@@ -77,8 +77,9 @@ Additional rules:
 - The design specs live in the Rust source as module docs (`//!`), not in
   `docs/`; the doc sits in the same diff as the code it describes, and
   `#[deny(rustdoc::broken_intra_doc_links)]` keeps its links compile-time
-  checked. `docs/` holds only `pitfalls.md` (environment content with no Rust
-  anchor); the crate overview lives in `lib.rs`.
+  checked. `docs/` holds `pitfalls.md` (environment content with no Rust anchor)
+  and `images/` (assets referenced by the markdown docs); the crate overview
+  lives in `lib.rs`.
 - Every sentence must teach something the code cannot, in the fewest words that
   carry it. If deleting a paragraph loses nothing, delete it.
 - Canonical facts live in exactly one place (the on-disk schema in the
