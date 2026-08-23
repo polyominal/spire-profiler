@@ -88,7 +88,7 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 
 use crate::fail;
-use crate::ui::ui_model::{self, UiRow, UiTab};
+use crate::ui::ui_model::{self, Section, UiRow, UiTab};
 
 // Pinned at compile time: a refactor that breaks a wire value, width, or
 // range fails the build instead of corrupting a schema.
@@ -147,17 +147,14 @@ const _: () = assert!(
 );
 const _: () = assert!(UiTab::Run as u8 == 1, "UiTab::Run must be discriminant 1");
 
-const _: () = assert!(ui_model::SECTION_DAMAGE == 0, "SECTION_DAMAGE must be id 0");
-const _: () = assert!(
-    ui_model::SECTION_DEFENSE == 1,
-    "SECTION_DEFENSE must be id 1"
-);
-const _: () = assert!(ui_model::SECTION_COUNT == 2, "SECTION_COUNT must be 2");
+const _: () = assert!(Section::Damage as u8 == 0);
+const _: () = assert!(Section::Defense as u8 == 1);
+const _: () = assert!(Section::ALL.len() == 2);
 
 const _: () = assert!(ui_model::ROW_FLAG_SELF == 2, "ROW_FLAG_SELF must be bit 1");
 
 const _: () = assert!(
-    ui_model::MAX_UI_ROWS >= ui_model::MAX_ROWS_PER_SECTION * ui_model::SECTION_COUNT as usize,
+    ui_model::MAX_UI_ROWS >= ui_model::MAX_ROWS_PER_SECTION * Section::ALL.len(),
     "MAX_UI_ROWS must hold MAX_ROWS_PER_SECTION rows for every section"
 );
 

@@ -4,7 +4,7 @@
 use super::*;
 use crate::data::state::PlayerFilter;
 use crate::test_util::scratch_dir;
-use crate::ui::ui_model::{UiRow, UiTab};
+use crate::ui::ui_model::{Section, UiRow, UiTab};
 
 fn assert_self_test_combat(combat: &CombatRec, combat_json: &serde_json::Value) {
     assert_eq!(combat.encounter_id, "SELF_TEST");
@@ -194,7 +194,7 @@ fn assert_combat_tab_rows() {
     let mut rows = [UiRow::default(); crate::ui::ui_model::MAX_UI_ROWS];
     let count = crate::ui::snapshot::ui_snapshot_rows(UiTab::Combat, &mut rows);
     assert!(count > 0);
-    assert_eq!(rows[0].section, crate::ui::ui_model::SECTION_DAMAGE);
+    assert_eq!(rows[0].section, Section::Damage);
     assert_eq!(rows[0].name_str(), "ANGER");
     assert_eq!(rows[0].value, 18);
     assert_eq!(rows[0].plays, 2);
@@ -209,7 +209,7 @@ fn assert_combat_tab_rows() {
         .iter()
         .find(|row| row.name_str() == "GHOST_RELIC");
     let ghost_row = ghost_row.expect("relic generator row");
-    assert_eq!(ghost_row.section, crate::ui::ui_model::SECTION_DAMAGE);
+    assert_eq!(ghost_row.section, Section::Damage);
     assert_eq!(ghost_row.kind, 1);
     assert_eq!(ghost_row.flags, 0);
     assert_eq!(ghost_row.value, 2);
@@ -217,8 +217,7 @@ fn assert_combat_tab_rows() {
     let di = rows[..count]
         .iter()
         .position(|row| {
-            row.section == crate::ui::ui_model::SECTION_DEFENSE
-                && row.flags & crate::ui::ui_model::ROW_FLAG_SELF == 0
+            row.section == Section::Defense && row.flags & crate::ui::ui_model::ROW_FLAG_SELF == 0
         })
         .expect("positive defense row");
     assert_eq!(rows[di].name_str(), "CRIMSON_MANTLE");

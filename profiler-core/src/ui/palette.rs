@@ -9,7 +9,7 @@ use crate::engine::math::Vector2;
 use crate::engine::object::TextAlign;
 use crate::ui::chart_layout::{self, Cmd, RectCmd, TextCmd};
 use crate::ui::theme::{self, TextRole};
-use crate::ui::ui_model;
+use crate::ui::ui_model::{self, Section};
 
 pub type Color = [f32; 4];
 
@@ -65,12 +65,12 @@ pub(crate) const COL_PANEL_BORDER: Color = [0.30, 0.40, 0.70, 0.60];
 // viewer.
 
 /// Section-tinted, not kind-tinted; Osty's absorb shares its `[O] ` hue.
-pub fn slot_color(slot: usize, section: u8, kind: u8) -> Color {
+pub fn slot_color(slot: usize, section: Section, kind: u8) -> Color {
     match slot {
         ui_model::SEG_DIRECT => match section {
-            ui_model::SECTION_DEFENSE if kind == ui_model::KIND_OSTY => COL_OSTY,
-            ui_model::SECTION_DEFENSE => COL_BLOCK,
-            _ => COL_DMG_DIRECT,
+            Section::Defense if kind == ui_model::KIND_OSTY => COL_OSTY,
+            Section::Defense => COL_BLOCK,
+            Section::Damage => COL_DMG_DIRECT,
         },
         ui_model::SEG_ATTRIBUTED => COL_ATTRIBUTED,
         ui_model::SEG_MODIFIER => COL_MODIFIER,
@@ -154,7 +154,7 @@ pub(crate) fn legend_plate(plate: bool) -> LegendPlate {
 pub(crate) struct LegendEntry {
     label: &'static str,
     slot: usize,
-    section: u8,
+    section: Section,
     kind: u8,
 }
 
@@ -164,61 +164,61 @@ pub(crate) const LEGEND_ENTRIES: &[LegendEntry] = &[
     LegendEntry {
         label: "direct",
         slot: ui_model::SEG_DIRECT,
-        section: ui_model::SECTION_DAMAGE,
+        section: Section::Damage,
         kind: ui_model::KIND_CARD,
     },
     LegendEntry {
         label: "indirect",
         slot: ui_model::SEG_ATTRIBUTED,
-        section: ui_model::SECTION_DAMAGE,
+        section: Section::Damage,
         kind: ui_model::KIND_CARD,
     },
     LegendEntry {
         label: "modifier",
         slot: ui_model::SEG_MODIFIER,
-        section: ui_model::SECTION_DAMAGE,
+        section: Section::Damage,
         kind: ui_model::KIND_CARD,
     },
     LegendEntry {
         label: "upgrade",
         slot: ui_model::SEG_UPGRADE,
-        section: ui_model::SECTION_DAMAGE,
+        section: Section::Damage,
         kind: ui_model::KIND_CARD,
     },
     LegendEntry {
         label: "block",
         slot: ui_model::SEG_DIRECT,
-        section: ui_model::SECTION_DEFENSE,
+        section: Section::Defense,
         kind: ui_model::KIND_CARD,
     },
     LegendEntry {
         label: "osty",
         slot: ui_model::SEG_DIRECT,
-        section: ui_model::SECTION_DEFENSE,
+        section: Section::Defense,
         kind: ui_model::KIND_OSTY,
     },
     LegendEntry {
         label: "weak",
         slot: ui_model::SEG_MITIGATE_DEBUFF,
-        section: ui_model::SECTION_DEFENSE,
+        section: Section::Defense,
         kind: ui_model::KIND_CARD,
     },
     LegendEntry {
         label: "buff",
         slot: ui_model::SEG_MITIGATE_BUFF,
-        section: ui_model::SECTION_DEFENSE,
+        section: Section::Defense,
         kind: ui_model::KIND_CARD,
     },
     LegendEntry {
         label: "str down",
         slot: ui_model::SEG_MITIGATE_STR,
-        section: ui_model::SECTION_DEFENSE,
+        section: Section::Defense,
         kind: ui_model::KIND_CARD,
     },
     LegendEntry {
         label: "self dmg",
         slot: ui_model::SEG_SELF,
-        section: ui_model::SECTION_DEFENSE,
+        section: Section::Defense,
         kind: ui_model::KIND_CARD,
     },
 ];
@@ -271,7 +271,7 @@ mod tests {
             ui_model::KIND_OSTY,
         ] {
             assert_eq!(
-                slot_color(ui_model::SEG_DIRECT, ui_model::SECTION_DAMAGE, kind),
+                slot_color(ui_model::SEG_DIRECT, Section::Damage, kind),
                 COL_DMG_DIRECT,
                 "kind {kind}"
             );
@@ -281,38 +281,38 @@ mod tests {
                 COL_BLOCK
             };
             assert_eq!(
-                slot_color(ui_model::SEG_DIRECT, ui_model::SECTION_DEFENSE, kind),
+                slot_color(ui_model::SEG_DIRECT, Section::Defense, kind),
                 expect,
                 "kind {kind}"
             );
         }
         assert_eq!(
-            slot_color(ui_model::SEG_ATTRIBUTED, ui_model::SECTION_DAMAGE, 0),
+            slot_color(ui_model::SEG_ATTRIBUTED, Section::Damage, 0),
             COL_ATTRIBUTED
         );
         assert_eq!(
-            slot_color(ui_model::SEG_MODIFIER, ui_model::SECTION_DEFENSE, 0),
+            slot_color(ui_model::SEG_MODIFIER, Section::Defense, 0),
             COL_MODIFIER
         );
         assert_eq!(
-            slot_color(ui_model::SEG_UPGRADE, ui_model::SECTION_DAMAGE, 0),
+            slot_color(ui_model::SEG_UPGRADE, Section::Damage, 0),
             COL_GOLD,
             "the upgrade segment IS the game's gold accent"
         );
         assert_eq!(
-            slot_color(ui_model::SEG_MITIGATE_DEBUFF, ui_model::SECTION_DEFENSE, 0),
+            slot_color(ui_model::SEG_MITIGATE_DEBUFF, Section::Defense, 0),
             COL_MITIGATE_DEBUFF
         );
         assert_eq!(
-            slot_color(ui_model::SEG_MITIGATE_BUFF, ui_model::SECTION_DEFENSE, 0),
+            slot_color(ui_model::SEG_MITIGATE_BUFF, Section::Defense, 0),
             COL_MITIGATE_BUFF
         );
         assert_eq!(
-            slot_color(ui_model::SEG_MITIGATE_STR, ui_model::SECTION_DEFENSE, 0),
+            slot_color(ui_model::SEG_MITIGATE_STR, Section::Defense, 0),
             COL_MITIGATE_STR
         );
         assert_eq!(
-            slot_color(ui_model::SEG_SELF, ui_model::SECTION_DEFENSE, 0),
+            slot_color(ui_model::SEG_SELF, Section::Defense, 0),
             COL_SELF
         );
     }

@@ -3,7 +3,7 @@
 
 use crate::data::state::{CardStat, Combat, PlayerFilter, STATE};
 use crate::ui::tooltip::{RowDetail, StatLine, StatTone};
-use crate::ui::ui_model::{self, UiMeta, UiRow, UiTab};
+use crate::ui::ui_model::{self, Section, UiMeta, UiRow, UiTab};
 use crate::ui::{chart_layout, palette};
 
 fn total_damage(c: &Combat) -> i64 {
@@ -36,7 +36,7 @@ fn format_card_detail(card: &CardStat) -> RowDetail {
     if card.damage_dealt > 0 {
         // Derived: there is no separate unblocked counter.
         let unblocked = card.damage_dealt - card.damage_blocked;
-        let direct = StatTone::Direct(ui_model::SECTION_DAMAGE, card.kind);
+        let direct = StatTone::Direct(Section::Damage, card.kind);
         push(
             format!("dmg ({unblocked} unblk)"),
             card.damage_dealt,
@@ -55,7 +55,7 @@ fn format_card_detail(card: &CardStat) -> RowDetail {
         push(
             format!("block ({} eff)", card.block_effective),
             card.block_gained,
-            StatTone::Direct(ui_model::SECTION_DEFENSE, card.kind),
+            StatTone::Direct(Section::Defense, card.kind),
         );
         push("blk mod".to_owned(), card.blk_modifier, StatTone::Modifier);
         push("blk upg".to_owned(), card.blk_upgrade, StatTone::Upgrade);
@@ -92,17 +92,17 @@ struct SectionView {
     segs: [i64; 8],
 }
 
-fn section_view(section: u8, card: &CardStat) -> SectionView {
+fn section_view(section: Section, card: &CardStat) -> SectionView {
     let mut v = SectionView::default();
     match section {
-        ui_model::SECTION_DAMAGE => {
+        Section::Damage => {
             v.segs[ui_model::SEG_DIRECT] = card.dmg_direct;
             v.segs[ui_model::SEG_ATTRIBUTED] = card.dmg_attributed;
             v.segs[ui_model::SEG_MODIFIER] = card.dmg_modifier;
             v.segs[ui_model::SEG_UPGRADE] = card.dmg_upgrade;
             v.value = card.dmg_direct + card.dmg_attributed + card.dmg_modifier + card.dmg_upgrade;
         }
-        ui_model::SECTION_DEFENSE => {
+        Section::Defense => {
             v.segs[ui_model::SEG_DIRECT] = card.block_effective;
             v.segs[ui_model::SEG_MODIFIER] = card.blk_modifier;
             v.segs[ui_model::SEG_MITIGATE_DEBUFF] = card.mitigate_debuff;
@@ -118,7 +118,6 @@ fn section_view(section: u8, card: &CardStat) -> SectionView {
                 + card.blk_upgrade
                 - card.self_damage;
         }
-        _ => {}
     }
     v
 }
@@ -176,15 +175,13 @@ pub fn ui_snapshot_rows(tab: UiTab, out: &mut [UiRow]) -> usize {
 
 pub fn ui_snapshot_rows_from(cards: &[CardStat], out: &mut [UiRow]) -> usize {
     let mut n: usize = 0;
-    let mut section: u8 = 0;
-    while section < ui_model::SECTION_COUNT {
+    for section in Section::ALL {
         n += build_section_rows(section, cards, &mut out[n..]);
-        section += 1;
     }
     n
 }
 
-fn build_section_rows(section: u8, cards: &[CardStat], out: &mut [UiRow]) -> usize {
+fn build_section_rows(section: Section, cards: &[CardStat], out: &mut [UiRow]) -> usize {
     if out.is_empty() {
         return 0;
     }
@@ -198,7 +195,7 @@ fn build_section_rows(section: u8, cards: &[CardStat], out: &mut [UiRow]) -> usi
     }
     let mut total_val: i64 = 0;
     for card in cards {
-        if section == ui_model::SECTION_DEFENSE {
+        if section == Section::Defense {
             let pos = defense_positive(card);
             if pos > 0 {
                 total_val += pos;
@@ -215,11 +212,11 @@ fn build_section_rows(section: u8, cards: &[CardStat], out: &mut [UiRow]) -> usi
     n
 }
 
-fn collect_candidates<'a>(section: u8, cards: &'a [CardStat]) -> Vec<RowCand<'a>> {
+fn collect_candidates<'a>(section: Section, cards: &'a [CardStat]) -> Vec<RowCand<'a>> {
     let mut kept: Vec<RowCand> = Vec::new();
     for card in cards {
         let view = section_view(section, card);
-        if view.value <= 0 && !(section == ui_model::SECTION_DEFENSE && card.self_damage > 0) {
+        if view.value <= 0 && !(section == Section::Defense && card.self_damage > 0) {
             continue;
         }
         if kept.len() < ui_model::MAX_ROWS_PER_SECTION {
@@ -230,9 +227,9 @@ fn collect_candidates<'a>(section: u8, cards: &'a [CardStat]) -> Vec<RowCand<'a>
 }
 
 /// By |value| descending; self-damage sorts below every contributor.
-fn rank_rows(section: u8, mut kept: Vec<RowCand>) -> Vec<RowCand> {
+fn rank_rows(section: Section, mut kept: Vec<RowCand>) -> Vec<RowCand> {
     kept.sort_by_key(|row| {
-        let solo_self = section == ui_model::SECTION_DEFENSE
+        let solo_self = section == Section::Defense
             && row.card.self_damage > 0
             && defense_positive(row.card) == 0;
         (solo_self, std::cmp::Reverse(row.view.value.abs()))
@@ -241,7 +238,7 @@ fn rank_rows(section: u8, mut kept: Vec<RowCand>) -> Vec<RowCand> {
 }
 
 fn emit_top_row(
-    section: u8,
+    section: Section,
     top: &RowCand,
     max_val: i64,
     total_val: i64,
@@ -249,12 +246,12 @@ fn emit_top_row(
 ) -> usize {
     let mut n: usize = 0;
     let card = top.card;
-    let pos = if section == ui_model::SECTION_DEFENSE {
+    let pos = if section == Section::Defense {
         defense_positive(card)
     } else {
         0
     };
-    let self_row = section == ui_model::SECTION_DEFENSE && card.self_damage > 0;
+    let self_row = section == Section::Defense && card.self_damage > 0;
     let split_self = self_row && pos > 0;
 
     if self_row && !split_self && n < out.len() {
@@ -298,7 +295,7 @@ fn emit_top_row(
 }
 
 fn make_row(
-    section: u8,
+    section: Section,
     card: &CardStat,
     view: SectionView,
     max_val: i64,
@@ -565,7 +562,7 @@ mod tests {
         assert_eq!(rows[1].name_str(), "SHIV");
         assert_eq!(rows[1].flags, 0);
         assert_eq!(rows[2].name_str(), "DEFEND");
-        assert_eq!(rows[2].section, ui_model::SECTION_DEFENSE);
+        assert_eq!(rows[2].section, Section::Defense);
     }
 
     #[test]
@@ -681,12 +678,12 @@ mod tests {
         // Damage ranks by value: STRIKE (70) before DEMON_FORM (35); the
         // zero-damage cards never appear in the damage section.
         assert_eq!(rows[0].name_str(), "STRIKE");
-        assert_eq!(rows[0].section, ui_model::SECTION_DAMAGE);
+        assert_eq!(rows[0].section, Section::Damage);
         assert_eq!(rows[0].value, 70);
         assert_eq!(rows[1].name_str(), "DEMON_FORM");
         // Defense follows with the only positive defense contributor.
-        let sections: Vec<u8> = rows[..n].iter().map(|r| r.section).collect();
-        assert!(sections.contains(&ui_model::SECTION_DEFENSE));
+        let sections: Vec<Section> = rows[..n].iter().map(|r| r.section).collect();
+        assert!(sections.contains(&Section::Defense));
 
         // The combat tab over the same dataset builds the same two sections.
         let n_combat = ui_snapshot_rows_from(&cards, &mut rows);
@@ -702,7 +699,7 @@ mod tests {
         let n = ui_snapshot_rows_from(&cards, &mut rows);
         let damage_rows = rows[..n]
             .iter()
-            .filter(|r| r.section == ui_model::SECTION_DAMAGE)
+            .filter(|r| r.section == Section::Damage)
             .count();
         assert_eq!(damage_rows, ui_model::MAX_ROWS_PER_SECTION);
         // The cap takes the first MAX_ROWS_PER_SECTION candidates in
@@ -738,7 +735,7 @@ mod tests {
         let n = ui_snapshot_rows_from(&cards, &mut rows);
         let defense: Vec<&UiRow> = rows[..n]
             .iter()
-            .filter(|r| r.section == ui_model::SECTION_DEFENSE)
+            .filter(|r| r.section == Section::Defense)
             .collect();
         // Exactly two defense rows: DEFEND's positive row and the
         // standalone BLOODLETTING self row (no phantom positive row).
@@ -779,7 +776,7 @@ mod tests {
         let defense: Vec<(usize, &UiRow)> = rows[..n]
             .iter()
             .enumerate()
-            .filter(|(_, r)| r.section == ui_model::SECTION_DEFENSE)
+            .filter(|(_, r)| r.section == Section::Defense)
             .collect();
         // OFFERING's 30 must not outrank DEFEND despite being the
         // section's largest |value|.

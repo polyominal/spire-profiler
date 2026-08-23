@@ -16,9 +16,10 @@
 use crate::engine::gdext::{Object, RetainedVariant};
 use crate::engine::math::{Color, Rect2, Vector2};
 use crate::engine::object::TextAlign;
+use crate::ui::palette;
 use crate::ui::panel_replay::{self, Fonts};
 use crate::ui::theme::{self, TextRole};
-use crate::ui::{palette, ui_model};
+use crate::ui::ui_model::{self, Section};
 
 /// The game's hover-tip width verbatim (`_hoverTipWidth = 360f`).
 pub(crate) const TIP_WIDTH: f32 = 360.0;
@@ -61,7 +62,7 @@ const LABEL_COL_W: f32 = 170.0;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum StatTone {
     Neutral,
-    Direct(u8, u8),
+    Direct(Section, u8),
     Attributed,
     Modifier,
     Upgrade,
@@ -105,13 +106,13 @@ fn tone_color(tone: StatTone) -> palette::Color {
     let (slot, section, kind) = match tone {
         StatTone::Neutral => return palette::COL_CREAM,
         StatTone::Direct(section, kind) => (ui_model::SEG_DIRECT, section, kind),
-        StatTone::Attributed => (ui_model::SEG_ATTRIBUTED, ui_model::SECTION_DAMAGE, 0),
-        StatTone::Modifier => (ui_model::SEG_MODIFIER, ui_model::SECTION_DAMAGE, 0),
-        StatTone::Upgrade => (ui_model::SEG_UPGRADE, ui_model::SECTION_DAMAGE, 0),
-        StatTone::MitigateDebuff => (ui_model::SEG_MITIGATE_DEBUFF, ui_model::SECTION_DEFENSE, 0),
-        StatTone::MitigateBuff => (ui_model::SEG_MITIGATE_BUFF, ui_model::SECTION_DEFENSE, 0),
-        StatTone::MitigateStr => (ui_model::SEG_MITIGATE_STR, ui_model::SECTION_DEFENSE, 0),
-        StatTone::SelfDamage => (ui_model::SEG_SELF, ui_model::SECTION_DEFENSE, 0),
+        StatTone::Attributed => (ui_model::SEG_ATTRIBUTED, Section::Damage, 0),
+        StatTone::Modifier => (ui_model::SEG_MODIFIER, Section::Damage, 0),
+        StatTone::Upgrade => (ui_model::SEG_UPGRADE, Section::Damage, 0),
+        StatTone::MitigateDebuff => (ui_model::SEG_MITIGATE_DEBUFF, Section::Defense, 0),
+        StatTone::MitigateBuff => (ui_model::SEG_MITIGATE_BUFF, Section::Defense, 0),
+        StatTone::MitigateStr => (ui_model::SEG_MITIGATE_STR, Section::Defense, 0),
+        StatTone::SelfDamage => (ui_model::SEG_SELF, Section::Defense, 0),
     };
     palette::slot_color(slot, section, kind)
 }
@@ -441,20 +442,12 @@ mod tests {
         RowDetail {
             title: "\"STRIKE\" x12".to_owned(),
             stats: vec![
-                stat(
-                    "dmg (12345 unblk)",
-                    "12345",
-                    Direct(ui_model::SECTION_DAMAGE, 0),
-                ),
-                stat("direct", "12345", Direct(ui_model::SECTION_DAMAGE, 0)),
+                stat("dmg (12345 unblk)", "12345", Direct(Section::Damage, 0)),
+                stat("direct", "12345", Direct(Section::Damage, 0)),
                 stat("indirect", "12345", Attributed),
                 stat("mod", "0", Modifier),
                 stat("upg", "0", Upgrade),
-                stat(
-                    "block (100 eff)",
-                    "120",
-                    Direct(ui_model::SECTION_DEFENSE, 0),
-                ),
+                stat("block (100 eff)", "120", Direct(Section::Defense, 0)),
                 stat("blk mod", "10", Modifier),
                 stat("blk upg", "10", Upgrade),
                 stat("weak", "30", MitigateDebuff),
@@ -474,41 +467,41 @@ mod tests {
         use ui_model as m;
         for (tone, slot, section, kind) in [
             (
-                Direct(m::SECTION_DAMAGE, 0),
+                Direct(m::Section::Damage, 0),
                 m::SEG_DIRECT,
-                m::SECTION_DAMAGE,
+                m::Section::Damage,
                 0,
             ),
             (
-                Direct(m::SECTION_DAMAGE, 1),
+                Direct(m::Section::Damage, 1),
                 m::SEG_DIRECT,
-                m::SECTION_DAMAGE,
+                m::Section::Damage,
                 1,
             ),
             (
-                Direct(m::SECTION_DEFENSE, 0),
+                Direct(m::Section::Defense, 0),
                 m::SEG_DIRECT,
-                m::SECTION_DEFENSE,
+                m::Section::Defense,
                 0,
             ),
             (
-                Direct(m::SECTION_DEFENSE, 4),
+                Direct(m::Section::Defense, 4),
                 m::SEG_DIRECT,
-                m::SECTION_DEFENSE,
+                m::Section::Defense,
                 4,
             ),
-            (Attributed, m::SEG_ATTRIBUTED, m::SECTION_DAMAGE, 0),
-            (Modifier, m::SEG_MODIFIER, m::SECTION_DAMAGE, 0),
-            (Upgrade, m::SEG_UPGRADE, m::SECTION_DAMAGE, 0),
+            (Attributed, m::SEG_ATTRIBUTED, m::Section::Damage, 0),
+            (Modifier, m::SEG_MODIFIER, m::Section::Damage, 0),
+            (Upgrade, m::SEG_UPGRADE, m::Section::Damage, 0),
             (
                 MitigateDebuff,
                 m::SEG_MITIGATE_DEBUFF,
-                m::SECTION_DEFENSE,
+                m::Section::Defense,
                 0,
             ),
-            (MitigateBuff, m::SEG_MITIGATE_BUFF, m::SECTION_DEFENSE, 0),
-            (MitigateStr, m::SEG_MITIGATE_STR, m::SECTION_DEFENSE, 0),
-            (SelfDamage, m::SEG_SELF, m::SECTION_DEFENSE, 0),
+            (MitigateBuff, m::SEG_MITIGATE_BUFF, m::Section::Defense, 0),
+            (MitigateStr, m::SEG_MITIGATE_STR, m::Section::Defense, 0),
+            (SelfDamage, m::SEG_SELF, m::Section::Defense, 0),
         ] {
             assert_eq!(
                 tone_color(tone),
@@ -518,7 +511,7 @@ mod tests {
         }
         // The Osty-absorb exception flows through.
         assert_eq!(
-            tone_color(StatTone::Direct(ui_model::SECTION_DEFENSE, 4)),
+            tone_color(StatTone::Direct(Section::Defense, 4)),
             palette::COL_OSTY
         );
         assert_eq!(tone_color(StatTone::Neutral), palette::COL_CREAM);
@@ -584,7 +577,7 @@ mod tests {
             stats: vec![StatLine {
                 label: "dmg (999999999999 unblk)".to_owned(),
                 value: "999999999999".to_owned(),
-                tone: StatTone::Direct(ui_model::SECTION_DAMAGE, 0),
+                tone: StatTone::Direct(Section::Damage, 0),
             }],
         };
         let lines = shape(&detail, 64);
@@ -595,7 +588,7 @@ mod tests {
             assert!(line.value.is_none(), "backstop lines carry no column");
             assert_eq!(
                 line.color,
-                palette::slot_color(ui_model::SEG_DIRECT, ui_model::SECTION_DAMAGE, 0)
+                palette::slot_color(ui_model::SEG_DIRECT, Section::Damage, 0)
             );
             assert!(chars(&line.text) <= BODY_BUDGET, "over budget: {line:?}");
         }

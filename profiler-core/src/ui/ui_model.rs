@@ -11,9 +11,23 @@ pub enum UiTab {
     Run = 1,
 }
 
-pub const SECTION_DAMAGE: u8 = 0;
-pub const SECTION_DEFENSE: u8 = 1;
-pub const SECTION_COUNT: u8 = 2;
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Section {
+    Damage = 0,
+    Defense = 1,
+}
+
+impl Section {
+    pub const ALL: [Section; 2] = [Section::Damage, Section::Defense];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Section::Damage => "Damage",
+            Section::Defense => "Defense",
+        }
+    }
+}
 
 /// A change here is a compile error at the `[u16; 8]` call sites.
 pub const SEG_COUNT: usize = 8;
@@ -44,7 +58,7 @@ pub const MAX_UI_ROWS: usize = 256;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct UiRow {
-    pub section: u8,
+    pub section: Section,
     pub kind: u8,
     /// TEAM (4) marks ownerless rows.
     pub player: u8,
@@ -62,7 +76,7 @@ pub struct UiRow {
 impl Default for UiRow {
     fn default() -> Self {
         UiRow {
-            section: 0,
+            section: Section::Damage,
             kind: 0,
             player: 0,
             flags: 0,
@@ -117,14 +131,6 @@ impl UiMeta {
     pub fn encounter_str(&self) -> &str {
         let len = usize::from(self.encounter_len).min(self.encounter.len());
         std::str::from_utf8(&self.encounter[..len]).unwrap_or("")
-    }
-}
-
-pub fn ui_section_name(section: u8) -> &'static str {
-    match section {
-        SECTION_DAMAGE => "Damage",
-        SECTION_DEFENSE => "Defense",
-        _ => "?",
     }
 }
 
