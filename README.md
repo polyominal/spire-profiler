@@ -8,6 +8,33 @@ in two in-game charts: the combat panel and the run-history summary.
 ![Run Summary panel: per-source damage bars with a hover breakdown and category
 legend](docs/images/run-summary.png)
 
+## A minimal example
+
+Playing **Bash, Dominate, Strike, Strike, Strike**:
+
+![Combat panel after Bash, Dominate, and three Strikes: per-source damage bars
+with Bash's hover breakdown](docs/images/minimal-example.png)
+
+1. **Bash** hits for 8 direct damage, and applies 2 Vulnerable.
+2. **Dominate** applies 1 more Vulnerable, and gives 3 Strength.
+3. Each **Strike** hits for 13: 6 base + 3 Strength, then ×1.5 from Vulnerable
+   (9 → 13). The mod re-runs the game's damage resolution per modifier: the
+   additive Strength owns its 3, the multiplicative Vulnerable owns 9 × 0.5 =
+   4. The 7 = 4 + 3 points are credited to:
+   - Strength's 3 to Dominate
+   - Vulnerable's 4 proportionally to stacks: Bash (2 of 3) gets 2, Dominate
+     (last applier) gets the residue
+
+Hence, after the five plays:
+
+- Strike ×3: 18 = 3 × 6 direct
+- Dominate ×1: 15 = 3 × (3 Strength + 2 Vulnerable) modifier
+- Bash ×1: 14 = 8 direct + 3 × 2 Vulnerable modifier
+
+The rows sum to the 47 behind "DPS 47.0 · 1 turns · 5 plays · took 0": every
+point of damage is credited exactly once — the attacker keeps its base, and
+each bonus goes to the source that applied it.
+
 ## AI use disclaimer
 
 This project is being built with heavy use of LLMs. The code is reviewed by
