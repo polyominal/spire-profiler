@@ -5,6 +5,9 @@ A per-source (cards, relics, powers, potions) combat profiler for Slay the Spire
 damage, defense, and forge. It aggregates those numbers per run, and shows them
 in two in-game charts: the combat panel and the run-history summary.
 
+![Run Summary panel: per-source damage bars with a hover breakdown and category
+legend](docs/images/run-summary.png)
+
 ## AI use disclaimer
 
 This project is being built with heavy use of LLMs. The code is reviewed by
