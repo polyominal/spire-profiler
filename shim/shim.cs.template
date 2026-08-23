@@ -1,0 +1,2180 @@
+// GENERATED FILE by the xtask shim generator. Source of truth:
+// shim/shim.cs.template. Do not edit by hand; rebuild with `cargo xtask build`.
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Threading.Tasks;
+using Godot;
+using HarmonyLib;
+using MegaCrit.Sts2.Core.Commands;
+using MegaCrit.Sts2.Core.Combat;
+using MegaCrit.Sts2.Core.Combat.History;
+using MegaCrit.Sts2.Core.Context;
+using MegaCrit.Sts2.Core.Entities.Cards;
+using MegaCrit.Sts2.Core.Entities.Creatures;
+using MegaCrit.Sts2.Core.Entities.Multiplayer;
+using MegaCrit.Sts2.Core.Entities.Players;
+using MegaCrit.Sts2.Core.Helpers;
+using MegaCrit.Sts2.Core.Hooks;
+using MegaCrit.Sts2.Core.Logging;
+using MegaCrit.Sts2.Core.Modding;
+using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Models.Orbs;
+using MegaCrit.Sts2.Core.Models.Powers;
+using MegaCrit.Sts2.Core.Models.Monsters;
+using MegaCrit.Sts2.Core.Models.Relics;
+using MegaCrit.Sts2.Core.Nodes.CommonUi;
+using MegaCrit.Sts2.Core.Nodes.Screens.MainMenu;
+using MegaCrit.Sts2.Core.Nodes.Screens.RunHistoryScreen;
+using MegaCrit.Sts2.Core.Rooms;
+using MegaCrit.Sts2.Core.Runs;
+using MegaCrit.Sts2.Core.Saves;
+using MegaCrit.Sts2.Core.ValueProps;
+
+namespace SpireProfiler;
+
+/// <summary>
+/// Required by the StS2 mod loader (types with [ModInitializer] are found
+/// and their static initializer invoked). The profiler's real work happens
+/// in the native core; this shim loads it and forwards game events
+/// through the C ABI.
+/// </summary>
+[ModInitializer("Initialize")]
+public static class SpireProfilerMod
+{
+    private static bool _initialized;
+
+    /// <summary>
+    /// The native core's file name on this OS/arch. The load path is
+    /// absolute (the mod directory), so only the file name differs per
+    /// platform; the selection expression is injected by the xtask
+    /// generator (@NATIVE_LIB_SELECTOR@) — this template carries no
+    /// platform knowledge of its own.
+    /// </summary>
+    private static string NativeLibraryName() => @NATIVE_LIB_SELECTOR@;
+
+    /// <summary>
+    /// The run's players in lobby order (host first) — the game's own slot
+    /// numbering (RunState.GetPlayerSlotIndex is Players.IndexOf, identical
+    /// on every peer). Captured at run start and immutable for the session;
+    /// single player is a one-element list, so every slot resolves to 0.
+    /// </summary>
+    private static readonly List<Player> _runPlayers = new();
+
+    /// <summary>
+    /// The player slot of a player: the index into the run's player list,
+    /// clamped 0..3 (the lobby max is 4). A null player, an empty registry
+    /// (no run active), or a player not in the run resolve to 0 — the
+    /// single-player degenerate case. Slot 4 names TEAM-scoped rows
+    /// (ProfilerNative.TeamSlot) and is never produced here: PlayerSlot
+    /// only ever answers for real players, the shim never invents a TEAM
+    /// tag. Pure plumbing: the shim never interprets a slot, the core owns
+    /// all per-slot state.
+    /// </summary>
+    internal static int PlayerSlot(Player player)
+    {
+        if (player == null || _runPlayers.Count == 0) return 0;
+        int index = _runPlayers.IndexOf(player);
+        return index < 0 ? 0 : Math.Min(index, 3);
+    }
+
+    /// <summary>
+    /// Refills the run-player registry from a run state. Every run start and
+    /// resume re-fires NotifyRunStarted; run state is immutable during a
+    /// run, so clear + refill is exact.
+    /// </summary>
+    internal static void CaptureRunPlayers(RunState state)
+    {
+        _runPlayers.Clear();
+        if (state?.Players != null) _runPlayers.AddRange(state.Players);
+    }
+
+    /// <summary>
+    /// The only locality check left: the enemy→player hit capture in the
+    /// ModifyDamage prefix, which feeds the LOCAL player's mitigation math
+    /// in the core (that capture is intentionally local — see the patch).
+    /// All other event forwarding is locality-free: every player's events
+    /// are counted and slot-tagged instead.
+    /// </summary>
+    internal static bool IsLocalPlayer(Player player)
+    {
+        if (player == null) return false;
+        return LocalContext.NetId.HasValue ? LocalContext.IsMe(player) : true;
+    }
+
+    /// Comma-joined character ids of the players in a run state (one id in
+    /// single player, several in multiplayer).
+    internal static string CharacterIds(RunState state)
+    {
+        if (state?.Players == null) return "";
+        return string.Join(",", state.Players.Select(p => p.Character?.Id?.Entry ?? "?"));
+    }
+
+    /// Comma-joined player NetIds (ulong) of the players in a run state,
+    /// positional with CharacterIds. The NetIds are the roster's
+    /// cross-session identity — slots are session-immutable, NetIds survive
+    /// — so the persistence side can match players across runs.
+    internal static string NetIds(RunState state)
+    {
+        if (state?.Players == null) return "";
+        return string.Join(",", state.Players.Select(p => p.NetId));
+    }
+
+    /// The active game profile id (SaveManager.CurrentProfileId), or -1
+    /// when the save manager is not initialized yet (safe at run start).
+    internal static int CurrentProfileId()
+    {
+        try { return SaveManager.Instance.CurrentProfileId; }
+        catch (Exception) { return -1; }
+    }
+
+    /// Forwards one damage result to the native core. Shared by the
+    /// CombatHistory.DamageReceived postfix and the kill-blow capture
+    /// (Hook.AfterDamageGiven): the game skips DamageReceived for the hit
+    /// that ends the combat, so the same forwarding must be reachable from
+    /// both events without double-counting. Every player's hits are
+    /// forwarded (team-as-one-player), tagged with the dealer's, receiver's,
+    /// and card source's slots (0 when there is none) so damage rows key on
+    /// the source card's owner. The slots are plumbing for the core's
+    /// per-player state, never attribution logic here.
+    internal static void ForwardDamage(Creature receiver, Creature dealer, DamageResult result, CardModel cardSource)
+    {
+        bool toPlayer = receiver?.IsPlayer ?? false;
+        // Multiplayer boss depth: Osty deals damage through attack cards
+        // (dealer flag), and absorbs the player's damage (receiver flag).
+        int ostyFlag = 0;
+        int receiverSlot = 0;
+        try
+        {
+            if (dealer?.Monster is Osty) ostyFlag = ProfilerNative.OstyFlagDealt;
+            else if (receiver?.Monster is Osty) ostyFlag = ProfilerNative.OstyFlagAbsorbed;
+            // The receiver's slot follows the same shape as the flags:
+            // the receiver's own Player when the hit lands on a player,
+            // else the absorbing Osty's PetOwner (already the Player).
+            if (toPlayer) receiverSlot = SpireProfilerMod.PlayerSlot(receiver.Player);
+            else if (receiver?.Monster is Osty) receiverSlot = SpireProfilerMod.PlayerSlot(receiver.PetOwner);
+        }
+        catch (Exception ex2) { Log.Error($"[SpireProfiler] Osty detect: {ex2}"); }
+        // A non-player dealer (enemy, or an Osty dealing damage) has no slot.
+        int dealerSlot = (dealer?.IsPlayer ?? false) ? SpireProfilerMod.PlayerSlot(dealer.Player) : 0;
+        // The damage row's card source — the card that produced the hit —
+        // tags the row with its owner's slot (0 when the hit has no card
+        // source: orb ticks, poison, powers; the core resolves the ambient
+        // slot for those).
+        int cardSourceSlot = cardSource?.Owner != null ? SpireProfilerMod.PlayerSlot(cardSource.Owner) : 0;
+        ProfilerNative.OnDamageDealt(
+            result?.TotalDamage ?? 0,
+            result?.UnblockedDamage ?? 0,
+            result?.BlockedDamage ?? 0,
+            cardSource?.Id?.Entry ?? "",
+            toPlayer,
+            receiver != null ? (ulong)receiver.GetHashCode() : 0UL,
+            ostyFlag,
+            dealer != null ? (ulong)dealer.GetHashCode() : 0UL,
+            dealerSlot,
+            receiverSlot,
+            cardSourceSlot);
+        // Weak on the attacking enemy reduces the hit; forward the
+        // prevented amount (computed from the actual multiplier, so
+        // PaperKrane / Debilitate adjust it) for debuff-layer
+        // attribution in the core.
+        if ((receiver?.IsPlayer ?? false) && dealer != null && !dealer.IsPlayer
+            && (result?.TotalDamage ?? 0) > 0 && dealer.GetPower<WeakPower>() != null)
+        {
+            decimal weakMult = 0.75m;
+            if (receiver?.Player != null && receiver.Player.GetRelic<PaperKrane>() != null)
+                weakMult -= 0.15m;
+            if (dealer.GetPower<DebilitatePower>() != null)
+                weakMult = 1m - (1m - weakMult) * 2m;
+            if (weakMult < 0.1m) weakMult = 0.1m;
+            int prevented = (int)Math.Round(result.TotalDamage / weakMult - result.TotalDamage);
+            if (prevented > 0)
+                ProfilerNative.OnWeakMitigation(prevented, (ulong)dealer.GetHashCode());
+        }
+    }
+
+    /// Pushes a relic/power source context for the duration of one hook
+    /// call. Returns the source id (used as the __state token) or "" when
+    /// there is nothing to attribute. The context carries its model's owner
+    /// slot so context rows key on the owning player.
+    internal static string TryBeginContext(AbstractModel model, int kind)
+    {
+        try
+        {
+            if (model == null) return "";
+            var id = model.Id?.Entry;
+            if (string.IsNullOrEmpty(id)) return "";
+            ProfilerNative.OnContextBegin(id, kind, ContextPlayerSlot(model));
+            return id;
+        }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] context begin: {ex}"); return ""; }
+    }
+
+    /// The owner slot of a catalog model, derived here because the catalog
+    /// prefix only hands us AbstractModel: RelicModel.Owner is the owning
+    /// player; PowerModel.Owner is the creature the power sits ON, so a
+    /// player creature's power takes the player's slot and an enemy power
+    /// has no player owner → the TEAM slot (4) — enemy-power rows must not
+    /// claim a player slot.
+    internal static int ContextPlayerSlot(AbstractModel model)
+    {
+        if (model is RelicModel relic && relic.Owner != null) return SpireProfilerMod.PlayerSlot(relic.Owner);
+        if (model is PowerModel power && power.Owner?.Player != null) return SpireProfilerMod.PlayerSlot(power.Owner.Player);
+        return ProfilerNative.TeamSlot;
+    }
+
+    internal static void TryEndContext(string state)
+    {
+        if (string.IsNullOrEmpty(state)) return;
+        try { ProfilerNative.OnContextEnd(); }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] context end: {ex}"); }
+    }
+
+    public static void Initialize()
+    {
+        if (_initialized) return;
+        _initialized = true;
+        try
+        {
+            var assemblyDir = Path.GetDirectoryName(typeof(SpireProfilerMod).Assembly.Location);
+            var modDir = !string.IsNullOrEmpty(assemblyDir)
+                ? assemblyDir
+                : Path.Combine(AppContext.BaseDirectory, "mods", "spire-profiler");
+            // The mod bundle lives at <game dir>/mods/spire-profiler, so one
+            // parent hop lands inside mods/. Climb two hops to the game dir:
+            // the data files must sit at <game dir>/mod_data/spire-profiler,
+            // the sibling of mods/ — the mod scanner sweeps every *.json
+            // under mods/ as a manifest (see docs/pitfalls.md "StS2 modding
+            // environment"). SPIRE_PROFILER_DATA_DIR overrides the location:
+            // headless-test points it at a scratch dir so its self-test
+            // records never mix into real play data.
+            var modsDir = Path.GetDirectoryName(modDir) ?? ".";
+            // Qualified: the bare name is ambiguous with Godot.Environment.
+            var dataDirOverride = System.Environment.GetEnvironmentVariable("SPIRE_PROFILER_DATA_DIR");
+            var dataDir = !string.IsNullOrEmpty(dataDirOverride)
+                ? dataDirOverride
+                : Path.Combine(Path.GetDirectoryName(modsDir) ?? ".", "mod_data", "spire-profiler");
+
+            ProfilerNative.Load(Path.Combine(modDir, NativeLibraryName()));
+            ProfilerNative.Init(dataDir);
+            Log.Info($"[SpireProfiler] native core loaded; mod dir: {modDir}; data dir: {dataDir}");
+
+            var harmony = new Harmony("dev.spireprofiler");
+            foreach (var type in typeof(SpireProfilerMod).Assembly.GetTypes())
+            {
+                // Skip classes without a class-level HarmonyPatch target:
+                // helper patchers (AttributionPatcher/OrbPatcher) carry only
+                // method-level attributes and are applied manually below —
+                // auto-processing them throws "method null", which reads as
+                // a real patch failure in the logs.
+                if (!type.GetCustomAttributes(typeof(HarmonyPatch), false).Any()) continue;
+                try
+                {
+                    harmony.CreateClassProcessor(type).Patch();
+                }
+                catch (Exception ex)
+                {
+                    Log.Error($"[SpireProfiler] Harmony patch failed for {type.Name}: {ex.Message}");
+                }
+            }
+            AttributionPatcher.PatchAll(harmony);
+            OrbPatcher.PatchAll(harmony);
+            Log.Info($"[SpireProfiler] harmony patches applied; patched methods: {Harmony.GetAllPatchedMethods().Count()}");
+            // Version-drift tripwire: these five gate the run lifecycle;
+            // if a game update renames them, runs would silently go unrecorded.
+            foreach (var name in new[] { "SetUpNewSingleplayer", "SetUpNewMultiplayer", "SetUpSavedSingleplayer", "SetUpSavedMultiplayer", "CleanUp" })
+            {
+                if (!Harmony.GetAllPatchedMethods().Any(m => m.Name == name))
+                    Log.Warn($"[SpireProfiler] expected patch missing: RunManager.{name}");
+            }
+
+            // The self-test only runs on request (see the headless-test build
+            // step) so normal play never pollutes the data files. Use the
+            // game's own arg parser (Environment.GetCommandLineArgs is
+            // unreliable under Godot's Mono bootstrap).
+            if (CommandLineHelper.HasArg("spire-profiler-self-test"))
+            {
+                ProfilerNative.SelfTest();
+                Log.Info("[SpireProfiler] self-test sequence sent to native core");
+            }
+
+            // In-game panel: load the GDExtension and attach the panel to
+            // the scene tree once it exists (async, so a slow tree doesn't
+            // block mod initialization).
+            _ = AttachPanelAsync(modDir);
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"[SpireProfiler] initialization failed: {ex}");
+        }
+    }
+
+    private static Control _panel;
+    private static Control _runPanel;
+    // The modal backdrop dimmers, one per panel. A panel cannot dim the
+    // surround itself: its Control is plate-box-sized with ClipContents on
+    // (its scroll needs it), so a fullscreen ColorRect added immediately
+    // BEFORE the panel (same parent, drawn behind it) carries the dimmer —
+    // the game's screen backdrop (StsColors.screenBackdrop, 80% black; the
+    // core names the same alpha BACKDROP_ALPHA in theme.rs, the source of
+    // truth the literal below mirrors). MouseFilter.Stop makes the dimmer
+    // swallow clicks so they never reach the game while the panel is up
+    // (modal). Each backdrop's Visible mirrors its panel's every frame in
+    // OnProcessFrame; being plain ColorRects, they need no fallback
+    // discipline of their own.
+    private static ColorRect _panelBackdrop;
+    private static ColorRect _runPanelBackdrop;
+    private static Button _runButton;
+    private static bool _f8Pressed;
+
+    /// <summary>
+    /// Creates one panel's modal backdrop (see the field declarations):
+    /// a fullscreen 80%-black ColorRect that swallows clicks, hidden until
+    /// the first OnProcessFrame mirrors the panel's visibility onto it.
+    /// </summary>
+    private static ColorRect NewBackdrop()
+    {
+        var backdrop = new ColorRect
+        {
+            Color = new Color(0.0f, 0.0f, 0.0f, 0.8f),
+            MouseFilter = Control.MouseFilterEnum.Stop,
+            Visible = false,
+        };
+        backdrop.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+        return backdrop;
+    }
+
+    private static async Task AttachPanelAsync(string modDir)
+    {
+        try
+        {
+            var extensionResult = GDExtensionManager.LoadExtension(Path.Combine(modDir, "spire_profiler.gdextension"));
+            Log.Info($"[SpireProfiler] GDExtension load result: {extensionResult}");
+            if (extensionResult != GDExtensionManager.LoadStatus.Ok) return;
+
+            SceneTree sceneTree = null;
+            while ((sceneTree = Engine.GetMainLoop() as SceneTree) == null || sceneTree.Root == null)
+            {
+                await Task.Delay(100);
+            }
+            _panel = ClassDB.Instantiate("SpireProfilerPanel").As<Control>();
+            if (_panel == null)
+            {
+                Log.Error("[SpireProfiler] panel instantiation failed");
+                return;
+            }
+            // Scroll input is forwarded from C# (see ForwardScrollInput):
+            // the native core never inspects the engine's input events.
+            _panel.GuiInput += OnCombatPanelGuiInput;
+            // The backdrop goes in immediately before the panel so the
+            // panel draws over the dimmer (deferred adds run in order).
+            _panelBackdrop = NewBackdrop();
+            sceneTree.Root.CallDeferred(Node.MethodName.AddChild, _panelBackdrop);
+            sceneTree.Root.CallDeferred(Node.MethodName.AddChild, _panel);
+            sceneTree.ProcessFrame += OnProcessFrame;
+            Log.Info("[SpireProfiler] profiler panel attached");
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"[SpireProfiler] panel attach failed: {ex}");
+        }
+    }
+
+    /// <summary>
+    /// Per-frame driver for both panels: refreshes them, mirrors each
+    /// panel's visibility onto its backdrop dimmer, and forwards
+    /// edge-detected panel hotkeys to the native core, which owns all
+    /// routing — F8 toggles the panel (the run panel on the run-history
+    /// screen, the combat panel elsewhere). The per-player filter no
+    /// longer has a key: the character avatars in the panels' headers
+    /// are the toggles (pressed core-side, like the tabs). While the run
+    /// panel is up, the toggle button is disabled and dimmed into the
+    /// background so it cannot fight the click-away dismissal: a press on
+    /// it closes the panel like any other background press.
+    /// </summary>
+    private static void OnProcessFrame()
+    {
+        try
+        {
+            if (_panel != null && GodotObject.IsInstanceValid(_panel)) _panel.Call("refresh");
+            // The core owns visibility (it hides the panel outside a run);
+            // the shim only reflects it onto the dimmer.
+            if (_panel != null && GodotObject.IsInstanceValid(_panel)
+                && _panelBackdrop != null && GodotObject.IsInstanceValid(_panelBackdrop))
+                _panelBackdrop.Visible = _panel.Visible;
+            // The run panel refreshes whenever it exists (lazily created on
+            // the first run-history display); before its first attach it
+            // stays hidden — the core's screen-open flag is false.
+            if (_runPanel != null && GodotObject.IsInstanceValid(_runPanel)) _runPanel.Call("refresh");
+            if (_runPanel != null && GodotObject.IsInstanceValid(_runPanel)
+                && _runPanelBackdrop != null && GodotObject.IsInstanceValid(_runPanelBackdrop))
+                _runPanelBackdrop.Visible = _runPanel.Visible;
+            // A live toggle button would fight the click-away dismissal: the
+            // press closes the panel, the release's Pressed re-opens it. The
+            // button is inert while the panel is up (the core's outside-press
+            // poll still sees the click and dismisses); the disabled stylebox
+            // dims it into the background. F8 keeps working — it is not a
+            // background press.
+            if (_runButton != null && GodotObject.IsInstanceValid(_runButton)
+                && _runPanel != null && GodotObject.IsInstanceValid(_runPanel))
+                _runButton.Disabled = _runPanel.Visible;
+            // C# only forwards edge-detected key presses; the core owns the
+            // per-frame visibility and toggle routing.
+            bool f8 = Input.IsKeyPressed(Key.F8);
+            if (f8 && !_f8Pressed) ProfilerNative.OnPanelToggle();
+            _f8Pressed = f8;
+        }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] ProcessFrame: {ex}"); }
+    }
+
+    /// <summary>
+    /// Lazily attaches the run-summary panel and its toggle button under
+    /// the run-history screen node, on the first DisplayRun (never in a
+    /// headless boot, which only reaches the main menu). Both hosts
+    /// (main-menu stack, mid-run stack) cache their own NRunHistory node,
+    /// so a second open reparents via AddChild; a freed screen instance
+    /// frees its children, and the validity checks re-instantiate.
+    /// </summary>
+    internal static void AttachRunPanelTo(NRunHistory screen)
+    {
+        try
+        {
+            if (_runPanel == null || !GodotObject.IsInstanceValid(_runPanel))
+            {
+                _runPanel = ClassDB.Instantiate("SpireProfilerRunPanel").As<Control>();
+                if (_runPanel == null)
+                {
+                    Log.Error("[SpireProfiler] run panel instantiation failed");
+                    return;
+                }
+                // Same scroll forward as the combat panel (the connection
+                // dies with the panel instance, so a re-instantiation
+                // re-connects exactly once). The backdrop shares the
+                // panel's lifecycle: a freed screen frees both, and this
+                // validity check re-creates both.
+                _runPanel.GuiInput += OnRunPanelGuiInput;
+                _runPanelBackdrop = NewBackdrop();
+            }
+            if (_runButton == null || !GodotObject.IsInstanceValid(_runButton))
+            {
+                _runButton = new Button { Text = "Profiler [F8]" };
+                // Styling is best-effort: a failed game-resource load leaves
+                // the plain engine look for that piece, never a dead button.
+                StyleRunButton(_runButton);
+                _runButton.Pressed += OnRunHistoryToggleButton;
+            }
+            // Placement is derived, not ad-hoc: the button joins the
+            // screen's own bottom-right button cluster, directly above the
+            // run-history screen's ShareButton (run_history.tscn: a direct
+            // child of the full-rect screen root, anchored bottom-right at
+            // 172×64 with 48px margins), right edges flush, a 16px gap
+            // between. The bottom-right cluster is the free corner BECAUSE
+            // the top-right is the date block's (the RightAlignedStuff
+            // labels). The size follows the game button's, not our own
+            // literal; the bottom-right anchors match the ShareButton's, so
+            // both track a viewport resize together. The panel centers
+            // itself (the core owns all placement), so the shim never
+            // positions it.
+            PlaceRunButton(screen);
+            // Draw order among the three siblings: backdrop, button, panel.
+            // The button is inert background while the panel is up, so it
+            // must sit UNDER the panel — added after it, the button would
+            // cover the panel's hover tooltip, which can extend into the
+            // button's bottom-right corner. AddChild reparents on a second
+            // open, so each guarded call runs at most once per screen.
+            if (_runPanel.GetParent() != screen)
+                screen.CallDeferred(Node.MethodName.AddChild, _runPanelBackdrop);
+            if (_runButton.GetParent() != screen)
+                screen.CallDeferred(Node.MethodName.AddChild, _runButton);
+            if (_runPanel.GetParent() != screen)
+                screen.CallDeferred(Node.MethodName.AddChild, _runPanel);
+        }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] run panel attach: {ex}"); }
+    }
+
+    /// <summary>
+    /// The button forwards the same toggle the F8 key does; the core
+    /// routes it to the run panel while the run-history screen is open.
+    /// It can only ever OPEN the panel: while the panel is up the shim
+    /// disables the button (see OnProcessFrame), so the Pressed handler
+    /// never fires against an open panel.
+    /// </summary>
+    private static void OnRunHistoryToggleButton()
+    {
+        try { ProfilerNative.OnPanelToggle(); }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] run history button: {ex}"); }
+    }
+
+    /// <summary>
+    /// Positions the run-history toggle button relative to the screen's
+    /// ShareButton LIVE rect (see the attach site for why the bottom-right
+    /// cluster): same size as the game button, directly above it with a
+    /// 16px gap, right edges flush. Node missing or not yet laid out →
+    /// the documented fallback: the ShareButton's own scene corner
+    /// (run_history.tscn offsets -220/-112 left/top, 48px right/bottom
+    /// margins — the button lands where the ShareButton would be, shifted
+    /// up by the gap and its height), with a WARNING, never an ERROR.
+    /// </summary>
+    private static void PlaceRunButton(NRunHistory screen)
+    {
+        const float gap = 16.0f;
+        var host = screen.GetRect().Size;
+        var share = screen.GetNodeOrNull<Control>("ShareButton");
+        var shareRect = share?.GetRect() ?? new Rect2();
+        // The fallback size is the ShareButton's scene size (172×64), not
+        // an invention; the label measures 130px at the shipped TTF's
+        // advances, leaving the plate's side margins their air.
+        var size = shareRect.Size.X > 0.0f ? shareRect.Size : new Vector2(172.0f, 64.0f);
+        Vector2 origin;
+        if (shareRect.Size.X > 0.0f)
+        {
+            origin = new Vector2(shareRect.End.X - size.X, shareRect.Position.Y - gap - size.Y);
+        }
+        else
+        {
+            Log.Warn("[SpireProfiler] run button: ShareButton node not found; parked above its scene corner");
+            origin = new Vector2(host.X - 220.0f, host.Y - 112.0f - gap - size.Y);
+        }
+        _runButton.SetAnchorsPreset(Control.LayoutPreset.BottomRight);
+        _runButton.OffsetLeft = origin.X - host.X;
+        _runButton.OffsetTop = origin.Y - host.Y;
+        _runButton.OffsetRight = origin.X + size.X - host.X;
+        _runButton.OffsetBottom = origin.Y + size.Y - host.Y;
+    }
+
+    /// <summary>
+    /// Restyles the run-history toggle button with the game's own chrome
+    /// and text behavior. The plate is the game's settings-tab plate
+    /// (`settings_tab_selected.tres`, the same art the core's tab strip
+    /// draws — the shim loads its own copy via GD.Load, the safe managed
+    /// path) as a StyleBoxTexture: a dark rounded plate that still reads
+    /// as a button at 64px tall, where the confirm/proceed button art
+    /// does not (confirm_button.tres bakes a 70px bottom margin of shadow
+    /// into a 132px region — its nine-patchable center is 37px, over half
+    /// the button's height; proceed_button.tres is a 2.0-aspect banner
+    /// against the button's 2.7). The AtlasTexture's draw frame is
+    /// region + margin = 515×181 (`theme.rs` TAB_ART_SIZE pins the same);
+    /// the 24px patch margins cover the rounded corners (~20px in the
+    /// art) plus the frame's transparent pad, and the flat center
+    /// stretches invisibly. The 0.9 modulate is the tab's rest state
+    /// (NSettingsTab drives the art through the game's HSV recolor shader
+    /// at v=0.9, and scaling HSV value by 0.9 is exactly an 0.9 RGB
+    /// multiply). The text behavior is NMainMenuTextButton's exact
+    /// treatment: cream going gold on hover and half-transparent white
+    /// while pressed (StsColors.cream/gold/halfTransparentWhite
+    /// verbatim) — one plate for every state, the label carries the
+    /// state, and the focus ring stays off (the engine's default ring is
+    /// not the game's look). The disabled state (the panel is up) dims
+    /// the plate to the backdrop's 20% brightness and the label to
+    /// half-transparent white, so the button reads as part of the dimmed
+    /// background instead of a live control. The game ships no project theme, so a bare
+    /// Button renders in Godot's default look — that was the defect. The face is Kreon Bold
+    /// glyph-space-one (the game's menu-button face, submenu_button.tscn's
+    /// Label) at 22px. The game's hover/press scale tweens need an
+    /// animation clock the shim does not keep — deliberately omitted.
+    ///
+    /// Every piece is independent best-effort: a failed game-resource
+    /// load keeps the engine default for that piece with one WARNING —
+    /// never an ERROR, and never a dead button (the Pressed wiring
+    /// happens regardless).
+    /// </summary>
+    private static void StyleRunButton(Button button)
+    {
+        try
+        {
+            var font = GD.Load<FontVariation>("res://themes/kreon_bold_glyph_space_one.tres");
+            if (font == null)
+            {
+                Log.Warn("[SpireProfiler] run button: kreon_bold_glyph_space_one.tres missing; default font kept");
+            }
+            else
+            {
+                button.AddThemeFontOverride("font", font);
+                button.AddThemeFontSizeOverride("font_size", 22);
+            }
+            var plate = GD.Load<Texture2D>("res://images/atlases/ui_atlas.sprites/settings_tab_selected.tres");
+            if (plate == null)
+            {
+                Log.Warn("[SpireProfiler] run button: settings_tab_selected.tres missing; chrome-less text button kept");
+            }
+            else
+            {
+                var box = new StyleBoxTexture
+                {
+                    Texture = plate,
+                    TextureMarginLeft = 24,
+                    TextureMarginTop = 24,
+                    TextureMarginRight = 24,
+                    TextureMarginBottom = 24,
+                    ModulateColor = new Color(0.9f, 0.9f, 0.9f, 1.0f),
+                };
+                button.AddThemeStyleboxOverride("normal", box);
+                button.AddThemeStyleboxOverride("hover", box);
+                button.AddThemeStyleboxOverride("pressed", box);
+                var disabledBox = new StyleBoxTexture
+                {
+                    Texture = plate,
+                    TextureMarginLeft = 24,
+                    TextureMarginTop = 24,
+                    TextureMarginRight = 24,
+                    TextureMarginBottom = 24,
+                    // The 80% backdrop leaves 20% of the scene visible
+                    // (1 - 0.8); the plate's rest state (0.9) scaled by
+                    // that 0.2 is 0.18 — exactly how the button would
+                    // render under the dimmer, so it reads as part of the
+                    // background.
+                    ModulateColor = new Color(0.18f, 0.18f, 0.18f, 1.0f),
+                };
+                button.AddThemeStyleboxOverride("disabled", disabledBox);
+            }
+            button.AddThemeColorOverride("font_color", StsColors.cream);
+            button.AddThemeColorOverride("font_hover_color", StsColors.gold);
+            button.AddThemeColorOverride("font_pressed_color", StsColors.halfTransparentWhite);
+            button.AddThemeColorOverride("font_disabled_color", StsColors.halfTransparentWhite);
+            button.AddThemeColorOverride("font_focus_color", StsColors.cream);
+            // The focus stylebox stays empty — the engine's default focus
+            // ring is not the game's look.
+            button.AddThemeStyleboxOverride("focus", new StyleBoxEmpty());
+        }
+        catch (Exception ex) { Log.Warn($"[SpireProfiler] run button styling: {ex.Message}"); }
+    }
+
+    // ── scroll input forward ─────────────────────────────────────────────
+    // The panels' scroll input crosses the ABI as raw event fields because
+    // the NATIVE side must never inspect an engine InputEvent: every
+    // GDExtension-originated call about one (method dispatch AND the pure C
+    // object_get_class_name alike) hangs the game's proprietary engine fork.
+    // The managed side is the game's own input path (its NScrollableContainer
+    // reads the same event types in C#), so the GuiInput signal — same
+    // targeting as the _gui_input virtual, fired for the control under the
+    // cursor — is the safe place to read them. The shim stays plumbing:
+    // kind discrimination and field extraction only; all translation and
+    // routing lives in the core (ui::scroll).
+
+    private static void OnCombatPanelGuiInput(InputEvent inputEvent) =>
+        ForwardScrollInput(ProfilerNative.PanelCombat, inputEvent);
+
+    private static void OnRunPanelGuiInput(InputEvent inputEvent) =>
+        ForwardScrollInput(ProfilerNative.PanelRun, inputEvent);
+
+    /// <summary>
+    /// Forwards one gui_input event's raw scroll fields to the native core.
+    /// Non-scroll kinds (mouse motion, keys) never cross the ABI — they
+    /// dominate the event stream and carry no scroll content.
+    /// </summary>
+    private static void ForwardScrollInput(int panel, InputEvent inputEvent)
+    {
+        try
+        {
+            switch (inputEvent)
+            {
+                case InputEventMouseButton button:
+                    ProfilerNative.OnScrollInput(panel, (int)button.ButtonIndex, button.Pressed, 0.0);
+                    break;
+                case InputEventPanGesture pan:
+                    ProfilerNative.OnScrollInput(panel, 0, false, (double)pan.Delta.Y);
+                    break;
+            }
+        }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] scroll input: {ex.Message}"); }
+    }
+}
+
+/// <summary>
+/// C ABI bindings for the native core. Function pointers are resolved
+/// explicitly so no DllImport probing rules apply; the native library is
+/// loaded by absolute path from the mod directory (the file name is
+/// platform-dependent — see SpireProfilerMod.NativeLibraryName).
+/// </summary>
+internal static class ProfilerNative
+{
+    private delegate void NativeVoid();
+    private delegate void NativeInit([MarshalAs(UnmanagedType.LPUTF8Str)] string dataDir);
+    private delegate void NativeCombatStarted([MarshalAs(UnmanagedType.LPUTF8Str)] string encounterId, [MarshalAs(UnmanagedType.LPUTF8Str)] string encounterType);
+    // Player slots (0..3, lobby order; 4 = TEAM) tag every per-slot export
+    // (always the trailing parameters), plus the roster's net-ids and the
+    // game's own StartTime (the run id) on run_started. Slots are plumbing
+    // for the core's per-slot state; they never change what is forwarded.
+    private delegate void NativeCardPlayStarted([MarshalAs(UnmanagedType.LPUTF8Str)] string cardId, int playIndex, int playCount, int cardHash, int playerSlot);
+    private delegate void NativeCardPlayFinished(int playerSlot);
+    private delegate void NativeDamageDealt(int total, int unblocked, int blocked, [MarshalAs(UnmanagedType.LPUTF8Str)] string cardSourceId, int toPlayer, ulong receiverHash, int ostyFlag, ulong dealerHash, int dealerSlot, int receiverSlot, int cardSourceSlot);
+    private delegate void NativeBlockGained(int amount, [MarshalAs(UnmanagedType.LPUTF8Str)] string cardId, int playerSlot, int sourceSlot);
+    private delegate void NativeRunStarted([MarshalAs(UnmanagedType.LPUTF8Str)] string characterIds, int ascension, [MarshalAs(UnmanagedType.LPUTF8Str)] string gameMode, [MarshalAs(UnmanagedType.LPUTF8Str)] string seed, int continued, [MarshalAs(UnmanagedType.LPUTF8Str)] string netIds, long startTime);
+    // The run terminal state: 0 = victory, 1 = defeat, 2 = abandoned (see
+    // PatchRunEnded's mapping).
+    private delegate void NativeRunEnded(int outcome);
+    private delegate void NativeContextBegin([MarshalAs(UnmanagedType.LPUTF8Str)] string sourceId, int kind, int playerSlot);
+    private delegate void NativeContextEnd();
+    private delegate void NativeTurnStarted();
+    private delegate void NativeOrbEvent(int hash, int playerSlot);
+    private delegate void NativePotionUsed([MarshalAs(UnmanagedType.LPUTF8Str)] string potionId, int playerSlot);
+    private delegate void NativePotionContextBegin([MarshalAs(UnmanagedType.LPUTF8Str)] string potionId, int playerSlot);
+    private delegate void NativeBlockPoolClear(int playerSlot);
+    private delegate void NativePanelToggle();
+    private delegate void NativePowerApplied([MarshalAs(UnmanagedType.LPUTF8Str)] string powerId, int amount, ulong creatureHash, int isPlayer, int playerSlot);
+    private delegate void NativePowerDecreased([MarshalAs(UnmanagedType.LPUTF8Str)] string powerId, int amount, ulong creatureHash, int isPlayer, int playerSlot);
+    private delegate void NativeModifierContribution([MarshalAs(UnmanagedType.LPUTF8Str)] string modifierId, int kind, int contribution, int playerSlot);
+    private delegate void NativeCardGenerated(int cardHash, [MarshalAs(UnmanagedType.LPUTF8Str)] string sourceId, int sourceKind, int playerSlot);
+    private delegate void NativeForge([MarshalAs(UnmanagedType.LPUTF8Str)] string sourceId, int kind, int amount, int playerSlot);
+    private delegate void NativeDoomTargetCapture(int creatureHash, int currentHp);
+    private delegate void NativeOstySummoned([MarshalAs(UnmanagedType.LPUTF8Str)] string sourceId, int kind, int hpAmount, int playerSlot);
+    private delegate void NativeWeakMitigation(int prevented, ulong dealerHash);
+    private delegate void NativeEnemyHitContext(int baseDamage, int dealerStr);
+    private delegate void NativeBuffMitigation([MarshalAs(UnmanagedType.LPUTF8Str)] string powerId, int prevented);
+    private delegate void NativeCardUpgraded(int cardHash, int damageDelta, int blockDelta);
+    private delegate void NativeRunMeta(int profileId);
+    private delegate void NativeRunHistorySelect([MarshalAs(UnmanagedType.LPUTF8Str)] string seed, long startTime, int profile);
+    private delegate void NativeOstyKilled(int playerSlot);
+    private delegate void NativePlayerDied(int playerSlot);
+    // The scroll forward carries one gui_input event's raw fields: the
+    // panel id names whose signal fired (PanelCombat/PanelRun), the rest
+    // is the InputEventMouseButton button/pressed pair or the
+    // InputEventPanGesture delta.y — the core owns all translation.
+    private delegate void NativeScrollInput(int panel, int buttonIndex, int pressed, double panY);
+
+    public const int ContextKindRelic = 1;
+    public const int ContextKindPower = 2;
+    // Reserved slot naming rows whose source has no player owner (enemy
+    // power contexts; the core's caps::MAX_PLAYER_SLOTS = 5 keeps 0..4).
+    public const int TeamSlot = 4;
+    public const int OstyFlagDealt = 1;
+    public const int OstyFlagAbsorbed = 2;
+    // Panel ids for the scroll forward (spire_profiler_scroll_input).
+    public const int PanelCombat = 0;
+    public const int PanelRun = 1;
+
+    private static NativeInit _init;
+    private static NativeCombatStarted _combatStarted;
+    private static NativeCardPlayStarted _cardPlayStarted;
+    private static NativeCardPlayFinished _cardPlayFinished;
+    private static NativeDamageDealt _damageDealt;
+    private static NativeBlockGained _blockGained;
+    private static NativeVoid _combatEnded;
+    private static NativeVoid _selfTest;
+    private static NativeRunStarted _runStarted;
+    private static NativeRunEnded _runEnded;
+    private static NativeVoid _runSuspended;
+    private static NativeContextBegin _contextBegin;
+    private static NativeContextEnd _contextEnd;
+    private static NativeTurnStarted _turnStarted;
+    private static NativeOrbEvent _orbChanneled;
+    private static NativeOrbEvent _orbContextBegin;
+    private static NativePotionUsed _potionUsed;
+    private static NativePotionContextBegin _potionContextBegin;
+    private static NativeBlockPoolClear _blockPoolClear;
+    private static NativePanelToggle _panelToggle;
+    private static NativePowerApplied _powerApplied;
+    private static NativePowerDecreased _powerDecreased;
+    private static NativeModifierContribution _modifierContribution;
+    private static NativeCardGenerated _cardGenerated;
+    private static NativeForge _forge;
+    private static NativeDoomTargetCapture _doomTargetCapture;
+    private static NativeVoid _doomKillsCompleted;
+    private static NativeOstySummoned _ostySummoned;
+    private static NativeOstyKilled _ostyKilled;
+    private static NativeWeakMitigation _weakMitigation;
+    private static NativeEnemyHitContext _enemyHitContext;
+    private static NativeBuffMitigation _buffMitigation;
+    private static NativeCardUpgraded _cardUpgraded;
+    private static NativeModifierContribution _blockModifierContribution;
+    private static NativeRunMeta _runMeta;
+    private static NativeRunHistorySelect _runHistorySelect;
+    private static NativeVoid _runHistoryClear;
+    private static NativePlayerDied _playerDied;
+    private static NativeScrollInput _scrollInput;
+
+    private static T GetExport<T>(IntPtr lib, string name) where T : Delegate =>
+        Marshal.GetDelegateForFunctionPointer<T>(NativeLibrary.GetExport(lib, name));
+
+    public static void Load(string libPath)
+    {
+        var lib = NativeLibrary.Load(libPath);
+        _init = GetExport<NativeInit>(lib, "spire_profiler_init");
+        _combatStarted = GetExport<NativeCombatStarted>(lib, "spire_profiler_combat_started");
+        _cardPlayStarted = GetExport<NativeCardPlayStarted>(lib, "spire_profiler_card_play_started");
+        _cardPlayFinished = GetExport<NativeCardPlayFinished>(lib, "spire_profiler_card_play_finished");
+        _damageDealt = GetExport<NativeDamageDealt>(lib, "spire_profiler_damage_dealt");
+        _blockGained = GetExport<NativeBlockGained>(lib, "spire_profiler_block_gained");
+        _combatEnded = GetExport<NativeVoid>(lib, "spire_profiler_combat_ended");
+        _selfTest = GetExport<NativeVoid>(lib, "spire_profiler_self_test");
+        _runStarted = GetExport<NativeRunStarted>(lib, "spire_profiler_run_started");
+        _runEnded = GetExport<NativeRunEnded>(lib, "spire_profiler_run_ended");
+        _runSuspended = GetExport<NativeVoid>(lib, "spire_profiler_run_suspended");
+        _contextBegin = GetExport<NativeContextBegin>(lib, "spire_profiler_context_begin");
+        _contextEnd = GetExport<NativeContextEnd>(lib, "spire_profiler_context_end");
+        _turnStarted = GetExport<NativeTurnStarted>(lib, "spire_profiler_turn_started");
+        _orbChanneled = GetExport<NativeOrbEvent>(lib, "spire_profiler_orb_channeled");
+        _orbContextBegin = GetExport<NativeOrbEvent>(lib, "spire_profiler_orb_context_begin");
+        _potionUsed = GetExport<NativePotionUsed>(lib, "spire_profiler_potion_used");
+        _potionContextBegin = GetExport<NativePotionContextBegin>(lib, "spire_profiler_potion_context_begin");
+        _blockPoolClear = GetExport<NativeBlockPoolClear>(lib, "spire_profiler_block_pool_clear");
+        _panelToggle = GetExport<NativePanelToggle>(lib, "spire_profiler_panel_toggle");
+        _powerApplied = GetExport<NativePowerApplied>(lib, "spire_profiler_power_applied");
+        _powerDecreased = GetExport<NativePowerDecreased>(lib, "spire_profiler_power_decreased");
+        _modifierContribution = GetExport<NativeModifierContribution>(lib, "spire_profiler_damage_modifier_contribution");
+        _cardGenerated = GetExport<NativeCardGenerated>(lib, "spire_profiler_card_generated");
+        _forge = GetExport<NativeForge>(lib, "spire_profiler_forge");
+        _doomTargetCapture = GetExport<NativeDoomTargetCapture>(lib, "spire_profiler_doom_target_capture");
+        _doomKillsCompleted = GetExport<NativeVoid>(lib, "spire_profiler_doom_kills_completed");
+        _ostySummoned = GetExport<NativeOstySummoned>(lib, "spire_profiler_osty_summoned");
+        _ostyKilled = GetExport<NativeOstyKilled>(lib, "spire_profiler_osty_killed");
+        _weakMitigation = GetExport<NativeWeakMitigation>(lib, "spire_profiler_weak_mitigation");
+        _enemyHitContext = GetExport<NativeEnemyHitContext>(lib, "spire_profiler_enemy_hit_context");
+        _buffMitigation = GetExport<NativeBuffMitigation>(lib, "spire_profiler_buff_mitigation");
+        _cardUpgraded = GetExport<NativeCardUpgraded>(lib, "spire_profiler_card_upgraded");
+        _blockModifierContribution = GetExport<NativeModifierContribution>(lib, "spire_profiler_block_modifier_contribution");
+        _runMeta = GetExport<NativeRunMeta>(lib, "spire_profiler_set_run_meta");
+        _runHistorySelect = GetExport<NativeRunHistorySelect>(lib, "spire_profiler_run_history_select");
+        _runHistoryClear = GetExport<NativeVoid>(lib, "spire_profiler_run_history_clear");
+        _playerDied = GetExport<NativePlayerDied>(lib, "spire_profiler_player_died");
+        _scrollInput = GetExport<NativeScrollInput>(lib, "spire_profiler_scroll_input");
+    }
+
+    public static void Init(string dataDir) => _init(dataDir);
+    public static void SelfTest() => _selfTest();
+    public static void OnCombatStarted(string encounterId, string encounterType) => _combatStarted(encounterId, encounterType);
+    public static void OnCardPlayStarted(string cardId, int playIndex, int playCount, int cardHash, int playerSlot) =>
+        _cardPlayStarted(cardId, playIndex, playCount, cardHash, playerSlot);
+    public static void OnCardPlayFinished(int playerSlot) => _cardPlayFinished(playerSlot);
+    public static void OnDamageDealt(int total, int unblocked, int blocked, string cardSourceId, bool toPlayer, ulong receiverHash, int ostyFlag, ulong dealerHash, int dealerSlot, int receiverSlot, int cardSourceSlot) =>
+        _damageDealt(total, unblocked, blocked, cardSourceId, toPlayer ? 1 : 0, receiverHash, ostyFlag, dealerHash, dealerSlot, receiverSlot, cardSourceSlot);
+    public static void OnBlockGained(int amount, string cardId, int playerSlot, int sourceSlot) => _blockGained(amount, cardId, playerSlot, sourceSlot);
+    public static void OnCombatEnded() => _combatEnded();
+    public static void OnRunStarted(string characterIds, int ascension, string gameMode, string seed, bool continued, string netIds, long startTime) =>
+        _runStarted(characterIds, ascension, gameMode, seed, continued ? 1 : 0, netIds, startTime);
+    public static void OnRunEnded(int outcome) => _runEnded(outcome);
+    public static void OnRunSuspended() => _runSuspended();
+    public static void OnContextBegin(string sourceId, int kind, int playerSlot) => _contextBegin(sourceId, kind, playerSlot);
+    public static void OnContextEnd() => _contextEnd();
+    public static void OnTurnStarted() => _turnStarted();
+    public static void OnOrbChanneled(int hash, int playerSlot) => _orbChanneled(hash, playerSlot);
+    public static void OnOrbContextBegin(int hash, int playerSlot) => _orbContextBegin(hash, playerSlot);
+    public static void OnPotionUsed(string potionId, int playerSlot) => _potionUsed(potionId, playerSlot);
+    public static void OnPotionContextBegin(string potionId, int playerSlot) => _potionContextBegin(potionId, playerSlot);
+    public static void OnBlockPoolClear(int playerSlot) => _blockPoolClear(playerSlot);
+    public static void OnPowerApplied(string powerId, int amount, ulong creatureHash, bool isPlayer, int playerSlot) => _powerApplied(powerId, amount, creatureHash, isPlayer ? 1 : 0, playerSlot);
+    public static void OnPowerDecreased(string powerId, int amount, ulong creatureHash, bool isPlayer, int playerSlot) => _powerDecreased(powerId, amount, creatureHash, isPlayer ? 1 : 0, playerSlot);
+    public static void OnDamageModifierContribution(string modifierId, int kind, int contribution, int playerSlot) => _modifierContribution(modifierId, kind, contribution, playerSlot);
+    public static void OnCardGenerated(int cardHash, string sourceId, int sourceKind, int playerSlot) => _cardGenerated(cardHash, sourceId, sourceKind, playerSlot);
+    public static void OnForge(string sourceId, int kind, int amount, int playerSlot) => _forge(sourceId, kind, amount, playerSlot);
+    public static void OnDoomTargetCapture(int creatureHash, int currentHp) => _doomTargetCapture(creatureHash, currentHp);
+    public static void OnDoomKillsCompleted() => _doomKillsCompleted();
+    public static void OnOstySummoned(string sourceId, int kind, int hpAmount, int playerSlot) => _ostySummoned(sourceId, kind, hpAmount, playerSlot);
+    public static void OnOstyKilled(int playerSlot) => _ostyKilled(playerSlot);
+    public static void OnWeakMitigation(int prevented, ulong dealerHash) => _weakMitigation(prevented, dealerHash);
+    public static void OnEnemyHitContext(int baseDamage, int dealerStr) => _enemyHitContext(baseDamage, dealerStr);
+    public static void OnBuffMitigation(string powerId, int prevented) => _buffMitigation(powerId, prevented);
+    public static void OnCardUpgraded(int cardHash, int damageDelta, int blockDelta) => _cardUpgraded(cardHash, damageDelta, blockDelta);
+    public static void OnBlockModifierContribution(string modifierId, int kind, int contribution, int playerSlot) => _blockModifierContribution(modifierId, kind, contribution, playerSlot);
+    public static void OnSetRunMeta(int profileId) => _runMeta(profileId);
+    public static void OnPanelToggle() => _panelToggle();
+    public static void OnRunHistorySelect(string seed, long startTime, int profile) => _runHistorySelect(seed, startTime, profile);
+    public static void OnRunHistoryClear() => _runHistoryClear();
+    public static void OnPlayerDied(int playerSlot) => _playerDied(playerSlot);
+    public static void OnScrollInput(int panel, int buttonIndex, bool pressed, double panY) => _scrollInput(panel, buttonIndex, pressed ? 1 : 0, panY);
+}
+
+// ── Harmony patches ──────────────────────────────────────────────────────
+// Each postfix is a thin forwarder; keep them exception-free so a profiler
+// bug can never break the game's own logic.
+
+[HarmonyPatch(typeof(CombatHistory), nameof(CombatHistory.CardPlayStarted))]
+internal static class PatchCardPlayStarted
+{
+    [HarmonyPostfix]
+    private static void Postfix(CardPlay cardPlay)
+    {
+        try
+        {
+            // Every player's plays count (team-as-one-player); the slot
+            // (CardPlay.Player) keeps the core's per-slot play stacks apart
+            // so the interleaved plays of a co-op round stay balanced.
+            var card = cardPlay?.Card;
+            ProfilerNative.OnCardPlayStarted(
+                card?.Id?.Entry ?? "",
+                cardPlay?.PlayIndex ?? 0,
+                cardPlay?.PlayCount ?? 1,
+                card?.GetHashCode() ?? 0,
+                SpireProfilerMod.PlayerSlot(cardPlay?.Player));
+        }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] CardPlayStarted: {ex}"); }
+    }
+}
+
+[HarmonyPatch(typeof(CombatHistory), nameof(CombatHistory.CardPlayFinished))]
+internal static class PatchCardPlayFinished
+{
+    [HarmonyPostfix]
+    private static void Postfix(CardPlay cardPlay)
+    {
+        try
+        {
+            // Every player's play finish is forwarded; the slot
+            // (CardPlay.Player) restores the play_depth bookkeeping balance
+            // — a remote play finishing during a local play's choice
+            // suspension pops the remote slot's stack, never the local one.
+            ProfilerNative.OnCardPlayFinished(SpireProfilerMod.PlayerSlot(cardPlay?.Player));
+        }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] CardPlayFinished: {ex}"); }
+    }
+}
+
+[HarmonyPatch(typeof(CombatHistory), nameof(CombatHistory.DamageReceived))]
+internal static class PatchDamageReceived
+{
+    [HarmonyPostfix]
+    private static void Postfix(Creature receiver, Creature dealer, DamageResult result, CardModel cardSource)
+    {
+        try { SpireProfilerMod.ForwardDamage(receiver, dealer, result, cardSource); }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] DamageReceived: {ex}"); }
+    }
+}
+
+[HarmonyPatch(typeof(Hook), nameof(Hook.AfterDamageGiven))]
+internal static class PatchKillBlowDamage
+{
+    [HarmonyPostfix]
+    private static void Postfix(Creature dealer, DamageResult results, Creature target, CardModel cardSource)
+    {
+        try
+        {
+            // CreatureCmd guards CombatHistory.DamageReceived with
+            // IsInProgress && !IsEnding, so the hit that kills the last
+            // enemy never fires it and would be lost entirely (damage +
+            // kill both missing). Hook.AfterDamageGiven is documented in
+            // the game source to fire from that same combat-ending hit.
+            // Forward only killing blows that DamageReceived did NOT
+            // record: non-final kills still fire DamageReceived normally,
+            // and IsEnding is a pure function of state (no alive primary
+            // enemies), so it is already true at postfix time.
+            if (results?.WasTargetKilled != true) return;
+            if (!CombatManager.Instance.IsEnding) return;
+            SpireProfilerMod.ForwardDamage(target, dealer, results, cardSource);
+        }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] AfterDamageGiven: {ex}"); }
+    }
+}
+
+[HarmonyPatch(typeof(CombatHistory), nameof(CombatHistory.BlockGained))]
+internal static class PatchBlockGained
+{
+    [HarmonyPostfix]
+    private static void Postfix(Creature receiver, int amount, CardPlay cardPlay)
+    {
+        try
+        {
+            if (!(receiver?.IsPlayer ?? false)) return;
+            // cardPlay is non-null iff the gain was directly caused by a card
+            // play (CreatureCmd.GainBlock's documented contract, verified
+            // against the game source: relic/power procs like Anchor and
+            // DaughterOfTheWind pass null). Every player's gains are
+            // forwarded; the receiver slot (receiver.Player) keeps per-slot
+            // block pools keyed on who gained the block, so an ally block
+            // credits the ally's pool even though the card play that caused
+            // it belongs to another slot. The row's SOURCE slot is the card
+            // play's card owner when card-caused, else the receiver's own
+            // slot (procs have no card owner).
+            int sourceSlot = cardPlay?.Card?.Owner != null
+                ? SpireProfilerMod.PlayerSlot(cardPlay.Card.Owner)
+                : SpireProfilerMod.PlayerSlot(receiver.Player);
+            ProfilerNative.OnBlockGained(amount, cardPlay?.Card?.Id?.Entry ?? "", SpireProfilerMod.PlayerSlot(receiver.Player), sourceSlot);
+        }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] BlockGained: {ex}"); }
+    }
+}
+
+[HarmonyPatch(typeof(CombatManager), nameof(CombatManager.SetUpCombat))]
+internal static class PatchSetUpCombat
+{
+    [HarmonyPostfix]
+    private static void Postfix(ICombatState state)
+    {
+        try
+        {
+            var encounter = state?.Encounter;
+            ProfilerNative.OnCombatStarted(
+                encounter?.Id?.Entry ?? "unknown",
+                (encounter?.RoomType.ToString() ?? "normal").ToLowerInvariant());
+        }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] SetUpCombat: {ex}"); }
+    }
+}
+
+[HarmonyPatch(typeof(CombatRoom), nameof(CombatRoom.OnCombatEnded))]
+internal static class PatchCombatEnded
+{
+    [HarmonyPostfix]
+    private static void Postfix()
+    {
+        try { ProfilerNative.OnCombatEnded(); }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] OnCombatEnded: {ex}"); }
+    }
+}
+
+[HarmonyPatch(typeof(RunManager), nameof(RunManager.SetUpNewSingleplayer))]
+internal static class PatchRunStartSingleplayer
+{
+    [HarmonyPostfix]
+    private static void Postfix(RunState state)
+    {
+        try { RunStartPatches.NotifyRunStarted(state, isResume: false); }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] SetUpNewSingleplayer: {ex}"); }
+    }
+}
+
+[HarmonyPatch(typeof(RunManager), nameof(RunManager.SetUpNewMultiplayer))]
+internal static class PatchRunStartMultiplayer
+{
+    [HarmonyPostfix]
+    private static void Postfix(RunState state)
+    {
+        try { RunStartPatches.NotifyRunStarted(state, isResume: false); }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] SetUpNewMultiplayer: {ex}"); }
+    }
+}
+
+// Resumed runs (save+quit continue): without these, combats in a continued
+// run would be recorded run-less.
+[HarmonyPatch(typeof(RunManager), nameof(RunManager.SetUpSavedSingleplayer))]
+internal static class PatchRunResumeSingleplayer
+{
+    [HarmonyPostfix]
+    private static void Postfix(RunState state)
+    {
+        try { RunStartPatches.NotifyRunStarted(state, isResume: true); }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] SetUpSavedSingleplayer: {ex}"); }
+    }
+}
+
+[HarmonyPatch(typeof(RunManager), nameof(RunManager.SetUpSavedMultiplayer))]
+internal static class PatchRunResumeMultiplayer
+{
+    [HarmonyPostfix]
+    private static void Postfix(RunState state)
+    {
+        try { RunStartPatches.NotifyRunStarted(state, isResume: true); }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] SetUpSavedMultiplayer: {ex}"); }
+    }
+}
+
+/// Shared run-start postfix body for the four RunManager.SetUp* patches:
+/// the run meta (profile id + build commit) must reach the core before the
+/// run record it will stamp is opened, then the record is opened with the
+/// roster (character ids + NetIds, positional), the run identity, and the
+/// resumed flag (true only for the SetUpSaved* variants). Plain helper
+/// class — no class-level [HarmonyPatch], so the auto-patch loop skips it.
+internal static class RunStartPatches
+{
+    internal static void NotifyRunStarted(RunState state, bool isResume)
+    {
+        // The game's run id IS its own StartTime: assigned in
+        // RunManager.InitializeShared (UtcNow for a fresh run, the
+        // original run's start for a resume), already set before these
+        // SetUp* postfixes run. Forwarding it makes run-history matching
+        // exact — both sides carry the same integer by provenance. The
+        // read degrades to 0 on any failure; the core then stamps its own
+        // clock, the pre-forwarding behavior.
+        long startTime = 0;
+        try
+        {
+            startTime = Traverse.Create(RunManager.Instance)?.Field("_startTime")?.GetValue<long>() ?? 0;
+        }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] NotifyRunStarted.StartTime: {ex}"); }
+
+        // The slot registry must exist before the first combat event; run
+        // start is the earliest event (and re-fires on resume, refilling
+        // the same session-immutable player list).
+        SpireProfilerMod.CaptureRunPlayers(state);
+        ProfilerNative.OnSetRunMeta(SpireProfilerMod.CurrentProfileId());
+        ProfilerNative.OnRunStarted(
+            SpireProfilerMod.CharacterIds(state),
+            state?.AscensionLevel ?? 0,
+            state?.GameMode.ToString() ?? "Standard",
+            state?.Rng?.StringSeed ?? "",
+            isResume,
+            SpireProfilerMod.NetIds(state),
+            startTime);
+    }
+}
+
+// ── Attribution catalog patcher ─────────────────────────────────────────
+// Every relic/power hook listed in the attribution catalog is wrapped
+// in a source-context begin/end pair so damage and block produced outside
+// a card play can be attributed to the relic or power that caused them.
+// The prefix stores the pushed source id in __state so the postfix only
+// pops when the prefix actually pushed (nested hooks stay balanced).
+
+internal static class AttributionPatcher
+{
+    private const string RelicNamespace = "MegaCrit.Sts2.Core.Models.Relics";
+    private const string PowerNamespace = "MegaCrit.Sts2.Core.Models.Powers";
+
+    private static readonly string[] RelicEntries = new[]
+    {
+@RELIC_ENTRIES@    };
+
+    private static readonly string[] PowerEntries = new[]
+    {
+@POWER_ENTRIES@    };
+
+    [HarmonyPrefix]
+    private static void RelicPrefix(AbstractModel __instance, out string __state)
+    {
+        __state = SpireProfilerMod.TryBeginContext(__instance, ProfilerNative.ContextKindRelic);
+    }
+
+    [HarmonyPostfix]
+    private static void RelicPostfix(string __state)
+    {
+        SpireProfilerMod.TryEndContext(__state);
+    }
+
+    [HarmonyPrefix]
+    private static void PowerPrefix(AbstractModel __instance, out string __state)
+    {
+        __state = SpireProfilerMod.TryBeginContext(__instance, ProfilerNative.ContextKindPower);
+    }
+
+    [HarmonyPostfix]
+    private static void PowerPostfix(string __state)
+    {
+        SpireProfilerMod.TryEndContext(__state);
+    }
+
+    public static void PatchAll(Harmony harmony)
+    {
+        foreach (var entry in RelicEntries) TryPatch(harmony, entry, RelicNamespace, "RelicPrefix", "RelicPostfix");
+        foreach (var entry in PowerEntries) TryPatch(harmony, entry, PowerNamespace, "PowerPrefix", "PowerPostfix");
+    }
+
+    private static void TryPatch(Harmony harmony, string entry, string ns, string prefixName, string postfixName)
+    {
+        try
+        {
+            var parts = entry.Split('|');
+            var className = parts[0];
+            var methodName = parts[1];
+            var fullName = className.IndexOf('.') >= 0 ? className : ns + "." + className;
+            var type = typeof(SpireProfilerMod).Assembly.GetType(fullName) ?? typeof(ModManager).Assembly.GetType(fullName);
+            if (type == null)
+            {
+                Log.Warn($"[SpireProfiler] catalog: type not found: {fullName}");
+                return;
+            }
+            var method = AccessTools.Method(type, methodName);
+            if (method == null)
+            {
+                Log.Warn($"[SpireProfiler] catalog: {type.Name}.{methodName} not found, skipping");
+                return;
+            }
+            var prefix = new HarmonyMethod(typeof(AttributionPatcher).GetMethod(prefixName, System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static));
+            var postfix = new HarmonyMethod(typeof(AttributionPatcher).GetMethod(postfixName, System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static));
+            harmony.Patch(method, prefix, postfix);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"[SpireProfiler] catalog: failed to patch {entry}: {ex.Message}");
+        }
+    }
+}
+// ── Event-forwarding patches ────────────────────────────────────────────
+// Orb triggers are async, so they use prefix-only wrappers that set a
+// fallback source in the core (cleared when any other attribution source
+// appears) instead of push/pop contexts.
+[HarmonyPatch(typeof(Hook), nameof(Hook.AfterSideTurnStart))]
+internal static class PatchTurnStart
+{
+    [HarmonyPrefix]
+    private static void Prefix(CombatSide side)
+    {
+        try
+        {
+            // AfterPlayerTurnStart fires once PER PLAYER per round
+            // (CombatManager.SetupPlayerTurn) and would inflate the combat
+            // turn counter by the player count. AfterSideTurnStart fires
+            // once per side switch per round (CombatManager.StartTurn), so
+            // the player-side event is exactly the round boundary — the
+            // export means rounds, and extra turns
+            // (which re-run SetupPlayerTurn without advancing RoundNumber)
+            // don't count. A round is team-scoped, so no slot.
+            if (side != CombatSide.Player) return;
+            ProfilerNative.OnTurnStarted();
+        }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] AfterSideTurnStart: {ex}"); }
+    }
+}
+[HarmonyPatch(typeof(CombatHistory), nameof(CombatHistory.OrbChanneled))]
+internal static class PatchOrbChanneled
+{
+    [HarmonyPostfix]
+    private static void Postfix(OrbModel orb)
+    {
+        try
+        {
+            // Orbs are per-player (PlayerCombatState.OrbQueue, OrbModel
+            // .Owner); every player's channels land in the team-merged
+            // orb-source table, tagged with the owning slot so the per-slot
+            // orb fallback only ever seizes its own slot's triggers.
+            if (orb == null) return;
+            ProfilerNative.OnOrbChanneled(orb.GetHashCode(), SpireProfilerMod.PlayerSlot(orb.Owner));
+        }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] OrbChanneled: {ex}"); }
+    }
+}
+[HarmonyPatch(typeof(Hook), nameof(Hook.AfterBlockCleared))]
+internal static class PatchBlockPoolClear
+{
+    [HarmonyPrefix]
+    private static void Prefix(Creature creature)
+    {
+        try
+        {
+            // Block is per creature, and every player's block clears at
+            // their turn boundaries; the slot keeps the core's block pools
+            // per player so a remote player's clear can no longer wipe the
+            // local pool (block_effective attribution stays per player).
+            if ((creature?.IsPlayer ?? false))
+                ProfilerNative.OnBlockPoolClear(SpireProfilerMod.PlayerSlot(creature.Player));
+        }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] AfterBlockCleared: {ex}"); }
+    }
+}
+/// <summary>
+/// Potion context: CombatHistory.PotionUsed fires only after the potion's
+/// OnUse completes (inside PotionModel.OnUseWrapper, verified against the
+/// v0.111.0 source) — too late for power attribution, because potions like
+/// FlexPotion apply their powers during OnUse. Prefix OnUseWrapper instead
+/// so the potion fallback exists before the effects run; the PotionUsed
+/// postfix below only bumps the potions_used counter.
+/// </summary>
+[HarmonyPatch(typeof(PotionModel), nameof(PotionModel.OnUseWrapper))]
+internal static class PatchPotionContextBegin
+{
+    [HarmonyPrefix]
+    private static void Prefix(PotionModel __instance)
+    {
+        try
+        {
+            // Potions are per-player (PotionModel.Owner); every player's
+            // potions carry the owner's slot so the per-slot potion
+            // fallback never captures another player's effects.
+            if (__instance == null) return;
+            ProfilerNative.OnPotionContextBegin(__instance.Id?.Entry ?? "UNKNOWN_POTION", SpireProfilerMod.PlayerSlot(__instance.Owner));
+        }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] PotionContextBegin: {ex}"); }
+    }
+}
+[HarmonyPatch(typeof(CombatHistory), nameof(CombatHistory.PotionUsed))]
+internal static class PatchPotionUsed
+{
+    [HarmonyPostfix]
+    private static void Postfix(PotionModel potion)
+    {
+        try
+        {
+            if (potion == null) return;
+            ProfilerNative.OnPotionUsed(potion.Id?.Entry ?? "UNKNOWN_POTION", SpireProfilerMod.PlayerSlot(potion.Owner));
+        }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] PotionUsed: {ex}"); }
+    }
+}
+/// <summary>
+/// Card origins: when a card is generated for combat by the player (e.g.
+/// Creative AI, White Noise), record its instance hash so a later play of
+/// the generated card attributes to the generating source (resolved in
+/// the core from the active card / hook context).
+/// </summary>
+[HarmonyPatch(typeof(Hook), nameof(Hook.AfterCardGeneratedForCombat))]
+internal static class PatchCardGenerated
+{
+    [HarmonyPostfix]
+    private static void Postfix(CardModel card, Player creator)
+    {
+        try
+        {
+            // The hook carries the generating player explicitly
+            // (Hook.AfterCardGeneratedForCombat's creator, nullable — a
+            // null creator resolves to 0, the single-player degenerate
+            // case). The generated instance is tagged with the GENERATOR's
+            // slot so the core credits the generator's row when the copy is
+            // played — the generator's slot, never re-derived at play time
+            // (a generated card's Owner changes when the card transfers
+            // between players).
+            if (card == null) return;
+            // The source is resolved in the core from the active card / hook
+            // context; the hook itself carries no explicit source.
+            ProfilerNative.OnCardGenerated(card.GetHashCode(), "", 0, SpireProfilerMod.PlayerSlot(creator));
+        }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] CardGenerated: {ex}"); }
+    }
+}
+
+/// <summary>
+/// Forge attribution: every ForgeCmd.Forge call (FurnacePower, Fencing
+/// Manual, etc.) records its source model; the core credits the source's
+/// ledger entry with the forge amount.
+/// </summary>
+[HarmonyPatch(typeof(ForgeCmd), nameof(ForgeCmd.Forge))]
+internal static class PatchForge
+{
+    [HarmonyPostfix]
+    private static void Postfix(decimal amount, Player player, AbstractModel source)
+    {
+        try
+        {
+            if (amount <= 0 || source == null) return;
+            // ForgeCmd.Forge carries the owning player explicitly; the
+            // forge row is tagged with that player's slot.
+            var sourceId = source.Id?.Entry ?? "";
+            if (string.IsNullOrEmpty(sourceId)) return;
+            int kind;
+            if (source is RelicModel) kind = ProfilerNative.ContextKindRelic;
+            else if (source is PowerModel) kind = ProfilerNative.ContextKindPower;
+            else kind = 0;
+            ProfilerNative.OnForge(sourceId, kind, (int)amount, SpireProfilerMod.PlayerSlot(player));
+        }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] Forge: {ex}"); }
+    }
+}
+
+/// <summary>
+/// Doom kill attribution: capture each doomed creature's HP before
+/// DoomPower.DoomKill executes, attribute the HP as damage after. The
+/// prefix/postfix pair brackets only the call; attribution itself (FIFO
+/// doom layers per creature, active-context fallback) lives in the core.
+/// </summary>
+[HarmonyPatch(typeof(DoomPower), nameof(DoomPower.DoomKill))]
+internal static class PatchDoomKill
+{
+    [HarmonyPrefix]
+    private static void Prefix(IReadOnlyList<Creature> creatures)
+    {
+        try
+        {
+            if (creatures == null) return;
+            foreach (var creature in creatures)
+            {
+                if (creature == null || !creature.IsAlive) continue;
+                int hp = (int)creature.CurrentHp;
+                if (hp > 0) ProfilerNative.OnDoomTargetCapture(creature.GetHashCode(), hp);
+            }
+        }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] DoomKill prefix: {ex}"); }
+    }
+
+    [HarmonyPostfix]
+    private static void Postfix()
+    {
+        try { ProfilerNative.OnDoomKillsCompleted(); }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] DoomKill postfix: {ex}"); }
+    }
+}
+
+/// <summary>
+/// Osty summon tracking: record each OstyCmd.Summon's HP and source so
+/// absorbed damage can be attributed back to the summoning cards/relics.
+/// </summary>
+[HarmonyPatch(typeof(OstyCmd), nameof(OstyCmd.Summon))]
+internal static class PatchOstySummon
+{
+    [HarmonyPostfix]
+    private static void Postfix(Player summoner, decimal amount, AbstractModel source)
+    {
+        try
+        {
+            int hpAmount = (int)amount;
+            if (hpAmount <= 0) return;
+            // Osty is strictly per-player: OstyCmd.Summon carries the
+            // summoning player; every player's summons carry the summoner's
+            // slot so the core keeps one Osty stack per player.
+            string sourceId = "";
+            int kind = 0;
+            if (source is CardModel card)
+            {
+                sourceId = card.Id?.Entry ?? "";
+            }
+            else if (source is RelicModel relic)
+            {
+                sourceId = relic.Id?.Entry ?? "";
+                kind = ProfilerNative.ContextKindRelic;
+            }
+            else if (source is PowerModel power)
+            {
+                sourceId = power.Id?.Entry ?? "";
+                kind = ProfilerNative.ContextKindPower;
+            }
+            // With no model source, the core resolves the active card/context.
+            ProfilerNative.OnOstySummoned(sourceId, kind, hpAmount, SpireProfilerMod.PlayerSlot(summoner));
+        }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] OstySummon: {ex}"); }
+    }
+}
+
+/// <summary>
+/// Deaths flow through both CreatureCmd.Kill overloads: the Osty branch
+/// clears the owner's unabsorbed-HP pool when the pet dies (sacrifice
+/// card, combat death), and the player branch flags the slot's death for
+/// the core's team-result label. Damage kills reach the game's Kill
+/// through the IReadOnlyCollection overload (CreatureCmd.Damage collects
+/// the killed creatures and kills them in one batch), while direct kills
+/// (DoomKill, SetCurrentHp, the abandon force-kill) go through the
+/// single-creature overload — so BOTH
+/// overloads are patched with the same prefix. The single-creature
+/// overload delegates to the collection one, so a direct kill fires the
+/// prefix twice; the core treats player_died idempotently and a cleared
+/// Osty stack clears again as a no-op.
+/// </summary>
+[HarmonyPatch]
+internal static class PatchCreatureKilled
+{
+    [HarmonyPatch(typeof(CreatureCmd), nameof(CreatureCmd.Kill), new Type[] { typeof(Creature), typeof(bool) })]
+    [HarmonyPrefix]
+    private static void KillPrefix(Creature creature)
+    {
+        try { ForwardKill(creature); }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] CreatureKill: {ex}"); }
+    }
+
+    [HarmonyPatch(typeof(CreatureCmd), nameof(CreatureCmd.Kill), new Type[] { typeof(IReadOnlyCollection<Creature>), typeof(bool) })]
+    [HarmonyPrefix]
+    private static void KillManyPrefix(IReadOnlyCollection<Creature> creatures)
+    {
+        try
+        {
+            if (creatures == null) return;
+            foreach (var creature in creatures) ForwardKill(creature);
+        }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] CreatureKillMany: {ex}"); }
+    }
+
+    private static void ForwardKill(Creature creature)
+    {
+        if (creature == null) return;
+        // No locality filter — the patch fires on every peer for the whole
+        // team's creatures. The Osty's slot is its single-assignment
+        // PetOwner (already the Player); the dying player's slot is
+        // creature.Player.
+        if (creature.Monster is Osty)
+            ProfilerNative.OnOstyKilled(SpireProfilerMod.PlayerSlot(creature.PetOwner));
+        else if (creature.IsPlayer)
+            ProfilerNative.OnPlayerDied(SpireProfilerMod.PlayerSlot(creature.Player));
+    }
+}
+
+/// <summary>
+/// Power application recording: SetAmount deltas attribute to the active
+/// source (positive) or are forwarded as decreases with the player flag
+/// (negative — the flag lets the core treat a player Strength decrease as
+/// a temporary-power expiry consuming the source table FIFO, while an
+/// enemy Strength decrease stays a recorded reduction).
+/// </summary>
+[HarmonyPatch(typeof(PowerModel), nameof(PowerModel.SetAmount))]
+internal static class PatchPowerApply
+{
+    [HarmonyPrefix]
+    private static void Prefix(PowerModel __instance, out int __state)
+    {
+        __state = 0;
+        try { __state = __instance?.Amount ?? 0; }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] PowerApply prefix: {ex}"); }
+    }
+    [HarmonyPostfix]
+    private static void Postfix(PowerModel __instance, int amount, int __state)
+    {
+        try
+        {
+            if (__instance == null || amount == __state) return;
+            var powerId = __instance.Id?.Entry;
+            if (string.IsNullOrEmpty(powerId)) return;
+            var owner = __instance.Owner;
+            if (owner == null) return;
+            // The owner is the creature the power sits ON. Every player's
+            // and enemy's applications land in the team-merged power-source
+            // table, tagged with the owning player's slot when the owner is
+            // a player creature, else 0 (enemy powers have no player owner
+            // — the applier still resolves through the core's ambient
+            // per-slot state).
+            ulong creatureHash = (ulong)owner.GetHashCode();
+            bool isPlayer = owner.IsPlayer;
+            int playerSlot = owner.IsPlayer ? SpireProfilerMod.PlayerSlot(owner.Player) : 0;
+            if (amount > __state)
+                ProfilerNative.OnPowerApplied(powerId, amount - __state, creatureHash, isPlayer, playerSlot);
+            else
+                ProfilerNative.OnPowerDecreased(powerId, __state - amount, creatureHash, isPlayer, playerSlot);
+        }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] PowerApply postfix: {ex}"); }
+    }
+}
+/// <summary>
+/// Damage decomposition: re-runs each modifier's additive/multiplicative
+/// contribution on the player->enemy hit and forwards it to the core,
+/// which
+/// attributes the share to the power's/relic's appliers (the card that
+/// played Demon Form keeps the Strength bonus).
+/// </summary>
+[HarmonyPatch(typeof(Hook), nameof(Hook.ModifyDamage))]
+internal static class PatchModifyDamage
+{
+    [HarmonyPrefix]
+    private static void Prefix(decimal damage, Creature target, Creature dealer, out decimal __state)
+    {
+        __state = damage;
+        // Enemy→player hits: capture the base damage and the dealer's
+        // current Strength so the core can prorate Strength-reduction
+        // mitigation when the hit lands. (ModifyDamage also fires for
+        // intent recalcs; the core consumes the capture on the next real
+        // hit, so a stale value never accumulates phantom mitigation.)
+        // This capture is deliberately LOCAL: it feeds the local player's
+        // mitigation math only, so it keeps the one locality check left in
+        // the shim (IsLocalPlayer) rather than being slot-tagged.
+        try
+        {
+            if (dealer == null || dealer.IsPlayer || target == null || !target.IsPlayer) return;
+            if (!SpireProfilerMod.IsLocalPlayer(target.Player)) return;
+            var str = dealer.GetPower<StrengthPower>();
+            ProfilerNative.OnEnemyHitContext((int)damage, (int)(str?.Amount ?? 0));
+        }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] ModifyDamage prefix: {ex}"); }
+    }
+    [HarmonyPostfix]
+    private static void Postfix(decimal __result, decimal __state,
+        Creature target, Creature dealer, ValueProp props, CardModel cardSource,
+        IEnumerable<AbstractModel> modifiers, CardPreviewMode previewMode)
+    {
+        try
+        {
+            if (previewMode != CardPreviewMode.None) return;
+            if (dealer == null || !dealer.IsPlayer || target == null || target.IsPlayer) return;
+            if (!props.HasFlag(ValueProp.Move) || props.HasFlag(ValueProp.Unpowered)) return;
+            decimal totalBonus = __result - __state;
+            if (totalBonus <= 0 || modifiers == null) return;
+            // Every player's hit contributes (team-as-one-player); the
+            // dealer's slot keeps the core's pending contribs per slot so
+            // one player's queued modifiers can't attach to another
+            // player's next hit.
+            int dealerSlot = SpireProfilerMod.PlayerSlot(dealer.Player);
+            Action<string, int, int> contribute =
+                (id, kind, value) => ProfilerNative.OnDamageModifierContribution(id, kind, value, dealerSlot);
+            // The game applies the attacking card's enchantment before the
+            // listener modifiers (Hook.ModifyDamage, hook-type flags are All
+            // on every live call site), so the decomposition starts from the
+            // post-enchantment value. The enchantment's own bonus is not a
+            // modifier-list entry and stays with the attacking card.
+            decimal start = __state;
+            var enchantment = cardSource?.Enchantment;
+            if (enchantment != null)
+            {
+                start += enchantment.EnchantDamageAdditive(start, props);
+                start *= enchantment.EnchantDamageMultiplicative(start, props);
+            }
+            ModifierDecomposition.ForwardContributions(
+                modifiers,
+                start,
+                __result,
+                (power, baseValue) => power.ModifyDamageAdditive(target, baseValue, props, dealer, cardSource, null),
+                (power, baseValue) => power.ModifyDamageMultiplicative(target, baseValue, props, dealer, cardSource, null),
+                (relic, baseValue) => relic.ModifyDamageAdditive(target, baseValue, props, dealer, cardSource, null),
+                (relic, baseValue) => relic.ModifyDamageMultiplicative(target, baseValue, props, dealer, cardSource, null),
+                isDamage: true,
+                contribute: contribute,
+                // VulnerablePower's multiplicative step is a COMPOSITE of the
+                // nested ModifyVulnerableMultiplier hooks (PaperPhrog,
+                // CrueltyPower, DebilitatePower) — none of them override
+                // ModifyDamage*, so they never appear in `modifiers`.
+                // Intercept the step so each nested contributor (e.g.
+                // Cruelty's damage scaling) gets its own share of the
+                // marginal instead of it all going to Vulnerable's appliers.
+                interceptMultiplicative: (power, multiplier, runningBefore) =>
+                    power is VulnerablePower vulnerable &&
+                    VulnerableDecomposition.Forward(
+                        vulnerable, target, dealer, props, cardSource, runningBefore, multiplier, contribute));
+        }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] ModifyDamage: {ex}"); }
+    }
+}
+/// <summary>
+/// Block decomposition: mirrors PatchModifyDamage for Hook.ModifyBlock —
+/// each modifier's (Dexterity etc.) contribution to a block gain is
+/// forwarded so the core can attach it to the block-pool chunk and credit
+/// it only when the block actually absorbs damage.
+/// </summary>
+[HarmonyPatch(typeof(Hook), nameof(Hook.ModifyBlock))]
+internal static class PatchModifyBlock
+{
+    [HarmonyPrefix]
+    private static void Prefix(decimal block, out decimal __state)
+    {
+        __state = block;
+    }
+    [HarmonyPostfix]
+    private static void Postfix(decimal __result, decimal __state,
+        Creature target, ValueProp props, CardModel cardSource, CardPlay cardPlay,
+        IEnumerable<AbstractModel> modifiers)
+    {
+        try
+        {
+            if (target == null || !target.IsPlayer) return;
+            decimal totalBonus = __result - __state;
+            if (totalBonus <= 0 || modifiers == null) return;
+            // Every player's block modifiers contribute; the target's slot
+            // keeps pending block contribs with the right player's block
+            // pool.
+            int targetSlot = SpireProfilerMod.PlayerSlot(target.Player);
+            // Mirror Hook.ModifyBlock's enchantment pre-step so the
+            // decomposition starts from the post-enchantment value (the
+            // enchantment's own bonus stays with the blocking card).
+            decimal start = __state;
+            var enchantment = cardSource?.Enchantment;
+            if (enchantment != null)
+            {
+                start += enchantment.EnchantBlockAdditive(start);
+                start *= enchantment.EnchantBlockMultiplicative(start);
+            }
+            ModifierDecomposition.ForwardContributions(
+                modifiers,
+                start,
+                __result,
+                (power, baseValue) => power.ModifyBlockAdditive(target, baseValue, props, cardSource, cardPlay),
+                (power, baseValue) => power.ModifyBlockMultiplicative(target, baseValue, props, cardSource, cardPlay),
+                (relic, baseValue) => relic.ModifyBlockAdditive(target, baseValue, props, cardSource, cardPlay),
+                (relic, baseValue) => relic.ModifyBlockMultiplicative(target, baseValue, props, cardSource, cardPlay),
+                isDamage: false,
+                contribute: (id, kind, value) => ProfilerNative.OnBlockModifierContribution(id, kind, value, targetSlot));
+        }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] ModifyBlock: {ex}"); }
+    }
+}
+
+/// Shared modifier-decomposition loop for the ModifyDamage/ModifyBlock
+/// postfixes. Re-runs the game's own resolution (Hook.ModifyDamage /
+/// ModifyBlock apply every listener's additive in order, then every
+/// multiplicative in order, over the post-enchantment start value the
+/// caller passes as `baseValue`) and credits each step with its STEP
+/// MARGINAL — the amount the game's running value actually grew when the
+/// step fired: an additive owns its raw delta, a multiplicative m owns
+/// runningBefore·(m−1). The shares sum exactly to the bonus the listed
+/// modifiers produced, so simultaneous multiplicative bonuses no longer
+/// over-credit one another the way the old per-modifier result−result/m
+/// formula did (each share is also strictly smaller for all but the last
+/// step). Sub-1 multipliers (Weak, Frail) reduce the running value and are
+/// deliberately never credited, but they still advance it so later
+/// marginals match the game. All shipped probes are amount-independent
+/// (verified against the decompiled models), so re-probing reproduces the
+/// game's deltas exactly; `result` only bounds marginals when a damage CAP
+/// clamped the final value below the re-run running value.
+/// The probes and callback are injected because the two hooks differ only
+/// in probe method names (ModifyDamage*/ModifyBlock*), the probe arguments
+/// (damage passes the dealer and a trailing null cardPlay), the additive
+/// semantics (damage forwards |additive| — a negative additive still
+/// contributes, e.g. Strength-loss mitigation; block forwards positive
+/// additive only), and the export name. `interceptMultiplicative` (damage
+/// only) lets the caller take over a power's multiplicative step — the
+/// Vulnerable composite — and receives the probed multiplier and the
+/// running value before the step; returning true skips the generic credit.
+/// No shipped model overrides both the additive and the multiplicative
+/// probe, so routing each list entry to exactly one of them is safe.
+/// Plain helper class — no class-level [HarmonyPatch], so the auto-patch
+/// loop skips it.
+internal static class ModifierDecomposition
+{
+    internal static void ForwardContributions(
+        IEnumerable<AbstractModel> modifiers,
+        decimal baseValue,
+        decimal result,
+        Func<PowerModel, decimal, decimal> powerAdditive,
+        Func<PowerModel, decimal, decimal> powerMultiplicative,
+        Func<RelicModel, decimal, decimal> relicAdditive,
+        Func<RelicModel, decimal, decimal> relicMultiplicative,
+        bool isDamage,
+        Action<string, int, int> contribute,
+        Func<PowerModel, decimal, decimal, bool> interceptMultiplicative = null)
+    {
+        // Pass 1: additive shares in the game's application order. `running`
+        // tracks the game's own value so pass 2 starts from the same
+        // post-additive base the game multiplied.
+        decimal running = baseValue;
+        var multiplicatives = new List<(AbstractModel Model, string Id, int Kind)>();
+        foreach (var mod in modifiers)
+        {
+            string id;
+            int kind;
+            decimal additive;
+            if (mod is PowerModel power)
+            {
+                id = power.Id?.Entry;
+                kind = ProfilerNative.ContextKindPower;
+                additive = powerAdditive(power, running);
+            }
+            else if (mod is RelicModel relic)
+            {
+                id = relic.Id?.Entry;
+                kind = ProfilerNative.ContextKindRelic;
+                additive = relicAdditive(relic, running);
+            }
+            else
+            {
+                continue;
+            }
+            if (string.IsNullOrEmpty(id)) continue;
+            running += additive;
+            if (isDamage ? additive != 0m : additive > 0m)
+            {
+                contribute(id, kind, isDamage ? Math.Abs((int)additive) : (int)additive);
+                continue;
+            }
+            multiplicatives.Add((mod, id, kind));
+        }
+        // Pass 2: multiplicative step marginals in the game's application
+        // order. running advances by every listed multiplier — including
+        // uncredited sub-1 steps — so each marginal is computed at the value
+        // the game actually had when the step fired.
+        foreach (var (mod, id, kind) in multiplicatives)
+        {
+            decimal multiplier = mod is PowerModel power
+                ? powerMultiplicative(power, running)
+                : relicMultiplicative((RelicModel)mod, running);
+            decimal runningBefore = running;
+            running *= multiplier;
+            if (multiplier <= 1m) continue;
+            if (mod is PowerModel p &&
+                interceptMultiplicative != null &&
+                interceptMultiplicative(p, multiplier, runningBefore > result ? result : runningBefore))
+            {
+                continue;
+            }
+            int contribution = (int)((runningBefore > result ? result : runningBefore) * (multiplier - 1m));
+            if (contribution > 0)
+                contribute(id, kind, contribution);
+        }
+    }
+}
+
+/// Vulnerable decomposition: VulnerablePower.ModifyDamageMultiplicative folds
+/// the nested ModifyVulnerableMultiplier hooks (PaperPhrog, CrueltyPower,
+/// DebilitatePower) into the single multiplier it returns, so the generic
+/// modifier loop can only see — and credit — the composite. This helper
+/// re-runs the game's own composition (the body of
+/// VulnerablePower.ModifyDamageMultiplicative: same contributor order, same
+/// public probes, all side-effect-free) and splits the step marginal
+/// linearly in multiplier space: the composite step added
+/// runningBefore·(M−1) to the damage, and a nested step that added `delta`
+/// to the multiplier owns runningBefore·delta of it. The parts sum to the
+/// step marginal the generic path would have forwarded (up to int
+/// truncation), so Vulnerable's appliers keep exactly the base share and
+/// e.g. Cruelty's scaling is no longer folded into it. If the re-run does
+/// not reproduce the probed composite (the game changed the composition),
+/// fall back to crediting the whole marginal to Vulnerable — a stale mirror
+/// must never drop the bonus.
+/// Plain helper class — no class-level [HarmonyPatch], so the auto-patch
+/// loop skips it.
+internal static class VulnerableDecomposition
+{
+    internal static bool Forward(
+        VulnerablePower vulnerable,
+        Creature target,
+        Creature dealer,
+        ValueProp props,
+        CardModel cardSource,
+        decimal runningBefore,
+        decimal composite,
+        Action<string, int, int> contribute)
+    {
+        var vulnerableId = vulnerable.Id?.Entry;
+        if (string.IsNullOrEmpty(vulnerableId)) return false;
+        if (composite <= 1m) return true;
+
+        // The pre-decomposition behavior: the whole step marginal to
+        // Vulnerable's appliers.
+        void Fallback()
+        {
+            int contribution = (int)(runningBefore * (composite - 1m));
+            if (contribution > 0)
+                contribute(vulnerableId, ProfilerNative.ContextKindPower, contribution);
+        }
+
+        // "DamageIncrease" is VulnerablePower's private DynamicVars key for
+        // the 1.5x base multiplier; the mismatch fallback covers a rename.
+        if (!vulnerable.DynamicVars.TryGetValue("DamageIncrease", out var damageIncrease))
+        {
+            Fallback();
+            return true;
+        }
+        decimal running = damageIncrease.BaseValue;
+        decimal vulnerableDelta = running - 1m;
+        var parts = new List<(string Id, int Kind, decimal Delta)>();
+
+        // The probes below mirror VulnerablePower.ModifyDamageMultiplicative
+        // step for step, in the game's own order: PaperPhrog (dealer's
+        // relic), CrueltyPower (dealer or its pet owner), DebilitatePower
+        // (target).
+        var paperPhrog = dealer.Player?.GetRelic<PaperPhrog>();
+        if (paperPhrog?.Id?.Entry is string phrogId)
+        {
+            decimal after = paperPhrog.ModifyVulnerableMultiplier(target, running, props, dealer, cardSource);
+            if (after != running) { parts.Add((phrogId, ProfilerNative.ContextKindRelic, after - running)); running = after; }
+        }
+        var cruelty = dealer.GetPower<CrueltyPower>() ?? dealer.PetOwner?.Creature.GetPower<CrueltyPower>();
+        if (cruelty?.Id?.Entry is string crueltyId)
+        {
+            decimal after = cruelty.ModifyVulnerableMultiplier(target, running, props, dealer, cardSource);
+            if (after != running) { parts.Add((crueltyId, ProfilerNative.ContextKindPower, after - running)); running = after; }
+        }
+        var debilitate = target.GetPower<DebilitatePower>();
+        if (debilitate?.Id?.Entry is string debilitateId)
+        {
+            decimal after = debilitate.ModifyVulnerableMultiplier(target, running, props, dealer, cardSource);
+            if (after != running) { parts.Add((debilitateId, ProfilerNative.ContextKindPower, after - running)); running = after; }
+        }
+
+        if (running != composite || vulnerableDelta < 0m)
+        {
+            Fallback();
+            return true;
+        }
+        int vulnerableContribution = (int)(runningBefore * vulnerableDelta);
+        if (vulnerableContribution > 0)
+            contribute(vulnerableId, ProfilerNative.ContextKindPower, vulnerableContribution);
+        foreach (var (id, kind, delta) in parts)
+        {
+            int contribution = (int)(runningBefore * delta);
+            if (contribution > 0)
+                contribute(id, kind, contribution);
+        }
+        return true;
+    }
+}
+
+/// <summary>
+/// In-combat upgrade tracking: captures each upgradable card's Damage /
+/// Block base values around CardCmd.Upgrade (the single-card overload
+/// delegates to the batch one, so one patch pair covers both) and forwards
+/// the deltas. The core credits the upgrader when the upgraded card lands.
+/// </summary>
+[HarmonyPatch(typeof(CardCmd), nameof(CardCmd.Upgrade), new Type[] { typeof(IEnumerable<CardModel>), typeof(CardPreviewStyle) })]
+internal static class PatchCardUpgrade
+{
+    private static readonly Dictionary<int, (decimal Damage, decimal Block)> PreUpgrade = new();
+    [HarmonyPrefix]
+    private static void Prefix(IEnumerable<CardModel> cards)
+    {
+        try
+        {
+            PreUpgrade.Clear();
+            foreach (var card in cards)
+            {
+                if (card == null || !card.IsUpgradable) continue;
+                var dv = card.DynamicVars;
+                decimal preDamage = dv != null && dv.TryGetValue("Damage", out var dmg) ? dmg.BaseValue : 0;
+                decimal preBlock = dv != null && dv.TryGetValue("Block", out var blk) ? blk.BaseValue : 0;
+                PreUpgrade[card.GetHashCode()] = (preDamage, preBlock);
+            }
+        }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] Upgrade prefix: {ex}"); }
+    }
+    [HarmonyPostfix]
+    private static void Postfix(IEnumerable<CardModel> cards)
+    {
+        try
+        {
+            if (PreUpgrade.Count == 0) return;
+            foreach (var card in cards)
+            {
+                // Every player's upgrades land in the team-merged
+                // upgrade-delta table (the spec keeps card_upgraded
+                // slotless).
+                if (card == null) continue;
+                if (!PreUpgrade.TryGetValue(card.GetHashCode(), out var pre)) continue;
+                var dv = card.DynamicVars;
+                decimal postDamage = dv != null && dv.TryGetValue("Damage", out var dmg) ? dmg.BaseValue : 0;
+                decimal postBlock = dv != null && dv.TryGetValue("Block", out var blk) ? blk.BaseValue : 0;
+                int damageDelta = (int)(postDamage - pre.Damage);
+                int blockDelta = (int)(postBlock - pre.Block);
+                if (damageDelta > 0 || blockDelta > 0)
+                    ProfilerNative.OnCardUpgraded(card.GetHashCode(), damageDelta, blockDelta);
+            }
+            PreUpgrade.Clear();
+        }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] Upgrade postfix: {ex}"); }
+    }
+}
+/// <summary>
+/// Buff mitigation: Buffer/Intangible/HardenedShell reduce HP loss through
+/// their ModifyHpLost* overrides; the prevented delta forwards to the core,
+/// which credits the buff's appliers.
+/// </summary>
+[HarmonyPatch]
+internal static class PatchBuffMitigation
+{
+    [HarmonyPatch(typeof(BufferPower), nameof(BufferPower.ModifyHpLostAfterOstyLate))]
+    [HarmonyPrefix]
+    private static void BufferPrefix(decimal amount, out decimal __state) { __state = amount; }
+    [HarmonyPatch(typeof(BufferPower), nameof(BufferPower.ModifyHpLostAfterOstyLate))]
+    [HarmonyPostfix]
+    private static void BufferPostfix(decimal __result, decimal __state, Creature target)
+    {
+        try
+        {
+            // Buff mitigation counts for every player (the spec keeps the
+            // mitigation events slotless).
+            if (__state > 0 && __result == 0 && target.IsPlayer)
+                ProfilerNative.OnBuffMitigation("BUFFER_POWER", (int)__state);
+        }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] Buffer mitigation: {ex}"); }
+    }
+    [HarmonyPatch(typeof(IntangiblePower), nameof(IntangiblePower.ModifyHpLostAfterOsty))]
+    [HarmonyPrefix]
+    private static void IntangiblePrefix(decimal amount, out decimal __state) { __state = amount; }
+    [HarmonyPatch(typeof(IntangiblePower), nameof(IntangiblePower.ModifyHpLostAfterOsty))]
+    [HarmonyPostfix]
+    private static void IntangiblePostfix(decimal __result, decimal __state, Creature target)
+    {
+        try
+        {
+            if (__state > __result && __result >= 0 && target.IsPlayer)
+                ProfilerNative.OnBuffMitigation("INTANGIBLE_POWER", (int)(__state - __result));
+        }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] Intangible mitigation: {ex}"); }
+    }
+    [HarmonyPatch(typeof(HardenedShellPower), nameof(HardenedShellPower.ModifyHpLostBeforeOstyLate))]
+    [HarmonyPrefix]
+    private static void HardenedShellPrefix(decimal amount, out decimal __state) { __state = amount; }
+    [HarmonyPatch(typeof(HardenedShellPower), nameof(HardenedShellPower.ModifyHpLostBeforeOstyLate))]
+    [HarmonyPostfix]
+    private static void HardenedShellPostfix(decimal __result, decimal __state, Creature target)
+    {
+        try
+        {
+            if (__state > __result && __result >= 0 && target.IsPlayer)
+                ProfilerNative.OnBuffMitigation("HARDENED_SHELL_POWER", (int)(__state - __result));
+        }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] HardenedShell mitigation: {ex}"); }
+    }
+}
+/// <summary>
+/// Wraps orb passive/evoke trigger entries with prefix-only fallback-source
+/// activation. Orb damage carries no card source, so the channeling source
+/// (recorded by PatchOrbChanneled) must be reactivated when the orb acts.
+/// </summary>
+internal static class OrbPatcher
+{
+    [HarmonyPrefix]
+    private static void OrbInstancePrefix(OrbModel __instance)
+    {
+        try
+        {
+            // Every player's orb triggers activate their own slot's orb
+            // fallback (the owner's slot, like PatchOrbChanneled).
+            if (__instance == null) return;
+            ProfilerNative.OnOrbContextBegin(__instance.GetHashCode(), SpireProfilerMod.PlayerSlot(__instance.Owner));
+        }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] orb prefix: {ex}"); }
+    }
+    [HarmonyPrefix]
+    private static void OrbCmdPassivePrefix(OrbModel orb)
+    {
+        try
+        {
+            if (orb == null) return;
+            ProfilerNative.OnOrbContextBegin(orb.GetHashCode(), SpireProfilerMod.PlayerSlot(orb.Owner));
+        }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] OrbCmd.Passive prefix: {ex}"); }
+    }
+    public static void PatchAll(Harmony harmony)
+    {
+        var instancePrefix = new HarmonyMethod(typeof(OrbPatcher).GetMethod("OrbInstancePrefix", BindingFlags.NonPublic | BindingFlags.Static));
+        var cmdPrefix = new HarmonyMethod(typeof(OrbPatcher).GetMethod("OrbCmdPassivePrefix", BindingFlags.NonPublic | BindingFlags.Static));
+        TryPatch(harmony, typeof(OrbCmd), "Passive", cmdPrefix);
+        var turnEndOrbs = new[] { typeof(LightningOrb), typeof(FrostOrb), typeof(DarkOrb), typeof(GlassOrb) };
+        foreach (var t in turnEndOrbs) TryPatch(harmony, t, "BeforeTurnEndOrbTrigger", instancePrefix);
+        TryPatch(harmony, typeof(PlasmaOrb), "AfterTurnStartOrbTrigger", instancePrefix);
+        var evokers = new[] { typeof(LightningOrb), typeof(FrostOrb), typeof(DarkOrb), typeof(GlassOrb), typeof(PlasmaOrb) };
+        foreach (var t in evokers) TryPatch(harmony, t, "Evoke", instancePrefix);
+    }
+    private static void TryPatch(Harmony harmony, Type type, string methodName, HarmonyMethod prefix)
+    {
+        try
+        {
+            var method = AccessTools.Method(type, methodName);
+            if (method == null)
+            {
+                Log.Warn($"[SpireProfiler] orb: {type.Name}.{methodName} not found, skipping");
+                return;
+            }
+            harmony.Patch(method, prefix, null);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"[SpireProfiler] orb: failed {type.Name}.{methodName}: {ex.Message}");
+        }
+    }
+}
+
+// ── Run-history screen ──────────────────────────────────────────────────────
+// The screen displays one RunHistory per open (left/right arrows switch via
+// RefreshAndSelectRun); these postfixes forward the displayed run's identity
+// to the core, which matches it against the profiler's own run records, and
+// keep the selection scoped to the screen's lifecycle. The run panel +
+// toggle button attach lazily on the first display.
+
+/// <summary>
+/// DisplayRun(RunHistory) fires for every displayed run — initial open
+/// and each left/right switch. The postfix reads the
+/// displayed run straight from the argument (Seed + StartTime are the join
+/// keys; identical seed provenance on both sides via RunRngSet.StringSeed)
+/// and forwards them with the active profile id.
+/// </summary>
+[HarmonyPatch(typeof(NRunHistory), "DisplayRun")]
+internal static class PatchRunHistoryDisplay
+{
+    [HarmonyPostfix]
+    private static void Postfix(NRunHistory __instance, RunHistory history)
+    {
+        try
+        {
+            ProfilerNative.OnRunHistorySelect(
+                history?.Seed ?? "",
+                history?.StartTime ?? 0,
+                SpireProfilerMod.CurrentProfileId());
+            SpireProfilerMod.AttachRunPanelTo(__instance);
+        }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] RunHistoryDisplay: {ex}"); }
+    }
+}
+
+/// <summary>
+/// OnSubmenuOpened fires only on a fresh push. The clear must be a
+/// PREFIX, not a postfix: despite the `TaskHelper.RunSafely` wrapper,
+/// `RefreshAndSelectRun` is synchronous (no await before `DisplayRun`),
+/// so the initial `DisplayRun` — and
+/// our select postfix — runs INSIDE the original method. A postfix clear
+/// would run after that select and blank the screen-open flag, breaking F8
+/// on the first displayed run until an arrow flip re-selects. Clearing
+/// first drops any stale selection before the body loads the first run,
+/// whose `DisplayRun` postfix then re-selects (a failed load keeps the
+/// screen marked closed, so no stale numbers render).
+/// </summary>
+[HarmonyPatch(typeof(NRunHistory), nameof(NRunHistory.OnSubmenuOpened))]
+internal static class PatchRunHistoryOpened
+{
+    [HarmonyPrefix]
+    private static void Prefix()
+    {
+        try { ProfilerNative.OnRunHistoryClear(); }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] RunHistoryOpened: {ex}"); }
+    }
+}
+
+/// <summary>
+/// The screen's close path is the NSubmenu.OnSubmenuClosed virtual
+/// (popped from its stack); NRunHistory does not override it, so the
+/// patch targets the base virtual and filters on the
+/// instance. Only the run-history screen's own pop clears — a submenu
+/// closing on top of it must not blank a still-displayed run (which only
+/// re-selects on the next arrow flip or re-push).
+/// </summary>
+[HarmonyPatch(typeof(NSubmenu), nameof(NSubmenu.OnSubmenuClosed))]
+internal static class PatchRunHistoryClosed
+{
+    [HarmonyPostfix]
+    private static void Postfix(NSubmenu __instance)
+    {
+        try
+        {
+            if (!(__instance is NRunHistory)) return;
+            ProfilerNative.OnRunHistoryClear();
+        }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] RunHistoryClosed: {ex}"); }
+    }
+}
+
+/// <summary>
+/// The run-end chokepoint: victory (WinRun), all-dead defeat, and abandon
+/// (the force-kill that ends an abandoned run) all funnel through
+/// RunManager.OnEnded on every peer. OnEnded's bool cannot distinguish
+/// abandon from defeat, but RunManager.IsAbandoned can — the force-kill
+/// leaves the flag set — so the postfix maps the three run terminals to
+/// 0 = victory, 1 = defeat, 2 = abandoned. OnEnded can fire twice
+/// (victory's follow-up all-dead kill); the second run_ended is a
+/// core-side no-op because the record is already closed. Save&quit and
+/// multiplayer-disconnect do not reach OnEnded and stay handled by the
+/// suspend patches below.
+/// </summary>
+[HarmonyPatch(typeof(RunManager), nameof(RunManager.OnEnded))]
+internal static class PatchRunEnded
+{
+    [HarmonyPostfix]
+    private static void Postfix(RunManager __instance, bool isVictory)
+    {
+        try
+        {
+            int outcome = isVictory
+                ? 0
+                : (__instance != null && __instance.IsAbandoned ? 2 : 1);
+            ProfilerNative.OnRunEnded(outcome);
+            Log.Info($"[SpireProfiler] run ended, outcome={outcome}");
+        }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] RunEnded: {ex}"); }
+    }
+}
+
+/// <summary>
+/// Save & exit forwards run_suspended, not run_ended: the save-and-quit
+/// path (NPauseMenu → CloseToMenu → NGame.ReturnToMainMenu) never
+/// reaches RunManager.OnEnded, so without this postfix the core
+/// would keep the run active — the combat panel stays visible on the main
+/// menu, and the next continue's run_started closes the stale run as a
+/// spurious defeat. The postfix targets RunManager.CleanUp, the
+/// synchronous teardown both menu-exit funnels (ReturnToMainMenu and
+/// GoToTimeline) pass through, rather than the async ReturnToMainMenu. A
+/// run that truly ended (victory/defeat/abandon) already cleared `active`,
+/// so the forwarded suspend is a core-side no-op.
+/// </summary>
+[HarmonyPatch(typeof(RunManager), nameof(RunManager.CleanUp))]
+internal static class PatchRunSuspend
+{
+    [HarmonyPostfix]
+    private static void Postfix()
+    {
+        try
+        {
+            ProfilerNative.OnRunSuspended();
+            Log.Info("[SpireProfiler] run suspended (save & quit); no record written");
+        }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] RunManager.CleanUp: {ex}"); }
+    }
+}
+
+/// <summary>
+/// A host quit or a dropped connection sends the client back to the main
+/// menu with no end-of-run signal (LocalPlayerDisconnected →
+/// ReturnToMainMenuWithError) — no OnEnded. The
+/// disconnect reason cannot distinguish "host saved and quit" (the run is
+/// resumable) from "host quit without saving", so the run must be
+/// SUSPENDED, not closed: run_suspended deactivates without writing a
+/// record, and a later resume rejoins the same run id by seed (closing as
+/// defeat here would split one run across two runs.json entries). The
+/// game-over case never reaches this forward: QuitGameOver disconnects are
+/// skipped below, and an already-abandoned run is closed by the OnEnded
+/// postfix. StateDivergence disconnects suspend as well (the stale record
+/// then closes as a loss at the next run start).
+/// </summary>
+[HarmonyPatch(typeof(RunManager), nameof(RunManager.LocalPlayerDisconnected))]
+internal static class PatchRunDisconnected
+{
+    [HarmonyPostfix]
+    private static void Postfix(NetErrorInfo info)
+    {
+        try
+        {
+            var runManager = RunManager.Instance;
+            if (info.GetReason() == NetError.QuitGameOver) return;
+            if (runManager == null || runManager.IsAbandoned) return;
+            ProfilerNative.OnRunSuspended();
+            Log.Info("[SpireProfiler] run suspended after multiplayer disconnect; no record written");
+        }
+        catch (Exception ex) { Log.Error($"[SpireProfiler] RunDisconnected: {ex}"); }
+    }
+}

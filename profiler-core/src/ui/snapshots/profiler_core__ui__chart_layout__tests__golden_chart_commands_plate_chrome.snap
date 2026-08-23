@@ -1,0 +1,45 @@
+---
+source: profiler-core/src/ui/chart_layout.rs
+expression: "crate::test_util::dump_layout(&l.header_cmds, &l.cmds)"
+---
+-- header --
+icon x=118.5 y=0.0 w=256.0 h=90.0 TabPlate
+icon x=118.5 y=0.0 w=256.0 h=90.0 TabStroke
+text x=118.5 y=56.0 size=32 role=Title shadow align=center w=256.0 #FFF6E2FF "This Combat"
+icon x=382.5 y=0.0 w=256.0 h=90.0 TabPlate
+text x=382.5 y=56.0 size=32 role=Title shadow align=center w=256.0 #FFF6E280 "Run Summary"
+text x=22.0 y=148.0 size=32 role=Title outline #EFC851FF "Contribution"
+text x=22.0 y=184.0 size=24 role=Body align=leftclip w=713.0 #FFF6E2FF "Vs. BYGONE_EFFIGY"
+text x=22.0 y=218.0 size=24 role=Title align=leftclip w=713.0 #FFF6E2FF "DPS 16.0 · 2 turns · 7 plays · took 6"
+-- body --
+rect x=22.0 y=226.0 w=713.0 h=38.0 #00000040
+rect x=22.0 y=260.0 w=713.0 h=2.0 #EFC851FF
+text x=30.0 y=252.0 size=24 role=Title shadow #EFC851FF "Damage"
+rect x=22.0 y=264.0 w=713.0 h=32.0 #FFFFFF06
+rect x=22.0 y=264.0 w=713.0 h=32.0 #FFFFFF14
+text x=26.0 y=289.0 size=24 role=Body #FFF6E2FF "STRIKE"
+text x=286.0 y=289.0 size=24 role=Body #FFF6E280 "x2"
+rect x=330.0 y=270.0 w=197.0 h=20.0 #FFFFFF0F
+rect x=330.0 y=270.0 w=151.0 h=20.0 #FF6464FF
+rect x=481.0 y=270.0 w=45.0 h=20.0 #FFA518FF
+text x=535.0 y=289.0 size=24 role=Body align=right w=200.0 #FFF6E2FF "20  (48.7%)"
+text x=26.0 y=321.0 size=24 role=Body #EFC851FF "[R] "
+text x=67.0 y=321.0 size=24 role=Body #FFF6E2FF "SEVER_SOUL"
+text x=286.0 y=321.0 size=24 role=Body #FFF6E280 "x1"
+rect x=330.0 y=302.0 w=197.0 h=20.0 #FFFFFF0F
+rect x=330.0 y=302.0 w=197.0 h=20.0 #FF6464FF
+text x=535.0 y=321.0 size=24 role=Body align=right w=200.0 #FFF6E2FF "12  (29.2%)"
+rect x=22.0 y=340.0 w=713.0 h=38.0 #00000040
+rect x=22.0 y=374.0 w=713.0 h=2.0 #EFC851FF
+text x=30.0 y=366.0 size=24 role=Title shadow #EFC851FF "Defense"
+rect x=22.0 y=378.0 w=713.0 h=32.0 #FFFFFF06
+text x=26.0 y=403.0 size=24 role=Body #FFF6E2FF "DEFEND"
+text x=286.0 y=403.0 size=24 role=Body #FFF6E280 "x3"
+rect x=330.0 y=384.0 w=197.0 h=20.0 #FFFFFF0F
+rect x=330.0 y=384.0 w=197.0 h=20.0 #67AEEBFF
+text x=535.0 y=403.0 size=24 role=Body align=right w=200.0 #FFF6E2FF "15  (100.0%)"
+text x=44.0 y=435.0 size=24 role=Body #BF3030FF "+ self damage"
+rect x=330.0 y=416.0 w=197.0 h=20.0 #FFFFFF0F
+rect x=330.0 y=416.0 w=197.0 h=20.0 #BF3030FF
+text x=535.0 y=435.0 size=24 role=Body align=right w=200.0 #BF3030FF "-6"
+text x=22.0 y=483.0 size=24 role=Body #FFF6E280 "Total 32 damage in 2 turns"

@@ -1,0 +1,79 @@
+//! Spire Profiler — the native core of a per-source combat profiler for
+//! Slay the Spire 2.
+//!
+//! The game's mod loader accepts only .NET assemblies, so a generated C#
+//! shim owns the entry point and the Harmony patches and stays dumb: every
+//! line of profiler logic lives in this crate. The shim forwards game
+//! events across the `spire_profiler_*` C exports; the core records,
+//! attributes, persists, and renders them.
+//!
+//! # What it records
+//!
+//! During every combat the mod tracks what each card and source
+//! contributes — damage (direct/attributed/modifier/upgrade splits, plus
+//! self-damage), defense (block gained/effective, debuff/buff/strength
+//! mitigation, Osty), and forge — rolls the numbers up per run, renders
+//! them in two in-game panels (the combat chart and the run-history
+//! summary, both game-native), and persists the results as JSON under
+//! `<mod_data>/spire-profiler/`. The attribution model lives in
+//! [`data`]'s module doc, the on-disk schema in [`data::persistence`]'s,
+//! and the player-slot model in [`data::state`]'s.
+//!
+//! # Layers
+//!
+//!   * [`abi`] — the `spire_profiler_*` C export surface; one of the three unsafe relaxations of
+//!     the crate-root deny
+//!   * [`registration`] — the composition root: the two panel classes and their per-panel casts;
+//!     the second relaxation
+//!   * [`data`] — combat facts and the persisted JSON model, engine-free
+//!   * [`engine`] — the hand-rolled GDExtension FFI (the third relaxation) and the local
+//!     Vector2/Rect2/Color stand-ins
+//!   * [`ui`] — the two panels and their shared plumbing
+//!
+//! # Standing contracts
+//!
+//! The game must never crash because of the mod: every export routes
+//! through `contain`, which catches a panic and logs it, and wire values
+//! clamp-and-log instead of panicking. All game state lives in one
+//! thread-local `RefCell<State>` because the game's logic loop is
+//! single-threaded. Unsafe Rust is quarantined in the three modules above,
+//! each with its reason documented. Specs live in the module docs, not in
+//! `docs/`; environment content (toolchain, headless testing, platform
+//! layout) lives in `docs/pitfalls.md`. A self-test entry point lets the
+//! host verify the bridge end-to-end under the headless gate.
+
+#![deny(unsafe_code)]
+// Module docs are spec documentation, so a broken intra-doc link is a doc
+// bug: fail the build rather than warn. Private links stay allowed — the
+// crate is not a public library and deliberately links `pub(crate)` items,
+// which only resolve under `--document-private-items`.
+#![deny(rustdoc::broken_intra_doc_links)]
+#![allow(rustdoc::private_intra_doc_links)]
+
+// The relaxations of the crate-root deny. Unsafe Rust is quarantined in
+// three places: the C ABI surface (raw C pointer reads, no_mangle extern
+// fns, and the catch_unwind panic-containment contract — see abi.rs's
+// header), the registration layer, which owns the per-panel instance casts
+// the FFI callbacks route into, and gdext.rs, which carries its own allow
+// inside engine.rs. Keep any future unsafe requirement behind a safe helper
+// in one of these.
+#[allow(unsafe_code)]
+pub mod abi;
+pub mod data;
+pub mod engine;
+#[allow(unsafe_code)]
+pub mod registration;
+pub mod ui;
+
+// The integration tests link the crate as a library (cfg(test) off), so the
+// `test-support` feature re-opens the test-only helpers for them.
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_util;
+
+/// Reports a non-fatal error to the game console: stderr, so the line is
+/// visible in the game console and in headless output either way. Everything
+/// below the C ABI must never surface an error, so failures are logged here
+/// and swallowed — callers keep going.
+pub(crate) fn fail(msg: String) {
+    eprintln!("[SpireProfiler] ERROR: {msg}");
+}

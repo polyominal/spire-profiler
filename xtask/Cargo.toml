@@ -1,0 +1,20 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+edition = "2024"
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "xtask"
+path = "src/main.rs"
+
+[dependencies]
+libc = "0.2.189"
+serde_json = { workspace = true }
+sha2 = "0.10"
+anyhow = "1.0.104"
+xflags = "0.3.2"
+xshell = "0.2.7"
+comrak = { version = "0.51", default-features = false }

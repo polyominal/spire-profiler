@@ -1,0 +1,12 @@
+[workspace]
+members = ["profiler-core", "xtask"]
+resolver = "3"
+
+# Shared dependency pins: a crate added to the workspace picks these up with
+# `workspace = true` instead of re-pinning a version that can drift.
+[workspace.dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+
+[workspace.lints.clippy]
+too_many_lines = "deny"

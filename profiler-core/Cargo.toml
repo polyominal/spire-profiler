@@ -1,0 +1,30 @@
+[package]
+name = "profiler_core"
+version = "0.1.0"
+edition = "2024"
+
+[lints]
+workspace = true
+
+[lib]
+name = "profiler_core"
+# cdylib is the artifact the C# host loads; the extra rlib lets the
+# integration tests under tests/ link the crate (cargo cannot link a
+# cdylib-only lib into test targets).
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# Integration tests (tests/) link the crate as a library, where cfg(test)
+# is off; this feature re-exposes the test-only helpers for them.
+test-support = []
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+insta = "1.48.0"
+# Self-referential dev-dependency: the test targets' feature unification
+# enables `test-support` on this package's own library build, so the
+# integration tests can use crate::test_util.
+profiler_core = { path = ".", features = ["test-support"] }

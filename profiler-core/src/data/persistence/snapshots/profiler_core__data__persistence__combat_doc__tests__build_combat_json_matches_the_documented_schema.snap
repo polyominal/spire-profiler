@@ -1,0 +1,5 @@
+---
+source: profiler-core/src/data/persistence/combat_doc.rs
+expression: build_combat_json(&synthetic_combat())
+---
+{"combat_id":7,"started_at":1786624000,"encounter_id":"BYGONE_EFFIGY","result":"completed","turns":5,"damage_received":33,"run":{"seq":42,"character":"SHROUD","ascension":5,"game_mode":"standard","seed":""},"cards":[{"id":"OMNI_CARD","kind":0,"plays":4,"damage_dealt":21,"damage_blocked":2,"block_gained":5,"block_effective":4,"forge":1,"dmg_direct":11,"dmg_attributed":5,"dmg_modifier":3,"dmg_upgrade":2,"blk_modifier":1,"blk_upgrade":1,"mitigate_debuff":4,"mitigate_buff":2,"mitigate_str":1,"self_damage":3,"player":0},{"id":"ANCHOR","kind":1,"block_gained":10,"player":0}]}

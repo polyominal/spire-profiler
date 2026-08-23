@@ -1,0 +1,8 @@
+/target
+# release zips (cargo xtask release)
+/dist
+/dotnet-sdk
+/zig-sdk
+tmp/
+SESSION.md
+.DS_Store

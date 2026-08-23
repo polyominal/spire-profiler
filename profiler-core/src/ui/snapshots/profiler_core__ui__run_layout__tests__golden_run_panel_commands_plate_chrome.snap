@@ -1,0 +1,33 @@
+---
+source: profiler-core/src/ui/run_layout.rs
+expression: "crate::test_util::dump_layout(&l.header_cmds, &l.cmds)"
+---
+-- header --
+text x=22.0 y=46.0 size=32 role=Title outline #EFC851FF "Run Summary"
+text x=30.0 y=81.0 size=24 role=Body align=leftclip w=705.0 #FFF6E2FF "A7 · Standard · Defeat"
+text x=30.0 y=109.0 size=24 role=Body align=leftclip w=705.0 #FFF6E280 "seed BETA"
+text x=22.0 y=138.0 size=24 role=Title align=leftclip w=713.0 #FFF6E2FF "DPS 17.5 · 6 turns · 2 combats"
+-- body --
+rect x=22.0 y=152.0 w=713.0 h=38.0 #00000040
+rect x=22.0 y=186.0 w=713.0 h=2.0 #EFC851FF
+text x=30.0 y=178.0 size=24 role=Title shadow #EFC851FF "Damage"
+rect x=22.0 y=190.0 w=713.0 h=32.0 #FFFFFF06
+text x=26.0 y=215.0 size=24 role=Body #FFF6E2FF "STRIKE"
+text x=286.0 y=215.0 size=24 role=Body #FFF6E280 "x4"
+rect x=330.0 y=196.0 w=197.0 h=20.0 #FFFFFF0F
+rect x=330.0 y=196.0 w=197.0 h=20.0 #FF6464FF
+text x=535.0 y=215.0 size=24 role=Body align=right w=200.0 #FFF6E2FF "70  (66.6%)"
+text x=26.0 y=247.0 size=24 role=Body #FFF6E2FF "DEMON_FORM"
+text x=286.0 y=247.0 size=24 role=Body #FFF6E280 "x1"
+rect x=330.0 y=228.0 w=197.0 h=20.0 #FFFFFF0F
+rect x=330.0 y=228.0 w=98.0 h=20.0 #FF6464FF
+text x=535.0 y=247.0 size=24 role=Body align=right w=200.0 #FFF6E2FF "35  (33.3%)"
+rect x=22.0 y=266.0 w=713.0 h=38.0 #00000040
+rect x=22.0 y=300.0 w=713.0 h=2.0 #EFC851FF
+text x=30.0 y=292.0 size=24 role=Title shadow #EFC851FF "Defense"
+rect x=22.0 y=304.0 w=713.0 h=32.0 #FFFFFF06
+text x=26.0 y=329.0 size=24 role=Body #FFF6E2FF "DEFEND"
+text x=286.0 y=329.0 size=24 role=Body #FFF6E280 "x2"
+rect x=330.0 y=310.0 w=197.0 h=20.0 #FFFFFF0F
+rect x=330.0 y=310.0 w=197.0 h=20.0 #67AEEBFF
+text x=535.0 y=329.0 size=24 role=Body align=right w=200.0 #FFF6E2FF "15  (100.0%)"

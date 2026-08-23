@@ -1,0 +1,5 @@
+---
+source: profiler-core/src/data/records/tests.rs
+expression: "build_run_json(&run_context(), 2)"
+---
+{"run_id":9,"profile":2,"character":"IRONCLAD","ascension":3,"game_mode":"standard","outcome":"victory","seed":"SEED123","started_at":1786579200,"ended_at":1786597200,"players":[{"slot":0,"character":"IRONCLAD"},{"slot":1,"character":"SILENT"}]}
