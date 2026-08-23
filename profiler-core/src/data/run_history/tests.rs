@@ -2,6 +2,7 @@
 //! results.
 
 use super::*;
+use crate::data::state::RunOutcome;
 use crate::source_kind::SourceKind;
 use crate::test_util::scratch_dir;
 
@@ -172,7 +173,7 @@ fn select_by_seed_assembles_the_full_view() {
     assert_eq!(view.character, "IRONCLAD");
     assert_eq!(view.ascension, 7);
     assert_eq!(view.game_mode, "Standard");
-    assert_eq!(view.outcome, "defeat");
+    assert_eq!(view.outcome, Some(RunOutcome::Defeat));
     assert_eq!(view.result, "Defeat");
     assert_eq!(view.seed, "BETA");
     assert_eq!(view.started_at, BETA_START);
@@ -227,7 +228,7 @@ fn combat_only_runs_fall_back_to_a_synthesized_view() {
         view.profile, 4,
         "the select's profile carries onto the view"
     );
-    assert!(view.outcome.is_empty());
+    assert!(view.outcome.is_none());
     assert_eq!(
         view.result, "Unfinished",
         "the run never closed, so its terminal state is unknown"
@@ -292,7 +293,7 @@ fn closed_runs_never_take_the_fallback() {
     let RunSelection::Selected(won) = select_run("ALPHA", 1_786_579_200, 2) else {
         panic!("ALPHA must match");
     };
-    assert_eq!(won.outcome, "victory");
+    assert_eq!(won.outcome, Some(RunOutcome::Victory));
     assert_eq!(won.result, "Victory");
 }
 
@@ -311,7 +312,7 @@ fn abandoned_runs_render_the_abandoned_label() {
     let RunSelection::Selected(view) = select_run("GAMMA", 1_786_579_200, 2) else {
         panic!("GAMMA must match");
     };
-    assert_eq!(view.outcome, "abandoned");
+    assert_eq!(view.outcome, Some(RunOutcome::Abandoned));
     assert_eq!(view.result, "Abandoned");
     assert_eq!(
         view.ended_at, 1_786_579_800,
@@ -569,7 +570,7 @@ fn view_fingerprint_tracks_every_view_field() {
         character: "IRONCLAD".to_owned(),
         ascension: 7,
         game_mode: "Standard".to_owned(),
-        outcome: "defeat".to_owned(),
+        outcome: Some(RunOutcome::Defeat),
         result: "Defeat".to_owned(),
         seed: "BETA".to_owned(),
         combats: vec![CombatView {

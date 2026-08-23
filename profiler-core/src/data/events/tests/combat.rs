@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::data::records::CombatRec;
+use crate::data::state::RunOutcome;
 use crate::source_kind::SourceKind;
 use crate::test_util::scratch_dir;
 
@@ -396,7 +397,7 @@ fn team_defeat_requires_every_slot_dead() {
     player_died(1);
     player_died(1);
     combat_ended();
-    run_ended(1);
+    run_ended(RunOutcome::Defeat);
 
     let combats: Vec<CombatRec> = read_all_combats(&base)
         .into_iter()

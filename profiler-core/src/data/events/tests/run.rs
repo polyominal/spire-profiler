@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::data::records::CombatRec;
-use crate::data::state::{self, RunPlayer};
+use crate::data::state::{self, RunOutcome, RunPlayer};
 use crate::test_util::scratch_dir;
 
 fn read_run(base: &str) -> serde_json::Value {
@@ -21,7 +21,7 @@ fn resumed_run_records_the_seed() {
     run_started("IRONCLAD", 7, "Standard", "SEED_123", 1, "", 0);
     combat_started("SELF_TEST", "test");
     combat_ended();
-    run_ended(1);
+    run_ended(RunOutcome::Defeat);
 
     let runs = read_run(&base);
     assert_eq!(runs[0]["seed"], "SEED_123");
@@ -81,7 +81,7 @@ fn suspend_without_an_active_run_is_a_no_op() {
     run_started("IRONCLAD", 0, "Standard", "SEED_ENDED", 0, "", 0);
     combat_started("ENDED_TEST", "test");
     combat_ended();
-    run_ended(1);
+    run_ended(RunOutcome::Defeat);
     run_suspended();
     assert!(!STATE.with(|s| s.borrow().run_ctx.active));
     let runs = read_run(&base);
@@ -121,7 +121,7 @@ fn suspend_then_continue_rejoins_without_a_spurious_defeat() {
     block_gained(5, "DEFEND", 0, 0);
     card_play_finished(0);
     combat_ended();
-    run_ended(2); // the run really ends now (abandoned)
+    run_ended(RunOutcome::Abandoned); // the run really ends now
     let runs = read_run(&base);
     assert_eq!(runs[0]["outcome"], "abandoned");
     assert!(runs[0]["ended_at"].is_i64());
@@ -165,7 +165,7 @@ fn resumed_run_rejoins_its_fragment_and_rebuilds_the_summary() {
     block_gained(5, "DEFEND", 0, 0);
     card_play_finished(0);
     combat_ended();
-    run_ended(2); // abandoned after the resumed fragment
+    run_ended(RunOutcome::Abandoned); // abandoned after the resumed fragment
     let runs = read_run(&base);
     assert_eq!(runs[0]["outcome"], "abandoned");
     assert_eq!(read_all_combats(&base).len(), 2, "both fragments persist");
@@ -210,7 +210,7 @@ fn resumed_run_discards_the_unfinished_combat() {
     });
     card_play_finished(0);
     combat_ended();
-    run_ended(1);
+    run_ended(RunOutcome::Defeat);
     read_run(&base);
     let combats: Vec<CombatRec> = read_all_combats(&base)
         .into_iter()
@@ -245,7 +245,7 @@ fn player_death_marks_the_combat_and_run_as_defeat() {
     });
     player_died(0);
     combat_ended();
-    run_ended(1);
+    run_ended(RunOutcome::Defeat);
 
     let (combat, _) = read_combat(&base);
     assert_eq!(combat.result, "defeat");
@@ -297,7 +297,7 @@ fn roster_parses_from_net_ids_and_truncates() {
     assert_eq!(stamped.len(), 2);
     assert_eq!(stamped[1].slot, 1);
     combat_ended();
-    run_ended(0);
+    run_ended(RunOutcome::Victory);
     run_started("A,B,C", 0, "Standard", "SEED_TRUNC", 0, "1,2", 0);
     let players = STATE.with(|s| s.borrow().run_ctx.players.clone());
     assert_eq!(players.len(), 2);

@@ -87,6 +87,8 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
 
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
 use crate::fail;
 pub use crate::source_kind::SourceKind;
 use crate::ui::ui_model::{self, Section, UiRow, UiTab};
@@ -295,24 +297,61 @@ pub struct RunPlayer {
     pub character: String,
 }
 
-/// 0 = victory, 1 = defeat, 2 = abandoned.
-pub const OUTCOME_VICTORY: i32 = 0;
-pub const OUTCOME_DEFEAT: i32 = 1;
-pub const OUTCOME_ABANDONED: i32 = 2;
+#[repr(i32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum RunOutcome {
+    Victory = 0,
+    #[default]
+    Defeat = 1,
+    Abandoned = 2,
+}
 
-const _: () = assert!(
-    OUTCOME_VICTORY == 0 && OUTCOME_DEFEAT == 1 && OUTCOME_ABANDONED == 2,
-    "run outcome wire codes are the ABI contract"
-);
+impl RunOutcome {
+    /// Anything outside the wire codes records as defeat.
+    pub fn from_c(code: i32) -> RunOutcome {
+        match code {
+            0 => RunOutcome::Victory,
+            1 => RunOutcome::Defeat,
+            2 => RunOutcome::Abandoned,
+            _ => {
+                fail(format!("invalid run outcome {code}; recording defeat"));
+                RunOutcome::Defeat
+            }
+        }
+    }
 
-/// Anything outside 0..=2 reads as "defeat".
-pub fn outcome_name(code: i32) -> &'static str {
-    match code {
-        OUTCOME_VICTORY => "victory",
-        OUTCOME_ABANDONED => "abandoned",
-        _ => "defeat",
+    pub fn name(self) -> &'static str {
+        match self {
+            RunOutcome::Victory => "victory",
+            RunOutcome::Defeat => "defeat",
+            RunOutcome::Abandoned => "abandoned",
+        }
     }
 }
+
+impl Serialize for RunOutcome {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.name())
+    }
+}
+
+impl<'de> Deserialize<'de> for RunOutcome {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let name = String::deserialize(deserializer)?;
+        Ok(match name.as_str() {
+            "victory" => RunOutcome::Victory,
+            "abandoned" => RunOutcome::Abandoned,
+            _ => RunOutcome::Defeat,
+        })
+    }
+}
+
+const _: () = assert!(
+    RunOutcome::Victory as i32 == 0
+        && RunOutcome::Defeat as i32 == 1
+        && RunOutcome::Abandoned as i32 == 2,
+    "run outcome wire codes are the ABI contract"
+);
 
 /// Serde `skip_serializing_if` predicate for the zero-omission rule.
 pub(crate) fn is_zero<T>(value: &T) -> bool
@@ -337,7 +376,7 @@ pub struct RunContext {
     pub started_at: i64,
     pub ended_at: i64,
     /// `ended_at` is the abandon moment.
-    pub outcome: i32,
+    pub outcome: RunOutcome,
     /// Serialized as runs.jsonl's `"players"`.
     pub players: Vec<RunPlayer>,
 }
@@ -354,7 +393,7 @@ impl Default for RunContext {
             seed: String::new(),
             started_at: 0,
             ended_at: 0,
-            outcome: OUTCOME_DEFEAT,
+            outcome: RunOutcome::Defeat,
             players: Vec::new(),
         }
     }
@@ -682,5 +721,25 @@ mod tests {
                 "from_c({kind}) must clamp to a catalogued kind"
             );
         }
+    }
+
+    #[test]
+    fn from_c_maps_wire_codes_and_defaults_unknowns_to_defeat() {
+        assert_eq!(RunOutcome::from_c(0), RunOutcome::Victory);
+        assert_eq!(RunOutcome::from_c(1), RunOutcome::Defeat);
+        assert_eq!(RunOutcome::from_c(2), RunOutcome::Abandoned);
+        assert_eq!(RunOutcome::from_c(-1), RunOutcome::Defeat);
+        assert_eq!(RunOutcome::from_c(3), RunOutcome::Defeat);
+    }
+
+    #[test]
+    fn outcome_serde_round_trips_lowercase_and_reads_unknowns_as_defeat() {
+        assert_eq!(
+            serde_json::to_string(&RunOutcome::Victory).expect("victory serializes"),
+            "\"victory\""
+        );
+        let out: RunOutcome =
+            serde_json::from_str("\"bogus\"").expect("unknown outcome string decodes");
+        assert_eq!(out, RunOutcome::Defeat);
     }
 }

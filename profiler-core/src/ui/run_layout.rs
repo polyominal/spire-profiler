@@ -524,7 +524,7 @@ fn insert_borders(l: &mut RunLayout) {
 mod tests {
     use super::*;
     use crate::data::run_history::CombatView;
-    use crate::data::state::CardStat;
+    use crate::data::state::{CardStat, RunOutcome};
     use crate::source_kind::SourceKind;
     use crate::test_util::cmd_texts as texts;
     use crate::ui::ui_model;
@@ -559,7 +559,7 @@ mod tests {
             character: "IRONCLAD".to_owned(),
             ascension: 7,
             game_mode: "Standard".to_owned(),
-            outcome: "defeat".to_owned(),
+            outcome: Some(RunOutcome::Defeat),
             result: "Defeat".to_owned(),
             seed: "BETA".to_owned(),
             combats: combats(2),
@@ -578,12 +578,12 @@ mod tests {
         // The avatar row carries the character; the text line never names it.
         assert_eq!(identity_line(&v), "A7 · Standard · Defeat");
         let mut won = view();
-        won.outcome = "victory".to_owned();
+        won.outcome = Some(RunOutcome::Victory);
         won.result = "Victory".to_owned();
         assert_eq!(identity_line(&won), "A7 · Standard · Victory");
         // An abandoned run reads "Abandoned", never a false "Defeat".
         let mut abandoned = view();
-        abandoned.outcome = "abandoned".to_owned();
+        abandoned.outcome = Some(RunOutcome::Abandoned);
         abandoned.result = "Abandoned".to_owned();
         assert_eq!(identity_line(&abandoned), "A7 · Standard · Abandoned");
         // An unknown ascension is omitted; the fallback's "Unfinished"

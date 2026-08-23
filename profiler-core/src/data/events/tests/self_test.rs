@@ -2,7 +2,7 @@
 //! snapshot rows/footers, the chart-row payload, and the filter toggle.
 
 use super::*;
-use crate::data::state::PlayerFilter;
+use crate::data::state::{PlayerFilter, RunOutcome};
 use crate::source_kind::SourceKind;
 use crate::test_util::scratch_dir;
 use crate::ui::ui_model::{Section, Segment, UiRow, UiTab};
@@ -323,7 +323,7 @@ fn panel_filter_toggle_selects_and_deselects_players() {
     panel_filter_toggle(0);
     assert_eq!(STATE.with(|s| s.borrow().player_filter), PlayerFilter::All);
     combat_ended();
-    run_ended(0);
+    run_ended(RunOutcome::Victory);
 
     // A stale slot from a previous run never survives a run start.
     STATE.with(|s| s.borrow_mut().player_filter = PlayerFilter::Player(1));
@@ -342,5 +342,5 @@ fn panel_filter_toggle_selects_and_deselects_players() {
     panel_filter_toggle(0);
     assert_eq!(STATE.with(|s| s.borrow().player_filter), PlayerFilter::All);
     combat_ended();
-    run_ended(0);
+    run_ended(RunOutcome::Victory);
 }

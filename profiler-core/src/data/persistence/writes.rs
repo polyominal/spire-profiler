@@ -51,7 +51,7 @@ pub fn write_run_record() {
         run_ctx.seq,
         run_ctx.character,
         run_ctx.game_mode,
-        crate::data::state::outcome_name(run_ctx.outcome),
+        run_ctx.outcome.name(),
     ));
 }
 
@@ -60,7 +60,7 @@ mod tests {
     use super::*;
     use crate::data::persistence::build_combat_json;
     use crate::data::persistence::test_support::*;
-    use crate::data::state::OUTCOME_VICTORY;
+    use crate::data::state::RunOutcome;
 
     #[test]
     fn write_run_record_appends_one_line_per_run() {
@@ -79,7 +79,7 @@ mod tests {
             st.run_ctx.seed = "SEED123".to_owned();
             st.run_ctx.started_at = 1_786_624_000;
             st.run_ctx.ended_at = 1_786_624_496;
-            st.run_ctx.outcome = OUTCOME_VICTORY;
+            st.run_ctx.outcome = RunOutcome::Victory;
             st.run_ctx.players = synthetic_roster();
         });
         let c = synthetic_combat(); // run_seq 42, seq 7
@@ -113,7 +113,7 @@ mod tests {
             let mut st = s.borrow_mut();
             st.run_ctx.seq = 43;
             st.run_ctx.character = "IRONCLAD".to_owned();
-            st.run_ctx.outcome = crate::data::state::OUTCOME_DEFEAT;
+            st.run_ctx.outcome = RunOutcome::Defeat;
         });
         let mut c2 = synthetic_combat();
         c2.run_seq = 43;

@@ -76,7 +76,7 @@ use serde::Deserialize;
 
 use crate::data::persistence::{card_stat_from_rec, merge_card_stat};
 use crate::data::records::{CombatRec, PlayerRec};
-use crate::data::state::{CardStat, PlayerFilter, STATE, TEAM_SLOT};
+use crate::data::state::{CardStat, PlayerFilter, RunOutcome, STATE, TEAM_SLOT};
 
 /// Generous for the run-start → first-combat gap, yet two same-seed
 /// replays played further apart never merge.
@@ -92,7 +92,7 @@ pub struct RunEntry {
     pub ascension: i32,
     pub game_mode: String,
     /// The view's result label derives from it.
-    pub outcome: String,
+    pub outcome: RunOutcome,
     pub seed: String,
     /// Epoch seconds; matching is direct integer arithmetic.
     pub started_at: i64,
@@ -110,7 +110,7 @@ impl Default for RunEntry {
             character: String::new(),
             ascension: -1,
             game_mode: String::new(),
-            outcome: "defeat".to_owned(),
+            outcome: RunOutcome::Defeat,
             seed: String::new(),
             started_at: 0,
             ended_at: 0,
@@ -143,8 +143,8 @@ pub struct RunSummaryView {
     pub character: String,
     pub ascension: i32,
     pub game_mode: String,
-    /// Empty on the combats-only fallback.
-    pub outcome: String,
+    /// None on the combats-only fallback.
+    pub outcome: Option<RunOutcome>,
     /// "Unfinished" for the fallback: the truth is unknown.
     pub result: String,
     pub seed: String,
@@ -301,11 +301,11 @@ fn build_view(entry: &RunEntry, combats: &[CombatRec]) -> RunSummaryView {
         character: entry.character.clone(),
         ascension: entry.ascension,
         game_mode: entry.game_mode.clone(),
-        outcome: entry.outcome.clone(),
-        result: match entry.outcome.as_str() {
-            "victory" => "Victory",
-            "abandoned" => "Abandoned",
-            _ => "Defeat",
+        outcome: Some(entry.outcome),
+        result: match entry.outcome {
+            RunOutcome::Victory => "Victory",
+            RunOutcome::Abandoned => "Abandoned",
+            RunOutcome::Defeat => "Defeat",
         }
         .to_owned(),
         seed: entry.seed.clone(),
@@ -460,7 +460,7 @@ fn fallback_from_combats(cache: &Cache, seed: &str, profile: i32, start_time: i6
         character: run.character.clone(),
         ascension: run.ascension,
         game_mode: run.game_mode.clone(),
-        outcome: String::new(),
+        outcome: RunOutcome::Defeat,
         seed: seed.to_owned(),
         started_at: group_start,
         ended_at: group_end,
@@ -468,7 +468,9 @@ fn fallback_from_combats(cache: &Cache, seed: &str, profile: i32, start_time: i6
         players: Vec::new(),
     };
     let mut view = build_view(&entry, &cache.combats);
-    // build_view labels the empty outcome "Defeat"; correct it.
+    // The combats-only fallback has no run record: the terminal state is
+    // unknown, never a false "Defeat".
+    view.outcome = None;
     view.result = "Unfinished".to_owned();
     RunSelection::Selected(Box::new(view))
 }

@@ -2,7 +2,7 @@
 //! profile stamping, and the run-history screen selection.
 
 use crate::data::persistence::{append_log, now_seconds, write_run_record};
-use crate::data::state::{self, RunPlayer, STATE, caps};
+use crate::data::state::{self, RunOutcome, RunPlayer, STATE, caps};
 use crate::fail;
 
 pub fn set_run_meta(profile_id: i32) {
@@ -41,7 +41,7 @@ pub fn run_started(
     });
     if close_previous {
         // Closing with 0 would fabricate a win.
-        run_ended(state::OUTCOME_DEFEAT);
+        run_ended(RunOutcome::Defeat);
     }
     let (log_lines, resumed_seq, roster) = STATE.with(|cell| {
         let mut state = cell.borrow_mut();
@@ -177,8 +177,7 @@ pub fn run_suspended() {
     }
 }
 
-/// The wire code: 0 = victory, 1 = defeat, 2 = abandoned.
-pub fn run_ended(outcome: i32) {
+pub fn run_ended(outcome: RunOutcome) {
     let active = STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         if !state.initialized || !state.run_ctx.active {
@@ -199,10 +198,7 @@ pub fn run_ended(outcome: i32) {
         let state = cell.borrow();
         (state.run_ctx.seq, state.run_ctx.outcome)
     });
-    eprintln!(
-        "[SpireProfiler] run {seq} recorded ({})",
-        state::outcome_name(outcome)
-    );
+    eprintln!("[SpireProfiler] run {seq} recorded ({})", outcome.name());
 }
 
 /// The shim forwards the displayed run's seed, `StartTime`, and profile.

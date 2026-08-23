@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 
-use profiler_core::data::state::{self, PendingContrib, STATE, SourceKind};
+use profiler_core::data::state::{self, PendingContrib, RunOutcome, STATE, SourceKind};
 use profiler_core::data::{events, ledger, records};
 use profiler_core::test_util::scratch_dir;
 
@@ -543,7 +543,11 @@ fn randomized_combat_lifecycle_invariants() {
             let st = cell.borrow();
             !st.per_player.is_empty() && st.per_player.iter().all(|slot| slot.died)
         });
-        events::run_ended(if player_died { 1 } else { 0 });
+        events::run_ended(if player_died {
+            RunOutcome::Defeat
+        } else {
+            RunOutcome::Victory
+        });
         check_written_files(&base, player_died);
         let _ = std::fs::remove_dir_all(&base);
     }

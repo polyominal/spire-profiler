@@ -49,6 +49,7 @@
 use std::ffi::{CStr, c_char};
 
 use crate::data::events;
+use crate::data::state::RunOutcome;
 use crate::fail;
 
 /// A null pointer (or one that is not valid NUL-terminated UTF-8) yields
@@ -147,7 +148,7 @@ pub unsafe extern "C" fn spire_profiler_run_started(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_run_ended(outcome: i32) {
     contain("spire_profiler_run_ended", (), || {
-        events::run_ended(outcome)
+        events::run_ended(RunOutcome::from_c(outcome))
     });
 }
 
@@ -744,7 +745,7 @@ mod tests {
         let view = crate::data::run_history::selected_view().expect("selection stored");
         assert_eq!(view.seed, "SELF_TEST_SEED");
         assert_eq!(view.character, "SELF_TEST_CHAR");
-        assert_eq!(view.outcome, "victory");
+        assert_eq!(view.outcome, Some(RunOutcome::Victory));
         assert_eq!(view.combats.len(), 1);
         assert_eq!(view.combats[0].encounter, "SELF_TEST");
 

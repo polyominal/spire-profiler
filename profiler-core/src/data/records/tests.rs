@@ -2,7 +2,7 @@
 //! contract: parse tolerance and the run record's byte-for-byte schema.
 
 use super::*;
-use crate::data::state::{OUTCOME_VICTORY, RunContext, RunPlayer};
+use crate::data::state::{RunContext, RunOutcome, RunPlayer};
 use crate::source_kind::SourceKind;
 
 fn run_context() -> RunContext {
@@ -15,7 +15,7 @@ fn run_context() -> RunContext {
         seed: "SEED123".to_owned(),
         started_at: 1_786_579_200, // 2026-08-13T00:00:00Z in epoch seconds
         ended_at: 1_786_597_200,   // 2026-08-13T00:30:00Z
-        outcome: OUTCOME_VICTORY,
+        outcome: RunOutcome::Victory,
         players: vec![
             RunPlayer {
                 slot: 0,
@@ -133,7 +133,7 @@ fn build_run_json_round_trips_through_the_parser() {
     assert_eq!(parsed.character, run.character);
     assert_eq!(parsed.ascension, run.ascension);
     assert_eq!(parsed.game_mode, run.game_mode);
-    assert_eq!(parsed.outcome, "victory");
+    assert_eq!(parsed.outcome, RunOutcome::Victory);
     assert_eq!(parsed.seed, run.seed);
     assert_eq!(parsed.started_at, run.started_at);
     assert_eq!(parsed.ended_at, run.ended_at);
