@@ -138,7 +138,7 @@ const _: () = assert!(
     "UiRow must stay under 4096 bytes for the panel's frame-buffer memcpy"
 );
 const _: () = assert!(
-    ui_model::SEG_COUNT == 8,
+    ui_model::Segment::ALL.len() == 8,
     "seg_milli must stay 8 segment slots wide"
 );
 

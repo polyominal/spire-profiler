@@ -3,7 +3,7 @@
 
 use crate::data::state::{CardStat, Combat, PlayerFilter, STATE};
 use crate::ui::tooltip::{RowDetail, StatLine, StatTone};
-use crate::ui::ui_model::{self, Section, UiMeta, UiRow, UiTab};
+use crate::ui::ui_model::{self, Section, Segment, UiMeta, UiRow, UiTab};
 use crate::ui::{chart_layout, palette};
 
 fn total_damage(c: &Combat) -> i64 {
@@ -89,27 +89,27 @@ fn format_card_detail(card: &CardStat) -> RowDetail {
 #[derive(Clone, Copy, Debug, Default)]
 struct SectionView {
     value: i64,
-    segs: [i64; 8],
+    segs: [i64; Segment::ALL.len()],
 }
 
 fn section_view(section: Section, card: &CardStat) -> SectionView {
     let mut v = SectionView::default();
     match section {
         Section::Damage => {
-            v.segs[ui_model::SEG_DIRECT] = card.dmg_direct;
-            v.segs[ui_model::SEG_ATTRIBUTED] = card.dmg_attributed;
-            v.segs[ui_model::SEG_MODIFIER] = card.dmg_modifier;
-            v.segs[ui_model::SEG_UPGRADE] = card.dmg_upgrade;
+            v.segs[Segment::Direct.index()] = card.dmg_direct;
+            v.segs[Segment::Attributed.index()] = card.dmg_attributed;
+            v.segs[Segment::Modifier.index()] = card.dmg_modifier;
+            v.segs[Segment::Upgrade.index()] = card.dmg_upgrade;
             v.value = card.dmg_direct + card.dmg_attributed + card.dmg_modifier + card.dmg_upgrade;
         }
         Section::Defense => {
-            v.segs[ui_model::SEG_DIRECT] = card.block_effective;
-            v.segs[ui_model::SEG_MODIFIER] = card.blk_modifier;
-            v.segs[ui_model::SEG_MITIGATE_DEBUFF] = card.mitigate_debuff;
-            v.segs[ui_model::SEG_MITIGATE_BUFF] = card.mitigate_buff;
-            v.segs[ui_model::SEG_MITIGATE_STR] = card.mitigate_str;
-            v.segs[ui_model::SEG_UPGRADE] = card.blk_upgrade;
-            v.segs[ui_model::SEG_SELF] = card.self_damage;
+            v.segs[Segment::Direct.index()] = card.block_effective;
+            v.segs[Segment::Modifier.index()] = card.blk_modifier;
+            v.segs[Segment::MitigateDebuff.index()] = card.mitigate_debuff;
+            v.segs[Segment::MitigateBuff.index()] = card.mitigate_buff;
+            v.segs[Segment::MitigateStr.index()] = card.mitigate_str;
+            v.segs[Segment::Upgrade.index()] = card.blk_upgrade;
+            v.segs[Segment::SelfDamage.index()] = card.self_damage;
             v.value = card.block_effective
                 + card.blk_modifier
                 + card.mitigate_debuff
@@ -270,7 +270,7 @@ fn emit_top_row(
         let mut view = top.view;
         if split_self {
             view.value = pos;
-            view.segs[ui_model::SEG_SELF] = 0;
+            view.segs[Segment::SelfDamage.index()] = 0;
         }
         out[n] = make_row(section, card, view, max_val, total_val, 0);
         n += 1;
@@ -280,7 +280,7 @@ fn emit_top_row(
             value: -card.self_damage,
             ..SectionView::default()
         };
-        self_view.segs[ui_model::SEG_SELF] = card.self_damage;
+        self_view.segs[Segment::SelfDamage.index()] = card.self_damage;
         out[n] = make_row(
             section,
             card,
@@ -320,11 +320,11 @@ fn make_row(
         row.share_x10 = (view.value * 1000 / total_val) as i32;
     }
     if max_val > 0 {
-        for (k, &seg) in view.segs.iter().enumerate() {
+        for (segment, &seg) in Segment::ALL.iter().zip(view.segs.iter()) {
             if seg <= 0 {
                 continue;
             }
-            row.seg_milli[k] = (seg * 1000 / max_val).min(1000) as u16;
+            row.seg_milli[segment.index()] = (seg * 1000 / max_val).min(1000) as u16;
         }
     }
     row
@@ -749,8 +749,8 @@ mod tests {
         assert_eq!(solo.share_x10, 0);
         assert_ne!(solo.flags & ui_model::ROW_FLAG_SELF, 0);
         assert_ne!(solo.flags & ui_model::ROW_FLAG_SELF_SOLO, 0);
-        assert!(solo.seg_milli[ui_model::SEG_SELF] > 0);
-        assert!(solo.seg_milli[ui_model::SEG_DIRECT] == 0);
+        assert!(solo.seg_milli[Segment::SelfDamage.index()] > 0);
+        assert!(solo.seg_milli[Segment::Direct.index()] == 0);
     }
 
     /// A big HP price never tops the Defense chart; solo-row hover still

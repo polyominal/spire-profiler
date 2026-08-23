@@ -5,7 +5,7 @@ use super::*;
 use crate::data::state::PlayerFilter;
 use crate::source_kind::SourceKind;
 use crate::test_util::scratch_dir;
-use crate::ui::ui_model::{Section, UiRow, UiTab};
+use crate::ui::ui_model::{Section, Segment, UiRow, UiTab};
 
 fn assert_self_test_combat(combat: &CombatRec, combat_json: &serde_json::Value) {
     assert_eq!(combat.encounter_id, "SELF_TEST");
@@ -209,12 +209,12 @@ fn assert_combat_tab_rows() {
     assert_eq!(rows[0].value, 18);
     assert_eq!(rows[0].plays, 2);
     assert_eq!(rows[0].share_x10, 600); // 18/30
-    assert_eq!(rows[0].seg_milli[crate::ui::ui_model::SEG_DIRECT], 1000);
+    assert_eq!(rows[0].seg_milli[Segment::Direct.index()], 1000);
     assert_eq!(rows[0].flags, 0);
     assert_eq!(rows[1].name_str(), "BASH");
     assert_eq!(rows[2].name_str(), "INFLAME");
-    assert!(rows[2].seg_milli[crate::ui::ui_model::SEG_MODIFIER] > 0);
-    assert_eq!(rows[2].seg_milli[crate::ui::ui_model::SEG_DIRECT], 0);
+    assert!(rows[2].seg_milli[Segment::Modifier.index()] > 0);
+    assert_eq!(rows[2].seg_milli[Segment::Direct.index()], 0);
     let ghost_row = rows[..count]
         .iter()
         .find(|row| row.name_str() == "GHOST_RELIC");
@@ -232,10 +232,10 @@ fn assert_combat_tab_rows() {
         .expect("positive defense row");
     assert_eq!(rows[di].name_str(), "CRIMSON_MANTLE");
     assert_eq!(rows[di].value, 10);
-    assert_eq!(rows[di].seg_milli[crate::ui::ui_model::SEG_DIRECT], 1000);
+    assert_eq!(rows[di].seg_milli[Segment::Direct.index()], 1000);
     assert_ne!(rows[di + 1].flags & crate::ui::ui_model::ROW_FLAG_SELF, 0);
     assert_eq!(rows[di + 1].value, -3);
-    assert_eq!(rows[di + 1].seg_milli[crate::ui::ui_model::SEG_SELF], 428); // 3/7 (net value)
+    assert_eq!(rows[di + 1].seg_milli[Segment::SelfDamage.index()], 428); // 3/7 (net value)
     assert_eq!(rows[di + 1].share_x10, 0);
 }
 

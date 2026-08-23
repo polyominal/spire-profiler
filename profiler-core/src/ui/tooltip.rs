@@ -20,7 +20,7 @@ use crate::source_kind::SourceKind;
 use crate::ui::palette;
 use crate::ui::panel_replay::{self, Fonts};
 use crate::ui::theme::{self, TextRole};
-use crate::ui::ui_model::{self, Section};
+use crate::ui::ui_model::{Section, Segment};
 
 /// The game's hover-tip width verbatim (`_hoverTipWidth = 360f`).
 pub(crate) const TIP_WIDTH: f32 = 360.0;
@@ -106,26 +106,14 @@ impl RowDetail {
 fn tone_color(tone: StatTone) -> palette::Color {
     let (slot, section, kind) = match tone {
         StatTone::Neutral => return palette::COL_CREAM,
-        StatTone::Direct(section, kind) => (ui_model::SEG_DIRECT, section, kind),
-        StatTone::Attributed => (ui_model::SEG_ATTRIBUTED, Section::Damage, SourceKind::Card),
-        StatTone::Modifier => (ui_model::SEG_MODIFIER, Section::Damage, SourceKind::Card),
-        StatTone::Upgrade => (ui_model::SEG_UPGRADE, Section::Damage, SourceKind::Card),
-        StatTone::MitigateDebuff => (
-            ui_model::SEG_MITIGATE_DEBUFF,
-            Section::Defense,
-            SourceKind::Card,
-        ),
-        StatTone::MitigateBuff => (
-            ui_model::SEG_MITIGATE_BUFF,
-            Section::Defense,
-            SourceKind::Card,
-        ),
-        StatTone::MitigateStr => (
-            ui_model::SEG_MITIGATE_STR,
-            Section::Defense,
-            SourceKind::Card,
-        ),
-        StatTone::SelfDamage => (ui_model::SEG_SELF, Section::Defense, SourceKind::Card),
+        StatTone::Direct(section, kind) => (Segment::Direct, section, kind),
+        StatTone::Attributed => (Segment::Attributed, Section::Damage, SourceKind::Card),
+        StatTone::Modifier => (Segment::Modifier, Section::Damage, SourceKind::Card),
+        StatTone::Upgrade => (Segment::Upgrade, Section::Damage, SourceKind::Card),
+        StatTone::MitigateDebuff => (Segment::MitigateDebuff, Section::Defense, SourceKind::Card),
+        StatTone::MitigateBuff => (Segment::MitigateBuff, Section::Defense, SourceKind::Card),
+        StatTone::MitigateStr => (Segment::MitigateStr, Section::Defense, SourceKind::Card),
+        StatTone::SelfDamage => (Segment::SelfDamage, Section::Defense, SourceKind::Card),
     };
     palette::slot_color(slot, section, kind)
 }
@@ -487,39 +475,45 @@ mod tests {
         use SourceKind as K;
         use StatTone::*;
         use m::Section as S;
-        use ui_model as m;
+
+        use crate::ui::ui_model as m;
         for (tone, slot, section, kind) in [
             (
                 Direct(S::Damage, K::Card),
-                m::SEG_DIRECT,
+                m::Segment::Direct,
                 S::Damage,
                 K::Card,
             ),
             (
                 Direct(S::Damage, K::Relic),
-                m::SEG_DIRECT,
+                m::Segment::Direct,
                 S::Damage,
                 K::Relic,
             ),
             (
                 Direct(S::Defense, K::Card),
-                m::SEG_DIRECT,
+                m::Segment::Direct,
                 S::Defense,
                 K::Card,
             ),
             (
                 Direct(S::Defense, K::Osty),
-                m::SEG_DIRECT,
+                m::Segment::Direct,
                 S::Defense,
                 K::Osty,
             ),
-            (Attributed, m::SEG_ATTRIBUTED, S::Damage, K::Card),
-            (Modifier, m::SEG_MODIFIER, S::Damage, K::Card),
-            (Upgrade, m::SEG_UPGRADE, S::Damage, K::Card),
-            (MitigateDebuff, m::SEG_MITIGATE_DEBUFF, S::Defense, K::Card),
-            (MitigateBuff, m::SEG_MITIGATE_BUFF, S::Defense, K::Card),
-            (MitigateStr, m::SEG_MITIGATE_STR, S::Defense, K::Card),
-            (SelfDamage, m::SEG_SELF, S::Defense, K::Card),
+            (Attributed, m::Segment::Attributed, S::Damage, K::Card),
+            (Modifier, m::Segment::Modifier, S::Damage, K::Card),
+            (Upgrade, m::Segment::Upgrade, S::Damage, K::Card),
+            (
+                MitigateDebuff,
+                m::Segment::MitigateDebuff,
+                S::Defense,
+                K::Card,
+            ),
+            (MitigateBuff, m::Segment::MitigateBuff, S::Defense, K::Card),
+            (MitigateStr, m::Segment::MitigateStr, S::Defense, K::Card),
+            (SelfDamage, m::Segment::SelfDamage, S::Defense, K::Card),
         ] {
             assert_eq!(
                 tone_color(tone),
@@ -606,7 +600,7 @@ mod tests {
             assert!(line.value.is_none(), "backstop lines carry no column");
             assert_eq!(
                 line.color,
-                palette::slot_color(ui_model::SEG_DIRECT, Section::Damage, SourceKind::Card)
+                palette::slot_color(Segment::Direct, Section::Damage, SourceKind::Card)
             );
             assert!(chars(&line.text) <= BODY_BUDGET, "over budget: {line:?}");
         }

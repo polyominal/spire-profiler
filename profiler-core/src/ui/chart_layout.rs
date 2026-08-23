@@ -30,7 +30,7 @@ use crate::ui::palette::{
     Color, PREFIX_ADVANCE, kind_prefix, kind_prefix_color, slot_color,
 };
 use crate::ui::theme::{self, TextRole};
-use crate::ui::ui_model::{self, Section, UiMeta, UiRow, UiTab};
+use crate::ui::ui_model::{self, Section, Segment, UiMeta, UiRow, UiTab};
 
 // Vertical constants derive from the shipped Kreon faces' metrics at
 // 24/32px (ascent 997, descent −293, cap 708 per 1024 upm).
@@ -420,14 +420,17 @@ pub struct Seg {
     pub w: f32,
 }
 
-pub(crate) fn segment_offsets(seg_milli: &[u16; 8], width: f32) -> [Seg; 8] {
-    let mut out = [Seg { x: 0.0, w: 0.0 }; 8];
+pub(crate) fn segment_offsets(
+    seg_milli: &[u16; ui_model::SEG_COUNT],
+    width: f32,
+) -> [Seg; ui_model::SEG_COUNT] {
+    let mut out = [Seg { x: 0.0, w: 0.0 }; ui_model::SEG_COUNT];
     let mut offset: f32 = 0.0;
-    for (k, &milli) in seg_milli.iter().enumerate() {
+    for (segment, &milli) in Segment::ALL.iter().zip(seg_milli) {
         // Integer math first, then the float: per-mille × pixel width, with
         // the width truncated to whole pixels (by design).
         let w = (u32::from(milli) * (width as u32) / 1000) as f32;
-        out[k] = Seg { x: offset, w };
+        out[segment.index()] = Seg { x: offset, w };
         offset += w;
     }
     out
@@ -814,7 +817,7 @@ fn emit_segments(l: &mut Layout, g: &Geom, row: &UiRow, y: f32) {
     let bar_y = y + (ROW_H - BAR_H) / 2.0;
     l.rect(g.bar_x, bar_y, g.bar_w, BAR_H, COL_TRACK);
     let segs = segment_offsets(&row.seg_milli, g.bar_w);
-    for (k, seg) in segs.iter().enumerate() {
+    for (segment, seg) in Segment::ALL.iter().zip(segs.iter()) {
         if seg.w <= 0.0 {
             continue;
         }
@@ -823,7 +826,7 @@ fn emit_segments(l: &mut Layout, g: &Geom, row: &UiRow, y: f32) {
             bar_y,
             seg.w,
             BAR_H,
-            slot_color(k, row.section, row.kind),
+            slot_color(*segment, row.section, row.kind),
         );
     }
 }

@@ -31,17 +31,39 @@ impl Section {
     }
 }
 
-/// A change here is a compile error at the `[u16; 8]` call sites.
-pub const SEG_COUNT: usize = 8;
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Segment {
+    Direct = 0,
+    Attributed = 1,
+    Modifier = 2,
+    Upgrade = 3,
+    MitigateDebuff = 4,
+    MitigateBuff = 5,
+    MitigateStr = 6,
+    SelfDamage = 7,
+}
 
-pub const SEG_DIRECT: usize = 0;
-pub const SEG_ATTRIBUTED: usize = 1; // indirect damage (ticks, orbs, doom)
-pub const SEG_MODIFIER: usize = 2;
-pub const SEG_UPGRADE: usize = 3;
-pub const SEG_MITIGATE_DEBUFF: usize = 4; // Weak-style prevention
-pub const SEG_MITIGATE_BUFF: usize = 5; // Buffer/Intangible prevention
-pub const SEG_MITIGATE_STR: usize = 6; // enemy Strength reduction
-pub const SEG_SELF: usize = 7;
+impl Segment {
+    pub const ALL: [Segment; 8] = [
+        Segment::Direct,
+        Segment::Attributed,
+        Segment::Modifier,
+        Segment::Upgrade,
+        Segment::MitigateDebuff,
+        Segment::MitigateBuff,
+        Segment::MitigateStr,
+        Segment::SelfDamage,
+    ];
+
+    /// The fixed `seg_milli` index, matching the segment's chart position.
+    pub fn index(self) -> usize {
+        self as usize
+    }
+}
+
+/// A change here is a compile error at every `[u16; SEG_COUNT]` site.
+pub const SEG_COUNT: usize = Segment::ALL.len();
 
 pub const ROW_FLAG_SELF: u8 = 2;
 /// The source has self damage but no positive defense to split off.
