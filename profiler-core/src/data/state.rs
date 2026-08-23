@@ -88,6 +88,7 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 
 use crate::fail;
+pub use crate::source_kind::SourceKind;
 use crate::ui::ui_model::{self, Section, UiRow, UiTab};
 
 // Pinned at compile time: a refactor that breaks a wire value, width, or
@@ -158,16 +159,6 @@ const _: () = assert!(
     "MAX_UI_ROWS must hold MAX_ROWS_PER_SECTION rows for every section"
 );
 
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SourceKind {
-    Card = 0,
-    Relic = 1,
-    Power = 2,
-    Potion = 3,
-    Osty = 4,
-}
-
 pub type SourceSlot = u8;
 
 /// The shim sends this value only for `context_begin` (enemy-owned powers);
@@ -184,18 +175,6 @@ pub fn clamp_source_slot(slot: i32) -> SourceSlot {
         ));
     }
     clamped
-}
-
-impl SourceKind {
-    /// The upper clamp is [`SourceKind::Power`], the only kind the shim
-    /// sends for contexts.
-    pub fn from_c(kind: i32) -> SourceKind {
-        match kind.clamp(0, SourceKind::Power as i32) {
-            0 => SourceKind::Card,
-            1 => SourceKind::Relic,
-            _ => SourceKind::Power,
-        }
-    }
 }
 
 /// Lives here because it is state owned by [`State`]; `ui_model` stays the
@@ -227,7 +206,7 @@ pub struct CardStat {
     /// First so the serialized identity group mirrors this order.
     pub player: SourceSlot,
     pub id: String,
-    pub kind: u8,
+    pub kind: SourceKind,
     /// Own triggers, so `contribution / plays` is the expected value.
     pub plays: u32,
     pub damage_dealt: i64,
@@ -459,7 +438,7 @@ pub struct PlayerSlotState {
     pub pending_upgrade_dmg: i64,
     pub pending_upgrade_blk: i64,
     pub pending_upgrade_source: String,
-    pub pending_upgrade_kind: u8,
+    pub pending_upgrade_kind: SourceKind,
     /// The upgrade record's row slot; the upgrader may sit on another slot.
     pub pending_upgrade_player: SourceSlot,
     /// This slot's block pool (bounded at [`caps::BLOCK_POOL`] chunks).

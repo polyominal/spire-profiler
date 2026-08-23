@@ -2,7 +2,6 @@
 //! activates that source as the owner slot's fallback. The `orb_sources`
 //! table stays global; which slot's fallback points at it is per-slot.
 
-use super::kind_name;
 use crate::data::persistence::append_log;
 use crate::data::state::{OrbSource, STATE, SourceKind, caps};
 use crate::fail;
@@ -61,7 +60,7 @@ pub fn orb_channeled(hash: i32, player_slot: i32) {
         }
         vec![format!(
             "  orb channeled, source: {source_id} ({})\n",
-            kind_name(kind)
+            kind.name()
         )]
     });
     for line in log_lines {
@@ -98,7 +97,7 @@ pub fn orb_context_begin(hash: i32, player_slot: i32) {
                 vec![format!(
                     "  orb trigger, fallback: {} ({})\n",
                     source.id,
-                    kind_name(source.kind)
+                    source.kind.name()
                 )]
             }
             None => {

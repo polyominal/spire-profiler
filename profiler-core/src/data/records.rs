@@ -6,12 +6,13 @@
 use serde::{Deserialize, Serialize};
 
 use crate::data::state::{RunContext, RunPlayer, outcome_name};
+use crate::source_kind::SourceKind;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct CardRec {
     pub id: String,
-    pub kind: u8,
+    pub kind: SourceKind,
     pub player: u8,
     pub plays: u32,
     pub damage_dealt: i64,

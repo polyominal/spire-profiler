@@ -15,6 +15,8 @@ use std::hash::{Hash, Hasher};
 use crate::data::state::{CardStat, PlayerFilter, STATE};
 use crate::engine::gdext::Object;
 use crate::engine::math::{Rect2, Vector2};
+#[cfg(test)]
+use crate::source_kind::SourceKind;
 use crate::ui::chart_layout::{self, Layout};
 use crate::ui::panel_common::{self, InteractionState, PressZone};
 use crate::ui::tooltip::RowDetail;
@@ -757,7 +759,16 @@ mod tests {
     use crate::ui::ui_model::Section;
 
     fn test_layout() -> Layout {
-        let rows = [test_row(Section::Damage, 0, 0, "STRIKE", 0, 20, 0, [0; 8])];
+        let rows = [test_row(
+            Section::Damage,
+            SourceKind::Card,
+            0,
+            "STRIKE",
+            0,
+            20,
+            0,
+            [0; 8],
+        )];
         chart_layout::build(chart_layout::BuildInput {
             tab: UiTab::Combat,
             rows: &rows,
@@ -839,7 +850,16 @@ mod tests {
 
     #[test]
     fn press_zone_distinguishes_avatar_tab_and_inert() {
-        let rows = [test_row(Section::Damage, 0, 0, "STRIKE", 0, 20, 0, [0; 8])];
+        let rows = [test_row(
+            Section::Damage,
+            SourceKind::Card,
+            0,
+            "STRIKE",
+            0,
+            20,
+            0,
+            [0; 8],
+        )];
         let l = chart_layout::build(chart_layout::BuildInput {
             tab: UiTab::Combat,
             rows: &rows,
@@ -899,7 +919,16 @@ mod tests {
 
     #[test]
     fn content_signature_is_stable_and_sensitive() {
-        let rows = [test_row(Section::Damage, 0, 0, "STRIKE", 0, 20, 0, [0; 8])];
+        let rows = [test_row(
+            Section::Damage,
+            SourceKind::Card,
+            0,
+            "STRIKE",
+            0,
+            20,
+            0,
+            [0; 8],
+        )];
         let meta = UiMeta::default();
         let none = RowDetail::default();
         let base = content_signature(&rows, meta, "footer", &none, UiTab::Combat, None);

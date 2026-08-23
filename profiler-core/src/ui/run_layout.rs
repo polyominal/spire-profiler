@@ -525,6 +525,7 @@ mod tests {
     use super::*;
     use crate::data::run_history::CombatView;
     use crate::data::state::CardStat;
+    use crate::source_kind::SourceKind;
     use crate::test_util::cmd_texts as texts;
     use crate::ui::ui_model;
 
@@ -543,7 +544,7 @@ mod tests {
                 })
                 .collect()
         };
-        let card = |id: &str, kind: u8, plays: u32, dmg: i64, blk: i64| CardStat {
+        let card = |id: &str, kind: SourceKind, plays: u32, dmg: i64, blk: i64| CardStat {
             id: id.to_owned(),
             kind,
             plays,
@@ -563,9 +564,9 @@ mod tests {
             seed: "BETA".to_owned(),
             combats: combats(2),
             rollup: vec![
-                card("STRIKE", 0, 4, 70, 0),
-                card("DEMON_FORM", 2, 1, 35, 0),
-                card("DEFEND", 0, 2, 0, 15),
+                card("STRIKE", SourceKind::Card, 4, 70, 0),
+                card("DEMON_FORM", SourceKind::Power, 1, 35, 0),
+                card("DEFEND", SourceKind::Card, 2, 0, 15),
             ],
             ..RunSummaryView::default()
         }

@@ -23,6 +23,8 @@
 //! commands own their text and the lists respect the command cap.
 
 use crate::engine::object::TextAlign;
+#[cfg(test)]
+use crate::source_kind::SourceKind;
 use crate::ui::palette::{
     COL_CREAM, COL_DIM, COL_GOLD, COL_HEADER_BG, COL_HOVER, COL_ROW_ALT, COL_SELF, COL_TRACK,
     Color, PREFIX_ADVANCE, kind_prefix, kind_prefix_color, slot_color,
@@ -972,7 +974,7 @@ mod tests {
         let rows = [
             test_row(
                 Section::Damage,
-                0,
+                SourceKind::Card,
                 0,
                 "STRIKE",
                 2,
@@ -982,7 +984,7 @@ mod tests {
             ),
             test_row(
                 Section::Defense,
-                0,
+                SourceKind::Card,
                 0,
                 "CRIMSON_MANTLE",
                 1,
@@ -992,7 +994,7 @@ mod tests {
             ),
             test_row(
                 Section::Defense,
-                0,
+                SourceKind::Card,
                 ui_model::ROW_FLAG_SELF,
                 "CRIMSON_MANTLE",
                 1,
@@ -1123,7 +1125,7 @@ mod tests {
         let rows = [
             test_row(
                 Section::Damage,
-                0,
+                SourceKind::Card,
                 0,
                 "STRIKE",
                 2,
@@ -1133,7 +1135,7 @@ mod tests {
             ),
             test_row(
                 Section::Defense,
-                0,
+                SourceKind::Card,
                 ui_model::ROW_FLAG_SELF,
                 "OFFERING",
                 1,
@@ -1169,7 +1171,7 @@ mod tests {
     fn layout_solo_self_row_shows_the_card_name_and_plays() {
         let rows = [test_row(
             Section::Defense,
-            0,
+            SourceKind::Card,
             ui_model::ROW_FLAG_SELF | ui_model::ROW_FLAG_SELF_SOLO,
             "BLOODLETTING",
             3,
@@ -1204,7 +1206,7 @@ mod tests {
     fn layout_run_tab_renders_the_dps_dash_without_turns() {
         let rows = [test_row(
             Section::Damage,
-            0,
+            SourceKind::Card,
             0,
             "STRIKE",
             1,
@@ -1262,7 +1264,7 @@ mod tests {
     fn encounter_line_emits_untruncated_and_clipped() {
         let rows = [test_row(
             Section::Damage,
-            0,
+            SourceKind::Card,
             0,
             "STRIKE",
             1,
@@ -1345,7 +1347,7 @@ mod tests {
     fn title_band_never_renders_a_player_filter_label() {
         let rows = [test_row(
             Section::Damage,
-            0,
+            SourceKind::Card,
             0,
             "STRIKE",
             1,
@@ -1393,7 +1395,7 @@ mod tests {
     fn combat_build(avatars: &[AvatarFact]) -> Layout {
         let rows = [test_row(
             Section::Damage,
-            0,
+            SourceKind::Card,
             0,
             "STRIKE",
             1,
@@ -1482,7 +1484,7 @@ mod tests {
     fn avatar_row_renders_on_the_run_tab_too() {
         let rows = [test_row(
             Section::Damage,
-            0,
+            SourceKind::Card,
             0,
             "STRIKE",
             1,
@@ -1546,7 +1548,7 @@ mod tests {
     fn chrome_less_build_emits_only_the_sections() {
         let rows = [test_row(
             Section::Damage,
-            0,
+            SourceKind::Card,
             0,
             "STRIKE",
             1,
@@ -1605,7 +1607,16 @@ mod tests {
                 Section::Defense
             };
             let name = format!("CARD{i}");
-            *row = test_row(section, 0, 0, &name, 1, 10, 10, [500, 0, 0, 0, 0, 0, 0, 0]);
+            *row = test_row(
+                section,
+                SourceKind::Card,
+                0,
+                &name,
+                1,
+                10,
+                10,
+                [500, 0, 0, 0, 0, 0, 0, 0],
+            );
         }
         let l = build(BuildInput {
             tab: UiTab::Combat,
@@ -1637,7 +1648,7 @@ mod tests {
     fn layout_reflows_to_the_build_width() {
         let rows = [test_row(
             Section::Damage,
-            0,
+            SourceKind::Card,
             0,
             "STRIKE",
             1,
@@ -1681,7 +1692,7 @@ mod tests {
             };
             *row = test_row(
                 section,
-                ui_model::KIND_RELIC,
+                SourceKind::Relic,
                 0,
                 &format!("CARD{i}"),
                 1,
@@ -1801,7 +1812,7 @@ mod tests {
         let rows = [
             test_row(
                 Section::Damage,
-                ui_model::KIND_RELIC,
+                SourceKind::Relic,
                 0,
                 "CRIMSON_MANTLE",
                 1,
@@ -1811,7 +1822,7 @@ mod tests {
             ),
             test_row(
                 Section::Damage,
-                ui_model::KIND_CARD,
+                SourceKind::Card,
                 0,
                 "STRIKE",
                 1,
@@ -1924,7 +1935,7 @@ mod tests {
         let rows = [
             test_row(
                 Section::Damage,
-                0,
+                SourceKind::Card,
                 0,
                 "STRIKE",
                 2,
@@ -1934,7 +1945,7 @@ mod tests {
             ),
             test_row(
                 Section::Damage,
-                1,
+                SourceKind::Relic,
                 0,
                 "SEVER_SOUL",
                 1,
@@ -1944,7 +1955,7 @@ mod tests {
             ),
             test_row(
                 Section::Defense,
-                0,
+                SourceKind::Card,
                 0,
                 "DEFEND",
                 3,
@@ -1954,7 +1965,7 @@ mod tests {
             ),
             test_row(
                 Section::Defense,
-                0,
+                SourceKind::Card,
                 ui_model::ROW_FLAG_SELF,
                 "OFFERING",
                 1,

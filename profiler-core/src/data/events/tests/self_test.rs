@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::data::state::PlayerFilter;
+use crate::source_kind::SourceKind;
 use crate::test_util::scratch_dir;
 use crate::ui::ui_model::{Section, UiRow, UiTab};
 
@@ -26,24 +27,33 @@ fn assert_self_test_combat(combat: &CombatRec, combat_json: &serde_json::Value) 
     assert!(combat_json[0].get("profile").is_none());
     assert!(combat_json[0].get("build").is_none());
     let zap = card_row(combat, "ZAP");
-    assert_eq!((zap.kind, zap.plays, zap.damage_dealt), (0, 1, 3));
+    assert_eq!(
+        (zap.kind, zap.plays, zap.damage_dealt),
+        (SourceKind::Card, 1, 3)
+    );
     let defend = card_row(combat, "DEFEND");
-    assert_eq!((defend.kind, defend.plays, defend.damage_dealt), (0, 1, 0));
+    assert_eq!(
+        (defend.kind, defend.plays, defend.damage_dealt),
+        (SourceKind::Card, 1, 0)
+    );
     assert_eq!((defend.block_gained, defend.block_effective), (5, 5));
     let bash = card_row(combat, "BASH");
-    assert_eq!((bash.kind, bash.plays, bash.damage_dealt), (0, 1, 6));
+    assert_eq!(
+        (bash.kind, bash.plays, bash.damage_dealt),
+        (SourceKind::Card, 1, 6)
+    );
     let cloak = card_row(combat, "CLOAK_AND_DAGGER");
-    assert_eq!((cloak.kind, cloak.plays), (0, 1));
+    assert_eq!((cloak.kind, cloak.plays), (SourceKind::Card, 1));
     let dualcast = card_row(combat, "DUALCAST");
     assert_eq!(
         (dualcast.kind, dualcast.plays, dualcast.damage_dealt),
-        (0, 1, 8)
+        (SourceKind::Card, 1, 8)
     );
     assert_eq!(card_json(combat_json, "DUALCAST")["dmg_direct"], 8);
     let cracked = card_row(combat, "CRACKED_CORE");
     assert_eq!(
         (cracked.kind, cracked.plays, cracked.damage_dealt),
-        (1, 0, 8)
+        (SourceKind::Relic, 0, 8)
     );
     assert_eq!(card_json(combat_json, "CRACKED_CORE")["dmg_attributed"], 8);
     assert_eq!(combat.damage_received, 8);
@@ -51,7 +61,7 @@ fn assert_self_test_combat(combat: &CombatRec, combat_json: &serde_json::Value) 
     assert!(combat.cards.iter().all(|c| c.id != "SHIV"));
     assert_no_key(combat_json, "origin");
     let furnace = card_row(combat, "FURNACE_POWER");
-    assert_eq!((furnace.kind, furnace.plays), (2, 0));
+    assert_eq!((furnace.kind, furnace.plays), (SourceKind::Power, 0));
     assert_eq!(card_json(combat_json, "FURNACE_POWER")["forge"], 2);
 }
 
@@ -103,7 +113,7 @@ fn combat_tab_rows_and_footer_render_generator_and_forge() {
     let mut rows = [UiRow::default(); crate::ui::ui_model::MAX_UI_ROWS];
     let count = crate::ui::snapshot::ui_snapshot_rows(UiTab::Combat, &mut rows);
     assert_eq!(count, 1);
-    assert_eq!(rows[0].kind, 0);
+    assert_eq!(rows[0].kind, SourceKind::Card);
     assert_eq!(rows[0].name_str(), "INFERNAL_BLADE");
     let footer = crate::ui::snapshot::ui_footer_text(UiTab::Combat);
     assert!(footer.contains("forge 2"));
@@ -210,7 +220,7 @@ fn assert_combat_tab_rows() {
         .find(|row| row.name_str() == "GHOST_RELIC");
     let ghost_row = ghost_row.expect("relic generator row");
     assert_eq!(ghost_row.section, Section::Damage);
-    assert_eq!(ghost_row.kind, 1);
+    assert_eq!(ghost_row.kind, SourceKind::Relic);
     assert_eq!(ghost_row.flags, 0);
     assert_eq!(ghost_row.value, 2);
     assert!(!rows[..count].iter().any(|row| row.name_str() == "SHIV"));

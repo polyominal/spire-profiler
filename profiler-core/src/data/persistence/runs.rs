@@ -119,6 +119,7 @@ mod tests {
     use crate::data::persistence::test_support::*;
     use crate::data::records;
     use crate::data::state::RunPlayer;
+    use crate::source_kind::SourceKind;
 
     #[test]
     fn two_players_same_id_cards_round_trip_and_stay_separate() {
@@ -138,7 +139,7 @@ mod tests {
         c.cards = vec![
             CardStat {
                 id: "STRIKE".to_owned(),
-                kind: 0,
+                kind: SourceKind::Card,
                 player: 0,
                 plays: 2,
                 damage_dealt: 20,
@@ -146,7 +147,7 @@ mod tests {
             },
             CardStat {
                 id: "STRIKE".to_owned(),
-                kind: 0,
+                kind: SourceKind::Card,
                 player: 1,
                 plays: 1,
                 damage_dealt: 9,
@@ -236,12 +237,12 @@ mod tests {
             assert_eq!(st.run_cards.len(), 2);
             let omni = &st.run_cards[0];
             assert_eq!(omni.id, "OMNI_CARD");
-            assert_eq!(omni.kind, 0);
+            assert_eq!(omni.kind, SourceKind::Card);
             assert_eq!(omni.plays, 8); // 4 + 4 across two combats
             assert_eq!(omni.damage_dealt, 42); // 21 + 21
             let anchor = &st.run_cards[1];
             assert_eq!(anchor.id, "ANCHOR");
-            assert_eq!(anchor.kind, 1);
+            assert_eq!(anchor.kind, SourceKind::Relic);
             assert_eq!(anchor.block_gained, 20); // 10 + 10
         });
     }

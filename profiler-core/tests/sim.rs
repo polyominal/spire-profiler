@@ -135,13 +135,9 @@ fn check_combat_totals(combat: &state::Combat, step: u32) {
 }
 
 fn check_card_invariants(combat: &state::Combat, step: u32) {
-    let mut seen: std::collections::HashSet<(u8, &str, u8)> = std::collections::HashSet::new();
+    let mut seen: std::collections::HashSet<(u8, &str, SourceKind)> =
+        std::collections::HashSet::new();
     for card in &combat.cards {
-        assert!(
-            card.kind <= 4,
-            "step {step}: card {id}: stored kind must stay within SourceKind",
-            id = card.id
-        );
         // Rows key on (player, id, kind); the key must be unique.
         assert!(
             card.player <= state::TEAM_SLOT,

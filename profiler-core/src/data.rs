@@ -10,7 +10,7 @@
 //!
 //! # The attribution model
 //!
-//! Every ledger row carries a [`state::SourceKind`] (also the stored
+//! Every ledger row carries a [`crate::source_kind::SourceKind`] (also the stored
 //! `kind: u8`):
 //!
 //! | discriminant | kind   | entries                              |
@@ -21,10 +21,11 @@
 //! | 3            | Potion | potion usage                         |
 //! | 4            | Osty   | the multiplayer boss's own entries   |
 //!
-//! [`state::SourceKind::from_c`] clamps an unchecked C `c_int` to
-//! card/relic/power (the shim only sends catalogued kinds for contexts),
-//! while [`ledger::source_kind_from_u8`] round-trips all five stored bytes
-//! so potion/osty survive the JSON. Rows carry `(slot, id, kind)` but the
+//! [`crate::source_kind::SourceKind::from_c`] clamps an unchecked C `c_int`
+//! to card/relic/power (the shim only sends catalogued kinds for contexts),
+//! while serde's numeric representation (`From<u8>`/`Into<u8>`) round-trips
+//! all five stored bytes so potion/osty survive the JSON. Rows carry
+//! `(slot, id, kind)` but the
 //! ledger's lookups key `(slot, id)` — an id is unique per slot, so two
 //! players' same-id cards stay separate rows; the slot vocabulary is the
 //! player-slot model in [`state`].

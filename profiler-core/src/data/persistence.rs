@@ -129,6 +129,7 @@ pub(crate) mod test_support {
     // re-pointing, the synthetic combat, and the store-file helper every
     // suite reuses, so each suite's `tests` module stays small.
     use crate::data::state::{CardStat, Combat, RunPlayer, STATE};
+    use crate::source_kind::SourceKind;
     pub(crate) use crate::test_util::temp_dir;
 
     /// Points the test process's STATE at `data` (creating it), with the
@@ -172,7 +173,7 @@ pub(crate) mod test_support {
             cards: vec![
                 CardStat {
                     id: "OMNI_CARD".to_owned(),
-                    kind: 0,
+                    kind: SourceKind::Card,
                     player: 0,
                     plays: 4,
                     damage_dealt: 21,
@@ -193,7 +194,7 @@ pub(crate) mod test_support {
                 },
                 CardStat {
                     id: "ANCHOR".to_owned(),
-                    kind: 1,
+                    kind: SourceKind::Relic,
                     block_gained: 10,
                     ..CardStat::default()
                 },

@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::data::state::{OUTCOME_VICTORY, RunContext, RunPlayer};
+use crate::source_kind::SourceKind;
 
 fn run_context() -> RunContext {
     RunContext {
@@ -66,7 +67,7 @@ fn parse_combat_doc_ignores_unknown_fields_and_fills_defaults() {
     assert_eq!(run.game_mode, "gm");
     assert_eq!(c.cards.len(), 2);
     assert_eq!(c.cards[0].id, "C1");
-    assert_eq!(c.cards[0].kind, 2);
+    assert_eq!(c.cards[0].kind, SourceKind::Power);
     assert_eq!(c.cards[0].plays, 1);
     assert_eq!(c.cards[0].damage_dealt, 5);
     assert_eq!(c.cards[0].forge, 1);

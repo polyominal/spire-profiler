@@ -1,7 +1,6 @@
 //! Combat lifecycle and attribution: the turn boundary, the block pool, and
 //! every damage/block credit, including the Osty defensive stack.
 
-use super::kind_name;
 use super::power::apply_str_mitigation_in;
 use crate::data::ledger;
 use crate::data::ledger::AsyncFallback;
@@ -82,7 +81,7 @@ pub fn osty_summoned(source_id: &str, source_kind: i32, hp_amount: i32, player_s
             };
             Some((
                 combat.cards[index].id.clone(),
-                ledger::source_kind_from_u8(combat.cards[index].kind),
+                combat.cards[index].kind,
                 row_slot,
             ))
         } else {
@@ -99,7 +98,7 @@ pub fn osty_summoned(source_id: &str, source_kind: i32, hp_amount: i32, player_s
         });
         vec![format!(
             "  osty summoned: +{hp_amount} hp from '{entry_id}' ({})\n",
-            kind_name(entry_kind)
+            entry_kind.name()
         )]
     });
     for line in log_lines {
@@ -577,7 +576,7 @@ pub fn block_gained(amount: i32, card_id: &str, player_slot: i32, source_slot: i
             if slot_state.pending_upgrade_blk > 0 && base > 0 && is_own_gain {
                 let split = slot_state.pending_upgrade_blk.min(base);
                 base -= split;
-                let kind = ledger::source_kind_from_u8(slot_state.pending_upgrade_kind);
+                let kind = slot_state.pending_upgrade_kind;
                 let source_id = slot_state.pending_upgrade_source.clone();
                 // The upgrader's row keys at the slot recorded when the
                 // upgrade happened, not the playing slot.
@@ -601,14 +600,7 @@ pub fn block_gained(amount: i32, card_id: &str, player_slot: i32, source_slot: i
         // The chunk remembers the SOURCE's row slot: the pool is the
         // receiver's (per-slot), but an ally block credits the owner's row
         // when consumed.
-        ledger::block_pool_push_in(
-            state,
-            &id,
-            ledger::source_kind_from_u8(kind),
-            base,
-            player_slot,
-            row_slot as i32,
-        );
+        ledger::block_pool_push_in(state, &id, kind, base, player_slot, row_slot as i32);
         logs.push(format!("  block +{amount} attributed to '{id}'\n"));
         logs
     });

@@ -2,6 +2,7 @@
 //! results.
 
 use super::*;
+use crate::source_kind::SourceKind;
 use crate::test_util::scratch_dir;
 
 fn seed_data(data: &std::path::Path, runs_text: &str, combats_text: &str) {
@@ -194,7 +195,7 @@ fn select_by_seed_assembles_the_full_view() {
 
     assert_eq!(view.rollup.len(), 3);
     assert_eq!(view.rollup[0].id, "STRIKE");
-    assert_eq!(view.rollup[0].kind, 0);
+    assert_eq!(view.rollup[0].kind, SourceKind::Card);
     assert_eq!(view.rollup[0].damage_dealt, 70);
     assert_eq!(view.rollup[0].plays, 4);
     assert_eq!(view.rollup[0].dmg_direct, 50);
@@ -522,14 +523,15 @@ fn rollup_keys_on_id_and_kind_and_teams_merge() {
     let RunSelection::Selected(view) = select_run("K", 1_786_579_200, 2) else {
         panic!("K must match");
     };
-    let ids: Vec<(String, u8)> = view.rollup.iter().map(|r| (r.id.clone(), r.kind)).collect();
+    let ids: Vec<(String, SourceKind)> =
+        view.rollup.iter().map(|r| (r.id.clone(), r.kind)).collect();
     assert_eq!(
         ids,
         vec![
-            ("DUPE".to_owned(), 0),
-            ("ZERO_A".to_owned(), 0),
-            ("DUPE".to_owned(), 2),
-            ("ZERO_B".to_owned(), 1),
+            ("DUPE".to_owned(), SourceKind::Card),
+            ("ZERO_A".to_owned(), SourceKind::Card),
+            ("DUPE".to_owned(), SourceKind::Power),
+            ("ZERO_B".to_owned(), SourceKind::Relic),
         ]
     );
     assert_eq!(view.rollup[0].plays, 3);
@@ -581,7 +583,7 @@ fn view_fingerprint_tracks_every_view_field() {
         rollup: vec![
             CardStat {
                 id: "STRIKE".to_owned(),
-                kind: 0,
+                kind: SourceKind::Card,
                 player: TEAM_SLOT,
                 plays: 4,
                 damage_dealt: 70,
@@ -589,7 +591,7 @@ fn view_fingerprint_tracks_every_view_field() {
             },
             CardStat {
                 id: "DEMON_FORM".to_owned(),
-                kind: 2,
+                kind: SourceKind::Power,
                 player: TEAM_SLOT,
                 plays: 1,
                 damage_dealt: 35,

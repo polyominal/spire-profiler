@@ -6,6 +6,7 @@
 use std::path::PathBuf;
 
 use crate::engine::object::TextAlign;
+use crate::source_kind::SourceKind;
 use crate::ui::chart_layout::Cmd;
 use crate::ui::theme::ContentBox;
 use crate::ui::ui_model::{Section, UiRow};
@@ -36,7 +37,7 @@ pub fn temp_dir(label: &str) -> PathBuf {
 #[allow(clippy::too_many_arguments)] // fixture: the args mirror UiRow's flat field shape
 pub fn test_row(
     section: Section,
-    kind: u8,
+    kind: SourceKind,
     flags: u8,
     name: &str,
     plays: u32,

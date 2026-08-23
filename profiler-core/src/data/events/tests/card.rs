@@ -3,6 +3,7 @@
 //! in-combat upgrades.
 
 use super::*;
+use crate::source_kind::SourceKind;
 use crate::test_util::scratch_dir;
 
 #[test]
@@ -36,10 +37,13 @@ fn deck_and_generated_copies_of_the_same_card_credit_differently() {
     let pillage = card_row(&combat, "PILLAGE");
     assert_eq!(
         (pillage.kind, pillage.plays, pillage.damage_dealt),
-        (0, 1, 6)
+        (SourceKind::Card, 1, 6)
     );
     let blade = card_row(&combat, "INFERNAL_BLADE");
-    assert_eq!((blade.kind, blade.plays, blade.damage_dealt), (0, 1, 6));
+    assert_eq!(
+        (blade.kind, blade.plays, blade.damage_dealt),
+        (SourceKind::Card, 1, 6)
+    );
     assert_no_key(&doc, "origin");
 }
 
@@ -67,7 +71,10 @@ fn generated_card_damage_credits_the_generator() {
     let (combat, _) = read_combat(&base);
     assert_no_card(&combat, "PILLAGE");
     let blade = card_row(&combat, "INFERNAL_BLADE");
-    assert_eq!((blade.kind, blade.plays, blade.damage_dealt), (0, 1, 9));
+    assert_eq!(
+        (blade.kind, blade.plays, blade.damage_dealt),
+        (SourceKind::Card, 1, 9)
+    );
     let (plays, generated_plays, _) = current_play_counters();
     assert_eq!((plays, generated_plays), (2, 1));
 }
@@ -124,10 +131,13 @@ fn plays_count_the_sources_own_triggers_only() {
     // 1 own play; 25 own + 12 generated damage; EV per trigger = 37/1.
     assert_eq!(
         (jackpot.kind, jackpot.plays, jackpot.damage_dealt),
-        (0, 1, 37)
+        (SourceKind::Card, 1, 37)
     );
     let ninja = card_row(&combat, "NINJA_SCROLL");
-    assert_eq!((ninja.kind, ninja.plays, ninja.damage_dealt), (1, 2, 4));
+    assert_eq!(
+        (ninja.kind, ninja.plays, ninja.damage_dealt),
+        (SourceKind::Relic, 2, 4)
+    );
     // The conservation identity: 5 real plays + 2 generation triggers equal
     // Σ row plays (1 + 2) + 4.
     let (plays, generated_plays, generation_triggers) = current_play_counters();
@@ -164,7 +174,7 @@ fn generated_card_block_credits_the_generator() {
             blade.damage_dealt - blade.damage_blocked,
             blade.block_gained,
         ),
-        (0, 1, 0, 0, 0, 5)
+        (SourceKind::Card, 1, 0, 0, 0, 5)
     );
 }
 
@@ -190,7 +200,10 @@ fn deck_card_own_id_as_explicit_source_is_a_no_op() {
 
     let (combat, _) = read_combat(&base);
     let wave = card_row(&combat, "IRON_WAVE");
-    assert_eq!((wave.kind, wave.plays, wave.damage_dealt), (0, 1, 5));
+    assert_eq!(
+        (wave.kind, wave.plays, wave.damage_dealt),
+        (SourceKind::Card, 1, 5)
+    );
     assert_eq!(wave.block_gained, 5);
 }
 
@@ -214,11 +227,14 @@ fn unrelated_explicit_source_beats_the_play_source() {
 
     let (combat, _) = read_combat(&base);
     let strike = card_row(&combat, "STRIKE");
-    assert_eq!((strike.kind, strike.plays, strike.damage_dealt), (0, 1, 0));
+    assert_eq!(
+        (strike.kind, strike.plays, strike.damage_dealt),
+        (SourceKind::Card, 1, 0)
+    );
     let mercury = card_row(&combat, "MERCURY_HOURGLASS");
     assert_eq!(
         (mercury.kind, mercury.plays, mercury.damage_dealt),
-        (0, 0, 4)
+        (SourceKind::Card, 0, 4)
     );
 }
 
@@ -363,10 +379,13 @@ fn upgrade_split_skips_other_sources_damage() {
     let mercury = card_row(&combat, "MERCURY_HOURGLASS");
     assert_eq!(
         (mercury.kind, mercury.plays, mercury.damage_dealt),
-        (0, 0, 4)
+        (SourceKind::Card, 0, 4)
     );
     let bash = card_row(&combat, "BASH");
-    assert_eq!((bash.kind, bash.plays, bash.damage_dealt), (0, 1, 7));
+    assert_eq!(
+        (bash.kind, bash.plays, bash.damage_dealt),
+        (SourceKind::Card, 1, 7)
+    );
     assert_eq!(card_json(&doc, "ARMAMENTS")["dmg_upgrade"], 3);
 }
 
@@ -389,10 +408,10 @@ fn upgrade_split_skips_proc_block() {
 
     let (combat, doc) = read_combat(&base);
     let shrug = card_row(&combat, "SHRUG_IT_OFF");
-    assert_eq!((shrug.kind, shrug.plays), (0, 1));
+    assert_eq!((shrug.kind, shrug.plays), (SourceKind::Card, 1));
     assert_eq!(shrug.block_gained, 10);
     let armaments = card_row(&combat, "ARMAMENTS");
-    assert_eq!((armaments.kind, armaments.plays), (0, 1));
+    assert_eq!((armaments.kind, armaments.plays), (SourceKind::Card, 1));
     assert_eq!(armaments.block_gained, 3);
     assert_eq!(card_json(&doc, "ARMAMENTS")["blk_upgrade"], 3);
 }
@@ -417,10 +436,10 @@ fn upgrade_block_bonus_credits_once_per_play() {
 
     let (combat, doc) = read_combat(&base);
     let shrug = card_row(&combat, "SHRUG_IT_OFF");
-    assert_eq!((shrug.kind, shrug.plays), (0, 1));
+    assert_eq!((shrug.kind, shrug.plays), (SourceKind::Card, 1));
     assert_eq!(shrug.block_gained, 12);
     let armaments = card_row(&combat, "ARMAMENTS");
-    assert_eq!((armaments.kind, armaments.plays), (0, 1));
+    assert_eq!((armaments.kind, armaments.plays), (SourceKind::Card, 1));
     assert_eq!(armaments.block_gained, 3);
     assert_eq!(card_json(&doc, "ARMAMENTS")["blk_upgrade"], 3);
 }
@@ -459,7 +478,7 @@ fn nested_generation_chain_collapses_to_the_root_generator() {
             distraction.plays,
             distraction.damage_dealt
         ),
-        (0, 1, 4)
+        (SourceKind::Card, 1, 4)
     );
     let (plays, generated_plays, _) = current_play_counters();
     assert_eq!((plays, generated_plays), (3, 2));
@@ -497,7 +516,10 @@ fn relic_hook_generation_beats_the_ambient_play() {
 
     let (combat, _) = read_combat(&base);
     let ninja = card_row(&combat, "NINJA_SCROLL");
-    assert_eq!((ninja.kind, ninja.plays, ninja.damage_dealt), (1, 1, 4));
+    assert_eq!(
+        (ninja.kind, ninja.plays, ninja.damage_dealt),
+        (SourceKind::Relic, 1, 4)
+    );
     assert_eq!(current_play_counters().2, 1);
     let distraction = card_row(&combat, "DISTRACTION");
     assert_eq!(
@@ -506,7 +528,7 @@ fn relic_hook_generation_beats_the_ambient_play() {
             distraction.plays,
             distraction.damage_dealt
         ),
-        (0, 1, 0)
+        (SourceKind::Card, 1, 0)
     );
     assert_no_card(&combat, "SHIV");
 }
@@ -534,7 +556,10 @@ fn potion_generated_card_credits_the_potion_kind() {
 
     let (combat, _) = read_combat(&base);
     let potion = card_row(&combat, "ATTACK_POTION");
-    assert_eq!((potion.kind, potion.plays, potion.damage_dealt), (3, 1, 6));
+    assert_eq!(
+        (potion.kind, potion.plays, potion.damage_dealt),
+        (SourceKind::Potion, 1, 6)
+    );
     assert_no_card(&combat, "PILLAGE");
 }
 
@@ -556,7 +581,10 @@ fn unplayed_generated_instances_contribute_nothing() {
     let (combat, _) = read_combat(&base);
     assert_eq!(combat.cards.len(), 1);
     let cloak = card_row(&combat, "CLOAK_AND_DAGGER");
-    assert_eq!((cloak.kind, cloak.plays, cloak.damage_dealt), (0, 1, 0));
+    assert_eq!(
+        (cloak.kind, cloak.plays, cloak.damage_dealt),
+        (SourceKind::Card, 1, 0)
+    );
     assert_eq!(cloak.block_gained, 6);
 }
 
@@ -597,9 +625,15 @@ fn interleaved_plays_keep_per_slot_play_stacks() {
 
     let (combat, _) = read_combat(&base);
     let strike = card_row(&combat, "STRIKE");
-    assert_eq!((strike.kind, strike.plays, strike.damage_dealt), (0, 1, 6));
+    assert_eq!(
+        (strike.kind, strike.plays, strike.damage_dealt),
+        (SourceKind::Card, 1, 6)
+    );
     let bash = card_row(&combat, "BASH");
-    assert_eq!((bash.kind, bash.plays, bash.damage_dealt), (0, 1, 10));
+    assert_eq!(
+        (bash.kind, bash.plays, bash.damage_dealt),
+        (SourceKind::Card, 1, 10)
+    );
 }
 
 /// P1 and P2 each play STRIKE: two rows, keyed (slot, id), never merged.

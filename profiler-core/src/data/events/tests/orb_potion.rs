@@ -3,9 +3,11 @@
 
 use super::*;
 use crate::data::state::OrbSource;
+use crate::source_kind::SourceKind;
 use crate::test_util::scratch_dir;
 
 #[test]
+#[allow(clippy::too_many_lines)] // a scripted end-to-end event sequence
 fn flex_potion_strength_attributes_to_the_potion_and_expires_fifo() {
     let base = scratch_dir("spire-profiler-test-flexpotion");
     test_reset();
@@ -65,10 +67,10 @@ fn flex_potion_strength_attributes_to_the_potion_and_expires_fifo() {
 
     let (combat, doc) = read_combat(&base);
     let potion = card_row(&combat, "FLEX_POTION");
-    assert_eq!(potion.kind, 3);
+    assert_eq!(potion.kind, SourceKind::Potion);
     assert_eq!(card_json(&doc, "FLEX_POTION")["dmg_modifier"], 20);
     let inflame = card_row(&combat, "INFLAME");
-    assert_eq!(inflame.kind, 0);
+    assert_eq!(inflame.kind, SourceKind::Card);
     assert_eq!(card_json(&doc, "INFLAME")["dmg_modifier"], 2);
     assert_eq!(
         STATE.with(|cell| cell
@@ -80,7 +82,10 @@ fn flex_potion_strength_attributes_to_the_potion_and_expires_fifo() {
         1
     );
     let strike = card_row(&combat, "STRIKE");
-    assert_eq!((strike.kind, strike.plays, strike.damage_dealt), (0, 2, 30));
+    assert_eq!(
+        (strike.kind, strike.plays, strike.damage_dealt),
+        (SourceKind::Card, 2, 30)
+    );
 }
 
 #[test]
@@ -141,10 +146,16 @@ fn potion_use_clears_a_live_orb_fallback() {
 
     let (combat, doc) = read_combat(&base);
     let fire = card_row(&combat, "FIRE_POTION");
-    assert_eq!((fire.kind, fire.plays, fire.damage_dealt), (3, 0, 20));
+    assert_eq!(
+        (fire.kind, fire.plays, fire.damage_dealt),
+        (SourceKind::Potion, 0, 20)
+    );
     assert_eq!(card_json(&doc, "FIRE_POTION")["dmg_direct"], 20);
     let zap = card_row(&combat, "ZAP");
-    assert_eq!((zap.kind, zap.plays, zap.damage_dealt), (0, 1, 3));
+    assert_eq!(
+        (zap.kind, zap.plays, zap.damage_dealt),
+        (SourceKind::Card, 1, 3)
+    );
     assert_eq!(card_json(&doc, "ZAP")["dmg_attributed"], 3);
 }
 
@@ -181,7 +192,13 @@ fn potion_fallbacks_do_not_capture_across_slots() {
 
     let (combat, _) = read_combat(&base);
     let strike = card_row(&combat, "STRIKE");
-    assert_eq!((strike.kind, strike.plays, strike.damage_dealt), (0, 1, 6));
+    assert_eq!(
+        (strike.kind, strike.plays, strike.damage_dealt),
+        (SourceKind::Card, 1, 6)
+    );
     let fire = card_row(&combat, "FIRE_POTION");
-    assert_eq!((fire.kind, fire.plays, fire.damage_dealt), (3, 0, 20));
+    assert_eq!(
+        (fire.kind, fire.plays, fire.damage_dealt),
+        (SourceKind::Potion, 0, 20)
+    );
 }

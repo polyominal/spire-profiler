@@ -3,6 +3,8 @@
 //! are the layout contract: the segment slots, the name buffers, and the
 //! per-mille bar widths are indexed by position.
 
+use crate::source_kind::SourceKind;
+
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum UiTab {
@@ -41,12 +43,6 @@ pub const SEG_MITIGATE_BUFF: usize = 5; // Buffer/Intangible prevention
 pub const SEG_MITIGATE_STR: usize = 6; // enemy Strength reduction
 pub const SEG_SELF: usize = 7;
 
-pub const KIND_CARD: u8 = 0;
-pub const KIND_RELIC: u8 = 1;
-pub const KIND_POWER: u8 = 2;
-pub const KIND_POTION: u8 = 3;
-pub const KIND_OSTY: u8 = 4;
-
 pub const ROW_FLAG_SELF: u8 = 2;
 /// The source has self damage but no positive defense to split off.
 pub const ROW_FLAG_SELF_SOLO: u8 = 4;
@@ -59,7 +55,7 @@ pub const MAX_UI_ROWS: usize = 256;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct UiRow {
     pub section: Section,
-    pub kind: u8,
+    pub kind: SourceKind,
     /// TEAM (4) marks ownerless rows.
     pub player: u8,
     pub flags: u8,
@@ -77,7 +73,7 @@ impl Default for UiRow {
     fn default() -> Self {
         UiRow {
             section: Section::Damage,
-            kind: 0,
+            kind: SourceKind::Card,
             player: 0,
             flags: 0,
             name_len: 0,

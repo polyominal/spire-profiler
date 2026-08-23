@@ -7,6 +7,7 @@
 
 use crate::engine::math::Vector2;
 use crate::engine::object::TextAlign;
+use crate::source_kind::SourceKind;
 use crate::ui::chart_layout::{self, Cmd, RectCmd, TextCmd};
 use crate::ui::theme::{self, TextRole};
 use crate::ui::ui_model::{self, Section};
@@ -65,10 +66,10 @@ pub(crate) const COL_PANEL_BORDER: Color = [0.30, 0.40, 0.70, 0.60];
 // viewer.
 
 /// Section-tinted, not kind-tinted; Osty's absorb shares its `[O] ` hue.
-pub fn slot_color(slot: usize, section: Section, kind: u8) -> Color {
+pub fn slot_color(slot: usize, section: Section, kind: SourceKind) -> Color {
     match slot {
         ui_model::SEG_DIRECT => match section {
-            Section::Defense if kind == ui_model::KIND_OSTY => COL_OSTY,
+            Section::Defense if kind == SourceKind::Osty => COL_OSTY,
             Section::Defense => COL_BLOCK,
             Section::Damage => COL_DMG_DIRECT,
         },
@@ -83,23 +84,23 @@ pub fn slot_color(slot: usize, section: Section, kind: u8) -> Color {
     }
 }
 
-pub(crate) fn kind_prefix(kind: u8) -> &'static str {
+pub(crate) fn kind_prefix(kind: SourceKind) -> &'static str {
     match kind {
-        ui_model::KIND_RELIC => "[R] ",
-        ui_model::KIND_POTION => "[P] ",
-        ui_model::KIND_OSTY => "[O] ",
-        _ => "",
+        SourceKind::Relic => "[R] ",
+        SourceKind::Potion => "[P] ",
+        SourceKind::Osty => "[O] ",
+        SourceKind::Card | SourceKind::Power => "",
     }
 }
 
 /// The same-hue collisions across the two channels are deliberate: one hue
 /// reads as one vocabulary.
-pub(crate) fn kind_prefix_color(kind: u8) -> Option<Color> {
+pub(crate) fn kind_prefix_color(kind: SourceKind) -> Option<Color> {
     match kind {
-        ui_model::KIND_RELIC => Some(COL_GOLD),
-        ui_model::KIND_POTION => Some(COL_MITIGATE_STR),
-        ui_model::KIND_OSTY => Some(COL_OSTY),
-        _ => None,
+        SourceKind::Relic => Some(COL_GOLD),
+        SourceKind::Potion => Some(COL_MITIGATE_STR),
+        SourceKind::Osty => Some(COL_OSTY),
+        SourceKind::Card | SourceKind::Power => None,
     }
 }
 
@@ -155,7 +156,7 @@ pub(crate) struct LegendEntry {
     label: &'static str,
     slot: usize,
     section: Section,
-    kind: u8,
+    kind: SourceKind,
 }
 
 /// One entry per distinct bar color, damage family first. Kind markers
@@ -165,61 +166,61 @@ pub(crate) const LEGEND_ENTRIES: &[LegendEntry] = &[
         label: "direct",
         slot: ui_model::SEG_DIRECT,
         section: Section::Damage,
-        kind: ui_model::KIND_CARD,
+        kind: SourceKind::Card,
     },
     LegendEntry {
         label: "indirect",
         slot: ui_model::SEG_ATTRIBUTED,
         section: Section::Damage,
-        kind: ui_model::KIND_CARD,
+        kind: SourceKind::Card,
     },
     LegendEntry {
         label: "modifier",
         slot: ui_model::SEG_MODIFIER,
         section: Section::Damage,
-        kind: ui_model::KIND_CARD,
+        kind: SourceKind::Card,
     },
     LegendEntry {
         label: "upgrade",
         slot: ui_model::SEG_UPGRADE,
         section: Section::Damage,
-        kind: ui_model::KIND_CARD,
+        kind: SourceKind::Card,
     },
     LegendEntry {
         label: "block",
         slot: ui_model::SEG_DIRECT,
         section: Section::Defense,
-        kind: ui_model::KIND_CARD,
+        kind: SourceKind::Card,
     },
     LegendEntry {
         label: "osty",
         slot: ui_model::SEG_DIRECT,
         section: Section::Defense,
-        kind: ui_model::KIND_OSTY,
+        kind: SourceKind::Osty,
     },
     LegendEntry {
         label: "weak",
         slot: ui_model::SEG_MITIGATE_DEBUFF,
         section: Section::Defense,
-        kind: ui_model::KIND_CARD,
+        kind: SourceKind::Card,
     },
     LegendEntry {
         label: "buff",
         slot: ui_model::SEG_MITIGATE_BUFF,
         section: Section::Defense,
-        kind: ui_model::KIND_CARD,
+        kind: SourceKind::Card,
     },
     LegendEntry {
         label: "str down",
         slot: ui_model::SEG_MITIGATE_STR,
         section: Section::Defense,
-        kind: ui_model::KIND_CARD,
+        kind: SourceKind::Card,
     },
     LegendEntry {
         label: "self dmg",
         slot: ui_model::SEG_SELF,
         section: Section::Defense,
-        kind: ui_model::KIND_CARD,
+        kind: SourceKind::Card,
     },
 ];
 
@@ -263,19 +264,13 @@ mod tests {
 
     #[test]
     fn slot_color_maps_the_section_families() {
-        for kind in [
-            ui_model::KIND_CARD,
-            ui_model::KIND_RELIC,
-            ui_model::KIND_POWER,
-            ui_model::KIND_POTION,
-            ui_model::KIND_OSTY,
-        ] {
+        for kind in SourceKind::ALL {
             assert_eq!(
                 slot_color(ui_model::SEG_DIRECT, Section::Damage, kind),
                 COL_DMG_DIRECT,
-                "kind {kind}"
+                "kind {kind:?}"
             );
-            let expect = if kind == ui_model::KIND_OSTY {
+            let expect = if kind == SourceKind::Osty {
                 COL_OSTY
             } else {
                 COL_BLOCK
@@ -283,47 +278,59 @@ mod tests {
             assert_eq!(
                 slot_color(ui_model::SEG_DIRECT, Section::Defense, kind),
                 expect,
-                "kind {kind}"
+                "kind {kind:?}"
             );
         }
         assert_eq!(
-            slot_color(ui_model::SEG_ATTRIBUTED, Section::Damage, 0),
+            slot_color(ui_model::SEG_ATTRIBUTED, Section::Damage, SourceKind::Card),
             COL_ATTRIBUTED
         );
         assert_eq!(
-            slot_color(ui_model::SEG_MODIFIER, Section::Defense, 0),
+            slot_color(ui_model::SEG_MODIFIER, Section::Defense, SourceKind::Card),
             COL_MODIFIER
         );
         assert_eq!(
-            slot_color(ui_model::SEG_UPGRADE, Section::Damage, 0),
+            slot_color(ui_model::SEG_UPGRADE, Section::Damage, SourceKind::Card),
             COL_GOLD,
             "the upgrade segment IS the game's gold accent"
         );
         assert_eq!(
-            slot_color(ui_model::SEG_MITIGATE_DEBUFF, Section::Defense, 0),
+            slot_color(
+                ui_model::SEG_MITIGATE_DEBUFF,
+                Section::Defense,
+                SourceKind::Card
+            ),
             COL_MITIGATE_DEBUFF
         );
         assert_eq!(
-            slot_color(ui_model::SEG_MITIGATE_BUFF, Section::Defense, 0),
+            slot_color(
+                ui_model::SEG_MITIGATE_BUFF,
+                Section::Defense,
+                SourceKind::Card
+            ),
             COL_MITIGATE_BUFF
         );
         assert_eq!(
-            slot_color(ui_model::SEG_MITIGATE_STR, Section::Defense, 0),
+            slot_color(
+                ui_model::SEG_MITIGATE_STR,
+                Section::Defense,
+                SourceKind::Card
+            ),
             COL_MITIGATE_STR
         );
         assert_eq!(
-            slot_color(ui_model::SEG_SELF, Section::Defense, 0),
+            slot_color(ui_model::SEG_SELF, Section::Defense, SourceKind::Card),
             COL_SELF
         );
     }
 
     #[test]
     fn kind_prefix_and_its_color_cover_the_same_kinds() {
-        for kind in 0..=u8::MAX {
+        for kind in SourceKind::ALL {
             assert_eq!(
                 kind_prefix(kind).is_empty(),
                 kind_prefix_color(kind).is_none(),
-                "kind {kind}"
+                "kind {kind:?}"
             );
         }
     }

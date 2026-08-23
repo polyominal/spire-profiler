@@ -687,7 +687,7 @@ fn record_str_reduction_in(
     state.str_reductions.push(StrReduction {
         creature_hash,
         source_id: card_id.clone(),
-        kind: ledger::source_kind_from_u8(card_kind),
+        kind: card_kind,
         player: row_slot,
         amount,
     });
