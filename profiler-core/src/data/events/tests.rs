@@ -13,12 +13,12 @@ mod power;
 mod run;
 mod self_test;
 
-fn read_test_file(base: &str, name: &str) -> String {
-    std::fs::read_to_string(format!("{base}/{name}")).expect("test file missing")
+fn read_test_file(base: &Path, name: &str) -> String {
+    std::fs::read_to_string(base.join(name)).expect("test file missing")
 }
 
-fn read_all_combats(base: &str) -> Vec<(CombatRec, serde_json::Value)> {
-    let runs_dir = std::path::Path::new(base).join("runs");
+fn read_all_combats(base: &Path) -> Vec<(CombatRec, serde_json::Value)> {
+    let runs_dir = base.join("runs");
     let mut ids: Vec<(u32, u32)> = Vec::new(); // (run id, combat id)
     for run in std::fs::read_dir(&runs_dir)
         .expect("runs dir exists")
@@ -63,7 +63,7 @@ fn read_all_combats(base: &str) -> Vec<(CombatRec, serde_json::Value)> {
         .collect()
 }
 
-fn read_all_runs(base: &str) -> Vec<serde_json::Value> {
+fn read_all_runs(base: &Path) -> Vec<serde_json::Value> {
     let text = read_test_file(base, "runs.jsonl");
     text.lines()
         .filter(|line| !line.trim().is_empty())
@@ -71,7 +71,7 @@ fn read_all_runs(base: &str) -> Vec<serde_json::Value> {
         .collect()
 }
 
-fn read_combat(base: &str) -> (CombatRec, serde_json::Value) {
+fn read_combat(base: &Path) -> (CombatRec, serde_json::Value) {
     let mut all = read_all_combats(base);
     assert_eq!(all.len(), 1, "exactly one combat record");
     let (combat, doc) = all.remove(0);

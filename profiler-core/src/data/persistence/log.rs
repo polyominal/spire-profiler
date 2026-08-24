@@ -1,6 +1,7 @@
 //! The process-lifetime `profiler.log` handle: one held file instead of an
 //! open+stat+write+close per game event.
 
+use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -11,7 +12,7 @@ use crate::fail;
 /// opened lazily and reused. A broken directory logs only once.
 struct LogSink {
     path: PathBuf,
-    file: Option<std::fs::File>,
+    file: Option<fs::File>,
     open_failure_logged: bool,
 }
 
@@ -45,7 +46,7 @@ pub fn append_log(line: String) {
             return;
         }
         // No held handle yet: one-shot open+write, kept on success.
-        match std::fs::OpenOptions::new()
+        match fs::OpenOptions::new()
             .append(true)
             .create(true)
             .open(&sink.path)
@@ -76,11 +77,11 @@ mod tests {
     fn append_log_appends_lines() {
         let dir = temp_dir("append-log");
         let data = dir.join("data");
-        std::fs::create_dir_all(&data).unwrap();
+        fs::create_dir_all(&data).unwrap();
         init_state(&data);
         append_log("first\n".to_owned());
         append_log("second\n".to_owned());
-        let content = std::fs::read_to_string(data.join("profiler.log")).unwrap();
+        let content = fs::read_to_string(data.join("profiler.log")).unwrap();
         assert_eq!(content, "first\nsecond\n");
     }
 
@@ -91,13 +92,13 @@ mod tests {
         // appending to the renamed inode.
         let dir = temp_dir("append-hold");
         let data = dir.join("data");
-        std::fs::create_dir_all(&data).unwrap();
+        fs::create_dir_all(&data).unwrap();
         init_state(&data);
         append_log("first\n".to_owned());
-        std::fs::rename(data.join("profiler.log"), data.join("profiler.log.moved")).unwrap();
+        fs::rename(data.join("profiler.log"), data.join("profiler.log.moved")).unwrap();
         append_log("second\n".to_owned());
         assert!(!data.join("profiler.log").exists());
-        let content = std::fs::read_to_string(data.join("profiler.log.moved")).unwrap();
+        let content = fs::read_to_string(data.join("profiler.log.moved")).unwrap();
         assert_eq!(content, "first\nsecond\n");
     }
 
@@ -108,18 +109,18 @@ mod tests {
         let dir = temp_dir("append-switch");
         let a = dir.join("a");
         let b = dir.join("b");
-        std::fs::create_dir_all(&a).unwrap();
-        std::fs::create_dir_all(&b).unwrap();
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
         init_state(&a);
         append_log("to-a\n".to_owned());
         init_state(&b);
         append_log("to-b\n".to_owned());
         assert_eq!(
-            std::fs::read_to_string(a.join("profiler.log")).unwrap(),
+            fs::read_to_string(a.join("profiler.log")).unwrap(),
             "to-a\n"
         );
         assert_eq!(
-            std::fs::read_to_string(b.join("profiler.log")).unwrap(),
+            fs::read_to_string(b.join("profiler.log")).unwrap(),
             "to-b\n"
         );
     }

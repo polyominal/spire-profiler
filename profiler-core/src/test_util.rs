@@ -3,7 +3,8 @@
 //! Everything is `pub`: under the feature build `cfg(test)` is off, so
 //! `pub(crate)` items would be dead code.
 
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use crate::engine::object::TextAlign;
 use crate::source_kind::SourceKind;
@@ -13,14 +14,15 @@ use crate::ui::ui_model::{Section, UiRow};
 
 /// A fresh dir under the gitignored tmp/ (wiped first, so a crashed run
 /// cannot leak state).
-pub fn scratch_dir(label: &str) -> String {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
+pub fn scratch_dir(label: &str) -> PathBuf {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("profiler-core is a workspace member")
         .join("tmp")
         .join(label);
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("create scratch dir");
-    dir.to_string_lossy().into_owned()
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).expect("create scratch dir");
+    dir
 }
 
 /// Unique per process and call, so parallel runs never collide.
@@ -29,7 +31,7 @@ pub fn temp_dir(label: &str) -> PathBuf {
     let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let dir =
         std::env::temp_dir().join(format!("spire-profiler-{label}-{}-{n}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("create temp dir");
+    fs::create_dir_all(&dir).expect("create temp dir");
     dir
 }
 

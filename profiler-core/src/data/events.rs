@@ -5,7 +5,7 @@
 //! collects any log lines, releases the borrow, and only then calls
 //! `append_log` (which re-borrows STATE — a nested borrow would panic).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::data::ledger;
 use crate::data::persistence::{append_log, ensure_data_dir, max_combat_id};
@@ -44,7 +44,7 @@ pub use run::{
 };
 pub use self_test::self_test;
 
-pub fn init(data_dir: &str) {
+pub fn init(data_dir: &Path) {
     let log_lines = STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         if state.initialized {
@@ -68,7 +68,10 @@ pub fn init(data_dir: &str) {
     for line in log_lines {
         append_log(line);
     }
-    eprintln!("[SpireProfiler] core initialized, data dir: {data_dir}");
+    eprintln!(
+        "[SpireProfiler] core initialized, data dir: {data_dir}",
+        data_dir = data_dir.display()
+    );
 }
 
 /// The innermost context is where damage and block without an explicit

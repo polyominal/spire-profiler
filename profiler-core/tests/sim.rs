@@ -14,6 +14,8 @@
 //! `ledger::apply_pending_contribs_in` stays exact on both routes.
 
 use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
 
 use profiler_core::data::state::{self, PendingContrib, RunOutcome, STATE, SourceKind};
 use profiler_core::data::{events, ledger, records};
@@ -549,12 +551,12 @@ fn randomized_combat_lifecycle_invariants() {
             RunOutcome::Victory
         });
         check_written_files(&base, player_died);
-        let _ = std::fs::remove_dir_all(&base);
+        let _ = fs::remove_dir_all(&base);
     }
 }
 
-fn store_combat_ids(runs_dir: &str) -> Vec<u32> {
-    let mut ids: Vec<u32> = std::fs::read_dir(runs_dir)
+fn store_combat_ids(runs_dir: &Path) -> Vec<u32> {
+    let mut ids: Vec<u32> = fs::read_dir(runs_dir)
         .expect("runs dir must be written")
         .flatten()
         .filter_map(|entry| {
@@ -567,7 +569,7 @@ fn store_combat_ids(runs_dir: &str) -> Vec<u32> {
                 .and_then(|name| name.to_string_lossy().parse::<u32>().ok())
         })
         .flat_map(|run_id| {
-            std::fs::read_dir(format!("{runs_dir}/{run_id}"))
+            fs::read_dir(runs_dir.join(run_id.to_string()))
                 .expect("run dir must be written")
                 .flatten()
                 .filter_map(move |entry| {
@@ -582,12 +584,12 @@ fn store_combat_ids(runs_dir: &str) -> Vec<u32> {
     ids
 }
 
-fn check_written_files(base: &str, player_died: bool) {
-    let runs_dir = format!("{base}/runs");
+fn check_written_files(base: &Path, player_died: bool) {
+    let runs_dir = base.join("runs");
     let ids = store_combat_ids(&runs_dir);
     assert_eq!(ids.len(), 1, "exactly one combat record per scenario");
-    let combats_text = std::fs::read_to_string(format!("{runs_dir}/1/1.json"))
-        .expect("combat file must be written");
+    let combats_text =
+        fs::read_to_string(runs_dir.join("1").join("1.json")).expect("combat file must be written");
     let parsed = [records::parse_combat_doc(&combats_text).expect("combat doc must parse back")];
     assert_eq!(parsed.len(), 1, "exactly one combat record per scenario");
     let rec = &parsed[0];
@@ -716,9 +718,9 @@ fn check_absent_equals_zero(combats_text: &str, rec: &records::CombatRec) {
     }
 }
 
-fn check_run_and_store_files(base: &str, player_died: bool) {
+fn check_run_and_store_files(base: &Path, player_died: bool) {
     let runs_text =
-        std::fs::read_to_string(format!("{base}/runs.jsonl")).expect("runs.jsonl must be written");
+        fs::read_to_string(base.join("runs.jsonl")).expect("runs.jsonl must be written");
     let runs: serde_json::Value = serde_json::from_str(
         runs_text
             .lines()
@@ -747,7 +749,7 @@ fn check_run_and_store_files(base: &str, player_died: bool) {
         !runs_text.contains("\"cards\""),
         "runs.jsonl must not carry the per-source cards array"
     );
-    let snapshot = std::fs::read_to_string(format!("{base}/runs/1/1.json"))
+    let snapshot = fs::read_to_string(base.join("runs").join("1").join("1.json"))
         .expect("combat store file must be written");
     assert!(snapshot.contains("\"combat_id\":1"));
 }
@@ -966,7 +968,7 @@ fn block_pool_consume_matches_naive_model() {
     let naive_credited = naive_consume(&mut naive_pool, &mut naive_credits, 10_000);
     assert_eq!(credited, naive_credited);
     compare_pool_and_credits(&naive_pool, &naive_credits);
-    let _ = std::fs::remove_dir_all(&base);
+    let _ = fs::remove_dir_all(&base);
 }
 
 fn compare_pool_and_credits(

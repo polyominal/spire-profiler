@@ -5,6 +5,7 @@
 //! run's directory instead of the whole history. Combats outside any run
 //! land in `runs/0/`.
 
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::combat_doc::build_combat_json;
@@ -28,7 +29,7 @@ fn combat_path(run_seq: u32, id: u32) -> PathBuf {
 /// The `<digits>.json` combat-file ids in one directory, sorted; anything
 /// else is skipped.
 fn scan_combat_ids(dir: &Path) -> Vec<u32> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let Ok(entries) = fs::read_dir(dir) else {
         return Vec::new();
     };
     let mut ids: Vec<u32> = Vec::new();
@@ -52,7 +53,7 @@ fn scan_combat_ids(dir: &Path) -> Vec<u32> {
 /// The highest id in the store; boot seeds `next_combat_id` with this + 1.
 pub(crate) fn max_combat_id() -> u32 {
     let base = STATE.with(|s| s.borrow().data_dir.join(RUNS_DIR_NAME));
-    let Ok(entries) = std::fs::read_dir(&base) else {
+    let Ok(entries) = fs::read_dir(&base) else {
         return 0;
     };
     let mut max = 0u32;
@@ -88,7 +89,7 @@ pub(crate) fn load_run_combat_docs(run_id: u32) -> Vec<String> {
 
 /// The whole history, oldest first.
 pub(crate) fn load_combat_docs_from(dir: &Path) -> Vec<String> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let Ok(entries) = fs::read_dir(dir) else {
         return Vec::new();
     };
     let mut ids: Vec<(u32, u32)> = Vec::new(); // (run id, combat id)
@@ -139,7 +140,7 @@ pub fn write_combat_file(c: &Combat) {
     let parent = path
         .parent()
         .expect("a store path always has a parent directory");
-    if let Err(err) = std::fs::create_dir_all(parent) {
+    if let Err(err) = fs::create_dir_all(parent) {
         fail(format!(
             "cannot create combat store directory '{}': {err}",
             parent.display()
@@ -167,15 +168,12 @@ mod tests {
     fn store_ids(data: &std::path::Path) -> Vec<u32> {
         let mut ids: Vec<u32> = Vec::new();
         let runs = data.join("runs");
-        for run in std::fs::read_dir(&runs).expect("runs dir exists").flatten() {
+        for run in fs::read_dir(&runs).expect("runs dir exists").flatten() {
             let run_dir = run.path();
             if !run_dir.is_dir() {
                 continue;
             }
-            for entry in std::fs::read_dir(&run_dir)
-                .expect("run dir exists")
-                .flatten()
-            {
+            for entry in fs::read_dir(&run_dir).expect("run dir exists").flatten() {
                 let name = entry.file_name();
                 let name = name.to_string_lossy();
                 if let Some(stem) = name.strip_suffix(".json")
@@ -197,10 +195,10 @@ mod tests {
         let c = synthetic_combat(); // seq 7, run_seq 42, as combat_started would assign
         write_combat_file(&c);
         let path = data.join("runs/42/7.json");
-        let content = std::fs::read_to_string(&path).expect("store file written");
+        let content = fs::read_to_string(&path).expect("store file written");
         assert_eq!(content, build_combat_json(&c));
         assert_eq!(store_ids(&data), vec![7]);
-        let log = std::fs::read_to_string(data.join("profiler.log")).unwrap();
+        let log = fs::read_to_string(data.join("profiler.log")).unwrap();
         assert!(log.contains("combat 7 ended: BYGONE_EFFIGY (completed)"));
         assert!(log.contains("stored at "));
     }
@@ -231,7 +229,7 @@ mod tests {
         c.run_seq = 0;
         write_combat_file(&c);
         let path = data.join("runs/0/7.json");
-        let content = std::fs::read_to_string(&path).expect("store file written");
+        let content = fs::read_to_string(&path).expect("store file written");
         assert_eq!(content, build_combat_json(&c));
         assert_eq!(store_ids(&data), vec![7]);
     }
@@ -241,13 +239,13 @@ mod tests {
         let dir = temp_dir("store-max");
         let data = dir.join("data");
         init_state(&data);
-        std::fs::create_dir_all(data.join("runs/1")).unwrap();
-        std::fs::create_dir_all(data.join("runs/3")).unwrap();
-        std::fs::write(data.join("runs/1/5.json"), "{}").unwrap();
-        std::fs::write(data.join("runs/1/garbage.json"), "{}").unwrap();
-        std::fs::write(data.join("runs/1/12.json.tmp"), "{}").unwrap();
-        std::fs::write(data.join("runs/3/7.json"), "{}").unwrap();
-        std::fs::create_dir_all(data.join("runs/profile-1")).unwrap();
+        fs::create_dir_all(data.join("runs/1")).unwrap();
+        fs::create_dir_all(data.join("runs/3")).unwrap();
+        fs::write(data.join("runs/1/5.json"), "{}").unwrap();
+        fs::write(data.join("runs/1/garbage.json"), "{}").unwrap();
+        fs::write(data.join("runs/1/12.json.tmp"), "{}").unwrap();
+        fs::write(data.join("runs/3/7.json"), "{}").unwrap();
+        fs::create_dir_all(data.join("runs/profile-1")).unwrap();
         assert_eq!(max_combat_id(), 7);
     }
 
@@ -283,14 +281,14 @@ mod tests {
             "no attempt-B file overwrote an attempt-A file"
         );
         assert_eq!(max_combat_id(), 4);
-        let mut a_files: Vec<String> = std::fs::read_dir(data.join("runs/42"))
+        let mut a_files: Vec<String> = fs::read_dir(data.join("runs/42"))
             .expect("run 42 dir exists")
             .flatten()
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect();
         a_files.sort();
         assert_eq!(a_files, vec!["1.json".to_owned(), "2.json".to_owned()]);
-        let mut b_files: Vec<String> = std::fs::read_dir(data.join("runs/43"))
+        let mut b_files: Vec<String> = fs::read_dir(data.join("runs/43"))
             .expect("run 43 dir exists")
             .flatten()
             .map(|e| e.file_name().to_string_lossy().into_owned())
@@ -304,12 +302,12 @@ mod tests {
         let dir = temp_dir("store-load");
         let data = dir.join("data");
         init_state(&data);
-        std::fs::create_dir_all(data.join("runs/2")).unwrap();
-        std::fs::create_dir_all(data.join("runs/1")).unwrap();
-        std::fs::write(data.join("runs/2/10.json"), r#"{"combat_id":10}"#).unwrap();
-        std::fs::write(data.join("runs/1/2.json"), r#"{"combat_id":2}"#).unwrap();
-        std::fs::write(data.join("runs/1/1.json"), r#"{"combat_id":1}"#).unwrap();
-        std::fs::write(data.join("runs/1/junk.json"), "{not json").unwrap();
+        fs::create_dir_all(data.join("runs/2")).unwrap();
+        fs::create_dir_all(data.join("runs/1")).unwrap();
+        fs::write(data.join("runs/2/10.json"), r#"{"combat_id":10}"#).unwrap();
+        fs::write(data.join("runs/1/2.json"), r#"{"combat_id":2}"#).unwrap();
+        fs::write(data.join("runs/1/1.json"), r#"{"combat_id":1}"#).unwrap();
+        fs::write(data.join("runs/1/junk.json"), "{not json").unwrap();
         let docs = load_all_combat_docs();
         assert_eq!(docs.len(), 3);
         assert!(docs[0].contains(r#""combat_id":1"#));
@@ -322,11 +320,11 @@ mod tests {
         let dir = temp_dir("store-run-load");
         let data = dir.join("data");
         init_state(&data);
-        std::fs::create_dir_all(data.join("runs/7")).unwrap();
-        std::fs::create_dir_all(data.join("runs/9")).unwrap();
-        std::fs::write(data.join("runs/7/2.json"), r#"{"combat_id":2}"#).unwrap();
-        std::fs::write(data.join("runs/7/1.json"), r#"{"combat_id":1}"#).unwrap();
-        std::fs::write(data.join("runs/9/99.json"), r#"{"combat_id":99}"#).unwrap();
+        fs::create_dir_all(data.join("runs/7")).unwrap();
+        fs::create_dir_all(data.join("runs/9")).unwrap();
+        fs::write(data.join("runs/7/2.json"), r#"{"combat_id":2}"#).unwrap();
+        fs::write(data.join("runs/7/1.json"), r#"{"combat_id":1}"#).unwrap();
+        fs::write(data.join("runs/9/99.json"), r#"{"combat_id":99}"#).unwrap();
         let docs = load_run_combat_docs(7);
         assert_eq!(docs.len(), 2);
         assert!(docs[0].contains(r#""combat_id":1"#));
