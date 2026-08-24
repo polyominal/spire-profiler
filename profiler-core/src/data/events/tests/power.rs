@@ -2,6 +2,7 @@
 //! forge credits, and the per-slot applier and TEAM context rows.
 
 use super::*;
+use crate::source_kind::SourceKind;
 use crate::test_util::scratch_dir;
 
 #[test]
@@ -17,7 +18,7 @@ fn forge_credits_the_named_source() {
 
     let (combat, doc) = read_combat(&base);
     let furnace = card_row(&combat, "FURNACE_POWER");
-    assert_eq!((furnace.kind, furnace.plays), (2, 0));
+    assert_eq!((furnace.kind, furnace.plays), (SourceKind::Power, 0));
     assert_eq!(card_json(&doc, "FURNACE_POWER")["forge"], 3);
 }
 
@@ -54,17 +55,23 @@ fn doom_kills_attribute_enemy_hp_to_the_doom_appliers() {
             deathbringer.plays,
             deathbringer.damage_dealt
         ),
-        (0, 1, 4)
+        (SourceKind::Card, 1, 4)
     );
     let countdown = card_row(&combat, "COUNTDOWN_POWER");
     assert_eq!(
         (countdown.kind, countdown.plays, countdown.damage_dealt),
-        (2, 0, 6)
+        (SourceKind::Power, 0, 6)
     );
     let neuro = card_row(&combat, "NEUROSURGE");
-    assert_eq!((neuro.kind, neuro.plays, neuro.damage_dealt), (0, 1, 0));
+    assert_eq!(
+        (neuro.kind, neuro.plays, neuro.damage_dealt),
+        (SourceKind::Card, 1, 0)
+    );
     let doom = card_row(&combat, "DOOM");
-    assert_eq!((doom.kind, doom.plays, doom.damage_dealt), (0, 0, 7));
+    assert_eq!(
+        (doom.kind, doom.plays, doom.damage_dealt),
+        (SourceKind::Card, 0, 7)
+    );
 }
 
 #[test]
@@ -107,17 +114,17 @@ fn osty_summons_absorb_damage_for_the_player() {
 
     let (combat, _) = read_combat(&base);
     let bodyguard = card_row(&combat, "BODYGUARD");
-    assert_eq!((bodyguard.kind, bodyguard.plays), (0, 1));
+    assert_eq!((bodyguard.kind, bodyguard.plays), (SourceKind::Card, 1));
     let phylactery = card_row(&combat, "BOUND_PHYLACTERY");
-    assert_eq!(phylactery.kind, 1);
+    assert_eq!(phylactery.kind, SourceKind::Relic);
     assert_eq!(bodyguard.block_effective, 5);
     assert_eq!(phylactery.block_effective, 1);
     let osty = card_row(&combat, "OSTY");
-    assert_eq!(osty.kind, 4);
+    assert_eq!(osty.kind, SourceKind::Osty);
     let unleash = card_row(&combat, "UNLEASH");
     assert_eq!(
         (unleash.kind, unleash.plays, unleash.damage_dealt),
-        (0, 0, 9)
+        (SourceKind::Card, 0, 9)
     );
 }
 
@@ -146,11 +153,14 @@ fn debuff_layers_attribute_poison_ticks_to_appliers() {
 
     let (combat, _) = read_combat(&base);
     let flask = card_row(&combat, "BOUNCING_FLASK");
-    assert_eq!((flask.kind, flask.plays, flask.damage_dealt), (0, 1, 3));
+    assert_eq!(
+        (flask.kind, flask.plays, flask.damage_dealt),
+        (SourceKind::Card, 1, 3)
+    );
     let noxious = card_row(&combat, "NOXIOUS_FUMES_POWER");
     assert_eq!(
         (noxious.kind, noxious.plays, noxious.damage_dealt),
-        (2, 0, 2)
+        (SourceKind::Power, 0, 2)
     );
 }
 
@@ -181,10 +191,13 @@ fn weak_and_buff_mitigation_credit_their_appliers() {
     let (combat, doc) = read_combat(&base);
     assert_eq!(card_json(&doc, "MALAISE")["mitigate_debuff"], 4);
     let eyes = card_row(&combat, "GO_FOR_THE_EYES");
-    assert_eq!((eyes.kind, eyes.plays, eyes.damage_dealt), (0, 1, 0));
+    assert_eq!(
+        (eyes.kind, eyes.plays, eyes.damage_dealt),
+        (SourceKind::Card, 1, 0)
+    );
     assert_eq!(card_json(&doc, "BUFFER")["mitigate_buff"], 6);
     let intangible = card_row(&combat, "INTANGIBLE_POWER");
-    assert_eq!(intangible.kind, 2);
+    assert_eq!(intangible.kind, SourceKind::Power);
     assert_eq!(card_json(&doc, "INTANGIBLE_POWER")["mitigate_buff"], 4);
 }
 

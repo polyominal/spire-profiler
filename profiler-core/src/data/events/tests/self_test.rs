@@ -2,9 +2,10 @@
 //! snapshot rows/footers, the chart-row payload, and the filter toggle.
 
 use super::*;
-use crate::data::state::PlayerFilter;
+use crate::data::state::{PlayerFilter, RunOutcome};
+use crate::source_kind::SourceKind;
 use crate::test_util::scratch_dir;
-use crate::ui::ui_model::{UiRow, UiTab};
+use crate::ui::ui_model::{Section, Segment, UiRow, UiTab};
 
 fn assert_self_test_combat(combat: &CombatRec, combat_json: &serde_json::Value) {
     assert_eq!(combat.encounter_id, "SELF_TEST");
@@ -26,24 +27,33 @@ fn assert_self_test_combat(combat: &CombatRec, combat_json: &serde_json::Value) 
     assert!(combat_json[0].get("profile").is_none());
     assert!(combat_json[0].get("build").is_none());
     let zap = card_row(combat, "ZAP");
-    assert_eq!((zap.kind, zap.plays, zap.damage_dealt), (0, 1, 3));
+    assert_eq!(
+        (zap.kind, zap.plays, zap.damage_dealt),
+        (SourceKind::Card, 1, 3)
+    );
     let defend = card_row(combat, "DEFEND");
-    assert_eq!((defend.kind, defend.plays, defend.damage_dealt), (0, 1, 0));
+    assert_eq!(
+        (defend.kind, defend.plays, defend.damage_dealt),
+        (SourceKind::Card, 1, 0)
+    );
     assert_eq!((defend.block_gained, defend.block_effective), (5, 5));
     let bash = card_row(combat, "BASH");
-    assert_eq!((bash.kind, bash.plays, bash.damage_dealt), (0, 1, 6));
+    assert_eq!(
+        (bash.kind, bash.plays, bash.damage_dealt),
+        (SourceKind::Card, 1, 6)
+    );
     let cloak = card_row(combat, "CLOAK_AND_DAGGER");
-    assert_eq!((cloak.kind, cloak.plays), (0, 1));
+    assert_eq!((cloak.kind, cloak.plays), (SourceKind::Card, 1));
     let dualcast = card_row(combat, "DUALCAST");
     assert_eq!(
         (dualcast.kind, dualcast.plays, dualcast.damage_dealt),
-        (0, 1, 8)
+        (SourceKind::Card, 1, 8)
     );
     assert_eq!(card_json(combat_json, "DUALCAST")["dmg_direct"], 8);
     let cracked = card_row(combat, "CRACKED_CORE");
     assert_eq!(
         (cracked.kind, cracked.plays, cracked.damage_dealt),
-        (1, 0, 8)
+        (SourceKind::Relic, 0, 8)
     );
     assert_eq!(card_json(combat_json, "CRACKED_CORE")["dmg_attributed"], 8);
     assert_eq!(combat.damage_received, 8);
@@ -51,7 +61,7 @@ fn assert_self_test_combat(combat: &CombatRec, combat_json: &serde_json::Value) 
     assert!(combat.cards.iter().all(|c| c.id != "SHIV"));
     assert_no_key(combat_json, "origin");
     let furnace = card_row(combat, "FURNACE_POWER");
-    assert_eq!((furnace.kind, furnace.plays), (2, 0));
+    assert_eq!((furnace.kind, furnace.plays), (SourceKind::Power, 0));
     assert_eq!(card_json(combat_json, "FURNACE_POWER")["forge"], 2);
 }
 
@@ -103,7 +113,7 @@ fn combat_tab_rows_and_footer_render_generator_and_forge() {
     let mut rows = [UiRow::default(); crate::ui::ui_model::MAX_UI_ROWS];
     let count = crate::ui::snapshot::ui_snapshot_rows(UiTab::Combat, &mut rows);
     assert_eq!(count, 1);
-    assert_eq!(rows[0].kind, 0);
+    assert_eq!(rows[0].kind, SourceKind::Card);
     assert_eq!(rows[0].name_str(), "INFERNAL_BLADE");
     let footer = crate::ui::snapshot::ui_footer_text(UiTab::Combat);
     assert!(footer.contains("forge 2"));
@@ -194,39 +204,38 @@ fn assert_combat_tab_rows() {
     let mut rows = [UiRow::default(); crate::ui::ui_model::MAX_UI_ROWS];
     let count = crate::ui::snapshot::ui_snapshot_rows(UiTab::Combat, &mut rows);
     assert!(count > 0);
-    assert_eq!(rows[0].section, crate::ui::ui_model::SECTION_DAMAGE);
+    assert_eq!(rows[0].section, Section::Damage);
     assert_eq!(rows[0].name_str(), "ANGER");
     assert_eq!(rows[0].value, 18);
     assert_eq!(rows[0].plays, 2);
     assert_eq!(rows[0].share_x10, 600); // 18/30
-    assert_eq!(rows[0].seg_milli[crate::ui::ui_model::SEG_DIRECT], 1000);
+    assert_eq!(rows[0].seg_milli[Segment::Direct.index()], 1000);
     assert_eq!(rows[0].flags, 0);
     assert_eq!(rows[1].name_str(), "BASH");
     assert_eq!(rows[2].name_str(), "INFLAME");
-    assert!(rows[2].seg_milli[crate::ui::ui_model::SEG_MODIFIER] > 0);
-    assert_eq!(rows[2].seg_milli[crate::ui::ui_model::SEG_DIRECT], 0);
+    assert!(rows[2].seg_milli[Segment::Modifier.index()] > 0);
+    assert_eq!(rows[2].seg_milli[Segment::Direct.index()], 0);
     let ghost_row = rows[..count]
         .iter()
         .find(|row| row.name_str() == "GHOST_RELIC");
     let ghost_row = ghost_row.expect("relic generator row");
-    assert_eq!(ghost_row.section, crate::ui::ui_model::SECTION_DAMAGE);
-    assert_eq!(ghost_row.kind, 1);
+    assert_eq!(ghost_row.section, Section::Damage);
+    assert_eq!(ghost_row.kind, SourceKind::Relic);
     assert_eq!(ghost_row.flags, 0);
     assert_eq!(ghost_row.value, 2);
     assert!(!rows[..count].iter().any(|row| row.name_str() == "SHIV"));
     let di = rows[..count]
         .iter()
         .position(|row| {
-            row.section == crate::ui::ui_model::SECTION_DEFENSE
-                && row.flags & crate::ui::ui_model::ROW_FLAG_SELF == 0
+            row.section == Section::Defense && row.flags & crate::ui::ui_model::ROW_FLAG_SELF == 0
         })
         .expect("positive defense row");
     assert_eq!(rows[di].name_str(), "CRIMSON_MANTLE");
     assert_eq!(rows[di].value, 10);
-    assert_eq!(rows[di].seg_milli[crate::ui::ui_model::SEG_DIRECT], 1000);
+    assert_eq!(rows[di].seg_milli[Segment::Direct.index()], 1000);
     assert_ne!(rows[di + 1].flags & crate::ui::ui_model::ROW_FLAG_SELF, 0);
     assert_eq!(rows[di + 1].value, -3);
-    assert_eq!(rows[di + 1].seg_milli[crate::ui::ui_model::SEG_SELF], 428); // 3/7 (net value)
+    assert_eq!(rows[di + 1].seg_milli[Segment::SelfDamage.index()], 428); // 3/7 (net value)
     assert_eq!(rows[di + 1].share_x10, 0);
 }
 
@@ -314,7 +323,7 @@ fn panel_filter_toggle_selects_and_deselects_players() {
     panel_filter_toggle(0);
     assert_eq!(STATE.with(|s| s.borrow().player_filter), PlayerFilter::All);
     combat_ended();
-    run_ended(0);
+    run_ended(RunOutcome::Victory);
 
     // A stale slot from a previous run never survives a run start.
     STATE.with(|s| s.borrow_mut().player_filter = PlayerFilter::Player(1));
@@ -333,5 +342,5 @@ fn panel_filter_toggle_selects_and_deselects_players() {
     panel_filter_toggle(0);
     assert_eq!(STATE.with(|s| s.borrow().player_filter), PlayerFilter::All);
     combat_ended();
-    run_ended(0);
+    run_ended(RunOutcome::Victory);
 }

@@ -5,7 +5,6 @@
 //! `plays + generation_triggers == Σ row plays + generated_plays` stays
 //! exact.
 
-use super::kind_name;
 use crate::data::ledger;
 use crate::data::persistence::append_log;
 use crate::data::state::{
@@ -151,7 +150,7 @@ pub fn card_play_started(
             // Everything during the play credits the generator.
             lines.push(format!(
                 "    play credits generator {source_id} ({})\n",
-                kind_name(play_source.1),
+                play_source.1.name(),
                 source_id = play_source.0
             ));
         }
@@ -176,7 +175,7 @@ fn record_card_play_in(
         card.plays += 1;
     }
     // Everything during this play attributes to exactly this source.
-    let (source_id, source_kind) = (card.id.clone(), ledger::source_kind_from_u8(card.kind));
+    let (source_id, source_kind) = (card.id.clone(), card.kind);
     slot_state.active_play_source = Some((source_id, source_kind));
     // The resolution chain must ignore the card's own id.
     slot_state.active_play_card_id = Some(card_id.to_owned());
@@ -187,13 +186,13 @@ fn load_pending_upgrade_in(slot_state: &mut PlayerSlotState, upgrade_delta: Opti
     slot_state.pending_upgrade_dmg = 0;
     slot_state.pending_upgrade_blk = 0;
     slot_state.pending_upgrade_source = String::new();
-    slot_state.pending_upgrade_kind = 0;
+    slot_state.pending_upgrade_kind = SourceKind::Card;
     slot_state.pending_upgrade_player = 0;
     if let Some(delta) = upgrade_delta {
         slot_state.pending_upgrade_dmg = delta.damage;
         slot_state.pending_upgrade_blk = delta.block;
         slot_state.pending_upgrade_source = delta.source_id;
-        slot_state.pending_upgrade_kind = delta.kind as u8;
+        slot_state.pending_upgrade_kind = delta.kind;
         slot_state.pending_upgrade_player = delta.player;
     }
 }
@@ -293,7 +292,7 @@ pub fn card_generated(card_hash: i32, source_id: &str, source_kind: i32, player_
         }
         vec![format!(
             "  card generated, generator: {resolved_source} ({})\n",
-            kind_name(kind)
+            kind.name()
         )]
     });
     for line in log_lines {

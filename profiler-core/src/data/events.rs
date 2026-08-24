@@ -44,16 +44,6 @@ pub use run::{
 };
 pub use self_test::self_test;
 
-fn kind_name(source_kind: SourceKind) -> &'static str {
-    match source_kind {
-        SourceKind::Card => "card",
-        SourceKind::Relic => "relic",
-        SourceKind::Power => "power",
-        SourceKind::Potion => "potion",
-        SourceKind::Osty => "osty",
-    }
-}
-
 pub fn init(data_dir: &str) {
     let log_lines = STATE.with(|cell| {
         let mut state = cell.borrow_mut();
@@ -118,10 +108,7 @@ pub fn context_begin(source_id: &str, kind: i32, player_slot: i32) {
         // only the AMBIENT slot's clear.
         let ambient = state.ambient_slot() as i32;
         ledger::clear_fallbacks_in(&mut state, ambient);
-        vec![format!(
-            "  context begin: {source_id} ({})\n",
-            kind_name(kind)
-        )]
+        vec![format!("  context begin: {source_id} ({})\n", kind.name())]
     });
     for line in log_lines {
         append_log(line);

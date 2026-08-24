@@ -2,6 +2,8 @@
 //! results.
 
 use super::*;
+use crate::data::state::RunOutcome;
+use crate::source_kind::SourceKind;
 use crate::test_util::scratch_dir;
 
 fn seed_data(data: &std::path::Path, runs_text: &str, combats_text: &str) {
@@ -171,7 +173,7 @@ fn select_by_seed_assembles_the_full_view() {
     assert_eq!(view.character, "IRONCLAD");
     assert_eq!(view.ascension, 7);
     assert_eq!(view.game_mode, "Standard");
-    assert_eq!(view.outcome, "defeat");
+    assert_eq!(view.outcome, Some(RunOutcome::Defeat));
     assert_eq!(view.result, "Defeat");
     assert_eq!(view.seed, "BETA");
     assert_eq!(view.started_at, BETA_START);
@@ -194,7 +196,7 @@ fn select_by_seed_assembles_the_full_view() {
 
     assert_eq!(view.rollup.len(), 3);
     assert_eq!(view.rollup[0].id, "STRIKE");
-    assert_eq!(view.rollup[0].kind, 0);
+    assert_eq!(view.rollup[0].kind, SourceKind::Card);
     assert_eq!(view.rollup[0].damage_dealt, 70);
     assert_eq!(view.rollup[0].plays, 4);
     assert_eq!(view.rollup[0].dmg_direct, 50);
@@ -226,7 +228,7 @@ fn combat_only_runs_fall_back_to_a_synthesized_view() {
         view.profile, 4,
         "the select's profile carries onto the view"
     );
-    assert!(view.outcome.is_empty());
+    assert!(view.outcome.is_none());
     assert_eq!(
         view.result, "Unfinished",
         "the run never closed, so its terminal state is unknown"
@@ -291,7 +293,7 @@ fn closed_runs_never_take_the_fallback() {
     let RunSelection::Selected(won) = select_run("ALPHA", 1_786_579_200, 2) else {
         panic!("ALPHA must match");
     };
-    assert_eq!(won.outcome, "victory");
+    assert_eq!(won.outcome, Some(RunOutcome::Victory));
     assert_eq!(won.result, "Victory");
 }
 
@@ -310,7 +312,7 @@ fn abandoned_runs_render_the_abandoned_label() {
     let RunSelection::Selected(view) = select_run("GAMMA", 1_786_579_200, 2) else {
         panic!("GAMMA must match");
     };
-    assert_eq!(view.outcome, "abandoned");
+    assert_eq!(view.outcome, Some(RunOutcome::Abandoned));
     assert_eq!(view.result, "Abandoned");
     assert_eq!(
         view.ended_at, 1_786_579_800,
@@ -522,14 +524,15 @@ fn rollup_keys_on_id_and_kind_and_teams_merge() {
     let RunSelection::Selected(view) = select_run("K", 1_786_579_200, 2) else {
         panic!("K must match");
     };
-    let ids: Vec<(String, u8)> = view.rollup.iter().map(|r| (r.id.clone(), r.kind)).collect();
+    let ids: Vec<(String, SourceKind)> =
+        view.rollup.iter().map(|r| (r.id.clone(), r.kind)).collect();
     assert_eq!(
         ids,
         vec![
-            ("DUPE".to_owned(), 0),
-            ("ZERO_A".to_owned(), 0),
-            ("DUPE".to_owned(), 2),
-            ("ZERO_B".to_owned(), 1),
+            ("DUPE".to_owned(), SourceKind::Card),
+            ("ZERO_A".to_owned(), SourceKind::Card),
+            ("DUPE".to_owned(), SourceKind::Power),
+            ("ZERO_B".to_owned(), SourceKind::Relic),
         ]
     );
     assert_eq!(view.rollup[0].plays, 3);
@@ -567,7 +570,7 @@ fn view_fingerprint_tracks_every_view_field() {
         character: "IRONCLAD".to_owned(),
         ascension: 7,
         game_mode: "Standard".to_owned(),
-        outcome: "defeat".to_owned(),
+        outcome: Some(RunOutcome::Defeat),
         result: "Defeat".to_owned(),
         seed: "BETA".to_owned(),
         combats: vec![CombatView {
@@ -581,7 +584,7 @@ fn view_fingerprint_tracks_every_view_field() {
         rollup: vec![
             CardStat {
                 id: "STRIKE".to_owned(),
-                kind: 0,
+                kind: SourceKind::Card,
                 player: TEAM_SLOT,
                 plays: 4,
                 damage_dealt: 70,
@@ -589,7 +592,7 @@ fn view_fingerprint_tracks_every_view_field() {
             },
             CardStat {
                 id: "DEMON_FORM".to_owned(),
-                kind: 2,
+                kind: SourceKind::Power,
                 player: TEAM_SLOT,
                 plays: 1,
                 damage_dealt: 35,

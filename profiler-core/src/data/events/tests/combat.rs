@@ -4,6 +4,8 @@
 
 use super::*;
 use crate::data::records::CombatRec;
+use crate::data::state::RunOutcome;
+use crate::source_kind::SourceKind;
 use crate::test_util::scratch_dir;
 
 #[test]
@@ -43,14 +45,17 @@ fn relic_and_power_contexts_attribute_damage_and_block() {
 
     let (combat, _) = read_combat(&base);
     let mercury = card_row(&combat, "MERCURY_HOURGLASS");
-    assert_eq!((mercury.kind, mercury.damage_dealt), (1, 3));
+    assert_eq!((mercury.kind, mercury.damage_dealt), (SourceKind::Relic, 3));
     let strike = card_row(&combat, "STRIKE");
-    assert_eq!((strike.kind, strike.plays, strike.damage_dealt), (0, 1, 8));
+    assert_eq!(
+        (strike.kind, strike.plays, strike.damage_dealt),
+        (SourceKind::Card, 1, 8)
+    );
     assert_no_card(&combat, "VAJRA");
     let strength = card_row(&combat, "STRENGTH_POWER");
     assert_eq!(
         (strength.kind, strength.plays, strength.damage_dealt),
-        (2, 0, 5)
+        (SourceKind::Power, 0, 5)
     );
 }
 
@@ -80,14 +85,20 @@ fn power_source_decomposition_splits_modifier_damage_across_appliers() {
 
     let (combat, _) = read_combat(&base);
     let demon = card_row(&combat, "DEMON_FORM");
-    assert_eq!((demon.kind, demon.plays, demon.damage_dealt), (0, 1, 3));
+    assert_eq!(
+        (demon.kind, demon.plays, demon.damage_dealt),
+        (SourceKind::Card, 1, 3)
+    );
     let inflame = card_row(&combat, "INFLAME");
     assert_eq!(
         (inflame.kind, inflame.plays, inflame.damage_dealt),
-        (0, 1, 2)
+        (SourceKind::Card, 1, 2)
     );
     let strike = card_row(&combat, "STRIKE");
-    assert_eq!((strike.kind, strike.plays, strike.damage_dealt), (0, 1, 6));
+    assert_eq!(
+        (strike.kind, strike.plays, strike.damage_dealt),
+        (SourceKind::Card, 1, 6)
+    );
     assert_eq!(strike.damage_dealt - strike.damage_blocked, 6);
 }
 
@@ -137,13 +148,19 @@ fn damage_segments_split_direct_modifier_attributed_and_upgrade() {
 
     let (combat, doc) = read_combat(&base);
     let strike = card_row(&combat, "STRIKE");
-    assert_eq!((strike.kind, strike.plays, strike.damage_dealt), (0, 1, 6));
+    assert_eq!(
+        (strike.kind, strike.plays, strike.damage_dealt),
+        (SourceKind::Card, 1, 6)
+    );
     assert_eq!(card_json(&doc, "STRIKE")["dmg_direct"], 6);
     assert_eq!(card_json(&doc, "INFLAME")["dmg_modifier"], 2);
     assert_eq!(card_json(&doc, "BOUNCING_FLASK")["dmg_attributed"], 3);
     assert_eq!(card_json(&doc, "ARMAMENTS")["dmg_upgrade"], 3);
     let bash = card_row(&combat, "BASH");
-    assert_eq!((bash.kind, bash.plays, bash.damage_dealt), (0, 1, 7));
+    assert_eq!(
+        (bash.kind, bash.plays, bash.damage_dealt),
+        (SourceKind::Card, 1, 7)
+    );
 }
 
 #[test]
@@ -182,7 +199,7 @@ fn block_pool_splits_modifier_portions_on_consumption() {
 
     let (combat, doc) = read_combat(&base);
     let defend = card_row(&combat, "DEFEND");
-    assert_eq!((defend.kind, defend.plays), (0, 1));
+    assert_eq!((defend.kind, defend.plays), (SourceKind::Card, 1));
     assert_eq!(defend.block_effective, 3);
     assert_eq!(card_json(&doc, "FOOTWORK")["blk_modifier"], 2);
 }
@@ -211,7 +228,7 @@ fn block_after_a_hooks_async_gap_credits_the_hooks_source() {
 
     let (combat, _) = read_combat(&base);
     let mantle = card_row(&combat, "CRIMSON_MANTLE_POWER");
-    assert_eq!((mantle.kind, mantle.block_gained), (2, 7));
+    assert_eq!((mantle.kind, mantle.block_gained), (SourceKind::Power, 7));
     assert_eq!(mantle.self_damage, 1);
 }
 
@@ -343,12 +360,21 @@ fn pending_modifier_contribs_apply_per_slot() {
 
     let (combat, doc) = read_combat(&base);
     let bash = card_row(&combat, "BASH");
-    assert_eq!((bash.kind, bash.plays, bash.damage_dealt), (0, 1, 6));
+    assert_eq!(
+        (bash.kind, bash.plays, bash.damage_dealt),
+        (SourceKind::Card, 1, 6)
+    );
     let strength = card_row(&combat, "STRENGTH_POWER");
-    assert_eq!((strength.kind, strength.damage_dealt), (2, 3));
+    assert_eq!(
+        (strength.kind, strength.damage_dealt),
+        (SourceKind::Power, 3)
+    );
     assert_eq!(card_json(&doc, "STRENGTH_POWER")["dmg_modifier"], 3);
     let strike = card_row(&combat, "STRIKE");
-    assert_eq!((strike.kind, strike.plays, strike.damage_dealt), (0, 1, 6));
+    assert_eq!(
+        (strike.kind, strike.plays, strike.damage_dealt),
+        (SourceKind::Card, 1, 6)
+    );
 }
 
 /// A partial death stays "completed"; a full wipe is "defeat".
@@ -371,7 +397,7 @@ fn team_defeat_requires_every_slot_dead() {
     player_died(1);
     player_died(1);
     combat_ended();
-    run_ended(1);
+    run_ended(RunOutcome::Defeat);
 
     let combats: Vec<CombatRec> = read_all_combats(&base)
         .into_iter()

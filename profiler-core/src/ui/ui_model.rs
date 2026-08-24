@@ -3,6 +3,8 @@
 //! are the layout contract: the segment slots, the name buffers, and the
 //! per-mille bar widths are indexed by position.
 
+use crate::source_kind::SourceKind;
+
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum UiTab {
@@ -11,27 +13,57 @@ pub enum UiTab {
     Run = 1,
 }
 
-pub const SECTION_DAMAGE: u8 = 0;
-pub const SECTION_DEFENSE: u8 = 1;
-pub const SECTION_COUNT: u8 = 2;
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Section {
+    Damage = 0,
+    Defense = 1,
+}
 
-/// A change here is a compile error at the `[u16; 8]` call sites.
-pub const SEG_COUNT: usize = 8;
+impl Section {
+    pub const ALL: [Section; 2] = [Section::Damage, Section::Defense];
 
-pub const SEG_DIRECT: usize = 0;
-pub const SEG_ATTRIBUTED: usize = 1; // indirect damage (ticks, orbs, doom)
-pub const SEG_MODIFIER: usize = 2;
-pub const SEG_UPGRADE: usize = 3;
-pub const SEG_MITIGATE_DEBUFF: usize = 4; // Weak-style prevention
-pub const SEG_MITIGATE_BUFF: usize = 5; // Buffer/Intangible prevention
-pub const SEG_MITIGATE_STR: usize = 6; // enemy Strength reduction
-pub const SEG_SELF: usize = 7;
+    pub fn name(self) -> &'static str {
+        match self {
+            Section::Damage => "Damage",
+            Section::Defense => "Defense",
+        }
+    }
+}
 
-pub const KIND_CARD: u8 = 0;
-pub const KIND_RELIC: u8 = 1;
-pub const KIND_POWER: u8 = 2;
-pub const KIND_POTION: u8 = 3;
-pub const KIND_OSTY: u8 = 4;
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Segment {
+    Direct = 0,
+    Attributed = 1,
+    Modifier = 2,
+    Upgrade = 3,
+    MitigateDebuff = 4,
+    MitigateBuff = 5,
+    MitigateStr = 6,
+    SelfDamage = 7,
+}
+
+impl Segment {
+    pub const ALL: [Segment; 8] = [
+        Segment::Direct,
+        Segment::Attributed,
+        Segment::Modifier,
+        Segment::Upgrade,
+        Segment::MitigateDebuff,
+        Segment::MitigateBuff,
+        Segment::MitigateStr,
+        Segment::SelfDamage,
+    ];
+
+    /// The fixed `seg_milli` index, matching the segment's chart position.
+    pub fn index(self) -> usize {
+        self as usize
+    }
+}
+
+/// A change here is a compile error at every `[u16; SEG_COUNT]` site.
+pub const SEG_COUNT: usize = Segment::ALL.len();
 
 pub const ROW_FLAG_SELF: u8 = 2;
 /// The source has self damage but no positive defense to split off.
@@ -44,8 +76,8 @@ pub const MAX_UI_ROWS: usize = 256;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct UiRow {
-    pub section: u8,
-    pub kind: u8,
+    pub section: Section,
+    pub kind: SourceKind,
     /// TEAM (4) marks ownerless rows.
     pub player: u8,
     pub flags: u8,
@@ -62,8 +94,8 @@ pub struct UiRow {
 impl Default for UiRow {
     fn default() -> Self {
         UiRow {
-            section: 0,
-            kind: 0,
+            section: Section::Damage,
+            kind: SourceKind::Card,
             player: 0,
             flags: 0,
             name_len: 0,
@@ -117,14 +149,6 @@ impl UiMeta {
     pub fn encounter_str(&self) -> &str {
         let len = usize::from(self.encounter_len).min(self.encounter.len());
         std::str::from_utf8(&self.encounter[..len]).unwrap_or("")
-    }
-}
-
-pub fn ui_section_name(section: u8) -> &'static str {
-    match section {
-        SECTION_DAMAGE => "Damage",
-        SECTION_DEFENSE => "Defense",
-        _ => "?",
     }
 }
 

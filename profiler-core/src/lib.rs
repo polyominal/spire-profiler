@@ -63,6 +63,7 @@ pub mod data;
 pub mod engine;
 #[allow(unsafe_code)]
 pub mod registration;
+pub mod source_kind;
 pub mod ui;
 
 // The integration tests link the crate as a library (cfg(test) off), so the

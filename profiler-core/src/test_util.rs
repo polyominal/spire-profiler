@@ -6,9 +6,10 @@
 use std::path::PathBuf;
 
 use crate::engine::object::TextAlign;
+use crate::source_kind::SourceKind;
 use crate::ui::chart_layout::Cmd;
 use crate::ui::theme::ContentBox;
-use crate::ui::ui_model::UiRow;
+use crate::ui::ui_model::{Section, UiRow};
 
 /// A fresh dir under the gitignored tmp/ (wiped first, so a crashed run
 /// cannot leak state).
@@ -35,8 +36,8 @@ pub fn temp_dir(label: &str) -> PathBuf {
 /// A synthetic UiRow; the name truncates to the fixed 64-byte field.
 #[allow(clippy::too_many_arguments)] // fixture: the args mirror UiRow's flat field shape
 pub fn test_row(
-    section: u8,
-    kind: u8,
+    section: Section,
+    kind: SourceKind,
     flags: u8,
     name: &str,
     plays: u32,

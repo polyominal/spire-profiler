@@ -87,8 +87,11 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
 
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
 use crate::fail;
-use crate::ui::ui_model::{self, UiRow, UiTab};
+pub use crate::source_kind::SourceKind;
+use crate::ui::ui_model::{self, Section, UiRow, UiTab};
 
 // Pinned at compile time: a refactor that breaks a wire value, width, or
 // range fails the build instead of corrupting a schema.
@@ -137,7 +140,7 @@ const _: () = assert!(
     "UiRow must stay under 4096 bytes for the panel's frame-buffer memcpy"
 );
 const _: () = assert!(
-    ui_model::SEG_COUNT == 8,
+    ui_model::Segment::ALL.len() == 8,
     "seg_milli must stay 8 segment slots wide"
 );
 
@@ -147,29 +150,16 @@ const _: () = assert!(
 );
 const _: () = assert!(UiTab::Run as u8 == 1, "UiTab::Run must be discriminant 1");
 
-const _: () = assert!(ui_model::SECTION_DAMAGE == 0, "SECTION_DAMAGE must be id 0");
-const _: () = assert!(
-    ui_model::SECTION_DEFENSE == 1,
-    "SECTION_DEFENSE must be id 1"
-);
-const _: () = assert!(ui_model::SECTION_COUNT == 2, "SECTION_COUNT must be 2");
+const _: () = assert!(Section::Damage as u8 == 0);
+const _: () = assert!(Section::Defense as u8 == 1);
+const _: () = assert!(Section::ALL.len() == 2);
 
 const _: () = assert!(ui_model::ROW_FLAG_SELF == 2, "ROW_FLAG_SELF must be bit 1");
 
 const _: () = assert!(
-    ui_model::MAX_UI_ROWS >= ui_model::MAX_ROWS_PER_SECTION * ui_model::SECTION_COUNT as usize,
+    ui_model::MAX_UI_ROWS >= ui_model::MAX_ROWS_PER_SECTION * Section::ALL.len(),
     "MAX_UI_ROWS must hold MAX_ROWS_PER_SECTION rows for every section"
 );
-
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SourceKind {
-    Card = 0,
-    Relic = 1,
-    Power = 2,
-    Potion = 3,
-    Osty = 4,
-}
 
 pub type SourceSlot = u8;
 
@@ -187,18 +177,6 @@ pub fn clamp_source_slot(slot: i32) -> SourceSlot {
         ));
     }
     clamped
-}
-
-impl SourceKind {
-    /// The upper clamp is [`SourceKind::Power`], the only kind the shim
-    /// sends for contexts.
-    pub fn from_c(kind: i32) -> SourceKind {
-        match kind.clamp(0, SourceKind::Power as i32) {
-            0 => SourceKind::Card,
-            1 => SourceKind::Relic,
-            _ => SourceKind::Power,
-        }
-    }
 }
 
 /// Lives here because it is state owned by [`State`]; `ui_model` stays the
@@ -230,7 +208,7 @@ pub struct CardStat {
     /// First so the serialized identity group mirrors this order.
     pub player: SourceSlot,
     pub id: String,
-    pub kind: u8,
+    pub kind: SourceKind,
     /// Own triggers, so `contribution / plays` is the expected value.
     pub plays: u32,
     pub damage_dealt: i64,
@@ -319,24 +297,61 @@ pub struct RunPlayer {
     pub character: String,
 }
 
-/// 0 = victory, 1 = defeat, 2 = abandoned.
-pub const OUTCOME_VICTORY: i32 = 0;
-pub const OUTCOME_DEFEAT: i32 = 1;
-pub const OUTCOME_ABANDONED: i32 = 2;
+#[repr(i32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum RunOutcome {
+    Victory = 0,
+    #[default]
+    Defeat = 1,
+    Abandoned = 2,
+}
 
-const _: () = assert!(
-    OUTCOME_VICTORY == 0 && OUTCOME_DEFEAT == 1 && OUTCOME_ABANDONED == 2,
-    "run outcome wire codes are the ABI contract"
-);
+impl RunOutcome {
+    /// Anything outside the wire codes records as defeat.
+    pub fn from_c(code: i32) -> RunOutcome {
+        match code {
+            0 => RunOutcome::Victory,
+            1 => RunOutcome::Defeat,
+            2 => RunOutcome::Abandoned,
+            _ => {
+                fail(format!("invalid run outcome {code}; recording defeat"));
+                RunOutcome::Defeat
+            }
+        }
+    }
 
-/// Anything outside 0..=2 reads as "defeat".
-pub fn outcome_name(code: i32) -> &'static str {
-    match code {
-        OUTCOME_VICTORY => "victory",
-        OUTCOME_ABANDONED => "abandoned",
-        _ => "defeat",
+    pub fn name(self) -> &'static str {
+        match self {
+            RunOutcome::Victory => "victory",
+            RunOutcome::Defeat => "defeat",
+            RunOutcome::Abandoned => "abandoned",
+        }
     }
 }
+
+impl Serialize for RunOutcome {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.name())
+    }
+}
+
+impl<'de> Deserialize<'de> for RunOutcome {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let name = String::deserialize(deserializer)?;
+        Ok(match name.as_str() {
+            "victory" => RunOutcome::Victory,
+            "abandoned" => RunOutcome::Abandoned,
+            _ => RunOutcome::Defeat,
+        })
+    }
+}
+
+const _: () = assert!(
+    RunOutcome::Victory as i32 == 0
+        && RunOutcome::Defeat as i32 == 1
+        && RunOutcome::Abandoned as i32 == 2,
+    "run outcome wire codes are the ABI contract"
+);
 
 /// Serde `skip_serializing_if` predicate for the zero-omission rule.
 pub(crate) fn is_zero<T>(value: &T) -> bool
@@ -361,7 +376,7 @@ pub struct RunContext {
     pub started_at: i64,
     pub ended_at: i64,
     /// `ended_at` is the abandon moment.
-    pub outcome: i32,
+    pub outcome: RunOutcome,
     /// Serialized as runs.jsonl's `"players"`.
     pub players: Vec<RunPlayer>,
 }
@@ -378,7 +393,7 @@ impl Default for RunContext {
             seed: String::new(),
             started_at: 0,
             ended_at: 0,
-            outcome: OUTCOME_DEFEAT,
+            outcome: RunOutcome::Defeat,
             players: Vec::new(),
         }
     }
@@ -462,7 +477,7 @@ pub struct PlayerSlotState {
     pub pending_upgrade_dmg: i64,
     pub pending_upgrade_blk: i64,
     pub pending_upgrade_source: String,
-    pub pending_upgrade_kind: u8,
+    pub pending_upgrade_kind: SourceKind,
     /// The upgrade record's row slot; the upgrader may sit on another slot.
     pub pending_upgrade_player: SourceSlot,
     /// This slot's block pool (bounded at [`caps::BLOCK_POOL`] chunks).
@@ -706,5 +721,25 @@ mod tests {
                 "from_c({kind}) must clamp to a catalogued kind"
             );
         }
+    }
+
+    #[test]
+    fn from_c_maps_wire_codes_and_defaults_unknowns_to_defeat() {
+        assert_eq!(RunOutcome::from_c(0), RunOutcome::Victory);
+        assert_eq!(RunOutcome::from_c(1), RunOutcome::Defeat);
+        assert_eq!(RunOutcome::from_c(2), RunOutcome::Abandoned);
+        assert_eq!(RunOutcome::from_c(-1), RunOutcome::Defeat);
+        assert_eq!(RunOutcome::from_c(3), RunOutcome::Defeat);
+    }
+
+    #[test]
+    fn outcome_serde_round_trips_lowercase_and_reads_unknowns_as_defeat() {
+        assert_eq!(
+            serde_json::to_string(&RunOutcome::Victory).expect("victory serializes"),
+            "\"victory\""
+        );
+        let out: RunOutcome =
+            serde_json::from_str("\"bogus\"").expect("unknown outcome string decodes");
+        assert_eq!(out, RunOutcome::Defeat);
     }
 }

@@ -26,7 +26,7 @@ fn start_combat() {
 fn hit_card(id: &str, amount: i64) -> CardStat {
     CardStat {
         id: id.to_owned(),
-        kind: 0,
+        kind: SourceKind::Card,
         damage_dealt: amount,
         dmg_direct: amount,
         ..CardStat::default()
@@ -39,7 +39,7 @@ fn assert_card(index: usize, id: &str, kind: SourceKind) {
         state.current.as_ref().expect("combat exists").cards[index].clone()
     });
     assert_eq!(card.id, id);
-    assert_eq!(card.kind, kind as u8);
+    assert_eq!(card.kind, kind);
 }
 
 fn resolve(explicit_id: &str, slot: i32, explicit_slot: i32) -> Option<(usize, SourceSlot)> {
@@ -93,15 +93,9 @@ fn u64_from_hash_sign_extends() {
 
 /// Potion/osty (3/4) round-trip exactly, unlike `SourceKind::from_c`.
 #[test]
-fn source_kind_from_u8_round_trips_all_kinds() {
-    for kind in [
-        SourceKind::Card,
-        SourceKind::Relic,
-        SourceKind::Power,
-        SourceKind::Potion,
-        SourceKind::Osty,
-    ] {
-        assert_eq!(source_kind_from_u8(kind as u8), kind);
+fn from_u8_round_trips_all_kinds() {
+    for kind in SourceKind::ALL {
+        assert_eq!(SourceKind::from(kind as u8), kind);
     }
 }
 
@@ -520,7 +514,7 @@ fn apply_pending_contribs_carves_attributed_hits_from_dmg_attributed() {
         state.current = Some(Combat {
             cards: vec![CardStat {
                 id: "ZAP".to_owned(),
-                kind: 0,
+                kind: SourceKind::Card,
                 damage_dealt: 5,
                 dmg_attributed: 5,
                 ..CardStat::default()
@@ -567,7 +561,7 @@ fn apply_pending_contribs_carves_mixed_hits_direct_first() {
         state.current = Some(Combat {
             cards: vec![CardStat {
                 id: "ZAP".to_owned(),
-                kind: 0,
+                kind: SourceKind::Card,
                 damage_dealt: 9,
                 dmg_direct: 4,
                 dmg_attributed: 5,
@@ -617,7 +611,7 @@ fn apply_upgrade_split_damage_credits_upgrader_per_hit() {
         let slot = state.slot_state_mut(0);
         slot.pending_upgrade_dmg = 4;
         slot.pending_upgrade_source = "ARMAMENTS".to_owned();
-        slot.pending_upgrade_kind = 0;
+        slot.pending_upgrade_kind = SourceKind::Card;
     });
     STATE.with(|cell| {
         let mut logs = Vec::new();

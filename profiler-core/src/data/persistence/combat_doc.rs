@@ -6,12 +6,13 @@ use serde::Serialize;
 
 use crate::data::records;
 use crate::data::state::{CardStat, Combat, is_zero};
+use crate::source_kind::SourceKind;
 /// One combat record's card entry. serde serializes fields in declaration
 /// order; the snapshot test pins that order byte for byte.
 #[derive(Serialize)]
 struct CardDoc<'a> {
     id: &'a str,
-    kind: u8,
+    kind: SourceKind,
     #[serde(skip_serializing_if = "is_zero")]
     plays: u32,
     #[serde(skip_serializing_if = "is_zero")]
@@ -178,7 +179,7 @@ mod tests {
         let mut c = synthetic_combat();
         c.cards = vec![CardStat {
             id: "ZERO_ROW".to_owned(),
-            kind: 3,
+            kind: SourceKind::Potion,
             player: 2,
             ..CardStat::default()
         }];
@@ -199,7 +200,7 @@ mod tests {
             combat.cards[0],
             records::CardRec {
                 id: "ZERO_ROW".to_owned(),
-                kind: 3,
+                kind: SourceKind::Potion,
                 player: 2,
                 ..records::CardRec::default()
             }

@@ -15,6 +15,8 @@ use std::hash::{Hash, Hasher};
 use crate::data::state::{CardStat, PlayerFilter, STATE};
 use crate::engine::gdext::Object;
 use crate::engine::math::{Rect2, Vector2};
+#[cfg(test)]
+use crate::source_kind::SourceKind;
 use crate::ui::chart_layout::{self, Layout};
 use crate::ui::panel_common::{self, InteractionState, PressZone};
 use crate::ui::tooltip::RowDetail;
@@ -754,11 +756,12 @@ mod tests {
     use super::*;
     use crate::data::state::{Combat, PlayerFilter};
     use crate::test_util::test_row;
+    use crate::ui::ui_model::Section;
 
     fn test_layout() -> Layout {
         let rows = [test_row(
-            ui_model::SECTION_DAMAGE,
-            0,
+            Section::Damage,
+            SourceKind::Card,
             0,
             "STRIKE",
             0,
@@ -848,8 +851,8 @@ mod tests {
     #[test]
     fn press_zone_distinguishes_avatar_tab_and_inert() {
         let rows = [test_row(
-            ui_model::SECTION_DAMAGE,
-            0,
+            Section::Damage,
+            SourceKind::Card,
             0,
             "STRIKE",
             0,
@@ -917,8 +920,8 @@ mod tests {
     #[test]
     fn content_signature_is_stable_and_sensitive() {
         let rows = [test_row(
-            ui_model::SECTION_DAMAGE,
-            0,
+            Section::Damage,
+            SourceKind::Card,
             0,
             "STRIKE",
             0,

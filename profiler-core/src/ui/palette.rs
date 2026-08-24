@@ -7,9 +7,10 @@
 
 use crate::engine::math::Vector2;
 use crate::engine::object::TextAlign;
+use crate::source_kind::SourceKind;
 use crate::ui::chart_layout::{self, Cmd, RectCmd, TextCmd};
 use crate::ui::theme::{self, TextRole};
-use crate::ui::ui_model;
+use crate::ui::ui_model::{Section, Segment};
 
 pub type Color = [f32; 4];
 
@@ -65,41 +66,40 @@ pub(crate) const COL_PANEL_BORDER: Color = [0.30, 0.40, 0.70, 0.60];
 // viewer.
 
 /// Section-tinted, not kind-tinted; Osty's absorb shares its `[O] ` hue.
-pub fn slot_color(slot: usize, section: u8, kind: u8) -> Color {
+pub fn slot_color(slot: Segment, section: Section, kind: SourceKind) -> Color {
     match slot {
-        ui_model::SEG_DIRECT => match section {
-            ui_model::SECTION_DEFENSE if kind == ui_model::KIND_OSTY => COL_OSTY,
-            ui_model::SECTION_DEFENSE => COL_BLOCK,
-            _ => COL_DMG_DIRECT,
+        Segment::Direct => match section {
+            Section::Defense if kind == SourceKind::Osty => COL_OSTY,
+            Section::Defense => COL_BLOCK,
+            Section::Damage => COL_DMG_DIRECT,
         },
-        ui_model::SEG_ATTRIBUTED => COL_ATTRIBUTED,
-        ui_model::SEG_MODIFIER => COL_MODIFIER,
-        ui_model::SEG_UPGRADE => COL_UPGRADE,
-        ui_model::SEG_MITIGATE_DEBUFF => COL_MITIGATE_DEBUFF,
-        ui_model::SEG_MITIGATE_BUFF => COL_MITIGATE_BUFF,
-        ui_model::SEG_MITIGATE_STR => COL_MITIGATE_STR,
-        ui_model::SEG_SELF => COL_SELF,
-        _ => COL_DMG_DIRECT,
+        Segment::Attributed => COL_ATTRIBUTED,
+        Segment::Modifier => COL_MODIFIER,
+        Segment::Upgrade => COL_UPGRADE,
+        Segment::MitigateDebuff => COL_MITIGATE_DEBUFF,
+        Segment::MitigateBuff => COL_MITIGATE_BUFF,
+        Segment::MitigateStr => COL_MITIGATE_STR,
+        Segment::SelfDamage => COL_SELF,
     }
 }
 
-pub(crate) fn kind_prefix(kind: u8) -> &'static str {
+pub(crate) fn kind_prefix(kind: SourceKind) -> &'static str {
     match kind {
-        ui_model::KIND_RELIC => "[R] ",
-        ui_model::KIND_POTION => "[P] ",
-        ui_model::KIND_OSTY => "[O] ",
-        _ => "",
+        SourceKind::Relic => "[R] ",
+        SourceKind::Potion => "[P] ",
+        SourceKind::Osty => "[O] ",
+        SourceKind::Card | SourceKind::Power => "",
     }
 }
 
 /// The same-hue collisions across the two channels are deliberate: one hue
 /// reads as one vocabulary.
-pub(crate) fn kind_prefix_color(kind: u8) -> Option<Color> {
+pub(crate) fn kind_prefix_color(kind: SourceKind) -> Option<Color> {
     match kind {
-        ui_model::KIND_RELIC => Some(COL_GOLD),
-        ui_model::KIND_POTION => Some(COL_MITIGATE_STR),
-        ui_model::KIND_OSTY => Some(COL_OSTY),
-        _ => None,
+        SourceKind::Relic => Some(COL_GOLD),
+        SourceKind::Potion => Some(COL_MITIGATE_STR),
+        SourceKind::Osty => Some(COL_OSTY),
+        SourceKind::Card | SourceKind::Power => None,
     }
 }
 
@@ -153,9 +153,9 @@ pub(crate) fn legend_plate(plate: bool) -> LegendPlate {
 /// Resolves through [`slot_color`] at emission, never a literal.
 pub(crate) struct LegendEntry {
     label: &'static str,
-    slot: usize,
-    section: u8,
-    kind: u8,
+    slot: Segment,
+    section: Section,
+    kind: SourceKind,
 }
 
 /// One entry per distinct bar color, damage family first. Kind markers
@@ -163,63 +163,63 @@ pub(crate) struct LegendEntry {
 pub(crate) const LEGEND_ENTRIES: &[LegendEntry] = &[
     LegendEntry {
         label: "direct",
-        slot: ui_model::SEG_DIRECT,
-        section: ui_model::SECTION_DAMAGE,
-        kind: ui_model::KIND_CARD,
+        slot: Segment::Direct,
+        section: Section::Damage,
+        kind: SourceKind::Card,
     },
     LegendEntry {
         label: "indirect",
-        slot: ui_model::SEG_ATTRIBUTED,
-        section: ui_model::SECTION_DAMAGE,
-        kind: ui_model::KIND_CARD,
+        slot: Segment::Attributed,
+        section: Section::Damage,
+        kind: SourceKind::Card,
     },
     LegendEntry {
         label: "modifier",
-        slot: ui_model::SEG_MODIFIER,
-        section: ui_model::SECTION_DAMAGE,
-        kind: ui_model::KIND_CARD,
+        slot: Segment::Modifier,
+        section: Section::Damage,
+        kind: SourceKind::Card,
     },
     LegendEntry {
         label: "upgrade",
-        slot: ui_model::SEG_UPGRADE,
-        section: ui_model::SECTION_DAMAGE,
-        kind: ui_model::KIND_CARD,
+        slot: Segment::Upgrade,
+        section: Section::Damage,
+        kind: SourceKind::Card,
     },
     LegendEntry {
         label: "block",
-        slot: ui_model::SEG_DIRECT,
-        section: ui_model::SECTION_DEFENSE,
-        kind: ui_model::KIND_CARD,
+        slot: Segment::Direct,
+        section: Section::Defense,
+        kind: SourceKind::Card,
     },
     LegendEntry {
         label: "osty",
-        slot: ui_model::SEG_DIRECT,
-        section: ui_model::SECTION_DEFENSE,
-        kind: ui_model::KIND_OSTY,
+        slot: Segment::Direct,
+        section: Section::Defense,
+        kind: SourceKind::Osty,
     },
     LegendEntry {
         label: "weak",
-        slot: ui_model::SEG_MITIGATE_DEBUFF,
-        section: ui_model::SECTION_DEFENSE,
-        kind: ui_model::KIND_CARD,
+        slot: Segment::MitigateDebuff,
+        section: Section::Defense,
+        kind: SourceKind::Card,
     },
     LegendEntry {
         label: "buff",
-        slot: ui_model::SEG_MITIGATE_BUFF,
-        section: ui_model::SECTION_DEFENSE,
-        kind: ui_model::KIND_CARD,
+        slot: Segment::MitigateBuff,
+        section: Section::Defense,
+        kind: SourceKind::Card,
     },
     LegendEntry {
         label: "str down",
-        slot: ui_model::SEG_MITIGATE_STR,
-        section: ui_model::SECTION_DEFENSE,
-        kind: ui_model::KIND_CARD,
+        slot: Segment::MitigateStr,
+        section: Section::Defense,
+        kind: SourceKind::Card,
     },
     LegendEntry {
         label: "self dmg",
-        slot: ui_model::SEG_SELF,
-        section: ui_model::SECTION_DEFENSE,
-        kind: ui_model::KIND_CARD,
+        slot: Segment::SelfDamage,
+        section: Section::Defense,
+        kind: SourceKind::Card,
     },
 ];
 
@@ -263,67 +263,61 @@ mod tests {
 
     #[test]
     fn slot_color_maps_the_section_families() {
-        for kind in [
-            ui_model::KIND_CARD,
-            ui_model::KIND_RELIC,
-            ui_model::KIND_POWER,
-            ui_model::KIND_POTION,
-            ui_model::KIND_OSTY,
-        ] {
+        for kind in SourceKind::ALL {
             assert_eq!(
-                slot_color(ui_model::SEG_DIRECT, ui_model::SECTION_DAMAGE, kind),
+                slot_color(Segment::Direct, Section::Damage, kind),
                 COL_DMG_DIRECT,
-                "kind {kind}"
+                "kind {kind:?}"
             );
-            let expect = if kind == ui_model::KIND_OSTY {
+            let expect = if kind == SourceKind::Osty {
                 COL_OSTY
             } else {
                 COL_BLOCK
             };
             assert_eq!(
-                slot_color(ui_model::SEG_DIRECT, ui_model::SECTION_DEFENSE, kind),
+                slot_color(Segment::Direct, Section::Defense, kind),
                 expect,
-                "kind {kind}"
+                "kind {kind:?}"
             );
         }
         assert_eq!(
-            slot_color(ui_model::SEG_ATTRIBUTED, ui_model::SECTION_DAMAGE, 0),
+            slot_color(Segment::Attributed, Section::Damage, SourceKind::Card),
             COL_ATTRIBUTED
         );
         assert_eq!(
-            slot_color(ui_model::SEG_MODIFIER, ui_model::SECTION_DEFENSE, 0),
+            slot_color(Segment::Modifier, Section::Defense, SourceKind::Card),
             COL_MODIFIER
         );
         assert_eq!(
-            slot_color(ui_model::SEG_UPGRADE, ui_model::SECTION_DAMAGE, 0),
+            slot_color(Segment::Upgrade, Section::Damage, SourceKind::Card),
             COL_GOLD,
             "the upgrade segment IS the game's gold accent"
         );
         assert_eq!(
-            slot_color(ui_model::SEG_MITIGATE_DEBUFF, ui_model::SECTION_DEFENSE, 0),
+            slot_color(Segment::MitigateDebuff, Section::Defense, SourceKind::Card),
             COL_MITIGATE_DEBUFF
         );
         assert_eq!(
-            slot_color(ui_model::SEG_MITIGATE_BUFF, ui_model::SECTION_DEFENSE, 0),
+            slot_color(Segment::MitigateBuff, Section::Defense, SourceKind::Card),
             COL_MITIGATE_BUFF
         );
         assert_eq!(
-            slot_color(ui_model::SEG_MITIGATE_STR, ui_model::SECTION_DEFENSE, 0),
+            slot_color(Segment::MitigateStr, Section::Defense, SourceKind::Card),
             COL_MITIGATE_STR
         );
         assert_eq!(
-            slot_color(ui_model::SEG_SELF, ui_model::SECTION_DEFENSE, 0),
+            slot_color(Segment::SelfDamage, Section::Defense, SourceKind::Card),
             COL_SELF
         );
     }
 
     #[test]
     fn kind_prefix_and_its_color_cover_the_same_kinds() {
-        for kind in 0..=u8::MAX {
+        for kind in SourceKind::ALL {
             assert_eq!(
                 kind_prefix(kind).is_empty(),
                 kind_prefix_color(kind).is_none(),
-                "kind {kind}"
+                "kind {kind:?}"
             );
         }
     }
@@ -331,10 +325,10 @@ mod tests {
     /// Chips share the bars' `slot_color` call, so the key cannot lie.
     #[test]
     fn legend_chips_match_the_bars_and_cover_every_slot() {
-        for slot in 0..ui_model::SEG_COUNT {
+        for slot in Segment::ALL {
             assert!(
                 LEGEND_ENTRIES.iter().any(|e| e.slot == slot),
-                "segment slot {slot} has no legend entry"
+                "segment slot {slot:?} has no legend entry"
             );
         }
         let mut cmds = Vec::new();

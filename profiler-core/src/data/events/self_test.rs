@@ -1,6 +1,7 @@
 //! The synthetic self-test pipeline (`--spire-profiler-self-test`).
 
 use super::*;
+use crate::data::state::RunOutcome;
 use crate::ui::snapshot;
 
 /// The host verifies the bridge without a real fight.
@@ -78,6 +79,6 @@ pub fn self_test() {
     forge("FURNACE_POWER", 2, 2, 0);
     combat_ended();
     // Wire code 0 = victory; the headless gate greps "(victory)".
-    run_ended(0);
+    run_ended(RunOutcome::Victory);
     snapshot::chart_self_test();
 }

@@ -197,7 +197,7 @@ pub fn get_or_create_card_kind(
     combat.cards.push(CardStat {
         player: slot,
         id: id.to_owned(),
-        kind: kind as u8,
+        kind,
         ..CardStat::default()
     });
     combat.cards.len() - 1
@@ -726,7 +726,7 @@ pub fn apply_upgrade_split_damage_in(
         attacker.dmg_direct -= split;
         assert_card_damage_segments(attacker);
     }
-    let kind = source_kind_from_u8(slot_state.pending_upgrade_kind);
+    let kind = slot_state.pending_upgrade_kind;
     let source_id = slot_state.pending_upgrade_source.clone();
     // The upgrader's row keys at the slot recorded when the upgrade
     // happened.
@@ -747,18 +747,6 @@ pub fn find_upgrade_in(state: &state::State, hash: i32) -> Option<UpgradeDelta> 
         .iter()
         .find(|e| e.hash == hash)
         .cloned()
-}
-
-/// The stored `kind: u8` back into a SourceKind. Unlike
-/// `SourceKind::from_c` this must not clamp: potion/osty kinds round-trip.
-pub fn source_kind_from_u8(kind: u8) -> SourceKind {
-    match kind {
-        0 => SourceKind::Card,
-        1 => SourceKind::Relic,
-        2 => SourceKind::Power,
-        3 => SourceKind::Potion,
-        _ => SourceKind::Osty,
-    }
 }
 
 #[cfg(test)]

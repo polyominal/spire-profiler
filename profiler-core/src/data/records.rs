@@ -5,13 +5,14 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::data::state::{RunContext, RunPlayer, outcome_name};
+use crate::data::state::{RunContext, RunOutcome, RunPlayer};
+use crate::source_kind::SourceKind;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct CardRec {
     pub id: String,
-    pub kind: u8,
+    pub kind: SourceKind,
     pub player: u8,
     pub plays: u32,
     pub damage_dealt: i64,
@@ -113,7 +114,7 @@ struct RunDoc<'a> {
     character: &'a str,
     ascension: i32,
     game_mode: &'a str,
-    outcome: &'a str,
+    outcome: RunOutcome,
     seed: &'a str,
     started_at: i64,
     ended_at: i64,
@@ -130,7 +131,7 @@ struct RunDocOwned {
     character: String,
     ascension: i32,
     game_mode: String,
-    outcome: String,
+    outcome: RunOutcome,
     seed: String,
     started_at: i64,
     ended_at: i64,
@@ -148,7 +149,7 @@ pub fn build_run_json(run: &RunContext, profile: i32) -> String {
         character: &run.character,
         ascension: run.ascension,
         game_mode: &run.game_mode,
-        outcome: outcome_name(run.outcome),
+        outcome: run.outcome,
         seed: &run.seed,
         started_at: run.started_at,
         ended_at: run.ended_at,
@@ -173,11 +174,7 @@ pub fn build_run_json(run: &RunContext, profile: i32) -> String {
             parsed.game_mode, run.game_mode,
             "run game_mode must round-trip"
         );
-        debug_assert_eq!(
-            parsed.outcome,
-            outcome_name(run.outcome),
-            "run outcome must round-trip"
-        );
+        debug_assert_eq!(parsed.outcome, run.outcome, "run outcome must round-trip");
         debug_assert_eq!(parsed.seed, run.seed, "run seed must round-trip");
         debug_assert_eq!(
             parsed.started_at, run.started_at,

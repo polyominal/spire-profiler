@@ -23,12 +23,14 @@
 //! commands own their text and the lists respect the command cap.
 
 use crate::engine::object::TextAlign;
+#[cfg(test)]
+use crate::source_kind::SourceKind;
 use crate::ui::palette::{
     COL_CREAM, COL_DIM, COL_GOLD, COL_HEADER_BG, COL_HOVER, COL_ROW_ALT, COL_SELF, COL_TRACK,
     Color, PREFIX_ADVANCE, kind_prefix, kind_prefix_color, slot_color,
 };
 use crate::ui::theme::{self, TextRole};
-use crate::ui::ui_model::{self, UiMeta, UiRow, UiTab};
+use crate::ui::ui_model::{self, Section, Segment, UiMeta, UiRow, UiTab};
 
 // Vertical constants derive from the shipped Kreon faces' metrics at
 // 24/32px (ascent 997, descent −293, cap 708 per 1024 upm).
@@ -418,14 +420,17 @@ pub struct Seg {
     pub w: f32,
 }
 
-pub(crate) fn segment_offsets(seg_milli: &[u16; 8], width: f32) -> [Seg; 8] {
-    let mut out = [Seg { x: 0.0, w: 0.0 }; 8];
+pub(crate) fn segment_offsets(
+    seg_milli: &[u16; ui_model::SEG_COUNT],
+    width: f32,
+) -> [Seg; ui_model::SEG_COUNT] {
+    let mut out = [Seg { x: 0.0, w: 0.0 }; ui_model::SEG_COUNT];
     let mut offset: f32 = 0.0;
-    for (k, &milli) in seg_milli.iter().enumerate() {
+    for (segment, &milli) in Segment::ALL.iter().zip(seg_milli) {
         // Integer math first, then the float: per-mille × pixel width, with
         // the width truncated to whole pixels (by design).
         let w = (u32::from(milli) * (width as u32) / 1000) as f32;
-        out[k] = Seg { x: offset, w };
+        out[segment.index()] = Seg { x: offset, w };
         offset += w;
     }
     out
@@ -638,11 +643,9 @@ fn emit_meta(l: &mut Layout, input: &BuildInput<'_>, g: &Geom, y_in: f32) -> f32
 
 fn emit_sections(l: &mut Layout, input: &BuildInput<'_>, g: &Geom, y_in: f32) -> f32 {
     let mut y = y_in;
-    let mut section: u8 = 0;
-    while section < ui_model::SECTION_COUNT {
+    for section in Section::ALL {
         y = emit_section(l, input, g, section, y);
         y += SECTION_GAP;
-        section += 1;
     }
     y
 }
@@ -710,15 +713,15 @@ fn emit_section_header(cmds: &mut Vec<Cmd>, owner: &'static str, g: &Geom, y: f3
     );
 }
 
-fn emit_section(l: &mut Layout, input: &BuildInput<'_>, g: &Geom, section: u8, y_in: f32) -> f32 {
+fn emit_section(
+    l: &mut Layout,
+    input: &BuildInput<'_>,
+    g: &Geom,
+    section: Section,
+    y_in: f32,
+) -> f32 {
     let mut y = y_in;
-    emit_section_header(
-        &mut l.cmds,
-        "chart",
-        g,
-        y,
-        ui_model::ui_section_name(section),
-    );
+    emit_section_header(&mut l.cmds, "chart", g, y, section.name());
     y += SECTION_HEADER_H;
 
     let mut any = false;
@@ -814,7 +817,7 @@ fn emit_segments(l: &mut Layout, g: &Geom, row: &UiRow, y: f32) {
     let bar_y = y + (ROW_H - BAR_H) / 2.0;
     l.rect(g.bar_x, bar_y, g.bar_w, BAR_H, COL_TRACK);
     let segs = segment_offsets(&row.seg_milli, g.bar_w);
-    for (k, seg) in segs.iter().enumerate() {
+    for (segment, seg) in Segment::ALL.iter().zip(segs.iter()) {
         if seg.w <= 0.0 {
             continue;
         }
@@ -823,7 +826,7 @@ fn emit_segments(l: &mut Layout, g: &Geom, row: &UiRow, y: f32) {
             bar_y,
             seg.w,
             BAR_H,
-            slot_color(k, row.section, row.kind),
+            slot_color(*segment, row.section, row.kind),
         );
     }
 }
@@ -973,8 +976,8 @@ mod tests {
     fn combat_tab_layout_mode(flat_chrome: bool, tab_sprites: bool, right_gutter: f32) -> Layout {
         let rows = [
             test_row(
-                ui_model::SECTION_DAMAGE,
-                0,
+                Section::Damage,
+                SourceKind::Card,
                 0,
                 "STRIKE",
                 2,
@@ -983,8 +986,8 @@ mod tests {
                 [769, 0, 0, 0, 0, 0, 0, 0],
             ),
             test_row(
-                ui_model::SECTION_DEFENSE,
-                0,
+                Section::Defense,
+                SourceKind::Card,
                 0,
                 "CRIMSON_MANTLE",
                 1,
@@ -993,8 +996,8 @@ mod tests {
                 [1000, 0, 0, 0, 0, 0, 0, 0],
             ),
             test_row(
-                ui_model::SECTION_DEFENSE,
-                0,
+                Section::Defense,
+                SourceKind::Card,
                 ui_model::ROW_FLAG_SELF,
                 "CRIMSON_MANTLE",
                 1,
@@ -1124,8 +1127,8 @@ mod tests {
     fn layout_value_share_formatting_and_self_row_semantics() {
         let rows = [
             test_row(
-                ui_model::SECTION_DAMAGE,
-                0,
+                Section::Damage,
+                SourceKind::Card,
                 0,
                 "STRIKE",
                 2,
@@ -1134,8 +1137,8 @@ mod tests {
                 [1000, 0, 0, 0, 0, 0, 0, 0],
             ),
             test_row(
-                ui_model::SECTION_DEFENSE,
-                0,
+                Section::Defense,
+                SourceKind::Card,
                 ui_model::ROW_FLAG_SELF,
                 "OFFERING",
                 1,
@@ -1170,8 +1173,8 @@ mod tests {
     #[test]
     fn layout_solo_self_row_shows_the_card_name_and_plays() {
         let rows = [test_row(
-            ui_model::SECTION_DEFENSE,
-            0,
+            Section::Defense,
+            SourceKind::Card,
             ui_model::ROW_FLAG_SELF | ui_model::ROW_FLAG_SELF_SOLO,
             "BLOODLETTING",
             3,
@@ -1205,8 +1208,8 @@ mod tests {
     #[test]
     fn layout_run_tab_renders_the_dps_dash_without_turns() {
         let rows = [test_row(
-            ui_model::SECTION_DAMAGE,
-            0,
+            Section::Damage,
+            SourceKind::Card,
             0,
             "STRIKE",
             1,
@@ -1263,8 +1266,8 @@ mod tests {
     #[test]
     fn encounter_line_emits_untruncated_and_clipped() {
         let rows = [test_row(
-            ui_model::SECTION_DAMAGE,
-            0,
+            Section::Damage,
+            SourceKind::Card,
             0,
             "STRIKE",
             1,
@@ -1346,8 +1349,8 @@ mod tests {
     #[test]
     fn title_band_never_renders_a_player_filter_label() {
         let rows = [test_row(
-            ui_model::SECTION_DAMAGE,
-            0,
+            Section::Damage,
+            SourceKind::Card,
             0,
             "STRIKE",
             1,
@@ -1394,8 +1397,8 @@ mod tests {
 
     fn combat_build(avatars: &[AvatarFact]) -> Layout {
         let rows = [test_row(
-            ui_model::SECTION_DAMAGE,
-            0,
+            Section::Damage,
+            SourceKind::Card,
             0,
             "STRIKE",
             1,
@@ -1483,8 +1486,8 @@ mod tests {
     #[test]
     fn avatar_row_renders_on_the_run_tab_too() {
         let rows = [test_row(
-            ui_model::SECTION_DAMAGE,
-            0,
+            Section::Damage,
+            SourceKind::Card,
             0,
             "STRIKE",
             1,
@@ -1547,8 +1550,8 @@ mod tests {
     #[test]
     fn chrome_less_build_emits_only_the_sections() {
         let rows = [test_row(
-            ui_model::SECTION_DAMAGE,
-            0,
+            Section::Damage,
+            SourceKind::Card,
             0,
             "STRIKE",
             1,
@@ -1602,12 +1605,21 @@ mod tests {
         let mut rows = [UiRow::default(); ui_model::MAX_UI_ROWS];
         for (i, row) in rows.iter_mut().enumerate() {
             let section = if i % 2 == 0 {
-                ui_model::SECTION_DAMAGE
+                Section::Damage
             } else {
-                ui_model::SECTION_DEFENSE
+                Section::Defense
             };
             let name = format!("CARD{i}");
-            *row = test_row(section, 0, 0, &name, 1, 10, 10, [500, 0, 0, 0, 0, 0, 0, 0]);
+            *row = test_row(
+                section,
+                SourceKind::Card,
+                0,
+                &name,
+                1,
+                10,
+                10,
+                [500, 0, 0, 0, 0, 0, 0, 0],
+            );
         }
         let l = build(BuildInput {
             tab: UiTab::Combat,
@@ -1638,8 +1650,8 @@ mod tests {
     #[test]
     fn layout_reflows_to_the_build_width() {
         let rows = [test_row(
-            ui_model::SECTION_DAMAGE,
-            0,
+            Section::Damage,
+            SourceKind::Card,
             0,
             "STRIKE",
             1,
@@ -1677,13 +1689,13 @@ mod tests {
         let mut rows = [UiRow::default(); ui_model::MAX_UI_ROWS];
         for (i, row) in rows.iter_mut().enumerate() {
             let section = if i % 2 == 0 {
-                ui_model::SECTION_DAMAGE
+                Section::Damage
             } else {
-                ui_model::SECTION_DEFENSE
+                Section::Defense
             };
             *row = test_row(
                 section,
-                ui_model::KIND_RELIC,
+                SourceKind::Relic,
                 0,
                 &format!("CARD{i}"),
                 1,
@@ -1802,8 +1814,8 @@ mod tests {
     fn kind_prefix_renders_as_a_separate_colored_run() {
         let rows = [
             test_row(
-                ui_model::SECTION_DAMAGE,
-                ui_model::KIND_RELIC,
+                Section::Damage,
+                SourceKind::Relic,
                 0,
                 "CRIMSON_MANTLE",
                 1,
@@ -1812,8 +1824,8 @@ mod tests {
                 [1000, 0, 0, 0, 0, 0, 0, 0],
             ),
             test_row(
-                ui_model::SECTION_DAMAGE,
-                ui_model::KIND_CARD,
+                Section::Damage,
+                SourceKind::Card,
                 0,
                 "STRIKE",
                 1,
@@ -1925,8 +1937,8 @@ mod tests {
     fn golden_fixture(flat_chrome: bool) -> Layout {
         let rows = [
             test_row(
-                ui_model::SECTION_DAMAGE,
-                0,
+                Section::Damage,
+                SourceKind::Card,
                 0,
                 "STRIKE",
                 2,
@@ -1935,8 +1947,8 @@ mod tests {
                 [769, 231, 0, 0, 0, 0, 0, 0],
             ),
             test_row(
-                ui_model::SECTION_DAMAGE,
-                1,
+                Section::Damage,
+                SourceKind::Relic,
                 0,
                 "SEVER_SOUL",
                 1,
@@ -1945,8 +1957,8 @@ mod tests {
                 [1000, 0, 0, 0, 0, 0, 0, 0],
             ),
             test_row(
-                ui_model::SECTION_DEFENSE,
-                0,
+                Section::Defense,
+                SourceKind::Card,
                 0,
                 "DEFEND",
                 3,
@@ -1955,8 +1967,8 @@ mod tests {
                 [1000, 0, 0, 0, 0, 0, 0, 0],
             ),
             test_row(
-                ui_model::SECTION_DEFENSE,
-                0,
+                Section::Defense,
+                SourceKind::Card,
                 ui_model::ROW_FLAG_SELF,
                 "OFFERING",
                 1,

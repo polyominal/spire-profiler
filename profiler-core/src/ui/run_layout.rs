@@ -524,7 +524,8 @@ fn insert_borders(l: &mut RunLayout) {
 mod tests {
     use super::*;
     use crate::data::run_history::CombatView;
-    use crate::data::state::CardStat;
+    use crate::data::state::{CardStat, RunOutcome};
+    use crate::source_kind::SourceKind;
     use crate::test_util::cmd_texts as texts;
     use crate::ui::ui_model;
 
@@ -543,7 +544,7 @@ mod tests {
                 })
                 .collect()
         };
-        let card = |id: &str, kind: u8, plays: u32, dmg: i64, blk: i64| CardStat {
+        let card = |id: &str, kind: SourceKind, plays: u32, dmg: i64, blk: i64| CardStat {
             id: id.to_owned(),
             kind,
             plays,
@@ -558,14 +559,14 @@ mod tests {
             character: "IRONCLAD".to_owned(),
             ascension: 7,
             game_mode: "Standard".to_owned(),
-            outcome: "defeat".to_owned(),
+            outcome: Some(RunOutcome::Defeat),
             result: "Defeat".to_owned(),
             seed: "BETA".to_owned(),
             combats: combats(2),
             rollup: vec![
-                card("STRIKE", 0, 4, 70, 0),
-                card("DEMON_FORM", 2, 1, 35, 0),
-                card("DEFEND", 0, 2, 0, 15),
+                card("STRIKE", SourceKind::Card, 4, 70, 0),
+                card("DEMON_FORM", SourceKind::Power, 1, 35, 0),
+                card("DEFEND", SourceKind::Card, 2, 0, 15),
             ],
             ..RunSummaryView::default()
         }
@@ -577,12 +578,12 @@ mod tests {
         // The avatar row carries the character; the text line never names it.
         assert_eq!(identity_line(&v), "A7 · Standard · Defeat");
         let mut won = view();
-        won.outcome = "victory".to_owned();
+        won.outcome = Some(RunOutcome::Victory);
         won.result = "Victory".to_owned();
         assert_eq!(identity_line(&won), "A7 · Standard · Victory");
         // An abandoned run reads "Abandoned", never a false "Defeat".
         let mut abandoned = view();
-        abandoned.outcome = "abandoned".to_owned();
+        abandoned.outcome = Some(RunOutcome::Abandoned);
         abandoned.result = "Abandoned".to_owned();
         assert_eq!(identity_line(&abandoned), "A7 · Standard · Abandoned");
         // An unknown ascension is omitted; the fallback's "Unfinished"
