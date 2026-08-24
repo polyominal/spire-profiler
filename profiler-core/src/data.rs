@@ -92,7 +92,7 @@
 //!
 //! ## Damage segments and records
 //!
-//! `damage_dealt == dmg_direct + dmg_attributed + dmg_modifier + dmg_upgrade`
+//! `damage_dealt == dmg_direct + dmg_attributed + dmg_modifier`
 //! is re-checked after every mutation. Per-power records (`power_sources`,
 //! `debuff_layers`, `doom_layers`, `osty_stack`, `str_reductions`) remember
 //! appliers so proportional splits credit the right source; their caps and

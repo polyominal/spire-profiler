@@ -16,7 +16,7 @@
 //!   state anyway.
 //! * Toggle: **core-side context routing on the existing export** — the shim's F8 handler and the
 //!   run-history button both call `spire_profiler_panel_toggle` (no new export, keeping check-abi
-//!   at 39 bindings); abi.rs routes it to this panel's flag while the screen is open and to the
+//!   at 38 bindings); abi.rs routes it to this panel's flag while the screen is open and to the
 //!   combat panel's otherwise. The panels keep separate flags, so hiding the combat panel mid-fight
 //!   never hides the run panel.
 //! * Empty state: the screen is open but the displayed run has no profiler record — the selection

@@ -516,7 +516,8 @@ pub fn block_gained(amount: i32, card_id: &str, player_slot: i32, source_slot: i
     let log_lines = STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         // Reborrow the RefCell guard so the combat and the slot's
-        // pool/pending-upgrade fields can be borrowed on disjoint fields.
+        // block-pool/pending-contrib fields can be borrowed on disjoint
+        // fields.
         let state = &mut *state;
         {
             let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {

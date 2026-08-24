@@ -27,7 +27,7 @@
 //! 1. **C pointer reads** — `with_c_str` dereferences a NUL-terminated string pointer supplied by
 //!    the host. The shim never passes null, but null (and any pointer that does not point at valid
 //!    NUL-terminated UTF-8) is treated as "" so a malformed argument can never crash the core.
-//! 2. **`no_mangle` exports** — the 40 `spire_profiler_*` functions (39 bound by the shim and one
+//! 2. **`no_mangle` exports** — the 39 `spire_profiler_*` functions (38 bound by the shim and one
 //!    test-only reset export) carry `#[unsafe(no_mangle)] pub unsafe extern "C"` so their symbols
 //!    exist for the host. Their bodies contain no other unsafe operations; each one decodes its
 //!    arguments and delegates to the safe [`events`] counterpart.

@@ -43,7 +43,7 @@
 //! run: {seq, character, ascension, game_mode, seed}   // absent when run_seq == 0
 //! cards: [{id, kind, plays, damage_dealt, damage_blocked,
 //!          block_gained, block_effective, forge, dmg_direct, dmg_attributed,
-//!          dmg_modifier, dmg_upgrade, blk_modifier, blk_upgrade,
+//!          dmg_modifier, blk_modifier,
 //!          mitigate_debuff, mitigate_buff, mitigate_str, self_damage, player}]
 //! ```
 //!
