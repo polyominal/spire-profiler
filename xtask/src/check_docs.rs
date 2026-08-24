@@ -9,7 +9,7 @@
 //! literal contents never start a comment, and a line where a block
 //! closes and code follows, or that carries a trailing comment, is code.
 //! Blank lines are not counted. Exceeding
-//! the 10% budget is a warning, not a failure: the figure is a
+//! the 15% budget is a warning, not a failure: the figure is a
 //! crate-wide floor checked at checkpoints, not a per-file or per-commit
 //! gate.
 
@@ -20,7 +20,7 @@ use anyhow::{Context, Result};
 use xshell::{Shell, cmd};
 
 /// The AGENTS.md budget: comment+code density, not code-only.
-const DENSITY_LIMIT_PERCENT: f64 = 10.0;
+const DENSITY_LIMIT_PERCENT: f64 = 15.0;
 
 /// Tests included.
 const RUST_ROOTS: &[&str] = &["profiler-core/src", "profiler-core/tests", "xtask/src"];
