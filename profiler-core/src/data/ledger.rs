@@ -1,5 +1,5 @@
 //! Attribution mechanics — the non-export helpers: source resolution, the
-//! debuff-layer FIFO, the block pool, the modifier/upgrade splits. The
+//! debuff-layer FIFO, the block pool, the modifier splits. The
 //! model overview lives in [`super`]'s module doc; this module pins the
 //! chain orders and the split arithmetic.
 //!
@@ -15,13 +15,11 @@
 //! so it falls through to the play source instead of opening a card-kind
 //! row.
 //!
-//! [`resolve_damage_route`] mirrors that order but records direct/indirect
-//! and `via_card`: explicit id → direct via_card; orb fallback → indirect;
-//! play source → direct via_card; innermost context → indirect iff a power;
-//! potion fallback → direct. [`resolve_damage_source_in`] then lets poison
-//! layers claim the hit, and finally falls back to `last_source` (indirect
-//! iff a power). `via_card` is the only route eligible for the per-hit
-//! upgrade split.
+//! [`resolve_damage_route`] mirrors that order but records direct/indirect:
+//! explicit id → direct; orb fallback → indirect; play source → direct;
+//! innermost context → indirect iff a power; potion fallback → direct.
+//! [`resolve_damage_source_in`] then lets poison layers claim the hit, and
+//! finally falls back to `last_source` (indirect iff a power).
 //!
 //! # Block pool
 //!
@@ -36,7 +34,7 @@
 //! to one over-credited point per modifier slice (the residue mechanism),
 //! plus blocked damage the ledger never recorded.
 //!
-//! # Damage modifier and upgrade splits
+//! # Damage modifier splits
 //!
 //! [`apply_pending_contribs_in`] carves the queued modifier share out of
 //! the attacker's `dmg_direct` (then `dmg_attributed`) into the modifier
@@ -44,8 +42,7 @@
 //! [`split_over_appliers_in`] distributes a share across the recorded
 //! appliers proportionally to their amounts (last share takes the
 //! residue), or gives the modifier itself the full amount when none are
-//! recorded. [`apply_upgrade_split_damage_in`] credits the upgrader's
-//! `dmg_upgrade` per hit, capped at the attacker's direct damage.
+//! recorded.
 //!
 //! [`assert_card_damage_segments`] re-checks the segment decomposition
 //! after every mutation so drift surfaces at the mutation site.
@@ -67,7 +64,7 @@ use crate::data::persistence::append_log;
 use crate::data::state::STATE;
 use crate::data::state::{
     self, BlockEntry, BlockMod, CardStat, Combat, ContextEntry, OrbSource, PendingContrib,
-    PlayerSlotState, SourceKind, SourceSlot, UpgradeDelta, clamp_source_slot,
+    PlayerSlotState, SourceKind, SourceSlot, clamp_source_slot,
 };
 use crate::fail;
 
@@ -77,13 +74,12 @@ pub struct DamageRoute {
     pub card_index: usize,
     pub row_slot: SourceSlot,
     pub indirect: bool,
-    pub via_card: bool,
 }
 
 pub(crate) fn assert_card_damage_segments(card: &CardStat) {
     debug_assert_eq!(
         card.damage_dealt,
-        card.dmg_direct + card.dmg_attributed + card.dmg_modifier + card.dmg_upgrade,
+        card.dmg_direct + card.dmg_attributed + card.dmg_modifier,
         "damage segments of '{}' drifted from damage_dealt",
         card.id
     );
@@ -299,13 +295,12 @@ fn resolve_damage_route(
     explicit_id: &str,
     explicit_slot: SourceSlot,
 ) -> Option<DamageRoute> {
-    let (index, row_slot, indirect, via_card) =
+    let (index, row_slot, indirect) =
         if !explicit_id.is_empty() && Some(explicit_id) != slot.active_play_card_id.as_deref() {
             (
                 get_or_create_card(combat, explicit_slot, explicit_id),
                 explicit_slot,
                 false,
-                true,
             )
         } else if let Some(i) = slot.orb_fallback {
             let source = &orb_sources[i];
@@ -315,7 +310,6 @@ fn resolve_damage_route(
                 get_or_create_card_kind(combat, caller_slot, &id, kind),
                 caller_slot,
                 true,
-                false,
             )
         } else if let Some((id, kind)) = slot.active_play_source.clone() {
             let row_slot = slot.active_play_source_slot;
@@ -323,7 +317,6 @@ fn resolve_damage_route(
                 get_or_create_card_kind(combat, row_slot, &id, kind),
                 row_slot,
                 false,
-                true,
             )
         } else if let Some(top) = context_stack.last() {
             let id = top.id.clone();
@@ -333,7 +326,6 @@ fn resolve_damage_route(
                 get_or_create_card_kind(combat, row_slot, &id, kind),
                 row_slot,
                 kind == SourceKind::Power,
-                false,
             )
         } else {
             let i = slot.potion_fallback?;
@@ -343,7 +335,6 @@ fn resolve_damage_route(
             (
                 get_or_create_card_kind(combat, caller_slot, &id, kind),
                 caller_slot,
-                false,
                 false,
             )
         };
@@ -356,7 +347,6 @@ fn resolve_damage_route(
         card_index: index,
         row_slot,
         indirect,
-        via_card,
     })
 }
 
@@ -401,7 +391,6 @@ pub fn resolve_damage_source_in(
         card_index: index,
         row_slot: last_source.slot,
         indirect: last_source.kind == SourceKind::Power,
-        via_card: false,
     })
 }
 
@@ -682,71 +671,6 @@ pub fn apply_pending_contribs_in(
     logs.push(format!(
         "  {total_pending} modifier damage attributed to sources\n"
     ));
-}
-
-/// Splits the slot's pending in-combat upgrade bonus out of a direct hit,
-/// crediting the upgrader's `dmg_upgrade` per hit.
-pub fn apply_upgrade_split_damage_in(
-    state: &mut state::State,
-    attacker_index: usize,
-    slot: i32,
-    logs: &mut Vec<String>,
-) {
-    let slot = state.slot_index(slot);
-    let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
-        return;
-    };
-    debug_assert!(
-        attacker_index < combat.cards.len(),
-        "attacker index {attacker_index} out of {} cards",
-        combat.cards.len()
-    );
-    let slot_state = &state.per_player[slot];
-    if slot_state.pending_upgrade_dmg <= 0 {
-        return;
-    }
-    let split = slot_state
-        .pending_upgrade_dmg
-        .min(combat.cards[attacker_index].dmg_direct);
-    if split <= 0 {
-        return;
-    }
-    {
-        let attacker = &mut combat.cards[attacker_index];
-        // The split is capped at the attacker's direct damage.
-        debug_assert!(
-            attacker.damage_dealt >= split,
-            "upgrade split exceeds the attacker's damage"
-        );
-        debug_assert!(
-            attacker.dmg_direct >= split,
-            "upgrade split exceeds the attacker's direct damage"
-        );
-        attacker.damage_dealt -= split;
-        attacker.dmg_direct -= split;
-        assert_card_damage_segments(attacker);
-    }
-    let kind = slot_state.pending_upgrade_kind;
-    let source_id = slot_state.pending_upgrade_source.clone();
-    // The upgrader's row keys at the slot recorded when the upgrade
-    // happened.
-    let row_slot = slot_state.pending_upgrade_player;
-    let index = get_or_create_card_kind(combat, row_slot, &source_id, kind);
-    let source = &mut combat.cards[index];
-    source.damage_dealt += split;
-    source.dmg_upgrade += split;
-    assert_card_damage_segments(source);
-    logs.push(format!(
-        "  upgrade damage +{split} credited to '{source_id}'\n"
-    ));
-}
-
-pub fn find_upgrade_in(state: &state::State, hash: i32) -> Option<UpgradeDelta> {
-    state
-        .upgrade_deltas
-        .iter()
-        .find(|e| e.hash == hash)
-        .cloned()
 }
 
 #[cfg(test)]

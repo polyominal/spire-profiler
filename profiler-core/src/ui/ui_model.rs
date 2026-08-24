@@ -37,19 +37,17 @@ pub enum Segment {
     Direct = 0,
     Attributed = 1,
     Modifier = 2,
-    Upgrade = 3,
-    MitigateDebuff = 4,
-    MitigateBuff = 5,
-    MitigateStr = 6,
-    SelfDamage = 7,
+    MitigateDebuff = 3,
+    MitigateBuff = 4,
+    MitigateStr = 5,
+    SelfDamage = 6,
 }
 
 impl Segment {
-    pub const ALL: [Segment; 8] = [
+    pub const ALL: [Segment; 7] = [
         Segment::Direct,
         Segment::Attributed,
         Segment::Modifier,
-        Segment::Upgrade,
         Segment::MitigateDebuff,
         Segment::MitigateBuff,
         Segment::MitigateStr,
@@ -102,7 +100,7 @@ impl Default for UiRow {
             plays: 0,
             value: 0,
             share_x10: 0,
-            seg_milli: [0; 8],
+            seg_milli: [0; SEG_COUNT],
             name: [0; 64],
         }
     }

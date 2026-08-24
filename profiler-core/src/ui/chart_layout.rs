@@ -943,7 +943,7 @@ mod tests {
 
     #[test]
     fn segment_offsets_per_mille_to_pixels_uncapped_tail() {
-        let segs = [500, 250, 0, 0, 0, 0, 0, 0];
+        let segs = [500, 250, 0, 0, 0, 0, 0];
         let px = segment_offsets(&segs, 300.0);
         assert_eq!(px[0].x, 0.0);
         assert_eq!(px[0].w, 150.0);
@@ -952,14 +952,14 @@ mod tests {
         assert_eq!(px[2].w, 0.0);
 
         // Sum > 1000 overflows the bar instead of clamping (by design).
-        let over = [800, 400, 0, 0, 0, 0, 0, 0];
+        let over = [800, 400, 0, 0, 0, 0, 0];
         let px_over = segment_offsets(&over, 300.0);
         assert_eq!(px_over[0].w, 240.0);
         assert_eq!(px_over[1].x, 240.0);
         assert_eq!(px_over[1].w, 120.0);
 
         // Truncation, not rounding: 1/3 of 300 = 99.9 -> 99.
-        let third = [333, 0, 0, 0, 0, 0, 0, 0];
+        let third = [333, 0, 0, 0, 0, 0, 0];
         assert_eq!(segment_offsets(&third, 300.0)[0].w, 99.0);
     }
 
@@ -983,7 +983,7 @@ mod tests {
                 2,
                 20,
                 487,
-                [769, 0, 0, 0, 0, 0, 0, 0],
+                [769, 0, 0, 0, 0, 0, 0],
             ),
             test_row(
                 Section::Defense,
@@ -993,7 +993,7 @@ mod tests {
                 1,
                 10,
                 1000,
-                [1000, 0, 0, 0, 0, 0, 0, 0],
+                [1000, 0, 0, 0, 0, 0, 0],
             ),
             test_row(
                 Section::Defense,
@@ -1003,7 +1003,7 @@ mod tests {
                 1,
                 -3,
                 0,
-                [0, 0, 0, 0, 0, 0, 0, 428],
+                [0, 0, 0, 0, 0, 0, 428],
             ),
         ];
         let meta = with_encounter(
@@ -1134,7 +1134,7 @@ mod tests {
                 2,
                 20,
                 487,
-                [1000, 0, 0, 0, 0, 0, 0, 0],
+                [1000, 0, 0, 0, 0, 0, 0],
             ),
             test_row(
                 Section::Defense,
@@ -1144,7 +1144,7 @@ mod tests {
                 1,
                 -6,
                 0,
-                [0, 0, 0, 0, 0, 0, 0, 500],
+                [0, 0, 0, 0, 0, 0, 500],
             ),
         ];
         let meta = UiMeta::default();
@@ -1180,7 +1180,7 @@ mod tests {
             3,
             -9,
             0,
-            [0, 0, 0, 0, 0, 0, 0, 1000],
+            [0, 0, 0, 0, 0, 0, 1000],
         )];
         let l = build(BuildInput {
             tab: UiTab::Combat,
@@ -1215,7 +1215,7 @@ mod tests {
             1,
             5,
             1000,
-            [1000, 0, 0, 0, 0, 0, 0, 0],
+            [1000, 0, 0, 0, 0, 0, 0],
         )];
         let meta = UiMeta {
             combats: 3,
@@ -1273,7 +1273,7 @@ mod tests {
             1,
             9,
             1000,
-            [1000, 0, 0, 0, 0, 0, 0, 0],
+            [1000, 0, 0, 0, 0, 0, 0],
         )];
         let build_with = |enc: &str, flat_chrome: bool| {
             let meta = with_encounter(
@@ -1356,7 +1356,7 @@ mod tests {
             1,
             9,
             1000,
-            [1000, 0, 0, 0, 0, 0, 0, 0],
+            [1000, 0, 0, 0, 0, 0, 0],
         )];
         for tab in [UiTab::Combat, UiTab::Run] {
             let l = build(BuildInput {
@@ -1404,7 +1404,7 @@ mod tests {
             1,
             9,
             1000,
-            [1000, 0, 0, 0, 0, 0, 0, 0],
+            [1000, 0, 0, 0, 0, 0, 0],
         )];
         build(BuildInput {
             tab: UiTab::Combat,
@@ -1493,7 +1493,7 @@ mod tests {
             1,
             9,
             1000,
-            [1000, 0, 0, 0, 0, 0, 0, 0],
+            [1000, 0, 0, 0, 0, 0, 0],
         )];
         let l = build(BuildInput {
             tab: UiTab::Run,
@@ -1557,7 +1557,7 @@ mod tests {
             1,
             9,
             1000,
-            [1000, 0, 0, 0, 0, 0, 0, 0],
+            [1000, 0, 0, 0, 0, 0, 0],
         )];
         let meta = UiMeta {
             turns: 3,
@@ -1618,7 +1618,7 @@ mod tests {
                 1,
                 10,
                 10,
-                [500, 0, 0, 0, 0, 0, 0, 0],
+                [500, 0, 0, 0, 0, 0, 0],
             );
         }
         let l = build(BuildInput {
@@ -1657,7 +1657,7 @@ mod tests {
             1,
             9,
             1000,
-            [1000, 0, 0, 0, 0, 0, 0, 0],
+            [1000, 0, 0, 0, 0, 0, 0],
         )];
         let track_w = |width: f32| {
             let l = build(BuildInput {
@@ -1701,7 +1701,7 @@ mod tests {
                 1,
                 10,
                 10,
-                [1000; 8],
+                [1000; 7],
             );
         }
         let l = build(BuildInput {
@@ -1821,7 +1821,7 @@ mod tests {
                 1,
                 10,
                 1000,
-                [1000, 0, 0, 0, 0, 0, 0, 0],
+                [1000, 0, 0, 0, 0, 0, 0],
             ),
             test_row(
                 Section::Damage,
@@ -1831,7 +1831,7 @@ mod tests {
                 1,
                 10,
                 1000,
-                [1000, 0, 0, 0, 0, 0, 0, 0],
+                [1000, 0, 0, 0, 0, 0, 0],
             ),
         ];
         let l = build(BuildInput {
@@ -1944,7 +1944,7 @@ mod tests {
                 2,
                 20,
                 487,
-                [769, 231, 0, 0, 0, 0, 0, 0],
+                [769, 231, 0, 0, 0, 0, 0],
             ),
             test_row(
                 Section::Damage,
@@ -1954,7 +1954,7 @@ mod tests {
                 1,
                 12,
                 292,
-                [1000, 0, 0, 0, 0, 0, 0, 0],
+                [1000, 0, 0, 0, 0, 0, 0],
             ),
             test_row(
                 Section::Defense,
@@ -1964,7 +1964,7 @@ mod tests {
                 3,
                 15,
                 1000,
-                [1000, 0, 0, 0, 0, 0, 0, 0],
+                [1000, 0, 0, 0, 0, 0, 0],
             ),
             test_row(
                 Section::Defense,
@@ -1974,7 +1974,7 @@ mod tests {
                 1,
                 -6,
                 0,
-                [0, 0, 0, 0, 0, 0, 0, 1000],
+                [0, 0, 0, 0, 0, 0, 1000],
             ),
         ];
         let meta = with_encounter(

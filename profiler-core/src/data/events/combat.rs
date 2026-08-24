@@ -244,7 +244,6 @@ pub fn combat_started(encounter_id: &str, encounter_type: &str) {
         state.doom_targets.clear();
         state.debuff_layers.clear();
         state.str_reductions.clear();
-        state.upgrade_deltas.clear();
         state.enemy_hit = None;
         let seq = state.next_combat_id;
         state.current = Some(Combat {
@@ -405,17 +404,6 @@ fn record_enemy_damage_in(
             ledger::assert_card_damage_segments(card);
         }
         ledger::apply_pending_contribs_in(state, index, dealer_slot, &mut logs);
-        // The pending bonus belongs to the PLAYED card, so it is only
-        // carved out of hits marked with that card's own id.
-        let dealer_index = state.slot_index(dealer_slot);
-        let is_played_card_hit = !card_source_id.is_empty()
-            && state.per_player[dealer_index]
-                .active_play_card_id
-                .as_deref()
-                == Some(card_source_id);
-        if route.via_card && is_played_card_hit {
-            ledger::apply_upgrade_split_damage_in(state, index, dealer_slot, &mut logs);
-        }
         let id = {
             let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
                 return (logs, false);
@@ -528,7 +516,8 @@ pub fn block_gained(amount: i32, card_id: &str, player_slot: i32, source_slot: i
     let log_lines = STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         // Reborrow the RefCell guard so the combat and the slot's
-        // pool/pending-upgrade fields can be borrowed on disjoint fields.
+        // block-pool/pending-contrib fields can be borrowed on disjoint
+        // fields.
         let state = &mut *state;
         {
             let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
@@ -552,49 +541,13 @@ pub fn block_gained(amount: i32, card_id: &str, player_slot: i32, source_slot: i
                 "  block +{amount} attributed to nothing (no active card)\n"
             )];
         };
-        let mut base = block_base_after_mods(&state.per_player[slot], amount as i64);
-        // In-combat upgrade block bonus: credited to the upgrader
-        // immediately (unlike modifier block, credited on consumption). The
-        // bonus MOVES out of the gainer's block_gained into the upgrader's,
-        // and out of the pool chunk so it cannot be double-counted later as
-        // block_effective.
+        let base = block_base_after_mods(&state.per_player[slot], amount as i64);
         let mut logs = Vec::new();
         let (id, kind) = {
             let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
                 return Vec::new();
             };
-            let slot_state = &mut state.per_player[slot];
             combat.cards[index].block_gained += amount as i64;
-            // The pending upgrade bonus belongs to the PLAYED card: split it
-            // only when this gain is that card's own block. Relic/power proc
-            // gains arrive with an empty or unrelated id and must not donate
-            // block to the upgrader.
-            let is_own_gain = slot_state
-                .active_play_card_id
-                .as_deref()
-                .is_some_and(|active_card| active_card == card_id);
-            if slot_state.pending_upgrade_blk > 0 && base > 0 && is_own_gain {
-                let split = slot_state.pending_upgrade_blk.min(base);
-                base -= split;
-                let kind = slot_state.pending_upgrade_kind;
-                let source_id = slot_state.pending_upgrade_source.clone();
-                // The upgrader's row keys at the slot recorded when the
-                // upgrade happened, not the playing slot.
-                let upgrade_slot = slot_state.pending_upgrade_player;
-                let source_index =
-                    ledger::get_or_create_card_kind(combat, upgrade_slot, &source_id, kind);
-                combat.cards[index].block_gained -= split;
-                combat.cards[source_index].blk_upgrade += split;
-                combat.cards[source_index].block_gained += split;
-                // The card's Block value applies to exactly ONE gain per
-                // play (unlike damage, where the C2 rule credits every hit):
-                // consume the pending delta so a second gain cannot
-                // re-credit the upgrader.
-                slot_state.pending_upgrade_blk = 0;
-                logs.push(format!(
-                    "  upgrade block +{split} credited to '{source_id}'\n"
-                ));
-            }
             (combat.cards[index].id.clone(), combat.cards[index].kind)
         };
         // The chunk remembers the SOURCE's row slot: the pool is the

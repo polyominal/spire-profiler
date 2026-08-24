@@ -23,8 +23,6 @@ pub const COL_DMG_DIRECT: Color = [1.0, 0.392157, 0.392157, 1.0];
 pub const COL_ATTRIBUTED: Color = [1.0, 0.647059, 0.094118, 1.0];
 /// StsColors.purple #EE82EE.
 pub const COL_MODIFIER: Color = [0.933333, 0.509804, 0.933333, 1.0];
-/// [`COL_GOLD`], aliased so the segment table reads in its own vocabulary.
-pub const COL_UPGRADE: Color = COL_GOLD;
 /// StsColors.disabledRed #BF3030.
 pub const COL_SELF: Color = [0.749020, 0.188235, 0.188235, 1.0];
 /// StsColors.darkBlue #67AEEB.
@@ -75,7 +73,6 @@ pub fn slot_color(slot: Segment, section: Section, kind: SourceKind) -> Color {
         },
         Segment::Attributed => COL_ATTRIBUTED,
         Segment::Modifier => COL_MODIFIER,
-        Segment::Upgrade => COL_UPGRADE,
         Segment::MitigateDebuff => COL_MITIGATE_DEBUFF,
         Segment::MitigateBuff => COL_MITIGATE_BUFF,
         Segment::MitigateStr => COL_MITIGATE_STR,
@@ -183,12 +180,6 @@ pub(crate) const LEGEND_ENTRIES: &[LegendEntry] = &[
         kind: SourceKind::Card,
     },
     LegendEntry {
-        label: "upgrade",
-        slot: Segment::Upgrade,
-        section: Section::Damage,
-        kind: SourceKind::Card,
-    },
-    LegendEntry {
         label: "block",
         slot: Segment::Direct,
         section: Section::Defense,
@@ -290,11 +281,6 @@ mod tests {
         assert_eq!(
             slot_color(Segment::Modifier, Section::Defense, SourceKind::Card),
             COL_MODIFIER
-        );
-        assert_eq!(
-            slot_color(Segment::Upgrade, Section::Damage, SourceKind::Card),
-            COL_GOLD,
-            "the upgrade segment IS the game's gold accent"
         );
         assert_eq!(
             slot_color(Segment::MitigateDebuff, Section::Defense, SourceKind::Card),

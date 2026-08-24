@@ -139,10 +139,6 @@ const _: () = assert!(
     core::mem::size_of::<UiRow>() <= 4096,
     "UiRow must stay under 4096 bytes for the panel's frame-buffer memcpy"
 );
-const _: () = assert!(
-    ui_model::Segment::ALL.len() == 8,
-    "seg_milli must stay 8 segment slots wide"
-);
 
 const _: () = assert!(
     UiTab::Combat as u8 == 0,
@@ -221,10 +217,8 @@ pub struct CardStat {
     /// Indirect damage: poison ticks, orb triggers, doom kills.
     pub dmg_attributed: i64,
     pub dmg_modifier: i64,
-    pub dmg_upgrade: i64,
     /// Credited only when the block actually absorbs damage.
     pub blk_modifier: i64,
-    pub blk_upgrade: i64,
     pub mitigate_debuff: i64,
     pub mitigate_buff: i64,
     pub mitigate_str: i64,
@@ -472,14 +466,6 @@ pub struct PlayerSlotState {
     /// How many of this slot's plays are nested; plays interleave across
     /// slots, never within one.
     pub play_depth: u32,
-    /// Pending in-combat upgrade bonus of the card this slot is playing;
-    /// the damage split is per hit.
-    pub pending_upgrade_dmg: i64,
-    pub pending_upgrade_blk: i64,
-    pub pending_upgrade_source: String,
-    pub pending_upgrade_kind: SourceKind,
-    /// The upgrade record's row slot; the upgrader may sit on another slot.
-    pub pending_upgrade_player: SourceSlot,
     /// This slot's block pool (bounded at [`caps::BLOCK_POOL`] chunks).
     pub block_pool: Vec<BlockEntry>,
     pub pending_block_contribs: Vec<PendingContrib>,
@@ -558,20 +544,6 @@ pub struct StrReduction {
     pub amount: i64,
 }
 
-/// In-combat upgrade deltas per card instance; the later play credits the
-/// bonus to the upgrader.
-#[derive(Clone, Debug)]
-pub struct UpgradeDelta {
-    pub hash: i32,
-    pub damage: i64,
-    pub block: i64,
-    pub source_id: String,
-    pub kind: SourceKind,
-    /// The upgrader's slot; the credit rows key here, not at the playing
-    /// slot.
-    pub player: SourceSlot,
-}
-
 /// FIFO debuff layers per (creature, power); turn-end decrements consume
 /// from the head, and poison tick damage splits by duration fraction.
 #[derive(Clone, Debug)]
@@ -641,8 +613,6 @@ pub struct State {
     /// A stale capture at worst mis-prorates one hit; it never accumulates.
     pub enemy_hit: Option<EnemyHit>,
 
-    pub upgrade_deltas: Vec<UpgradeDelta>,
-
     pub debuff_layers: Vec<DebuffLayer>,
 }
 
@@ -689,7 +659,6 @@ pub mod caps {
     pub const OSTY_STACK: usize = 32;
     pub const PENDING_CONTRIBS: usize = 16;
     pub const STR_REDUCTIONS: usize = 64;
-    pub const UPGRADE_DELTAS: usize = 64;
     pub const DEBUFF_LAYERS: usize = 64;
 }
 

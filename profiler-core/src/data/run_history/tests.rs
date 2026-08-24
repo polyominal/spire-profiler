@@ -67,7 +67,7 @@ const COMBATS: &str = r#"[
          "run":{"seq":2,"character":"IRONCLAD","ascension":7,"game_mode":"Standard"},
          "cards":[
             {"id":"STRIKE","kind":0,"plays":3,"damage_dealt":40,"block_gained":0,"block_effective":0,"heal":0,
-             "dmg_direct":30,"dmg_attributed":10,"dmg_modifier":0,"dmg_upgrade":0},
+             "dmg_direct":30,"dmg_attributed":10,"dmg_modifier":0},
             {"id":"DEFEND","kind":0,"plays":2,"damage_dealt":0,"block_gained":16,"block_effective":15,"heal":0}
          ]},
         {"combat_id":3,"encounter_id":"C","result":"defeated","turns":3,"damage_received":25,
@@ -75,7 +75,7 @@ const COMBATS: &str = r#"[
          "run":{"seq":2,"character":"IRONCLAD","ascension":7,"game_mode":"Standard"},
          "cards":[
             {"id":"STRIKE","kind":0,"plays":1,"damage_dealt":30,"block_gained":0,"block_effective":0,"heal":0,
-             "dmg_direct":20,"dmg_attributed":0,"dmg_modifier":5,"dmg_upgrade":5},
+             "dmg_direct":20,"dmg_attributed":0,"dmg_modifier":5},
             {"id":"NOT_YET","kind":0,"plays":1,"damage_dealt":0,"block_gained":0,"block_effective":0,"heal":4}
          ]}
     ]"#;
@@ -205,7 +205,6 @@ fn select_by_seed_assembles_the_full_view() {
     assert_eq!(view.rollup[0].dmg_direct, 50);
     assert_eq!(view.rollup[0].dmg_attributed, 10);
     assert_eq!(view.rollup[0].dmg_modifier, 5);
-    assert_eq!(view.rollup[0].dmg_upgrade, 5);
     assert_eq!(view.rollup[1].id, "DEFEND");
     assert_eq!(view.rollup[1].damage_dealt, 0);
     assert_eq!(view.rollup[1].block_effective, 15);

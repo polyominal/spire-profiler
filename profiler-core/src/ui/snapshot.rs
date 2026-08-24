@@ -3,7 +3,7 @@
 
 use crate::data::state::{CardStat, Combat, PlayerFilter, STATE};
 use crate::ui::tooltip::{RowDetail, StatLine, StatTone};
-use crate::ui::ui_model::{self, Section, Segment, UiMeta, UiRow, UiTab};
+use crate::ui::ui_model::{self, SEG_COUNT, Section, Segment, UiMeta, UiRow, UiTab};
 use crate::ui::{chart_layout, palette};
 
 fn total_damage(c: &Combat) -> i64 {
@@ -49,7 +49,6 @@ fn format_card_detail(card: &CardStat) -> RowDetail {
             StatTone::Attributed,
         );
         push("mod".to_owned(), card.dmg_modifier, StatTone::Modifier);
-        push("upg".to_owned(), card.dmg_upgrade, StatTone::Upgrade);
     }
     if card.block_gained > 0 {
         push(
@@ -58,7 +57,6 @@ fn format_card_detail(card: &CardStat) -> RowDetail {
             StatTone::Direct(Section::Defense, card.kind),
         );
         push("blk mod".to_owned(), card.blk_modifier, StatTone::Modifier);
-        push("blk upg".to_owned(), card.blk_upgrade, StatTone::Upgrade);
     }
     if card.mitigate_debuff > 0 || card.mitigate_buff > 0 || card.mitigate_str > 0 {
         push(
@@ -89,7 +87,7 @@ fn format_card_detail(card: &CardStat) -> RowDetail {
 #[derive(Clone, Copy, Debug, Default)]
 struct SectionView {
     value: i64,
-    segs: [i64; Segment::ALL.len()],
+    segs: [i64; SEG_COUNT],
 }
 
 fn section_view(section: Section, card: &CardStat) -> SectionView {
@@ -99,8 +97,7 @@ fn section_view(section: Section, card: &CardStat) -> SectionView {
             v.segs[Segment::Direct.index()] = card.dmg_direct;
             v.segs[Segment::Attributed.index()] = card.dmg_attributed;
             v.segs[Segment::Modifier.index()] = card.dmg_modifier;
-            v.segs[Segment::Upgrade.index()] = card.dmg_upgrade;
-            v.value = card.dmg_direct + card.dmg_attributed + card.dmg_modifier + card.dmg_upgrade;
+            v.value = card.dmg_direct + card.dmg_attributed + card.dmg_modifier;
         }
         Section::Defense => {
             v.segs[Segment::Direct.index()] = card.block_effective;
@@ -108,14 +105,12 @@ fn section_view(section: Section, card: &CardStat) -> SectionView {
             v.segs[Segment::MitigateDebuff.index()] = card.mitigate_debuff;
             v.segs[Segment::MitigateBuff.index()] = card.mitigate_buff;
             v.segs[Segment::MitigateStr.index()] = card.mitigate_str;
-            v.segs[Segment::Upgrade.index()] = card.blk_upgrade;
             v.segs[Segment::SelfDamage.index()] = card.self_damage;
             v.value = card.block_effective
                 + card.blk_modifier
                 + card.mitigate_debuff
                 + card.mitigate_buff
                 + card.mitigate_str
-                + card.blk_upgrade
                 - card.self_damage;
         }
     }
@@ -128,7 +123,6 @@ fn defense_positive(card: &CardStat) -> i64 {
         + card.mitigate_debuff
         + card.mitigate_buff
         + card.mitigate_str
-        + card.blk_upgrade
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -320,11 +314,13 @@ fn make_row(
         row.share_x10 = (view.value * 1000 / total_val) as i32;
     }
     if max_val > 0 {
-        for (segment, &seg) in Segment::ALL.iter().zip(view.segs.iter()) {
+        for i in Segment::ALL.iter() {
+            let i = i.index();
+            let seg = view.segs[i];
             if seg <= 0 {
                 continue;
             }
-            row.seg_milli[segment.index()] = (seg * 1000 / max_val).min(1000) as u16;
+            row.seg_milli[i] = (seg * 1000 / max_val).min(1000) as u16;
         }
     }
     row

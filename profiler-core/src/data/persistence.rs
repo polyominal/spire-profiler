@@ -43,7 +43,7 @@
 //! run: {seq, character, ascension, game_mode, seed}   // absent when run_seq == 0
 //! cards: [{id, kind, plays, damage_dealt, damage_blocked,
 //!          block_gained, block_effective, forge, dmg_direct, dmg_attributed,
-//!          dmg_modifier, dmg_upgrade, blk_modifier, blk_upgrade,
+//!          dmg_modifier, blk_modifier,
 //!          mitigate_debuff, mitigate_buff, mitigate_str, self_damage, player}]
 //! ```
 //!
@@ -184,9 +184,7 @@ pub(crate) mod test_support {
                     dmg_direct: 11,
                     dmg_attributed: 5,
                     dmg_modifier: 3,
-                    dmg_upgrade: 2,
                     blk_modifier: 1,
-                    blk_upgrade: 1,
                     mitigate_debuff: 4,
                     mitigate_buff: 2,
                     mitigate_str: 1,

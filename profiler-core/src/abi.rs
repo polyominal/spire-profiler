@@ -27,7 +27,7 @@
 //! 1. **C pointer reads** — `with_c_str` dereferences a NUL-terminated string pointer supplied by
 //!    the host. The shim never passes null, but null (and any pointer that does not point at valid
 //!    NUL-terminated UTF-8) is treated as "" so a malformed argument can never crash the core.
-//! 2. **`no_mangle` exports** — the 40 `spire_profiler_*` functions (39 bound by the shim and one
+//! 2. **`no_mangle` exports** — the 39 `spire_profiler_*` functions (38 bound by the shim and one
 //!    test-only reset export) carry `#[unsafe(no_mangle)] pub unsafe extern "C"` so their symbols
 //!    exist for the host. Their bodies contain no other unsafe operations; each one decodes its
 //!    arguments and delegates to the safe [`events`] counterpart.
@@ -370,17 +370,6 @@ pub unsafe extern "C" fn spire_profiler_buff_mitigation(power_id: *const c_char,
 pub unsafe extern "C" fn spire_profiler_enemy_hit_context(base_damage: i32, dealer_str: i32) {
     contain("spire_profiler_enemy_hit_context", (), || {
         events::enemy_hit_context(base_damage, dealer_str);
-    });
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn spire_profiler_card_upgraded(
-    card_hash: i32,
-    damage_delta: i32,
-    block_delta: i32,
-) {
-    contain("spire_profiler_card_upgraded", (), || {
-        events::card_upgraded(card_hash, damage_delta, block_delta);
     });
 }
 

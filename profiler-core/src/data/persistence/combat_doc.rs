@@ -32,11 +32,7 @@ struct CardDoc<'a> {
     #[serde(skip_serializing_if = "is_zero")]
     dmg_modifier: i64,
     #[serde(skip_serializing_if = "is_zero")]
-    dmg_upgrade: i64,
-    #[serde(skip_serializing_if = "is_zero")]
     blk_modifier: i64,
-    #[serde(skip_serializing_if = "is_zero")]
-    blk_upgrade: i64,
     #[serde(skip_serializing_if = "is_zero")]
     mitigate_debuff: i64,
     #[serde(skip_serializing_if = "is_zero")]
@@ -90,9 +86,7 @@ fn card_doc(card: &crate::data::state::CardStat) -> CardDoc<'_> {
         dmg_direct: card.dmg_direct,
         dmg_attributed: card.dmg_attributed,
         dmg_modifier: card.dmg_modifier,
-        dmg_upgrade: card.dmg_upgrade,
         blk_modifier: card.blk_modifier,
-        blk_upgrade: card.blk_upgrade,
         mitigate_debuff: card.mitigate_debuff,
         mitigate_buff: card.mitigate_buff,
         mitigate_str: card.mitigate_str,
@@ -139,9 +133,7 @@ pub(crate) fn card_stat_from_rec(rec: &records::CardRec) -> CardStat {
         dmg_direct: rec.dmg_direct,
         dmg_attributed: rec.dmg_attributed,
         dmg_modifier: rec.dmg_modifier,
-        dmg_upgrade: rec.dmg_upgrade,
         blk_modifier: rec.blk_modifier,
-        blk_upgrade: rec.blk_upgrade,
         mitigate_debuff: rec.mitigate_debuff,
         mitigate_buff: rec.mitigate_buff,
         mitigate_str: rec.mitigate_str,

@@ -20,14 +20,14 @@ cargo xtask build          # cross-platform mod bundle (runs check-abi inside)
 cargo xtask release        # build + package the mod as release zips under dist/
 cargo xtask install-mod    # copy the bundle into the game's mods directory
 cargo xtask smoke          # commit gate: fmt, clippy, citations, tests
-cargo xtask check-abi      # standalone shim<->Rust ABI check (39 bindings)
+cargo xtask check-abi      # standalone shim<->Rust ABI check (38 bindings)
 cargo xtask check-citations # fail on file:line citations in comments/docs
 cargo xtask headless-test  # install, then boot the game headless (~30s)
 cargo xtask decompile      # recover the game's Godot source (see below)
 ```
 
-The gate set, stated once: `smoke` green; `check-abi` green (39 bindings);
-`headless-test` PASS — patch count ≥ 199 (the static count is 204), no
+The gate set, stated once: `smoke` green; `check-abi` green (38 bindings);
+`headless-test` PASS — patch count ≥ 199 (the static count is 203), no
 unexpected `[SpireProfiler]` ERROR lines, and the combat panel's `draw` virtual
 fires under the headless dummy renderer (draw dispatch is covered, visual output
 is not). Real-play validation is pending for the user — the pipeline cannot
@@ -106,7 +106,7 @@ mods directory is the whole install.
   allowlisted.
 
 - The verdict's patch-count gate accepts \>= 199 patched methods (the static
-  count is 204); below that means a large chunk of the catalog silently failed
+  count is 203); below that means a large chunk of the catalog silently failed
   to patch.
 
 - `headless-test` boots the game under a 10-minute watchdog (first boot after an

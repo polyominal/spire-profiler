@@ -1,5 +1,5 @@
-//! Card plays and card instances: play start/finish, in-combat upgrades, and
-//! generation. The play stack is per player slot (co-op plays interleave).
+//! Card plays and card instances: play start/finish and generation.
+//! The play stack is per player slot (co-op plays interleave).
 //! A row's `plays` counts the source's OWN triggers only — never the plays
 //! of cards it generated — so the conservation invariant
 //! `plays + generation_triggers == Σ row plays + generated_plays` stays
@@ -8,83 +8,10 @@
 use crate::data::ledger;
 use crate::data::persistence::append_log;
 use crate::data::state::{
-    Combat, GeneratedInstance, PlayerSlotState, STATE, SourceKind, SourceSlot, State, UpgradeDelta,
-    caps, clamp_source_slot,
+    Combat, GeneratedInstance, PlayerSlotState, STATE, SourceKind, SourceSlot, State, caps,
+    clamp_source_slot,
 };
 use crate::fail;
-
-/// Record the card instance's damage/block deltas with the upgrader source.
-pub fn card_upgraded(card_hash: i32, damage_delta: i32, block_delta: i32) {
-    let log_lines = STATE.with(|cell| {
-        let mut state = cell.borrow_mut();
-        if !state.initialized || card_hash == 0 {
-            return Vec::new();
-        }
-        if damage_delta <= 0 && block_delta <= 0 {
-            return Vec::new();
-        }
-        if !state
-            .current
-            .as_ref()
-            .is_some_and(|combat| !combat.finished)
-        {
-            return Vec::new();
-        }
-        // Slotless event: the source is the ambient play.
-        let ambient = state.ambient_slot();
-        let mut source_id = "UPGRADE".to_owned();
-        let mut kind = SourceKind::Card;
-        if let Some((id, play_kind)) = state
-            .per_player
-            .get(ambient)
-            .and_then(|slot| slot.active_play_source.clone())
-        {
-            source_id = id;
-            kind = play_kind;
-        } else if let Some(top) = state.context_stack.last() {
-            source_id = top.id.clone();
-            kind = top.kind;
-        }
-        // The credit rows key at the ambient slot at upgrade time.
-        let player = ambient as SourceSlot;
-        let existing = state
-            .upgrade_deltas
-            .iter()
-            .position(|e| e.hash == card_hash);
-        match existing {
-            Some(i) => {
-                state.upgrade_deltas[i] = UpgradeDelta {
-                    hash: card_hash,
-                    damage: damage_delta as i64,
-                    block: block_delta as i64,
-                    source_id: source_id.clone(),
-                    kind,
-                    player,
-                };
-            }
-            None => {
-                if state.upgrade_deltas.len() >= caps::UPGRADE_DELTAS {
-                    fail("upgrade delta table overflow".to_owned());
-                    return Vec::new();
-                }
-                state.upgrade_deltas.push(UpgradeDelta {
-                    hash: card_hash,
-                    damage: damage_delta as i64,
-                    block: block_delta as i64,
-                    source_id: source_id.clone(),
-                    kind,
-                    player,
-                });
-            }
-        }
-        vec![format!(
-            "  card upgraded: +{damage_delta} dmg/+{block_delta} blk from '{source_id}'\n"
-        )]
-    });
-    for line in log_lines {
-        append_log(line);
-    }
-}
 
 pub fn card_play_started(
     card_id: &str,
@@ -110,7 +37,7 @@ pub fn card_play_started(
         let slot = state.slot_index(player_slot);
         ledger::clear_fallbacks_in(state, player_slot);
         // Metadata read before the combat borrow for disjoint fields.
-        let (generator, upgrade_delta) = load_play_metadata_in(state, card_hash);
+        let generator = load_play_metadata_in(state, card_hash);
         // Capture generation BEFORE consuming the entry: Anger cloning
         // Anger still makes this a generated play.
         let generated = generator.is_some();
@@ -134,7 +61,6 @@ pub fn card_play_started(
         let index =
             ledger::get_or_create_card_kind(combat, play_slot, &play_source.0, play_source.1);
         record_card_play_in(combat, slot_state, index, card_id, !generated);
-        load_pending_upgrade_in(slot_state, upgrade_delta);
         slot_state.play_depth += 1;
         combat.plays += 1;
         if generated {
@@ -181,27 +107,8 @@ fn record_card_play_in(
     slot_state.active_play_card_id = Some(card_id.to_owned());
 }
 
-/// The credit rows key at the upgrader's slot, not the playing slot.
-fn load_pending_upgrade_in(slot_state: &mut PlayerSlotState, upgrade_delta: Option<UpgradeDelta>) {
-    slot_state.pending_upgrade_dmg = 0;
-    slot_state.pending_upgrade_blk = 0;
-    slot_state.pending_upgrade_source = String::new();
-    slot_state.pending_upgrade_kind = SourceKind::Card;
-    slot_state.pending_upgrade_player = 0;
-    if let Some(delta) = upgrade_delta {
-        slot_state.pending_upgrade_dmg = delta.damage;
-        slot_state.pending_upgrade_blk = delta.block;
-        slot_state.pending_upgrade_source = delta.source_id;
-        slot_state.pending_upgrade_kind = delta.kind;
-        slot_state.pending_upgrade_player = delta.player;
-    }
-}
-
-fn load_play_metadata_in(
-    state: &State,
-    card_hash: i32,
-) -> (Option<GeneratedInstance>, Option<UpgradeDelta>) {
-    let generator = if card_hash != 0 {
+fn load_play_metadata_in(state: &State, card_hash: i32) -> Option<GeneratedInstance> {
+    if card_hash != 0 {
         state
             .generated_instances
             .iter()
@@ -209,13 +116,7 @@ fn load_play_metadata_in(
             .cloned()
     } else {
         None
-    };
-    let upgrade_delta = if card_hash != 0 {
-        ledger::find_upgrade_in(state, card_hash)
-    } else {
-        None
-    };
-    (generator, upgrade_delta)
+    }
 }
 
 pub fn card_play_finished(player_slot: i32) {

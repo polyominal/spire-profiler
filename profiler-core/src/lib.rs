@@ -10,7 +10,7 @@
 //! # What it records
 //!
 //! During every combat the mod tracks what each card and source
-//! contributes — damage (direct/attributed/modifier/upgrade splits, plus
+//! contributes — damage (direct/attributed/modifier splits, plus
 //! self-damage), defense (block gained/effective, debuff/buff/strength
 //! mitigation, Osty), and forge — rolls the numbers up per run, renders
 //! them in two in-game panels (the combat chart and the run-history

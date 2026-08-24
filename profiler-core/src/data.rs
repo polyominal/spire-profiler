@@ -46,10 +46,6 @@
 //!   direct; then poison layers claim the hit and, failing that, `last_source` catches async
 //!   continuations.
 //!
-//! `via_card` plus the played-card id check gate the per-hit upgrade split:
-//! the pending upgrade bonus belongs to the played card, so it is only
-//! carved out of hits the shim marked with that card's own id.
-//!
 //! ## Contexts and the async fallback rule
 //!
 //! The shim wraps every catalogued relic/power hook in a begin/end pair. A
@@ -96,11 +92,11 @@
 //!
 //! ## Damage segments and records
 //!
-//! `damage_dealt == dmg_direct + dmg_attributed + dmg_modifier + dmg_upgrade`
+//! `damage_dealt == dmg_direct + dmg_attributed + dmg_modifier`
 //! is re-checked after every mutation. Per-power records (`power_sources`,
-//! `debuff_layers`, `doom_layers`, `osty_stack`, `str_reductions`,
-//! `upgrade_deltas`) remember appliers so proportional splits credit the
-//! right source; their caps and one-line rationales live in [`state::caps`].
+//! `debuff_layers`, `doom_layers`, `osty_stack`, `str_reductions`) remember
+//! appliers so proportional splits credit the right source; their caps and
+//! one-line rationales live in [`state::caps`].
 
 pub mod events;
 pub mod ledger;

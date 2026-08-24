@@ -103,7 +103,7 @@ fn power_source_decomposition_splits_modifier_damage_across_appliers() {
 }
 
 #[test]
-fn damage_segments_split_direct_modifier_attributed_and_upgrade() {
+fn damage_segments_split_direct_modifier_and_attributed() {
     let base = scratch_dir("spire-profiler-test-segments");
     test_reset();
     init(&base);
@@ -133,7 +133,6 @@ fn damage_segments_split_direct_modifier_attributed_and_upgrade() {
     });
 
     card_play_started("ARMAMENTS", 0, 1, 0, 0);
-    card_upgraded(6001, 3, 0);
     card_play_finished(0);
     card_play_started("BASH", 0, 1, 6001, 0);
     damage_dealt(DamageDealt {
@@ -155,11 +154,10 @@ fn damage_segments_split_direct_modifier_attributed_and_upgrade() {
     assert_eq!(card_json(&doc, "STRIKE")["dmg_direct"], 6);
     assert_eq!(card_json(&doc, "INFLAME")["dmg_modifier"], 2);
     assert_eq!(card_json(&doc, "BOUNCING_FLASK")["dmg_attributed"], 3);
-    assert_eq!(card_json(&doc, "ARMAMENTS")["dmg_upgrade"], 3);
     let bash = card_row(&combat, "BASH");
     assert_eq!(
         (bash.kind, bash.plays, bash.damage_dealt),
-        (SourceKind::Card, 1, 7)
+        (SourceKind::Card, 1, 10)
     );
 }
 

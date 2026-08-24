@@ -28,7 +28,7 @@ const GAME_ARGS: [&str; 6] = [
 ];
 
 /// Below this a large chunk of the catalog silently failed. Static count is
-/// 35 class-level + 11 orb + 158 catalog = 204; the runtime count also
+/// 34 class-level + 11 orb + 158 catalog = 203; the runtime count also
 /// depends on the pinned version's hook resolution, so the floor keeps a
 /// small margin for drift while still catching a large failure.
 const MIN_PATCHES: u64 = 199;

@@ -699,9 +699,7 @@ fn hash_card_stat(hasher: &mut std::collections::hash_map::DefaultHasher, card: 
     card.dmg_direct.hash(hasher);
     card.dmg_attributed.hash(hasher);
     card.dmg_modifier.hash(hasher);
-    card.dmg_upgrade.hash(hasher);
     card.blk_modifier.hash(hasher);
-    card.blk_upgrade.hash(hasher);
     card.mitigate_debuff.hash(hasher);
     card.mitigate_buff.hash(hasher);
     card.mitigate_str.hash(hasher);
@@ -756,7 +754,7 @@ mod tests {
     use super::*;
     use crate::data::state::{Combat, PlayerFilter};
     use crate::test_util::test_row;
-    use crate::ui::ui_model::Section;
+    use crate::ui::ui_model::{SEG_COUNT, Section};
 
     fn test_layout() -> Layout {
         let rows = [test_row(
@@ -767,7 +765,7 @@ mod tests {
             0,
             20,
             0,
-            [0; 8],
+            [0; SEG_COUNT],
         )];
         chart_layout::build(chart_layout::BuildInput {
             tab: UiTab::Combat,
@@ -858,7 +856,7 @@ mod tests {
             0,
             20,
             0,
-            [0; 8],
+            [0; SEG_COUNT],
         )];
         let l = chart_layout::build(chart_layout::BuildInput {
             tab: UiTab::Combat,
@@ -927,7 +925,7 @@ mod tests {
             0,
             20,
             0,
-            [0; 8],
+            [0; SEG_COUNT],
         )];
         let meta = UiMeta::default();
         let none = RowDetail::default();
