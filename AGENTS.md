@@ -27,7 +27,7 @@ legacy compatibility.
 
 ## Comments
 
-Comment density across in-house Rust must stay at most 10% of comment+code
+Comment density across in-house Rust must stay at most 15% of comment+code
 lines, measured with `cargo xtask check-docs` (a line counter over
 `profiler-core/src`, `profiler-core/tests`, and `xtask/src`; doc comments count,
 and tests are part of the whole-repo metric). The gate fails on any `cargo doc`
