@@ -699,9 +699,7 @@ fn hash_card_stat(hasher: &mut std::collections::hash_map::DefaultHasher, card: 
     card.dmg_direct.hash(hasher);
     card.dmg_attributed.hash(hasher);
     card.dmg_modifier.hash(hasher);
-    card.dmg_upgrade.hash(hasher);
     card.blk_modifier.hash(hasher);
-    card.blk_upgrade.hash(hasher);
     card.mitigate_debuff.hash(hasher);
     card.mitigate_buff.hash(hasher);
     card.mitigate_str.hash(hasher);

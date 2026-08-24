@@ -217,10 +217,8 @@ pub struct CardStat {
     /// Indirect damage: poison ticks, orb triggers, doom kills.
     pub dmg_attributed: i64,
     pub dmg_modifier: i64,
-    pub dmg_upgrade: i64,
     /// Credited only when the block actually absorbs damage.
     pub blk_modifier: i64,
-    pub blk_upgrade: i64,
     pub mitigate_debuff: i64,
     pub mitigate_buff: i64,
     pub mitigate_str: i64,
@@ -468,14 +466,6 @@ pub struct PlayerSlotState {
     /// How many of this slot's plays are nested; plays interleave across
     /// slots, never within one.
     pub play_depth: u32,
-    /// Pending in-combat upgrade bonus of the card this slot is playing;
-    /// the damage split is per hit.
-    pub pending_upgrade_dmg: i64,
-    pub pending_upgrade_blk: i64,
-    pub pending_upgrade_source: String,
-    pub pending_upgrade_kind: SourceKind,
-    /// The upgrade record's row slot; the upgrader may sit on another slot.
-    pub pending_upgrade_player: SourceSlot,
     /// This slot's block pool (bounded at [`caps::BLOCK_POOL`] chunks).
     pub block_pool: Vec<BlockEntry>,
     pub pending_block_contribs: Vec<PendingContrib>,

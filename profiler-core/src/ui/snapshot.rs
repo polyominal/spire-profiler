@@ -97,7 +97,7 @@ fn section_view(section: Section, card: &CardStat) -> SectionView {
             v.segs[Segment::Direct.index()] = card.dmg_direct;
             v.segs[Segment::Attributed.index()] = card.dmg_attributed;
             v.segs[Segment::Modifier.index()] = card.dmg_modifier;
-            v.value = card.dmg_direct + card.dmg_attributed + card.dmg_modifier + card.dmg_upgrade;
+            v.value = card.dmg_direct + card.dmg_attributed + card.dmg_modifier;
         }
         Section::Defense => {
             v.segs[Segment::Direct.index()] = card.block_effective;
@@ -111,7 +111,6 @@ fn section_view(section: Section, card: &CardStat) -> SectionView {
                 + card.mitigate_debuff
                 + card.mitigate_buff
                 + card.mitigate_str
-                + card.blk_upgrade
                 - card.self_damage;
         }
     }
@@ -124,7 +123,6 @@ fn defense_positive(card: &CardStat) -> i64 {
         + card.mitigate_debuff
         + card.mitigate_buff
         + card.mitigate_str
-        + card.blk_upgrade
 }
 
 #[derive(Clone, Copy, Debug)]

@@ -103,9 +103,7 @@ pub(crate) fn merge_card_stat(dst: &mut CardStat, src: &CardStat) {
     dst.dmg_direct += src.dmg_direct;
     dst.dmg_attributed += src.dmg_attributed;
     dst.dmg_modifier += src.dmg_modifier;
-    dst.dmg_upgrade += src.dmg_upgrade;
     dst.blk_modifier += src.blk_modifier;
-    dst.blk_upgrade += src.blk_upgrade;
     dst.mitigate_debuff += src.mitigate_debuff;
     dst.mitigate_buff += src.mitigate_buff;
     dst.mitigate_str += src.mitigate_str;
@@ -404,9 +402,7 @@ mod tests {
         assert_eq!(a.dmg_direct, b.dmg_direct);
         assert_eq!(a.dmg_attributed, b.dmg_attributed);
         assert_eq!(a.dmg_modifier, b.dmg_modifier);
-        assert_eq!(a.dmg_upgrade, b.dmg_upgrade);
         assert_eq!(a.blk_modifier, b.blk_modifier);
-        assert_eq!(a.blk_upgrade, b.blk_upgrade);
         assert_eq!(a.mitigate_debuff, b.mitigate_debuff);
         assert_eq!(a.mitigate_buff, b.mitigate_buff);
         assert_eq!(a.mitigate_str, b.mitigate_str);

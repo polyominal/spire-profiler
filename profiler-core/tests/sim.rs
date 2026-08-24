@@ -153,7 +153,7 @@ fn check_card_invariants(combat: &state::Combat, step: u32) {
         );
         assert_eq!(
             card.damage_dealt,
-            card.dmg_direct + card.dmg_attributed + card.dmg_modifier + card.dmg_upgrade,
+            card.dmg_direct + card.dmg_attributed + card.dmg_modifier,
             "step {step}: card {id}: segment sum must equal damage_dealt",
             id = card.id
         );
@@ -164,8 +164,7 @@ fn check_card_invariants(combat: &state::Combat, step: u32) {
                 && card.damage_blocked >= 0
                 && card.dmg_direct >= 0
                 && card.dmg_attributed >= 0
-                && card.dmg_modifier >= 0
-                && card.dmg_upgrade >= 0,
+                && card.dmg_modifier >= 0,
             "step {step}: card {id}: damage fields must be non-negative",
             id = card.id
         );
@@ -177,7 +176,7 @@ fn check_card_invariants(combat: &state::Combat, step: u32) {
         // osty_killed removes the summon's unabsorbed HP from the killer's
         // credit.
         assert!(
-            card.blk_modifier >= 0 && card.blk_upgrade >= 0,
+            card.blk_modifier >= 0,
             "step {step}: card {id}: block modifier credits must be non-negative",
             id = card.id
         );
@@ -640,7 +639,7 @@ fn check_wire_shape(combats_text: &str, rec: &records::CombatRec) {
     check_absent_equals_zero(combats_text, rec);
 }
 
-const CARD_NUMERIC_FIELDS: [&str; 16] = [
+const CARD_NUMERIC_FIELDS: [&str; 14] = [
     "plays",
     "damage_dealt",
     "damage_blocked",
@@ -650,9 +649,7 @@ const CARD_NUMERIC_FIELDS: [&str; 16] = [
     "dmg_direct",
     "dmg_attributed",
     "dmg_modifier",
-    "dmg_upgrade",
     "blk_modifier",
-    "blk_upgrade",
     "mitigate_debuff",
     "mitigate_buff",
     "mitigate_str",
@@ -670,9 +667,7 @@ fn card_numeric(card: &records::CardRec, name: &str) -> i64 {
         "dmg_direct" => card.dmg_direct,
         "dmg_attributed" => card.dmg_attributed,
         "dmg_modifier" => card.dmg_modifier,
-        "dmg_upgrade" => card.dmg_upgrade,
         "blk_modifier" => card.blk_modifier,
-        "blk_upgrade" => card.blk_upgrade,
         "mitigate_debuff" => card.mitigate_debuff,
         "mitigate_buff" => card.mitigate_buff,
         "mitigate_str" => card.mitigate_str,

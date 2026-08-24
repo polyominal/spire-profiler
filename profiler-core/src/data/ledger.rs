@@ -79,7 +79,7 @@ pub struct DamageRoute {
 pub(crate) fn assert_card_damage_segments(card: &CardStat) {
     debug_assert_eq!(
         card.damage_dealt,
-        card.dmg_direct + card.dmg_attributed + card.dmg_modifier + card.dmg_upgrade,
+        card.dmg_direct + card.dmg_attributed + card.dmg_modifier,
         "damage segments of '{}' drifted from damage_dealt",
         card.id
     );
