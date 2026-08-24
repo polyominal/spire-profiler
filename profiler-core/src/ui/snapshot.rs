@@ -19,10 +19,10 @@ fn total_forge(c: &Combat) -> i64 {
 fn format_card_detail(card: &CardStat) -> RowDetail {
     let mut detail = RowDetail {
         title: format!(
-            "{}{} x{}",
-            palette::kind_prefix(card.kind),
-            card.id,
-            card.plays
+            "{prefix}{id} x{plays}",
+            prefix = palette::kind_prefix(card.kind).map_or("", |prefix| prefix.text),
+            id = card.id,
+            plays = card.plays
         ),
         stats: Vec::new(),
     };
@@ -399,7 +399,11 @@ pub fn ui_row_detail_from_cards(
     if is_self && !is_solo {
         // The hanging self row is terse: name plus the HP cost.
         return RowDetail {
-            title: format!("{}{}", palette::kind_prefix(row.kind), row.name_str()),
+            title: format!(
+                "{prefix}{name}",
+                prefix = palette::kind_prefix(row.kind).map_or("", |prefix| prefix.text),
+                name = row.name_str()
+            ),
             stats: vec![StatLine {
                 label: "self dmg".to_owned(),
                 value: row.value.unsigned_abs().to_string(),
