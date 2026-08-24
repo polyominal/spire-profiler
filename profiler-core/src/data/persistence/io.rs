@@ -2,6 +2,7 @@
 //! tmp+rename, [`read_file`]'s whole-file reads under the 64 MiB budget,
 //! and [`ensure_data_dir`].
 
+use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -17,14 +18,14 @@ pub fn ensure_data_dir() -> bool {
         let runs_dir = data_dir.join(RUNS_DIR_NAME);
         (data_dir, runs_dir)
     });
-    if let Err(err) = std::fs::create_dir_all(&data_dir) {
+    if let Err(err) = fs::create_dir_all(&data_dir) {
         fail(format!(
             "cannot create data directory '{}': {err}",
             data_dir.display()
         ));
         return false;
     }
-    if let Err(err) = std::fs::create_dir_all(&runs_dir) {
+    if let Err(err) = fs::create_dir_all(&runs_dir) {
         fail(format!(
             "cannot create runs store directory '{}': {err}",
             runs_dir.display()
@@ -40,18 +41,18 @@ pub fn write_file(path: &Path, bytes: &str) -> bool {
     tmp_name.push(".tmp");
     let tmp_path = PathBuf::from(tmp_name);
     let write_result =
-        std::fs::File::create(&tmp_path).and_then(|mut file| file.write_all(bytes.as_bytes()));
+        fs::File::create(&tmp_path).and_then(|mut file| file.write_all(bytes.as_bytes()));
     if let Err(err) = write_result {
         // Deliberately silent cleanup: the real error is already reported,
         // and a stale .tmp is inert (the next write truncates it).
-        let _ = std::fs::remove_file(&tmp_path);
+        let _ = fs::remove_file(&tmp_path);
         fail(format!("cannot write '{}': {err}", tmp_path.display()));
         return false;
     }
-    match std::fs::rename(&tmp_path, path) {
+    match fs::rename(&tmp_path, path) {
         Ok(()) => true,
         Err(err) => {
-            let _ = std::fs::remove_file(&tmp_path);
+            let _ = fs::remove_file(&tmp_path);
             fail(format!(
                 "cannot move '{}' into place: {err}",
                 path.display()
@@ -63,7 +64,7 @@ pub fn write_file(path: &Path, bytes: &str) -> bool {
 
 /// An empty file yields a zero-length string: "no data yet" is a state.
 pub fn read_file(path: &Path) -> Option<String> {
-    let meta = match std::fs::metadata(path) {
+    let meta = match fs::metadata(path) {
         Ok(meta) => meta,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
         Err(err) => {
@@ -79,7 +80,7 @@ pub fn read_file(path: &Path) -> Option<String> {
         ));
         return None;
     }
-    let bytes = match std::fs::read(path) {
+    let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(err) => {
             fail(format!("cannot open '{}': {err}", path.display()));
@@ -114,7 +115,7 @@ mod tests {
         // A blocker file where a directory component belongs makes
         // create_dir_all fail without crashing.
         let dir = temp_dir("ensure-fail");
-        std::fs::write(dir.join("blocker"), "x").unwrap();
+        fs::write(dir.join("blocker"), "x").unwrap();
         init_state(&dir.join("blocker/data"));
         assert!(!ensure_data_dir());
     }
@@ -135,7 +136,7 @@ mod tests {
     fn read_file_missing_vs_empty() {
         let dir = temp_dir("read");
         assert!(read_file(&dir.join("missing.json")).is_none());
-        std::fs::write(dir.join("empty.json"), "").unwrap();
+        fs::write(dir.join("empty.json"), "").unwrap();
         assert_eq!(read_file(&dir.join("empty.json")).unwrap(), "");
     }
 }

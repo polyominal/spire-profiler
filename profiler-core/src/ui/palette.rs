@@ -83,22 +83,25 @@ pub fn slot_color(slot: Segment, section: Section, kind: SourceKind) -> Color {
     }
 }
 
-pub(crate) fn kind_prefix(kind: SourceKind) -> &'static str {
-    match kind {
-        SourceKind::Relic => "[R] ",
-        SourceKind::Potion => "[P] ",
-        SourceKind::Osty => "[O] ",
-        SourceKind::Card | SourceKind::Power => "",
-    }
+pub(crate) struct KindPrefix {
+    pub color: Color,
+    pub text: &'static str,
 }
 
-/// The same-hue collisions across the two channels are deliberate: one hue
-/// reads as one vocabulary.
-pub(crate) fn kind_prefix_color(kind: SourceKind) -> Option<Color> {
+pub(crate) fn kind_prefix(kind: SourceKind) -> Option<KindPrefix> {
     match kind {
-        SourceKind::Relic => Some(COL_GOLD),
-        SourceKind::Potion => Some(COL_MITIGATE_STR),
-        SourceKind::Osty => Some(COL_OSTY),
+        SourceKind::Relic => Some(KindPrefix {
+            color: COL_GOLD,
+            text: "[R] ",
+        }),
+        SourceKind::Potion => Some(KindPrefix {
+            color: COL_MITIGATE_STR,
+            text: "[P] ",
+        }),
+        SourceKind::Osty => Some(KindPrefix {
+            color: COL_OSTY,
+            text: "[O] ",
+        }),
         SourceKind::Card | SourceKind::Power => None,
     }
 }
@@ -309,17 +312,6 @@ mod tests {
             slot_color(Segment::SelfDamage, Section::Defense, SourceKind::Card),
             COL_SELF
         );
-    }
-
-    #[test]
-    fn kind_prefix_and_its_color_cover_the_same_kinds() {
-        for kind in SourceKind::ALL {
-            assert_eq!(
-                kind_prefix(kind).is_empty(),
-                kind_prefix_color(kind).is_none(),
-                "kind {kind:?}"
-            );
-        }
     }
 
     /// Chips share the bars' `slot_color` call, so the key cannot lie.

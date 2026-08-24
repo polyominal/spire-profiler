@@ -7,7 +7,7 @@ use crate::data::records::CombatRec;
 use crate::data::state::{self, RunOutcome, RunPlayer};
 use crate::test_util::scratch_dir;
 
-fn read_run(base: &str) -> serde_json::Value {
+fn read_run(base: &Path) -> serde_json::Value {
     let runs = read_all_runs(base);
     assert_eq!(runs.len(), 1, "exactly one run record");
     serde_json::json!([runs.into_iter().next().expect("one run")])
@@ -40,7 +40,7 @@ fn suspend_clears_active_without_writing_a_run_record() {
 
     assert!(!STATE.with(|s| s.borrow().run_ctx.active));
     assert!(
-        !std::path::Path::new(&format!("{base}/runs.jsonl")).exists(),
+        !base.join("runs.jsonl").exists(),
         "a suspended run writes no record"
     );
 }
@@ -112,7 +112,7 @@ fn suspend_then_continue_rejoins_without_a_spurious_defeat() {
     assert_eq!(STATE.with(|s| s.borrow().run_ctx.seq), 1);
     assert_eq!(STATE.with(|s| s.borrow().run_combats), 1);
     assert!(
-        !std::path::Path::new(&format!("{base}/runs.jsonl")).exists(),
+        !base.join("runs.jsonl").exists(),
         "the continue must not close the suspended run as a defeat"
     );
 

@@ -27,7 +27,7 @@ use crate::engine::object::TextAlign;
 use crate::source_kind::SourceKind;
 use crate::ui::palette::{
     COL_CREAM, COL_DIM, COL_GOLD, COL_HEADER_BG, COL_HOVER, COL_ROW_ALT, COL_SELF, COL_TRACK,
-    Color, PREFIX_ADVANCE, kind_prefix, kind_prefix_color, slot_color,
+    Color, PREFIX_ADVANCE, kind_prefix, slot_color,
 };
 use crate::ui::theme::{self, TextRole};
 use crate::ui::ui_model::{self, Section, Segment, UiMeta, UiRow, UiTab};
@@ -783,9 +783,9 @@ fn emit_name(l: &mut Layout, g: &Geom, row: &UiRow, hanging: bool, is_self: bool
     } else {
         // The kind marker is its own color run; the name follows at the
         // fixed advance.
-        let name_run_x = match kind_prefix_color(row.kind) {
-            Some(color) => {
-                l.text(name_x, base_y, SIZE_BODY, color, kind_prefix(row.kind));
+        let name_run_x = match kind_prefix(row.kind) {
+            Some(prefix) => {
+                l.text(name_x, base_y, SIZE_BODY, prefix.color, prefix.text);
                 name_x + PREFIX_ADVANCE
             }
             None => name_x,

@@ -89,7 +89,7 @@ fn self_test_pipeline_writes_combat_and_run_files() {
     let snap = read_test_file(&base, "runs/1/1.json");
     let snap_json: serde_json::Value = serde_json::from_str(&snap).expect("store file parses");
     assert_eq!(snap_json["combat_id"], 1);
-    assert!(!std::path::Path::new(&format!("{base}/runs/profile-1")).exists());
+    assert!(!base.join("runs").join("profile-1").exists());
 }
 
 #[test]

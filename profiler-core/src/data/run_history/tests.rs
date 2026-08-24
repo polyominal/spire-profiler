@@ -1,12 +1,15 @@
 //! Each test seeds the persisted store and asserts the selection and view
 //! results.
 
+use std::fs;
+use std::path::Path;
+
 use super::*;
 use crate::data::state::RunOutcome;
 use crate::source_kind::SourceKind;
 use crate::test_util::scratch_dir;
 
-fn seed_data(data: &std::path::Path, runs_text: &str, combats_text: &str) {
+fn seed_data(data: &Path, runs_text: &str, combats_text: &str) {
     STATE.with(|s| {
         let mut st = s.borrow_mut();
         st.runs_path_full = data.join("runs.jsonl");
@@ -18,25 +21,25 @@ fn seed_data(data: &std::path::Path, runs_text: &str, combats_text: &str) {
     write_combats_fixture(data, combats_text);
 }
 
-fn write_runs_fixture(data: &std::path::Path, runs_text: &str) {
+fn write_runs_fixture(data: &Path, runs_text: &str) {
     let runs: serde_json::Value = serde_json::from_str(runs_text).expect("runs fixture parses");
     let mut lines = String::new();
     for run in runs.as_array().expect("runs fixture is an array") {
         lines.push_str(&run.to_string());
         lines.push('\n');
     }
-    std::fs::write(data.join("runs.jsonl"), lines).expect("write fixture");
+    fs::write(data.join("runs.jsonl"), lines).expect("write fixture");
 }
 
-fn write_combats_fixture(data: &std::path::Path, combats_text: &str) {
+fn write_combats_fixture(data: &Path, combats_text: &str) {
     let combats: serde_json::Value =
         serde_json::from_str(combats_text).expect("combats fixture parses");
     for combat in combats.as_array().expect("combats fixture is an array") {
         let id = combat["combat_id"].as_u64().expect("fixture combat_id");
         let run_seq = combat["run"]["seq"].as_u64().expect("fixture run.seq");
         let dir = data.join("runs").join(run_seq.to_string());
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join(format!("{id}.json")), combat.to_string()).unwrap();
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(format!("{id}.json")), combat.to_string()).unwrap();
     }
 }
 
@@ -97,7 +100,7 @@ const BETA_START: i64 = 1_786_665_600;
 
 #[test]
 fn next_run_id_advances_past_runs_file_and_run_dirs() {
-    let data = std::path::PathBuf::from(scratch_dir("next-run-id"));
+    let data = scratch_dir("next-run-id");
     seed_data(
         &data,
         r#"[{"run_id":9,"profile":2,"character":"A","ascension":0,"game_mode":"Standard",
@@ -112,7 +115,7 @@ fn next_run_id_advances_past_runs_file_and_run_dirs() {
         next_run_id(&data.join("runs.jsonl"), &data.join("runs")),
         13
     );
-    let empty = std::path::PathBuf::from(scratch_dir("next-run-id-empty"));
+    let empty = scratch_dir("next-run-id-empty");
     assert_eq!(
         next_run_id(&empty.join("runs.jsonl"), &empty.join("runs")),
         1
@@ -121,14 +124,14 @@ fn next_run_id_advances_past_runs_file_and_run_dirs() {
 
 #[test]
 fn next_run_id_reserves_abandoned_run_dirs() {
-    let data = std::path::PathBuf::from(scratch_dir("next-run-id-abandoned"));
+    let data = scratch_dir("next-run-id-abandoned");
     seed_data(&data, "[]", "[]");
-    std::fs::create_dir_all(data.join("runs/12")).unwrap();
+    fs::create_dir_all(data.join("runs/12")).unwrap();
     assert_eq!(
         next_run_id(&data.join("runs.jsonl"), &data.join("runs")),
         13
     );
-    std::fs::create_dir_all(data.join("runs/profile-1")).unwrap();
+    fs::create_dir_all(data.join("runs/profile-1")).unwrap();
     assert_eq!(
         next_run_id(&data.join("runs.jsonl"), &data.join("runs")),
         13
@@ -137,7 +140,7 @@ fn next_run_id_reserves_abandoned_run_dirs() {
 
 #[test]
 fn continued_run_id_rejoins_the_latest_matching_fragment() {
-    let data = std::path::PathBuf::from(scratch_dir("continued-run-id"));
+    let data = scratch_dir("continued-run-id");
     seed_data(
         &data,
         "[]",

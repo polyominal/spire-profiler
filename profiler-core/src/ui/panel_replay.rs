@@ -288,10 +288,10 @@ pub(crate) fn draw_flat_background(
             Vector2::new(width, box_height - y0),
         ),
         Color::from_rgba(
-            crate::ui::palette::COL_PANEL_BG[0],
-            crate::ui::palette::COL_PANEL_BG[1],
-            crate::ui::palette::COL_PANEL_BG[2],
-            crate::ui::palette::COL_PANEL_BG[3],
+            palette::COL_PANEL_BG[0],
+            palette::COL_PANEL_BG[1],
+            palette::COL_PANEL_BG[2],
+            palette::COL_PANEL_BG[3],
         ),
     );
 }
@@ -303,7 +303,7 @@ pub(crate) fn draw_header_fill(
     width: f32,
     header_bottom: f32,
 ) -> usize {
-    let color = crate::ui::palette::COL_PANEL_BG;
+    let color = palette::COL_PANEL_BG;
     usize::from(!object.draw_rect(
         Rect2::new(
             Vector2::new(origin_x, 0.0),
