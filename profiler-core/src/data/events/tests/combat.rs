@@ -103,7 +103,7 @@ fn power_source_decomposition_splits_modifier_damage_across_appliers() {
 }
 
 #[test]
-fn damage_segments_split_direct_modifier_attributed_and_upgrade() {
+fn damage_segments_split_direct_modifier_and_attributed() {
     let base = scratch_dir("spire-profiler-test-segments");
     test_reset();
     init(&base);
@@ -132,7 +132,6 @@ fn damage_segments_split_direct_modifier_attributed_and_upgrade() {
         ..DamageDealt::default()
     });
 
-    // Upgrade Bash with Arnament.
     card_play_started("ARMAMENTS", 0, 1, 0, 0);
     card_play_finished(0);
     card_play_started("BASH", 0, 1, 6001, 0);

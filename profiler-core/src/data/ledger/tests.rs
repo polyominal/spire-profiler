@@ -292,7 +292,6 @@ fn resolve_damage_source_route_then_poison_then_last_source() {
     reset_state();
     start_combat();
     let route = resolve_damage_source("STRIKE", 5, 9, 0, 0).expect("explicit route");
-    assert!(route.via_card);
     assert!(!route.indirect);
     assert_card(route.card_index, "STRIKE", SourceKind::Card);
     STATE.with(|cell| {
@@ -315,7 +314,6 @@ fn resolve_damage_source_route_then_poison_then_last_source() {
         });
     });
     let route = resolve_damage_source("", 10, 5, 0, 0).expect("last source route");
-    assert!(!route.via_card);
     assert!(route.indirect);
     assert_card(route.card_index, "NOXIOUS_FUMES_POWER", SourceKind::Power);
 }
@@ -597,87 +595,6 @@ fn apply_pending_contribs_carves_mixed_hits_direct_first() {
             .expect("inflame card");
         assert_eq!(inflame.dmg_modifier, 6);
     });
-}
-
-#[test]
-fn apply_upgrade_split_damage_credits_upgrader_per_hit() {
-    reset_state();
-    STATE.with(|cell| {
-        let mut state = cell.borrow_mut();
-        state.current = Some(Combat {
-            cards: vec![hit_card("STRIKE", 10)],
-            ..Combat::default()
-        });
-        let slot = state.slot_state_mut(0);
-        slot.pending_upgrade_dmg = 4;
-        slot.pending_upgrade_source = "ARMAMENTS".to_owned();
-        slot.pending_upgrade_kind = SourceKind::Card;
-    });
-    STATE.with(|cell| {
-        let mut logs = Vec::new();
-        apply_upgrade_split_damage_in(&mut cell.borrow_mut(), 0, 0, &mut logs);
-    });
-    STATE.with(|cell| {
-        let state = cell.borrow();
-        let combat = state.current.as_ref().expect("combat exists");
-        assert_eq!(combat.cards[0].damage_dealt, 6);
-        assert_eq!(combat.cards[0].dmg_direct, 6);
-        assert_eq!(
-            combat.cards[0].damage_dealt - combat.cards[0].damage_blocked,
-            6
-        );
-        let arm = combat
-            .cards
-            .iter()
-            .find(|card| card.id == "ARMAMENTS")
-            .expect("upgrader card");
-        assert_eq!(arm.damage_dealt, 4);
-        assert_eq!(arm.dmg_upgrade, 4);
-        assert_eq!(arm.damage_dealt - arm.damage_blocked, 4);
-    });
-    // The pending bonus is not consumed; a second hit splits it again.
-    STATE.with(|cell| {
-        let mut logs = Vec::new();
-        apply_upgrade_split_damage_in(&mut cell.borrow_mut(), 0, 0, &mut logs);
-    });
-    STATE.with(|cell| {
-        let state = cell.borrow();
-        let combat = state.current.as_ref().expect("combat exists");
-        assert_eq!(combat.cards[0].dmg_direct, 2);
-        let arm = combat
-            .cards
-            .iter()
-            .find(|card| card.id == "ARMAMENTS")
-            .expect("upgrader card");
-        assert_eq!(arm.dmg_upgrade, 8);
-    });
-}
-
-#[test]
-fn find_upgrade_locates_delta_record() {
-    reset_state();
-    STATE.with(|cell| {
-        cell.borrow_mut().upgrade_deltas.push(UpgradeDelta {
-            hash: 42,
-            damage: 3,
-            block: 2,
-            source_id: "ARMAMENTS".to_owned(),
-            kind: SourceKind::Card,
-            player: 0,
-        });
-    });
-    let delta = STATE
-        .with(|cell| find_upgrade_in(&cell.borrow(), 42))
-        .expect("record found");
-    assert_eq!(delta.damage, 3);
-    assert_eq!(delta.block, 2);
-    assert_eq!(delta.source_id, "ARMAMENTS");
-    assert_eq!(delta.kind, SourceKind::Card);
-    assert!(
-        STATE
-            .with(|cell| find_upgrade_in(&cell.borrow(), 1))
-            .is_none()
-    );
 }
 
 #[test]

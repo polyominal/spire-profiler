@@ -139,10 +139,6 @@ const _: () = assert!(
     core::mem::size_of::<UiRow>() <= 4096,
     "UiRow must stay under 4096 bytes for the panel's frame-buffer memcpy"
 );
-const _: () = assert!(
-    ui_model::Segment::ALL.len() == 8,
-    "seg_milli must stay 8 segment slots wide"
-);
 
 const _: () = assert!(
     UiTab::Combat as u8 == 0,
@@ -558,20 +554,6 @@ pub struct StrReduction {
     pub amount: i64,
 }
 
-/// In-combat upgrade deltas per card instance; the later play credits the
-/// bonus to the upgrader.
-#[derive(Clone, Debug)]
-pub struct UpgradeDelta {
-    pub hash: i32,
-    pub damage: i64,
-    pub block: i64,
-    pub source_id: String,
-    pub kind: SourceKind,
-    /// The upgrader's slot; the credit rows key here, not at the playing
-    /// slot.
-    pub player: SourceSlot,
-}
-
 /// FIFO debuff layers per (creature, power); turn-end decrements consume
 /// from the head, and poison tick damage splits by duration fraction.
 #[derive(Clone, Debug)]
@@ -641,8 +623,6 @@ pub struct State {
     /// A stale capture at worst mis-prorates one hit; it never accumulates.
     pub enemy_hit: Option<EnemyHit>,
 
-    pub upgrade_deltas: Vec<UpgradeDelta>,
-
     pub debuff_layers: Vec<DebuffLayer>,
 }
 
@@ -689,7 +669,6 @@ pub mod caps {
     pub const OSTY_STACK: usize = 32;
     pub const PENDING_CONTRIBS: usize = 16;
     pub const STR_REDUCTIONS: usize = 64;
-    pub const UPGRADE_DELTAS: usize = 64;
     pub const DEBUFF_LAYERS: usize = 64;
 }
 

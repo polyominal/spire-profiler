@@ -242,10 +242,6 @@ fn check_queue_bounds(st: &state::State, step: u32) {
         "step {step}: str reduction table overflow"
     );
     assert!(
-        st.upgrade_deltas.len() <= state::caps::UPGRADE_DELTAS,
-        "step {step}: upgrade delta table overflow"
-    );
-    assert!(
         st.debuff_layers.len() <= state::caps::DEBUFF_LAYERS,
         "step {step}: debuff layer table overflow"
     );

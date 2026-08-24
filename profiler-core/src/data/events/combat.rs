@@ -244,7 +244,6 @@ pub fn combat_started(encounter_id: &str, encounter_type: &str) {
         state.doom_targets.clear();
         state.debuff_layers.clear();
         state.str_reductions.clear();
-        state.upgrade_deltas.clear();
         state.enemy_hit = None;
         let seq = state.next_combat_id;
         state.current = Some(Combat {
@@ -405,17 +404,6 @@ fn record_enemy_damage_in(
             ledger::assert_card_damage_segments(card);
         }
         ledger::apply_pending_contribs_in(state, index, dealer_slot, &mut logs);
-        // The pending bonus belongs to the PLAYED card, so it is only
-        // carved out of hits marked with that card's own id.
-        let dealer_index = state.slot_index(dealer_slot);
-        let is_played_card_hit = !card_source_id.is_empty()
-            && state.per_player[dealer_index]
-                .active_play_card_id
-                .as_deref()
-                == Some(card_source_id);
-        if route.via_card && is_played_card_hit {
-            ledger::apply_upgrade_split_damage_in(state, index, dealer_slot, &mut logs);
-        }
         let id = {
             let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
                 return (logs, false);
