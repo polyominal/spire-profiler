@@ -33,8 +33,8 @@
 //! # Standing contracts
 //!
 //! The game must never crash because of the mod: every export routes
-//! through `contain`, which catches a panic and logs it, and wire values
-//! clamp-and-log instead of panicking. All game state lives in one
+//! through [`crate::abi::contain`], which catches a panic and logs it,
+//! and wire values clamp-and-log instead of panicking. All game state lives in one
 //! thread-local `RefCell<State>` because the game's logic loop is
 //! single-threaded. Unsafe Rust is quarantined in the three modules above,
 //! each with its reason documented. Specs live in the module docs, not in

@@ -57,8 +57,8 @@ const BODY_BUDGET: usize = 24;
 /// The 293px text column splits into the label column and the value box.
 const LABEL_COL_W: f32 = 170.0;
 
-/// `Direct` carries (section, kind) because the direct slot is
-/// section-tinted; `Neutral` is cream.
+/// [`StatTone::Direct`] carries (section, kind) because the direct slot is
+/// section-tinted; [`StatTone::Neutral`] is cream.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum StatTone {
     Neutral,

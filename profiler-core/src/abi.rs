@@ -6,8 +6,9 @@
 //! spelled as their Rust equivalents: `c_int` → `i32`, `u64`, `f64`,
 //! NUL-terminated strings → `*const c_char`), so the generated shim binds
 //! them unchanged and check-abi verifies the table mechanically.
-//! `gdextension_entry` is deliberately absent: it is the engine-facing
-//! symbol, written by hand in `crate::engine::gdext`.
+//! [`crate::engine::gdext::gdextension_entry`] is deliberately absent:
+//! it is the engine-facing symbol, written by hand in
+//! [`crate::engine::gdext`].
 //!
 //! ## Export prefix
 //!
@@ -20,11 +21,11 @@
 //! # What unsafe concentrates here
 //!
 //! `lib.rs` declares `#![deny(unsafe_code)]`, relaxed in exactly three
-//! modules: this one, `crate::registration`, and `crate::engine::gdext`
-//! (whose allow sits in `engine.rs`, not in `lib.rs`). This module's share
-//! of the crate's unsafe Rust is:
+//! modules: this one, [`crate::registration`], and
+//! [`crate::engine::gdext`] (whose allow sits in `engine.rs`, not in
+//! `lib.rs`). This module's share of the crate's unsafe Rust is:
 //!
-//! 1. **C pointer reads** — `with_c_str` dereferences a NUL-terminated string pointer supplied by
+//! 1. **C pointer reads** — [`with_c_str`] dereferences a NUL-terminated string pointer supplied by
 //!    the host. The shim never passes null, but null (and any pointer that does not point at valid
 //!    NUL-terminated UTF-8) is treated as "" so a malformed argument can never crash the core.
 //! 2. **`no_mangle` exports** — the 39 `spire_profiler_*` functions (38 bound by the shim and one
@@ -32,15 +33,16 @@
 //!    exist for the host. Their bodies contain no other unsafe operations; each one decodes its
 //!    arguments and delegates to the safe [`events`] counterpart.
 //! 3. **Panic containment** — a Rust panic must never unwind across the C ABI into the game. Every
-//!    export runs through `contain`, which catches a panicking core function, reports it through
-//!    `crate::fail` (stderr, touches no state), and swallows it. A panic escaping into the host
+//!    export runs through [`contain`], which catches a panicking core function, reports it through
+//!    [`crate::fail`] (stderr, touches no state), and swallows it. A panic escaping into the host
 //!    would crash the game; containment lets the core continue with whatever state the panic left
 //!    behind.
 //!
-//! The other two relaxations quarantine different needs: `registration` owns
-//! the per-panel instance casts the FFI callbacks route into, and `gdext`
-//! owns the raw engine pointers and interface-function resolution. Any future
-//! unsafe requirement belongs behind a safe helper in one of these three.
+//! The other two relaxations quarantine different needs:
+//! [`crate::registration`] owns the per-panel instance casts the FFI
+//! callbacks route into, and [`crate::engine::gdext`] owns the raw engine
+//! pointers and interface-function resolution. Any future unsafe
+//! requirement belongs behind a safe helper in one of these three.
 
 // The unsafe-op blocks below are exactly the three sources listed above;
 // the allow keeps a stricter lint set from demanding safety docs per export.

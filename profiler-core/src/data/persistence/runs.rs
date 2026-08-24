@@ -374,7 +374,7 @@ mod tests {
         });
     }
 
-    /// Compares every field explicitly, so a field added to `CardStat`
+    /// Compares every field explicitly, so a field added to [`CardStat`]
     /// must be added to the merge and to this assertion.
     fn assert_card_stat_eq(a: &CardStat, b: &CardStat) {
         assert_eq!(a.id, b.id);

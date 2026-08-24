@@ -1,8 +1,9 @@
 //! The data layer — combat facts, attribution, and the persisted JSON
 //! model. Engine-free: nothing here knows the engine exists. All mutable
-//! state sits in the thread-local `STATE: RefCell<State>`; [`events`] holds
-//! the borrow once while mutating and emitting the gameplay event trace;
-//! the `profiler.log` sink owns its destination and never re-enters `STATE`.
+//! state sits in the thread-local [`state::STATE`] `RefCell<State>`;
+//! [`events`] holds the borrow once while mutating and emitting the
+//! gameplay event trace; the `profiler.log` sink owns its destination and
+//! never re-enters [`state::STATE`].
 //!
 //! [`records`] — the persisted record types; [`events`] — the export
 //! bodies; [`ledger`] — attribution mechanics; [`persistence`] — the JSON
@@ -49,23 +50,24 @@
 //! ## Contexts and the async fallback rule
 //!
 //! The shim wraps every catalogued relic/power hook in a begin/end pair. A
-//! bounded stack keeps nested hooks correct; `context_begin` also writes
-//! `last_source`, remembered after the context pops, because game hooks
-//! fire across an `await` (Crimson Mantle's turn-start block). The orb and
-//! potion fallbacks are set on entry and cleared the moment any other
-//! attribution source appears; `turn_started` clears both and `last_source`
-//! — a new turn is a natural boundary.
+//! bounded stack keeps nested hooks correct; [`events::context_begin`]
+//! also writes `last_source`, remembered after the context pops, because
+//! game hooks fire across an `await` (Crimson Mantle's turn-start block).
+//! The orb and potion fallbacks are set on entry and cleared the moment
+//! any other attribution source appears; [`events::turn_started`] clears
+//! both and `last_source` — a new turn is a natural boundary.
 //!
 //! ## Orb and potion attribution
 //!
 //! Orbs are async, so their channeling source is recorded up front
-//! (`orb_channeled`: innermost context > play source > `last_source`);
-//! `orb_context_begin` activates the orb fallback and clears the potion
-//! fallback. During a play only the FIRST orb trigger credits the
-//! channeling source — later triggers credit the evoking card. Potions
-//! prefix `OnUseWrapper` so the fallback exists before the effects run (a
-//! postfix would be too late for FlexPotion's Strength); each slot owns
-//! its potion source directly, outside the orb table.
+//! ([`events::orb_channeled`]: innermost context > play source >
+//! `last_source`); [`events::orb_context_begin`] activates the orb
+//! fallback and clears the potion fallback. During a play only the FIRST
+//! orb trigger credits the channeling source — later triggers credit the
+//! evoking card. Potions prefix `OnUseWrapper` so the fallback exists
+//! before the effects run (a postfix would be too late for FlexPotion's
+//! Strength); each slot owns its potion source directly, outside the orb
+//! table.
 //!
 //! ## Generated cards
 //!
@@ -74,8 +76,9 @@
 //! sub-rows. A row's `plays` counts the source's OWN triggers, so
 //! `contribution / plays` is the expected value per trigger:
 //! `plays + generation_triggers == Σ cards[].plays + generated_plays`.
-//! `card_generated` records the instance→generator mapping; the play then
-//! overrides to that `(id, kind)` for everything during the play.
+//! [`events::card_generated`] records the instance→generator mapping;
+//! the play then overrides to that `(id, kind)` for everything during
+//! the play.
 //!
 //! ## Block pool and damage modifiers
 //!

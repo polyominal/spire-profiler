@@ -1,12 +1,12 @@
 //! Composition root for the engine registration: the one module that knows
-//! both the FFI's `EngineClass` shape and the concrete panel types, so the
+//! both the FFI's [`EngineClass`] shape and the concrete panel types, so the
 //! engine layer stays free of profiler-specific types. All instance casts
 //! concentrate here.
 //!
 //! The callbacks dispatch on the instance-state pointer `create` returned
 //! (`Box::into_raw` — never null), and the engine-side null guards live at
-//! the FFI boundary in `gdext`'s callbacks, so no defensive null checks are
-//! needed here.
+//! the FFI boundary in [`crate::engine::gdext`]'s callbacks, so no defensive
+//! null checks are needed here.
 
 use std::ffi::c_void;
 

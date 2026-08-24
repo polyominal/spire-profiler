@@ -289,7 +289,7 @@ fn resumed_run_discards_the_unfinished_combat() {
     assert_eq!(combats[0].cards[0].damage_dealt, 9);
 }
 
-/// `player_died` double-fires idempotently; the run closes as a loss.
+/// [`player_died`] double-fires idempotently; the run closes as a loss.
 #[test]
 fn player_death_marks_the_combat_and_run_as_defeat() {
     let base = wiped_dir("spire-profiler-test-defeat");

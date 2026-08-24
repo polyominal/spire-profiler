@@ -1,5 +1,6 @@
 //! Minimal local stand-ins for the Godot builtin value types the panel
-//! plumbing needs, keeping `panel` and `run_panel` engine-free. The structs
+//! plumbing needs, keeping [`crate::ui::panel`] and
+//! [`crate::ui::run_panel`] engine-free. The structs
 //! are plain `f32` data, converted to the engine's variant payloads only
 //! inside the engine layer; nothing here touches an engine pointer.
 

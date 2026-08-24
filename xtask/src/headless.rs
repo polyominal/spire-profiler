@@ -13,7 +13,7 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::{Result, bail};
 use xshell::Shell;
 
-use crate::{discover, install, workspace_root};
+use crate::{catalog, discover, install, workspace_root};
 
 const BOOT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
@@ -27,11 +27,12 @@ const GAME_ARGS: [&str; 6] = [
     "1800",
 ];
 
-/// Below this a large chunk of the catalog silently failed. Static count is
-/// 34 class-level + 11 orb + 158 catalog = 203; the runtime count also
-/// depends on the pinned version's hook resolution, so the floor keeps a
-/// small margin for drift while still catching a large failure.
-const MIN_PATCHES: u64 = 199;
+/// Every dynamic target is unique, so the catalog and the two fixed shim
+/// groups determine the runtime patch count exactly.
+const CLASS_LEVEL_PATCHES: usize = 34;
+const ORB_PATCHES: usize = 11;
+const MIN_PATCHES: u64 =
+    (CLASS_LEVEL_PATCHES + ORB_PATCHES + catalog::RELICS.len() + catalog::POWERS.len()) as u64;
 
 pub fn headless_test(shell: &Shell) -> Result<()> {
     let game = install::install_mod(shell)?;
@@ -94,7 +95,8 @@ impl Verdict {
     }
 }
 
-/// The threshold catches a silently half-broken catalog; deduped by max.
+/// Deduped by max: only this mod's marker line is parsed, but additional
+/// mods can patch more methods during the same boot.
 fn check_patch_count(output: &str, failures: &mut Vec<String>) {
     match output
         .match_indices("patched methods: ")

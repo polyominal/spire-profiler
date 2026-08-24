@@ -1,14 +1,15 @@
 //! `cargo xtask decompile`: recover the game's Godot source via GDRE Tools —
 //! locate the .pck, provision the pinned tool (download + SHA-256 verify),
 //! run it headless, verify the output, drop a provenance record. Hosts are
-//! macOS/Linux (`Platform::detect`); a WSL2 host finds the Windows
+//! macOS/Linux ([`discover::Platform::detect`]); a WSL2 host finds the
+//! Windows
 //! install's .pck through the same layout detection as discovery.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use xshell::{Shell, cmd};
 
 use crate::{discover, game_version, workspace_root};
@@ -23,7 +24,7 @@ fn gdre_tools_dir(root: &Path) -> PathBuf {
     root.join("tmp/gdre-tools")
 }
 
-fn default_output_dir(root: &Path) -> PathBuf {
+pub(crate) fn default_output_dir(root: &Path) -> PathBuf {
     root.join("tmp/sts2-decompiled")
 }
 
@@ -312,18 +313,22 @@ fn write_provenance(output: &Path, pck: &Path, host: discover::Platform) -> Resu
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| anyhow::anyhow!("system clock before the epoch: {e}"))?
         .as_secs();
+    // The pin check already ran, so this is the verified version; recorded
+    // so check-catalog can reject a tree decompiled from an older game.
+    let version = game_version::installed_version_from(&release_info_for_pck(pck))?;
     let json = serde_json::json!({
         // Unix epoch seconds.
         "utc_timestamp": utc,
         "host_platform": gdre_host(host).0,
         "pck_path": pck,
         "gdre_version": GDRE_VERSION,
+        "game_version": version,
         "gdre_export_log_present": output.join("gdre_export.log").is_file(),
     });
     let text = serde_json::to_string_pretty(&json)
         .map_err(|e| anyhow::anyhow!("serializing provenance: {e}"))?;
     let path = output.join(".provenance.json");
-    fs::write(&path, text)?;
+    fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
     Ok(())
 }
 

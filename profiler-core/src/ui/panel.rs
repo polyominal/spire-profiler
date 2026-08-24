@@ -27,7 +27,7 @@ use crate::ui::{panel_body, panel_replay, snapshot};
 thread_local! {
     static VISIBLE: Cell<bool> = const { Cell::new(false) };
     /// Keeps the panel drawable after the synthetic run ends: the boot's
-    /// draw gates run after `self_test` completed.
+    /// draw gates run after [`crate::data::events::self_test`] completed.
     static SELFTEST_FORCE: Cell<bool> = const { Cell::new(false) };
     /// Module scope because the flat C export cannot address the panel
     /// instance.
@@ -72,7 +72,7 @@ pub(crate) fn enable_for_selftest() {
     }
 }
 
-/// The class name must stay `SpireProfilerPanel`.
+/// The class name must stay [`SpireProfilerPanel`].
 pub struct SpireProfilerPanel {
     object: Object,
     children: panel_body::PanelChildren,
@@ -310,7 +310,7 @@ impl SpireProfilerPanel {
     }
 
     /// The `chart draw ok` marker proves clean parent engine calls, not
-    /// just entry; child-call failures surface via `fail_call_failed`.
+    /// just entry; child-call failures surface via [`fail_call_failed`].
     fn log_draw_ok(&mut self, call_errors: usize) {
         if !self.draw_ok_logged && call_errors == 0 {
             self.draw_ok_logged = true;

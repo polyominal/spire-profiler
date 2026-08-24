@@ -1,6 +1,6 @@
 //! The combat record's JSON serialization: [`build_combat_json`] and
 //! [`card_stat_from_rec`], which converts a parsed card row back to the
-//! in-memory `CardStat` the run-history roll-up merges.
+//! in-memory [`CardStat`] the run-history roll-up merges.
 
 use serde::Serialize;
 
@@ -72,7 +72,7 @@ struct CombatDoc<'a> {
 }
 
 /// The per-card row serialization, split out so the field list stays out
-/// of `build_combat_json`.
+/// of [`build_combat_json`].
 fn card_doc(card: &crate::data::state::CardStat) -> CardDoc<'_> {
     CardDoc {
         id: &card.id,
@@ -120,7 +120,7 @@ pub fn build_combat_json(c: &Combat) -> String {
     serde_json::to_string(&doc).expect("combat document cannot fail to serialize")
 }
 
-/// Converts a parsed card row to the in-memory `CardStat`.
+/// Converts a parsed card row to the in-memory [`CardStat`].
 pub(crate) fn card_stat_from_rec(rec: &records::CardRec) -> CardStat {
     CardStat {
         id: rec.id.clone(),

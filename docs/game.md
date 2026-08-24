@@ -55,8 +55,8 @@ layout assumption first; `STS2_GAME_DIR` overrides.
   `install-mod`, `headless-test`, and `decompile` all fail fast when the
   installed game's version differs, naming both versions and the
   `release_info.json` path. A Steam game update therefore breaks every command
-  until the pin is bumped deliberately and the mod is re-verified (the Harmony
-  patch catalog above all) against the new game.
+  until the pin is bumped deliberately; that bump starts re-verification of the
+  mod (the Harmony patch catalog above all) against the new game.
 
 ## StS2 modding environment
 
@@ -78,19 +78,30 @@ layout assumption first; `STS2_GAME_DIR` overrides.
 
 Always verify patch targets against the decompiled source. The current snapshot
 lives at `tmp/sts2-decompiled/` (gitignored; regenerate with `cargo xtask
-decompile`) and matches the pin in `xtask/src/game_version.rs`. The drift
-findings below were verified against an earlier v0.110.1 snapshot and must be
-re-checked against the current one before acting — hook names/types drift
-across game versions.
+decompile`) and its provenance must name the pin in `xtask/src/game_version.rs`.
+The update runbook lives in AGENTS.md.
+
+`cargo xtask check-catalog` compares the hand-curated attribution catalog and
+its reviewed exclusions with the decompiled relic and power classes. It fails on
+renamed or overloaded methods, namespace drift, entries that no longer show a
+tracked effect, new effect-producing hooks, and stale reviewed exclusions. The
+check is syntax-based: a new or changed report still requires reading the hook
+bodies before changing the catalog.
+
+The findings below record traps check-catalog cannot see (dead hook bodies,
+renamed parameter types). Re-check them against the new snapshot on every game
+update and re-date this note; hook names and types drift across versions.
+Verified against the v0.111.0 snapshot.
 
 - `CombatRoom.Resume(AbstractRoom, IRunState?)` exists but its body is `throw
   new NotImplementedException()` — Harmony postfixes on it never fire
-  (exceptions skip postfixes). Older-build mods used it as a refresh site; in
-  v0.110.1 it is a dead site (kept patched, harmless).
-- `CombatManager.SetUpCombat` takes `CombatState` in v0.110.1; older hooks
-  declare `CombatStateType`. Harmony injects by name, so our postfix takes
+  (exceptions skip postfixes). Older-build mods used it as a refresh site; it is
+  kept patched, harmless.
+- `CombatManager.SetUpCombat` takes `CombatState`; older hooks declare
+  `CombatStateType`. Harmony injects by name, so our postfix takes
   `ICombatState` — do not copy older parameter types blindly.
-- Turn hooks became side-based (e.g. `BeforeTurnEnd` → `BeforeSideTurnEnd`).
+- Turn hooks are side-based: older mods' `BeforeTurnEnd` is now
+  `BeforeSideTurnEnd`.
 
 ## Decompiling the game source (`cargo xtask decompile`)
 
@@ -149,7 +160,7 @@ that was searched.
 After a successful run the output directory contains the recovered Godot project
 (`project.godot`, `src/`, `scenes/`, ...) plus a `.provenance.json` recording
 when it was produced, the host platform, the source `.pck` path, the GDRE Tools
-version, and whether `gdre_export.log` was written.
+version, the game version, and whether `gdre_export.log` was written.
 
 ### Troubleshooting
 

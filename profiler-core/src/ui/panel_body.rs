@@ -19,7 +19,7 @@ use crate::engine::math::{Rect2, Vector2};
 use crate::ui::panel_common;
 
 thread_local! {
-    /// Set by `spawn` and taken by the create callback running inside the
+    /// Set by [`spawn`] and taken by the create callback running inside the
     /// instantiation call. Same thread, one call deep, so the slot never
     /// holds a stale child.
     static PENDING_CHILD: RefCell<Option<ChildTarget>> =
@@ -256,7 +256,7 @@ fn object(control: &mut Option<ChildControl>, layer: &'static str) -> Option<Obj
 }
 
 /// The single source of the registered class name: the class table is
-/// built from it and `spawn` resolves the class through it.
+/// built from it and [`spawn`] resolves the class through it.
 pub(crate) const CLASS_NAME: &CStr = c"SpireProfilerPanelBody";
 
 pub(crate) fn take_pending_child() -> Option<ChildTarget> {

@@ -14,13 +14,17 @@ layout and discovery live in `game.md`.
 - `cargo xtask check-abi` green — the shim's `GetExport` bindings verified
   against the Rust exports. The binding count is the command's own output;
   nothing else pins it, so no count is stated here.
-- `cargo xtask headless-test` PASS — the number of patched Harmony methods at
-  or above the floor pinned in `xtask/src/headless.rs` (`MIN_PATCHES`, set just
-  under the shim's static patch catalog; the breakdown is documented next to the
-  constant), no unexpected `[SpireProfiler]` ERROR lines, and the combat panel's
-  parent, rows-child, and overlay-child `draw` virtuals fire under the headless
-  dummy renderer (draw dispatch is covered, visual output is not).
+- `cargo xtask headless-test` PASS — at least the shim's expected number of
+  patched Harmony methods (`MIN_PATCHES`, derived from the attribution catalog
+  plus the fixed class-level and orb groups), no unexpected `[SpireProfiler]`
+  ERROR lines (including skipped dynamic catalog/orb patches), and the combat
+  panel's parent, rows-child, and overlay-child `draw` virtuals fire under the
+  headless dummy renderer (draw dispatch is covered, visual output is not).
 - Real-play validation is manual: the pipeline cannot play the game.
+
+A game update adds one machine-local gate: `cargo xtask check-catalog` reads the
+decompiled tree (`tmp/sts2-decompiled`), so it stays out of smoke; what it
+verifies lives in `game.md`.
 
 ## StS2 headless testing
 

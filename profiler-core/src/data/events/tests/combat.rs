@@ -262,7 +262,7 @@ fn self_damage_credits_the_sources_red_segment() {
     );
 }
 
-/// `block_pool_clear` for one slot never touches another's pool.
+/// [`block_pool_clear`] for one slot never touches another's pool.
 #[test]
 fn block_pools_consume_and_clear_per_slot() {
     combat_fixture("MP_BLOCKPOOL_TEST");
