@@ -1,17 +1,18 @@
-//! Deterministic randomized simulation of the profiler core (mini-VOPR).
-//! A splitmix64 PRNG feeds every scenario; `SIM_SEED` overrides the default
-//! so a failing run reproduces byte-for-byte. The lifecycle walk runs 20
-//! scenarios x 40 weighted events against a scratch data dir, re-checking
-//! the ledger invariants (segment sums, sign constraints, combat totals,
-//! queue bounds) after every event, then parses the written JSON back.
-//! `block_pool_consume_matches_naive_model` property-tests the same way
-//! against an independent naive FIFO model.
+//! Deterministic randomized simulation of the profiler core, inspired by
+//! TigerBeetle's VOPR:
+//! https://github.com/tigerbeetle/tigerbeetle/blob/97c7a8ef385270ebe0e1b75959d3d21d134629df/docs/internals/vopr.md
+//! A seeded PRNG feeds every scenario; `SIM_SEED` overrides the default so a
+//! failing run reproduces byte-for-byte. The lifecycle walk runs 20
+//! scenarios x 40 weighted events in a scratch dir, re-checking ledger
+//! invariants (segment sums, sign constraints, combat totals, queue bounds)
+//! after every event, then parses the JSON back; the block-pool test does
+//! the same against an independent naive FIFO model.
 //!
 //! The walk models the shim, not an adversary: a queued damage-modifier
 //! contribution forces the next event to be an enemy hit covering the
-//! queued share, with its attribution route left free (orb fallback or
-//! power context), so the segment carve in
-//! `ledger::apply_pending_contribs_in` stays exact on both routes.
+//! queued share, leaving its attribution route free (orb fallback or power
+//! context), so `ledger::apply_pending_contribs_in`'s carve stays exact on
+//! both routes.
 
 use std::collections::HashMap;
 use std::fs;
