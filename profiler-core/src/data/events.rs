@@ -25,9 +25,7 @@ mod self_test;
 #[cfg(test)]
 mod tests;
 
-// Re-export the whole event surface so `crate::data::events::*` paths
-// resolve unchanged; the 34-name surface is pinned here on purpose.
-pub use card::{card_generated, card_play_finished, card_play_started, card_upgraded};
+pub use card::{card_generated, card_play_finished, card_play_started};
 pub use combat::{
     DamageDealt, block_gained, block_pool_clear, combat_ended, combat_started, damage_dealt,
     osty_killed, osty_summoned, player_died, turn_started,

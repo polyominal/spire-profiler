@@ -359,14 +359,9 @@ fn drive_rare_event(rng: &mut Rng, roll: u64) {
             rng.range_i32(0, 3),
         ),
         76..=77 => drive_card_generated(rng),
-        78..=79 => events::card_upgraded(
-            rng.range_i32(1, 60_000),
-            rng.range_i32(0, 5),
-            rng.range_i32(0, 5),
-        ),
-        80..=81 => events::weak_mitigation(rng.range_i32(1, 8), rng.next_u64()),
-        82..=83 => events::buff_mitigation(rng.pick(&POWER_POOL), rng.range_i32(1, 8)),
-        84..=85 => events::enemy_hit_context(rng.range_i32(1, 20), rng.range_i32(-8, 8)),
+        78..=79 => events::weak_mitigation(rng.range_i32(1, 8), rng.next_u64()),
+        80..=81 => events::buff_mitigation(rng.pick(&POWER_POOL), rng.range_i32(1, 8)),
+        82..=83 => events::enemy_hit_context(rng.range_i32(1, 20), rng.range_i32(-8, 8)),
         _ => events::block_pool_clear(0),
     }
 }

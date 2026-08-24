@@ -374,17 +374,6 @@ pub unsafe extern "C" fn spire_profiler_enemy_hit_context(base_damage: i32, deal
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn spire_profiler_card_upgraded(
-    card_hash: i32,
-    damage_delta: i32,
-    block_delta: i32,
-) {
-    contain("spire_profiler_card_upgraded", (), || {
-        events::card_upgraded(card_hash, damage_delta, block_delta);
-    });
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_combat_started(
     encounter_id: *const c_char,
     encounter_type: *const c_char,

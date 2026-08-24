@@ -724,7 +724,6 @@ internal static class ProfilerNative
     private delegate void NativeWeakMitigation(int prevented, ulong dealerHash);
     private delegate void NativeEnemyHitContext(int baseDamage, int dealerStr);
     private delegate void NativeBuffMitigation([MarshalAs(UnmanagedType.LPUTF8Str)] string powerId, int prevented);
-    private delegate void NativeCardUpgraded(int cardHash, int damageDelta, int blockDelta);
     private delegate void NativeRunMeta(int profileId);
     private delegate void NativeRunHistorySelect([MarshalAs(UnmanagedType.LPUTF8Str)] string seed, long startTime, int profile);
     private delegate void NativeOstyKilled(int playerSlot);
@@ -778,7 +777,6 @@ internal static class ProfilerNative
     private static NativeWeakMitigation _weakMitigation;
     private static NativeEnemyHitContext _enemyHitContext;
     private static NativeBuffMitigation _buffMitigation;
-    private static NativeCardUpgraded _cardUpgraded;
     private static NativeModifierContribution _blockModifierContribution;
     private static NativeRunMeta _runMeta;
     private static NativeRunHistorySelect _runHistorySelect;
@@ -824,7 +822,6 @@ internal static class ProfilerNative
         _weakMitigation = GetExport<NativeWeakMitigation>(lib, "spire_profiler_weak_mitigation");
         _enemyHitContext = GetExport<NativeEnemyHitContext>(lib, "spire_profiler_enemy_hit_context");
         _buffMitigation = GetExport<NativeBuffMitigation>(lib, "spire_profiler_buff_mitigation");
-        _cardUpgraded = GetExport<NativeCardUpgraded>(lib, "spire_profiler_card_upgraded");
         _blockModifierContribution = GetExport<NativeModifierContribution>(lib, "spire_profiler_block_modifier_contribution");
         _runMeta = GetExport<NativeRunMeta>(lib, "spire_profiler_set_run_meta");
         _runHistorySelect = GetExport<NativeRunHistorySelect>(lib, "spire_profiler_run_history_select");
@@ -867,7 +864,6 @@ internal static class ProfilerNative
     public static void OnWeakMitigation(int prevented, ulong dealerHash) => _weakMitigation(prevented, dealerHash);
     public static void OnEnemyHitContext(int baseDamage, int dealerStr) => _enemyHitContext(baseDamage, dealerStr);
     public static void OnBuffMitigation(string powerId, int prevented) => _buffMitigation(powerId, prevented);
-    public static void OnCardUpgraded(int cardHash, int damageDelta, int blockDelta) => _cardUpgraded(cardHash, damageDelta, blockDelta);
     public static void OnBlockModifierContribution(string modifierId, int kind, int contribution, int playerSlot) => _blockModifierContribution(modifierId, kind, contribution, playerSlot);
     public static void OnSetRunMeta(int profileId) => _runMeta(profileId);
     public static void OnPanelToggle() => _panelToggle();
@@ -1847,59 +1843,6 @@ internal static class VulnerableDecomposition
     }
 }
 
-/// <summary>
-/// In-combat upgrade tracking: captures each upgradable card's Damage /
-/// Block base values around CardCmd.Upgrade (the single-card overload
-/// delegates to the batch one, so one patch pair covers both) and forwards
-/// the deltas. The core credits the upgrader when the upgraded card lands.
-/// </summary>
-[HarmonyPatch(typeof(CardCmd), nameof(CardCmd.Upgrade), new Type[] { typeof(IEnumerable<CardModel>), typeof(CardPreviewStyle) })]
-internal static class PatchCardUpgrade
-{
-    private static readonly Dictionary<int, (decimal Damage, decimal Block)> PreUpgrade = new();
-    [HarmonyPrefix]
-    private static void Prefix(IEnumerable<CardModel> cards)
-    {
-        try
-        {
-            PreUpgrade.Clear();
-            foreach (var card in cards)
-            {
-                if (card == null || !card.IsUpgradable) continue;
-                var dv = card.DynamicVars;
-                decimal preDamage = dv != null && dv.TryGetValue("Damage", out var dmg) ? dmg.BaseValue : 0;
-                decimal preBlock = dv != null && dv.TryGetValue("Block", out var blk) ? blk.BaseValue : 0;
-                PreUpgrade[card.GetHashCode()] = (preDamage, preBlock);
-            }
-        }
-        catch (Exception ex) { Log.Error($"[SpireProfiler] Upgrade prefix: {ex}"); }
-    }
-    [HarmonyPostfix]
-    private static void Postfix(IEnumerable<CardModel> cards)
-    {
-        try
-        {
-            if (PreUpgrade.Count == 0) return;
-            foreach (var card in cards)
-            {
-                // Every player's upgrades land in the team-merged
-                // upgrade-delta table (the spec keeps card_upgraded
-                // slotless).
-                if (card == null) continue;
-                if (!PreUpgrade.TryGetValue(card.GetHashCode(), out var pre)) continue;
-                var dv = card.DynamicVars;
-                decimal postDamage = dv != null && dv.TryGetValue("Damage", out var dmg) ? dmg.BaseValue : 0;
-                decimal postBlock = dv != null && dv.TryGetValue("Block", out var blk) ? blk.BaseValue : 0;
-                int damageDelta = (int)(postDamage - pre.Damage);
-                int blockDelta = (int)(postBlock - pre.Block);
-                if (damageDelta > 0 || blockDelta > 0)
-                    ProfilerNative.OnCardUpgraded(card.GetHashCode(), damageDelta, blockDelta);
-            }
-            PreUpgrade.Clear();
-        }
-        catch (Exception ex) { Log.Error($"[SpireProfiler] Upgrade postfix: {ex}"); }
-    }
-}
 /// <summary>
 /// Buff mitigation: Buffer/Intangible/HardenedShell reduce HP loss through
 /// their ModifyHpLost* overrides; the prevented delta forwards to the core,
