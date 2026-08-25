@@ -567,7 +567,6 @@ pub struct EnemyHit {
 pub struct State {
     pub initialized: bool,
     pub data_dir: PathBuf,
-    pub log_path_full: PathBuf,
     pub runs_dir_full: PathBuf,
     pub runs_path_full: PathBuf,
     /// The next combat's globally-unique id: seeded one past the store's

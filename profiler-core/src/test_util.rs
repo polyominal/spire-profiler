@@ -4,8 +4,9 @@
 //! `pub(crate)` items would be dead code.
 
 use std::path::{Path, PathBuf};
-use std::{fs, io};
+use std::{fmt, fs, io};
 
+use crate::data::persistence::{bind_log_path, event_log};
 use crate::engine::object::TextAlign;
 use crate::source_kind::SourceKind;
 use crate::ui::chart_layout::Cmd;
@@ -46,6 +47,14 @@ pub fn emit_allocation_probe(literal: &str, integer: i64, path: &Path, err: &io:
         err.kind(),
         err.raw_os_error().unwrap_or(-1)
     );
+}
+
+pub fn emit_event_log_probe(args: fmt::Arguments<'_>) {
+    event_log!("{}", args);
+}
+
+pub fn bind_event_log_probe(path: &Path) {
+    bind_log_path(path);
 }
 
 /// A synthetic UiRow; the name truncates to the fixed 64-byte field.

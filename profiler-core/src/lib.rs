@@ -43,8 +43,17 @@
 //! host verify the bridge end-to-end under the headless gate.
 //!
 //! Console diagnostics stream `fmt::Arguments` into stderr and are
-//! allocation-free after the first stderr lock. OS errors print kind and raw
-//! code instead of `strerror`; valid UTF-8 paths are the tested path profile.
+//! allocation-free after the first stderr lock. They are health reports for
+//! the person running the game, not gameplay records. OS errors print kind
+//! and raw code instead of `strerror`; valid UTF-8 paths are the tested
+//! path profile.
+//! TODO: stream non-UTF-8 paths lossily if diagnostics ever need the
+//! allocation guarantee on every host path.
+//!
+//! Logging has two deliberate outputs: the stderr diagnostics above and the
+//! unlevelled gameplay event trace in `profiler.log`. A record goes to
+//! exactly one output; the event trace may report sink failure through a
+//! stderr diagnostic, but diagnostics are never copied into the file.
 
 #![deny(unsafe_code)]
 // Module docs are spec documentation, so a broken intra-doc link is a doc

@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! <data_dir>/                            <game dir>/mod_data/spire-profiler/ by default
-//! ├── profiler.log                       append-only process log
+//! ├── profiler.log                       append-only gameplay/event trace
 //! ├── runs.jsonl                         one run record per line, rewritten atomically
 //! └── runs/<run_id>/<combat_id>.json     one write-once file per finished combat
 //! ```
@@ -108,7 +108,7 @@ pub(crate) use combat_doc::card_stat_from_rec;
 pub use combats::write_combat_file;
 pub(crate) use combats::{load_combat_docs_from, max_combat_id};
 pub use io::{ensure_data_dir, read_file, write_file};
-pub use log::append_log;
+pub(crate) use log::{append_log, bind_log_path, event_log, reset_log_sink};
 pub(crate) use runs::merge_card_stat;
 pub use runs::{merge_into_run, rebuild_run_accumulator};
 pub use time::now_seconds;
@@ -128,6 +128,7 @@ pub(crate) mod test_support {
     // The shared fixtures for the persistence submodule suites: the STATE
     // re-pointing, the synthetic combat, and the store-file helper every
     // suite reuses, so each suite's `tests` module stays small.
+    use super::bind_log_path;
     use crate::data::state::{CardStat, Combat, RunPlayer, STATE};
     use crate::source_kind::SourceKind;
     pub(crate) use crate::test_util::temp_dir;
@@ -138,10 +139,10 @@ pub(crate) mod test_support {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
             st.data_dir = data.to_path_buf();
-            st.log_path_full = data.join("profiler.log");
             st.runs_dir_full = data.join("runs");
             st.runs_path_full = data.join("runs.jsonl");
         });
+        bind_log_path(&data.join("profiler.log"));
     }
 
     /// The single-player roster every fixture combat carries: one slot-0

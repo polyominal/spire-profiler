@@ -1,22 +1,21 @@
 //! Run lifecycle and meta: start/end (with the save+quit resume contract),
 //! profile stamping, and the run-history screen selection.
 
-use crate::data::persistence::{append_log, now_seconds, write_run_record};
+use std::fmt;
+
+use crate::data::persistence::{event_log, now_seconds, write_run_record};
 use crate::data::state::{self, RunOutcome, RunPlayer, STATE, caps};
 use crate::{fail, marker};
 
 pub fn set_run_meta(profile_id: i32) {
-    let log_lines = STATE.with(|cell| {
+    STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         if !state.initialized {
-            return Vec::new();
+            return;
         }
         state.run_profile = profile_id;
-        vec![format!("run meta: profile {profile_id}\n")]
+        event_log!("run meta: profile {profile_id}");
     });
-    for line in log_lines {
-        append_log(line);
-    }
 }
 
 /// `start_time` is the game's own `StartTime`; 0 means the read failed and
@@ -43,7 +42,7 @@ pub fn run_started(
         // Closing with 0 would fabricate a win.
         run_ended(RunOutcome::Defeat);
     }
-    let (log_lines, resumed_seq, roster) = STATE.with(|cell| {
+    let (seq, resumed_seq) = STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         // A resumed run rejoins its earlier fragments by seed.
         let resumed = (continued != 0)
@@ -76,45 +75,49 @@ pub fn run_started(
                 // The session clock preserves the old behavior.
                 now_seconds()
             },
-            players: roster.clone(),
+            players: roster,
             ..state::RunContext::default()
         };
-        (
-            vec![format!(
-                "run {seq} started: {} (ascension {ascension}, {game_mode}{})\n",
-                character_ids,
-                if continued != 0 { ", continued" } else { "" }
-            )],
-            resumed,
-            roster,
-        )
+        (seq, resumed)
     });
-    // The borrow above must release first.
+    // The accumulator rebuild re-borrows STATE, so the start line waits.
     if let Some(seq) = resumed_seq {
         let (combats, turns) = crate::data::persistence::rebuild_run_accumulator(seq);
-        append_log(format!(
-            "run {seq} resumed: {combats} combats ({turns} turns) merged from earlier sessions\n"
-        ));
+        event_log!(
+            "run {seq} resumed: {combats} combats ({turns} turns) merged from earlier sessions"
+        );
     }
-    for line in log_lines {
-        append_log(line);
-    }
-    append_log(roster_log_line(&roster));
+    event_log!(
+        "run {seq} started: {} (ascension {ascension}, {game_mode}{})",
+        character_ids,
+        if continued != 0 { ", continued" } else { "" }
+    );
+    STATE.with(|cell| {
+        let state = cell.borrow();
+        let roster = &state.run_ctx.players;
+        if roster.len() > 1 {
+            event_log!("{}", RosterLog(roster));
+        }
+    });
 }
 
-fn roster_log_line(roster: &[RunPlayer]) -> String {
-    if roster.len() <= 1 {
-        return String::new();
+struct RosterLog<'a>(&'a [RunPlayer]);
+
+impl fmt::Display for RosterLog<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "  roster: {} players (", self.0.len())?;
+        for (i, player) in self.0.iter().enumerate() {
+            if i > 0 {
+                f.write_str(", ")?;
+            }
+            write!(
+                f,
+                "slot {} = {} ({})",
+                player.slot, player.net_id, player.character
+            )?;
+        }
+        f.write_str(")")
     }
-    format!(
-        "  roster: {} players ({})\n",
-        roster.len(),
-        roster
-            .iter()
-            .map(|p| format!("slot {} = {} ({})", p.slot, p.net_id, p.character))
-            .collect::<Vec<_>>()
-            .join(", ")
-    )
 }
 
 /// `net_ids` pairs positionally with `character_ids`; mismatches truncate.
@@ -145,10 +148,10 @@ fn parse_roster(character_ids: &str, net_ids: &str) -> Vec<RunPlayer> {
 /// No record is written; clearing `active` makes the next close_previous a
 /// no-op instead of a spurious defeat.
 pub fn run_suspended() {
-    let log_lines = STATE.with(|cell| {
+    let suspended_seq = STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         if !state.initialized || !state.run_ctx.active {
-            return Vec::new();
+            return None;
         }
         // A save+quit mid-combat discards that combat.
         // otherwise the restart's combat_started would flush it as
@@ -159,17 +162,13 @@ pub fn run_suspended() {
         state.player_filter = state::PlayerFilter::All;
         let seq = state.run_ctx.seq;
         state.run_ctx.active = false;
-        vec![format!(
-            "run {seq} suspended (save & quit); no record written\n"
-        )]
+        Some(seq)
     });
-    if !log_lines.is_empty() {
+    if let Some(seq) = suspended_seq {
         // A stale screen-open flag would keep F8 routed to the run panel on
         // the main menu after the transition; only a real suspend drops it.
         crate::data::run_history::clear();
-    }
-    for line in log_lines {
-        append_log(line);
+        event_log!("run {seq} suspended (save & quit); no record written");
     }
 }
 
@@ -206,14 +205,14 @@ pub fn run_history_select(seed: &str, start_time: i64, profile: i32) {
         crate::data::run_history::clear();
         false
     };
-    append_log(format!(
-        "run history select: seed '{}' start {start_time} ({})\n",
+    event_log!(
+        "run history select: seed '{}' start {start_time} ({})",
         if seed.is_empty() { "(none)" } else { seed },
         if matched { "matched" } else { "no match" }
-    ));
+    );
 }
 
 pub fn run_history_clear() {
     crate::data::run_history::clear();
-    append_log("run history selection cleared\n".to_owned());
+    event_log!("run history selection cleared");
 }

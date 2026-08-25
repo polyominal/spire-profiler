@@ -1,14 +1,18 @@
 //! The event surface: the `spire_profiler_*` export bodies as plain `pub fn`s
 //! taking Rust types; `abi.rs` wraps these in the C signatures.
 //!
-//! Borrowing discipline: every function holds the STATE borrow exactly once,
-//! collects any log lines, releases the borrow, and only then calls
-//! `append_log` (which re-borrows STATE — a nested borrow would panic).
+//! Borrowing discipline: every event holds the STATE borrow while mutating
+//! and may emit a trace line immediately; the `profiler.log` sink owns its
+//! path and never re-enters STATE.
+//! TODO: extend steady-state allocation freedom from trace emission to the
+//! event-state representation.
 
 use std::path::{Path, PathBuf};
 
 use crate::data::ledger;
-use crate::data::persistence::{append_log, ensure_data_dir, max_combat_id};
+use crate::data::persistence::{
+    bind_log_path, ensure_data_dir, event_log, max_combat_id, reset_log_sink,
+};
 use crate::data::state::{
     ContextEntry, PlayerFilter, STATE, SourceKind, State, caps, clamp_source_slot,
 };
@@ -46,40 +50,37 @@ pub fn init(data_dir: &Path) {
     if STATE.with(|cell| cell.borrow().initialized) {
         return;
     }
-    let log_lines = STATE.with(|cell| {
+    STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         // The conversion to a path happens once, here.
         let data_dir = PathBuf::from(data_dir);
         state.data_dir = data_dir.clone();
-        state.log_path_full = data_dir.join("profiler.log");
         state.runs_dir_full = data_dir.join("runs");
         state.runs_path_full = data_dir.join("runs.jsonl");
         state.initialized = true;
-        vec![format!(
-            "profiler core initialized; data dir: {}\n",
-            data_dir.display()
-        )]
     });
+    bind_log_path(&data_dir.join("profiler.log"));
     let _ = ensure_data_dir();
     // One past the highest id in the store's file names.
     STATE.with(|cell| cell.borrow_mut().next_combat_id = max_combat_id());
-    for line in log_lines {
-        append_log(line);
-    }
+    event_log!(
+        "profiler core initialized; data dir: {}",
+        data_dir.display()
+    );
     marker!("core initialized, data dir: {}", data_dir.display());
 }
 
 /// The innermost context is where damage and block without an explicit
 /// source are attributed.
 pub fn context_begin(source_id: &str, kind: i32, player_slot: i32) {
-    let log_lines = STATE.with(|cell| {
+    STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         if !state.initialized || source_id.is_empty() {
-            return Vec::new();
+            return;
         }
         if state.context_stack.len() >= caps::CONTEXT_STACK {
             fail!("context stack overflow ({}) entries", caps::CONTEXT_STACK);
-            return Vec::new();
+            return;
         }
         let kind = SourceKind::from_c(kind);
         // The slot is a row key, not a per-player index.
@@ -103,28 +104,22 @@ pub fn context_begin(source_id: &str, kind: i32, player_slot: i32) {
         // only the AMBIENT slot's clear.
         let ambient = state.ambient_slot() as i32;
         ledger::clear_fallbacks_in(&mut state, ambient);
-        vec![format!("  context begin: {source_id} ({})\n", kind.name())]
+        event_log!("  context begin: {source_id} ({})", kind.name());
     });
-    for line in log_lines {
-        append_log(line);
-    }
 }
 
 pub fn context_end() {
-    let log_lines = STATE.with(|cell| {
+    STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         if state.context_stack.is_empty() {
-            return Vec::new();
+            return;
         }
         let top = state
             .context_stack
             .pop()
             .expect("context stack was just checked non-empty");
-        vec![format!("  context end: {}\n", top.id)]
+        event_log!("  context end: {}", top.id);
     });
-    for line in log_lines {
-        append_log(line);
-    }
 }
 
 /// The combat panel's avatar press. `current` keeps the finished combat
@@ -149,4 +144,5 @@ pub fn panel_filter_toggle(slot: u8) {
 /// lifetime of the game would never need this).
 pub fn test_reset() {
     STATE.with(|cell| *cell.borrow_mut() = State::default());
+    reset_log_sink();
 }
