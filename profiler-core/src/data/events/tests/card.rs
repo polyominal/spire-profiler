@@ -67,6 +67,14 @@ fn generated_card_damage_credits_the_generator() {
 
     combat_ended();
 
+    let log = read_test_file(&base, "profiler.log");
+    assert!(
+        log.contains(
+            "  play: PILLAGE (play 1/1)\n    \
+             play credits generator INFERNAL_BLADE (card)\n"
+        ),
+        "a generated play renders both lines without an owned buffer:\n{log}"
+    );
     let (combat, _) = read_combat(&base);
     assert_no_card(&combat, "PILLAGE");
     let blade = card_row(&combat, "INFERNAL_BLADE");

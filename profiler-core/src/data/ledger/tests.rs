@@ -2,19 +2,18 @@
 //! against a fresh core and asserts the resulting state.
 
 use super::*;
+use crate::data::persistence::{bind_log_path, reset_log_sink};
 use crate::data::state::{DebuffLayer, PowerSourceEntry};
 use crate::test_util::temp_dir;
 
 fn reset_state() {
     STATE.with(|cell| *cell.borrow_mut() = state::State::default());
+    reset_log_sink();
 }
 
 fn temp_log_dir(label: &str) {
     let dir = temp_dir(&format!("ledger-{label}"));
-    STATE.with(|cell| {
-        let mut state = cell.borrow_mut();
-        state.log_path_full = dir.join("profiler.log");
-    });
+    bind_log_path(&dir.join("profiler.log"));
 }
 
 fn start_combat() {
@@ -70,7 +69,6 @@ fn resolve_damage_source(
     explicit_slot: i32,
 ) -> Option<DamageRoute> {
     STATE.with(|cell| {
-        let mut logs = Vec::new();
         resolve_damage_source_in(
             &mut cell.borrow_mut(),
             explicit_id,
@@ -78,7 +76,6 @@ fn resolve_damage_source(
             total,
             slot,
             explicit_slot,
-            &mut logs,
         )
     })
 }
@@ -480,8 +477,7 @@ fn apply_pending_contribs_shifts_modifier_share() {
             });
     });
     STATE.with(|cell| {
-        let mut logs = Vec::new();
-        apply_pending_contribs_in(&mut cell.borrow_mut(), 0, 0, &mut logs);
+        apply_pending_contribs_in(&mut cell.borrow_mut(), 0, 0);
     });
     STATE.with(|cell| {
         let state = cell.borrow();
@@ -530,8 +526,7 @@ fn apply_pending_contribs_carves_attributed_hits_from_dmg_attributed() {
             });
     });
     STATE.with(|cell| {
-        let mut logs = Vec::new();
-        apply_pending_contribs_in(&mut cell.borrow_mut(), 0, 0, &mut logs);
+        apply_pending_contribs_in(&mut cell.borrow_mut(), 0, 0);
     });
     STATE.with(|cell| {
         let state = cell.borrow();
@@ -578,8 +573,7 @@ fn apply_pending_contribs_carves_mixed_hits_direct_first() {
             });
     });
     STATE.with(|cell| {
-        let mut logs = Vec::new();
-        apply_pending_contribs_in(&mut cell.borrow_mut(), 0, 0, &mut logs);
+        apply_pending_contribs_in(&mut cell.borrow_mut(), 0, 0);
     });
     STATE.with(|cell| {
         let state = cell.borrow();

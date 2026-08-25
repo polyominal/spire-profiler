@@ -50,16 +50,14 @@
 //! ## Borrowing and handles
 //!
 //! The mutable tables live in [`state::State`] behind
-//! `STATE: RefCell<State>`. Each function borrows State, mutates, and
-//! releases before the caller emits log lines through `append_log` (which
-//! re-borrows). A `&mut Combat` cannot escape the `STATE.with` closure, so
-//! the `_in` helpers take `&mut State` instead. The `get_or_create_card*`
+//! `STATE: RefCell<State>`. Each function borrows State, mutates, and logs
+//! through the state-independent event sink. A `&mut Combat` cannot escape
+//! the `STATE.with` closure, so the `_in` helpers take `&mut State`. The
+//! `get_or_create_card*`
 //! functions return the entry's INDEX: a `Vec` push reallocates the buffer
 //! but never moves existing elements, so the index stays valid.
 
-// Test-only: production defers log emission to the event callers.
-#[cfg(test)]
-use crate::data::persistence::append_log;
+use crate::data::persistence::event_log;
 #[cfg(test)]
 use crate::data::state::STATE;
 use crate::data::state::{
@@ -112,15 +110,10 @@ pub fn consume_debuff_layers_in(
 
 #[cfg(test)]
 fn attribute_debuff_damage(creature_hash: u64, power_id: &str, amount: i64) -> bool {
-    let mut logs = Vec::new();
-    let outcome = STATE.with(|cell| {
+    STATE.with(|cell| {
         let mut state = cell.borrow_mut();
-        attribute_debuff_damage_in(&mut state, creature_hash, power_id, amount, &mut logs)
-    });
-    for line in logs {
-        append_log(line);
-    }
-    outcome
+        attribute_debuff_damage_in(&mut state, creature_hash, power_id, amount)
+    })
 }
 
 fn attribute_debuff_damage_in(
@@ -128,7 +121,6 @@ fn attribute_debuff_damage_in(
     creature_hash: u64,
     power_id: &str,
     amount: i64,
-    logs: &mut Vec<String>,
 ) -> bool {
     let combat = state.current.as_mut().filter(|combat| !combat.finished);
     let Some(combat) = combat else { return false };
@@ -167,9 +159,7 @@ fn attribute_debuff_damage_in(
             assert_card_damage_segments(card);
         }
     }
-    logs.push(format!(
-        "  debuff damage {amount} from {power_id} split across {matched} layers\n"
-    ));
+    event_log!("  debuff damage {amount} from {power_id} split across {matched} layers");
     true
 }
 
@@ -358,7 +348,6 @@ pub fn resolve_damage_source_in(
     total: i64,
     slot: i32,
     explicit_slot: i32,
-    logs: &mut Vec<String>,
 ) -> Option<DamageRoute> {
     {
         let slot_index = state.slot_index(slot);
@@ -375,7 +364,7 @@ pub fn resolve_damage_source_in(
             return Some(route);
         }
     }
-    if attribute_debuff_damage_in(state, receiver_hash, "POISON_POWER", total, logs) {
+    if attribute_debuff_damage_in(state, receiver_hash, "POISON_POWER", total) {
         return None;
     }
     let last_source = state.last_source.clone()?;
@@ -616,12 +605,7 @@ pub fn split_over_appliers_in(
 
 /// Route-agnostic: `dmg_direct` first, then `dmg_attributed`, because the
 /// route is decided by the caller's resolution and is not visible here.
-pub fn apply_pending_contribs_in(
-    state: &mut state::State,
-    attacker_index: usize,
-    slot: i32,
-    logs: &mut Vec<String>,
-) {
+pub fn apply_pending_contribs_in(state: &mut state::State, attacker_index: usize, slot: i32) {
     let slot = state.slot_index(slot);
     let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
         return;
@@ -668,9 +652,7 @@ pub fn apply_pending_contribs_in(
         source.dmg_modifier += contrib.amount;
         assert_card_damage_segments(source);
     }
-    logs.push(format!(
-        "  {total_pending} modifier damage attributed to sources\n"
-    ));
+    event_log!("  {total_pending} modifier damage attributed to sources");
 }
 
 #[cfg(test)]

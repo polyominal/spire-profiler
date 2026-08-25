@@ -3,7 +3,7 @@
 
 use crate::data::ledger;
 use crate::data::ledger::AsyncFallback;
-use crate::data::persistence::append_log;
+use crate::data::persistence::event_log;
 use crate::data::state::{
     DebuffLayer, DoomLayer, DoomTarget, EnemyHit, PowerSourceEntry, STATE, SourceKind, SourceSlot,
     State, StrReduction, TEAM_SLOT, caps,
@@ -18,16 +18,16 @@ pub fn power_applied(
     is_player: i32,
     player_slot: i32,
 ) {
-    let log_lines = STATE.with(|cell| {
+    STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         if !state.initialized || amount <= 0 {
-            return Vec::new();
+            return;
         }
         // A positive Strength delta on an enemy reverts reductions; handled
         // before source resolution.
         if is_player == 0 && power_id == "STRENGTH_POWER" {
             consume_str_reductions_in(&mut state, creature_hash, amount as i64);
-            return Vec::new();
+            return;
         }
         // The owner player slot, else the ambient play.
         let applier_slot = if is_player != 0 {
@@ -60,14 +60,14 @@ pub fn power_applied(
             kind = source.kind;
         }
         let Some(source_id) = source_id else {
-            return Vec::new();
+            return;
         };
         // Self-doom targets the player and is skipped.
         if power_id == "DOOM_POWER" {
             if is_player != 0 {
-                return Vec::new();
+                return;
             }
-            return record_doom_layer_in(
+            record_doom_layer_in(
                 &mut state,
                 creature_hash,
                 &source_id,
@@ -75,6 +75,7 @@ pub fn power_applied(
                 amount as i64,
                 applier_slot as SourceSlot,
             );
+            return;
         }
         record_power_source_in(
             &mut state,
@@ -85,11 +86,8 @@ pub fn power_applied(
             is_player,
             creature_hash,
             applier_slot as SourceSlot,
-        )
+        );
     });
-    for line in log_lines {
-        append_log(line);
-    }
 }
 
 fn record_doom_layer_in(
@@ -99,10 +97,10 @@ fn record_doom_layer_in(
     kind: SourceKind,
     amount: i64,
     player: SourceSlot,
-) -> Vec<String> {
+) {
     if state.doom_layers.len() >= caps::DOOM_LAYERS {
         fail!("doom layer table overflow");
-        return Vec::new();
+        return;
     }
     state.doom_layers.push(DoomLayer {
         creature_hash,
@@ -111,9 +109,7 @@ fn record_doom_layer_in(
         player,
         amount,
     });
-    vec![format!(
-        "  doom layer: creature {creature_hash} (+{amount} from '{source_id}')\n"
-    )]
+    event_log!("  doom layer: creature {creature_hash} (+{amount} from '{source_id}')");
 }
 
 /// Merges repeated applications by the same source AND slot.
@@ -127,21 +123,22 @@ fn record_power_source_in(
     is_player: i32,
     creature_hash: u64,
     player: SourceSlot,
-) -> Vec<String> {
+) {
     if let Some(entry) = state
         .power_sources
         .iter_mut()
         .find(|e| e.power_id == power_id && e.source_id == source_id && e.player == player)
     {
         entry.amount += amount;
-        return vec![format!(
-            "  power {power_id} +{amount} attributed to '{source_id}' (total {})\n",
+        event_log!(
+            "  power {power_id} +{amount} attributed to '{source_id}' (total {})",
             entry.amount
-        )];
+        );
+        return;
     }
     if state.power_sources.len() >= caps::POWER_SOURCES {
         fail!("power source table overflow");
-        return Vec::new();
+        return;
     }
     state.power_sources.push(PowerSourceEntry {
         power_id: power_id.to_owned(),
@@ -150,15 +147,13 @@ fn record_power_source_in(
         player,
         amount,
     });
-    let mut lines = vec![format!(
-        "  power {power_id} +{amount} attributed to '{source_id}'\n"
-    )];
+    event_log!("  power {power_id} +{amount} attributed to '{source_id}'");
 
     // Debuff layer for duration debuffs applied to enemies.
     if is_player == 0 && crate::data::persistence::is_duration_debuff(power_id) {
         if state.debuff_layers.len() >= caps::DEBUFF_LAYERS {
             fail!("debuff layer table overflow");
-            return lines;
+            return;
         }
         state.debuff_layers.push(DebuffLayer {
             creature_hash,
@@ -168,11 +163,10 @@ fn record_power_source_in(
             player,
             duration: amount,
         });
-        lines.push(format!(
-            "  debuff layer: {power_id} on creature {creature_hash} (+{amount} from '{source_id}')\n"
-        ));
+        event_log!(
+            "  debuff layer: {power_id} on creature {creature_hash} (+{amount} from '{source_id}')"
+        );
     }
-    lines
 }
 
 /// On the PLAYER the decrease consumes the recorded appliers FIFO so
@@ -184,41 +178,35 @@ pub fn power_decreased(
     is_player: i32,
     player_slot: i32,
 ) {
-    let log_lines = STATE.with(|cell| {
+    STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         if !state.initialized || amount <= 0 {
-            return Vec::new();
+            return;
         }
         state.slot_index(player_slot);
         if power_id == "STRENGTH_POWER" {
-            let mut lines = Vec::new();
             if is_player != 0 {
-                consume_player_strength_in(&mut state, amount as i64, &mut lines);
+                consume_player_strength_in(&mut state, amount as i64);
             } else if state
                 .current
                 .as_mut()
                 .is_some_and(|combat| !combat.finished)
             {
-                record_str_reduction_in(&mut state, creature_hash, amount as i64, &mut lines);
+                record_str_reduction_in(&mut state, creature_hash, amount as i64);
             }
-            return lines;
+            return;
         }
         if !crate::data::persistence::is_duration_debuff(power_id) {
-            return Vec::new();
+            return;
         }
         ledger::consume_debuff_layers_in(&mut state, creature_hash, power_id, amount as i64);
-        vec![format!(
-            "  debuff {power_id} on creature {creature_hash} decreased by {amount}\n"
-        )]
+        event_log!("  debuff {power_id} on creature {creature_hash} decreased by {amount}");
     });
-    for line in log_lines {
-        append_log(line);
-    }
 }
 
 /// Temporary powers record their +5 before later card applications, so
 /// FIFO is the correct order; exhausted entries are removed outright.
-fn consume_player_strength_in(state: &mut State, amount: i64, logs: &mut Vec<String>) {
+fn consume_player_strength_in(state: &mut State, amount: i64) {
     let mut remaining = amount;
     let mut consumed = 0_i64;
     let mut i = 0;
@@ -237,41 +225,34 @@ fn consume_player_strength_in(state: &mut State, amount: i64, logs: &mut Vec<Str
             i += 1;
         }
     }
-    logs.push(format!(
-        "  player strength -{amount}: {consumed} consumed from appliers (FIFO)\n"
-    ));
+    event_log!("  player strength -{amount}: {consumed} consumed from appliers (FIFO)");
 }
 
 pub fn doom_target_capture(creature_hash: i32, current_hp: i32) {
-    let log_lines = STATE.with(|cell| {
+    STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         if !state.initialized || current_hp <= 0 {
-            return Vec::new();
+            return;
         }
         if state.doom_targets.len() >= caps::DOOM_TARGETS {
             fail!("doom target table overflow");
-            return Vec::new();
+            return;
         }
         let hash = ledger::u64_from_hash(creature_hash);
         state.doom_targets.push(DoomTarget {
             creature_hash: hash,
             hp: current_hp as i64,
         });
-        vec![format!(
-            "  doom target capture: creature {hash} at {current_hp} hp\n"
-        )]
+        event_log!("  doom target capture: creature {hash} at {current_hp} hp");
     });
-    for line in log_lines {
-        append_log(line);
-    }
 }
 
 /// Attribute each captured target's HP to the Doom layers FIFO.
 pub fn doom_kills_completed() {
-    let log_lines = STATE.with(|cell| {
+    STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         if !state.initialized {
-            return Vec::new();
+            return;
         }
         if state
             .current
@@ -280,23 +261,18 @@ pub fn doom_kills_completed() {
             .is_none()
         {
             state.doom_targets.clear();
-            return Vec::new();
+            return;
         }
         // Drain up front for disjoint borrows.
         let targets = std::mem::take(&mut state.doom_targets);
         let count = targets.len();
         for target in &targets {
             if !attribute_doom_target_in(&mut state, target.creature_hash, target.hp) {
-                return Vec::new();
+                return;
             }
         }
-        vec![format!(
-            "  doom kills completed, {count} targets attributed\n"
-        )]
+        event_log!("  doom kills completed, {count} targets attributed");
     });
-    for line in log_lines {
-        append_log(line);
-    }
 }
 
 /// First against the matching Doom layers FIFO, then to the active context
@@ -370,10 +346,10 @@ pub fn damage_modifier_contribution(
     contribution: i32,
     player_slot: i32,
 ) {
-    let log_lines = STATE.with(|cell| {
+    STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         if !state.initialized || contribution <= 0 {
-            return Vec::new();
+            return;
         }
         let mod_kind = if kind == 1 {
             SourceKind::Relic
@@ -399,13 +375,8 @@ pub fn damage_modifier_contribution(
             state.per_player[slot].pending_contribs.push(share);
             count += 1;
         }
-        vec![format!(
-            "  modifier {modifier_id} +{contribution} split across {count} appliers\n"
-        )]
+        event_log!("  modifier {modifier_id} +{contribution} split across {count} appliers");
     });
-    for line in log_lines {
-        append_log(line);
-    }
 }
 
 /// Queue it on the GAINER's slot to attach to the next block chunk.
@@ -415,10 +386,10 @@ pub fn block_modifier_contribution(
     contribution: i32,
     player_slot: i32,
 ) {
-    let log_lines = STATE.with(|cell| {
+    STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         if !state.initialized || contribution <= 0 {
-            return Vec::new();
+            return;
         }
         let mod_kind = if kind == 1 {
             SourceKind::Relic
@@ -443,21 +414,16 @@ pub fn block_modifier_contribution(
             state.per_player[slot].pending_block_contribs.push(share);
             count += 1;
         }
-        vec![format!(
-            "  block modifier {modifier_id} +{contribution} split across {count} appliers\n"
-        )]
+        event_log!("  block modifier {modifier_id} +{contribution} split across {count} appliers");
     });
-    for line in log_lines {
-        append_log(line);
-    }
 }
 
 /// Credited to the FIFO head source of the enemy's WEAK_POWER layers.
 pub fn weak_mitigation(prevented: i32, dealer_hash: u64) {
-    let log_lines = STATE.with(|cell| {
+    STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         if !state.initialized || prevented <= 0 {
-            return Vec::new();
+            return;
         }
         if state
             .current
@@ -465,7 +431,7 @@ pub fn weak_mitigation(prevented: i32, dealer_hash: u64) {
             .filter(|combat| !combat.finished)
             .is_none()
         {
-            return Vec::new();
+            return;
         }
         let layer = state
             .debuff_layers
@@ -474,30 +440,23 @@ pub fn weak_mitigation(prevented: i32, dealer_hash: u64) {
             .map(|l| (l.source_id.clone(), l.kind, l.player));
         if let Some((source_id, kind, player)) = layer {
             let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
-                return Vec::new();
+                return;
             };
             let index = ledger::get_or_create_card_kind(combat, player, &source_id, kind);
             combat.cards[index].mitigate_debuff += prevented as i64;
-            vec![format!(
-                "  weak mitigation +{prevented} credited to '{source_id}'\n"
-            )]
+            event_log!("  weak mitigation +{prevented} credited to '{source_id}'");
         } else {
-            vec![format!(
-                "  weak mitigation +{prevented} with no recorded layer (uncredited)\n"
-            )]
+            event_log!("  weak mitigation +{prevented} with no recorded layer (uncredited)");
         }
     });
-    for line in log_lines {
-        append_log(line);
-    }
 }
 
 /// Split the credit across the buff's recorded appliers.
 pub fn buff_mitigation(power_id: &str, prevented: i32) {
-    let log_lines = STATE.with(|cell| {
+    STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         if !state.initialized || prevented <= 0 {
-            return Vec::new();
+            return;
         }
         if state
             .current
@@ -505,7 +464,7 @@ pub fn buff_mitigation(power_id: &str, prevented: i32) {
             .filter(|combat| !combat.finished)
             .is_none()
         {
-            return Vec::new();
+            return;
         }
         let ambient = state.ambient_slot() as i32;
         let shares = ledger::split_over_appliers_in(
@@ -517,28 +476,23 @@ pub fn buff_mitigation(power_id: &str, prevented: i32) {
         );
         let count = shares.len();
         let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
-            return Vec::new();
+            return;
         };
         for share in shares {
             let index =
                 ledger::get_or_create_card_kind(combat, share.player, &share.id, share.kind);
             combat.cards[index].mitigate_buff += share.amount;
         }
-        vec![format!(
-            "  buff mitigation {power_id} +{prevented} split across {count} appliers\n"
-        )]
+        event_log!("  buff mitigation {power_id} +{prevented} split across {count} appliers");
     });
-    for line in log_lines {
-        append_log(line);
-    }
 }
 
 /// `player_slot` is the forging player; the row keys at it.
 pub fn forge(source_id: &str, source_kind: i32, amount: i32, player_slot: i32) {
-    let log_lines = STATE.with(|cell| {
+    STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         if !state.initialized || amount <= 0 {
-            return Vec::new();
+            return;
         }
         if state
             .current
@@ -546,7 +500,7 @@ pub fn forge(source_id: &str, source_kind: i32, amount: i32, player_slot: i32) {
             .filter(|combat| !combat.finished)
             .is_none()
         {
-            return Vec::new();
+            return;
         }
         let kind = SourceKind::from_c(source_kind);
         // The explicit kind matters for relic/power forges (a bare
@@ -554,7 +508,7 @@ pub fn forge(source_id: &str, source_kind: i32, amount: i32, player_slot: i32) {
         // forging player's slot.
         let index = if !source_id.is_empty() {
             let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
-                return Vec::new();
+                return;
             };
             let row_slot = crate::data::state::clamp_source_slot(player_slot);
             Some(ledger::get_or_create_card_kind(
@@ -573,18 +527,15 @@ pub fn forge(source_id: &str, source_kind: i32, amount: i32, player_slot: i32) {
         match index {
             Some(index) => {
                 let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
-                    return Vec::new();
+                    return;
                 };
                 combat.cards[index].forge += amount as i64;
                 let id = combat.cards[index].id.clone();
-                vec![format!("  forge +{amount} attributed to '{id}'\n")]
+                event_log!("  forge +{amount} attributed to '{id}'");
             }
-            None => vec![format!("  forge +{amount} attributed to nothing\n")],
+            None => event_log!("  forge +{amount} attributed to nothing"),
         }
     });
-    for line in log_lines {
-        append_log(line);
-    }
 }
 
 /// Captured by the ModifyDamage prefix, consumed by the next hit to
@@ -604,7 +555,7 @@ pub fn enemy_hit_context(base_damage: i32, dealer_str: i32) {
 
 /// Credits the Strength-reduction mitigation for a player-received hit from
 /// `dealer_hash`.
-pub(super) fn apply_str_mitigation_in(state: &mut State, dealer_hash: u64, logs: &mut Vec<String>) {
+pub(super) fn apply_str_mitigation_in(state: &mut State, dealer_hash: u64) {
     if dealer_hash == 0 {
         return;
     }
@@ -649,19 +600,12 @@ pub(super) fn apply_str_mitigation_in(state: &mut State, dealer_hash: u64, logs:
             allocated += share;
         }
     }
-    logs.push(format!(
-        "  str reduction mitigated {effective} across {matched} sources\n"
-    ));
+    event_log!("  str reduction mitigated {effective} across {matched} sources");
 }
 
 /// The reducer's slot is captured at reduction time; the credit fires
 /// later, with no ambient play.
-fn record_str_reduction_in(
-    state: &mut State,
-    creature_hash: u64,
-    amount: i64,
-    logs: &mut Vec<String>,
-) {
+fn record_str_reduction_in(state: &mut State, creature_hash: u64, amount: i64) {
     let ambient = state.ambient_slot() as i32;
     let Some((index, row_slot)) =
         ledger::resolve_card_in(&mut *state, "", ambient, ambient, AsyncFallback::Allow)
@@ -691,9 +635,7 @@ fn record_str_reduction_in(
         player: row_slot,
         amount,
     });
-    logs.push(format!(
-        "  str reduction: creature {creature_hash} -{amount} by '{card_id}'\n"
-    ));
+    event_log!("  str reduction: creature {creature_hash} -{amount} by '{card_id}'");
 }
 
 /// An enemy's Strength went up: consume recorded reductions LIFO.

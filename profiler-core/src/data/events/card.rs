@@ -6,7 +6,7 @@
 //! exact.
 
 use crate::data::ledger;
-use crate::data::persistence::append_log;
+use crate::data::persistence::event_log;
 use crate::data::state::{
     Combat, GeneratedInstance, PlayerSlotState, STATE, SourceKind, SourceSlot, State, caps,
     clamp_source_slot,
@@ -20,7 +20,7 @@ pub fn card_play_started(
     card_hash: i32,
     player_slot: i32,
 ) {
-    let log_lines = STATE.with(|cell| {
+    STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         // Reborrow so disjoint fields borrow field-precisely.
         let state = &mut *state;
@@ -31,7 +31,7 @@ pub fn card_play_started(
             .is_none()
         {
             fail!("card_play_started called before init or outside a combat");
-            return Vec::new();
+            return;
         }
         // Co-op plays interleave across slots.
         let slot = state.slot_index(player_slot);
@@ -52,7 +52,7 @@ pub fn card_play_started(
             |entry| (entry.source_id, entry.kind),
         );
         let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
-            return Vec::new();
+            return;
         };
         let slot_state = &mut state.per_player[slot];
         slot_state.active_play_source_slot = play_slot;
@@ -68,23 +68,16 @@ pub fn card_play_started(
             // generator row's plays.
             combat.generated_plays += 1;
         }
-        let mut lines = vec![format!(
-            "  play: {card_id} (play {}/{play_count})\n",
-            play_index + 1
-        )];
+        event_log!("  play: {card_id} (play {}/{play_count})", play_index + 1);
         if play_source.0 != card_id {
             // Everything during the play credits the generator.
-            lines.push(format!(
-                "    play credits generator {source_id} ({})\n",
+            event_log!(
+                "    play credits generator {source_id} ({})",
                 play_source.1.name(),
                 source_id = play_source.0
-            ));
+            );
         }
-        lines
     });
-    for line in log_lines {
-        append_log(line);
-    }
 }
 
 /// `count_play` is false for generated instances: their play must not
@@ -142,14 +135,15 @@ pub fn card_play_finished(player_slot: i32) {
 /// A non-card generator counts each generation as a trigger; card-kind
 /// generators count their own plays instead.
 pub fn card_generated(card_hash: i32, source_id: &str, source_kind: i32, player_slot: i32) {
-    let log_lines = STATE.with(|cell| {
+    STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         if !state.initialized || card_hash == 0 {
-            return Vec::new();
+            return;
         }
         let (resolved_source, kind) = resolve_cause_in(&state, source_id, source_kind);
         let Some(resolved_source) = resolved_source else {
-            return vec!["  card generated with no attribution source\n".to_owned()];
+            event_log!("  card generated with no attribution source");
+            return;
         };
         // The creator is a real player, but the value only ever feeds row
         // keys, so the pure clamp (no per_player growth) suffices.
@@ -181,7 +175,7 @@ pub fn card_generated(card_hash: i32, source_id: &str, source_kind: i32, player_
             None => {
                 if state.generated_instances.len() >= caps::GENERATED_INSTANCES {
                     fail!("generated instance table overflow");
-                    return Vec::new();
+                    return;
                 }
                 state.generated_instances.push(GeneratedInstance {
                     hash: card_hash,
@@ -191,14 +185,11 @@ pub fn card_generated(card_hash: i32, source_id: &str, source_kind: i32, player_
                 });
             }
         }
-        vec![format!(
-            "  card generated, generator: {resolved_source} ({})\n",
+        event_log!(
+            "  card generated, generator: {resolved_source} ({})",
             kind.name()
-        )]
+        );
     });
-    for line in log_lines {
-        append_log(line);
-    }
 }
 
 /// Explicit source, innermost context, ambient play source, potion

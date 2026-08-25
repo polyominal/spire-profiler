@@ -195,6 +195,45 @@ fn resumed_run_rejoins_its_fragment_and_rebuilds_the_summary() {
     assert_eq!(read_all_combats(&base).len(), 2, "both fragments persist");
 }
 
+#[test]
+fn resumed_run_log_lines_keep_their_legacy_order() {
+    let base = scratch_dir("spire-profiler-test-resume-log-order");
+    test_reset();
+    init(&base);
+    run_started("DEFECT", 1, "Standard", "SEED_LOG_ORDER", 0, "", 0);
+    combat_started("FRAG_ONE", "test");
+    card_play_started("STRIKE", 0, 1, 0, 0);
+    card_play_finished(0);
+    combat_ended();
+
+    run_started(
+        "DEFECT,DEFECT",
+        1,
+        "Standard",
+        "SEED_LOG_ORDER",
+        1,
+        "1,2",
+        0,
+    );
+    let log = read_test_file(&base, "profiler.log");
+    let ended = log
+        .find("run 1 ended: DEFECT (Standard), defeat\n")
+        .expect("previous run ends");
+    let resumed = log
+        .find("run 1 resumed: 1 combats (0 turns)")
+        .expect("resume merge renders");
+    let started = log
+        .find("run 1 started: DEFECT,DEFECT (ascension 1, Standard, continued)\n")
+        .expect("started run renders");
+    let roster = log
+        .find("  roster: 2 players (slot 0 = 1 (DEFECT), slot 1 = 2 (DEFECT))\n")
+        .expect("multiplayer roster renders");
+    assert!(
+        ended < resumed && resumed < started && started < roster,
+        "run lifecycle log order changed:\n{log}"
+    );
+}
+
 /// The game restarts the combat after loading, so it is never persisted.
 #[test]
 fn resumed_run_discards_the_unfinished_combat() {

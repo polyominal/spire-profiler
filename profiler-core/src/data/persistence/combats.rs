@@ -10,9 +10,9 @@ use std::path::{Path, PathBuf};
 
 use super::combat_doc::build_combat_json;
 use super::io::{ensure_data_dir, read_file, write_file};
-use super::log::append_log;
 use super::runs::merge_into_run;
 use super::{MAX_JSON_SIZE, RUNS_DIR_NAME};
+use crate::data::persistence::event_log;
 use crate::data::state::{Combat, STATE};
 use crate::fail;
 
@@ -148,15 +148,15 @@ pub fn write_combat_file(c: &Combat) {
     }
     write_file(&path, &combat_json);
     crate::data::run_history::invalidate();
-    append_log(format!(
-        "combat {} ended: {} ({}), {} plays, {} cards tracked; stored at {}\n",
+    event_log!(
+        "combat {} ended: {} ({}), {} plays, {} cards tracked; stored at {}",
         c.seq,
         c.encounter_id,
         c.result,
         c.plays,
         c.cards.len(),
         path.display()
-    ));
+    );
 }
 
 #[cfg(test)]

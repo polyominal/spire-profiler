@@ -2,16 +2,16 @@
 //! activates that source as the owner slot's fallback. The `orb_sources`
 //! table stays global; which slot's fallback points at it is per-slot.
 
-use crate::data::persistence::append_log;
+use crate::data::persistence::event_log;
 use crate::data::state::{OrbSource, STATE, SourceKind, caps};
 use crate::fail;
 
 /// Innermost context, then the active card, then `last_source`.
 pub fn orb_channeled(hash: i32, player_slot: i32) {
-    let log_lines = STATE.with(|cell| {
+    STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         if !state.initialized {
-            return Vec::new();
+            return;
         }
         let slot = state.slot_index(player_slot);
         let mut source_id: Option<String> = None;
@@ -32,7 +32,8 @@ pub fn orb_channeled(hash: i32, player_slot: i32) {
             kind = last_source.kind;
         }
         let Some(source_id) = source_id else {
-            return vec!["  orb channeled with no attribution source\n".to_owned()];
+            event_log!("  orb channeled with no attribution source");
+            return;
         };
         let existing = state
             .orb_sources
@@ -49,7 +50,7 @@ pub fn orb_channeled(hash: i32, player_slot: i32) {
             None => {
                 if state.orb_sources.len() >= caps::ORB_SOURCES {
                     fail!("orb source map overflow");
-                    return Vec::new();
+                    return;
                 }
                 state.orb_sources.push(OrbSource {
                     hash,
@@ -58,22 +59,16 @@ pub fn orb_channeled(hash: i32, player_slot: i32) {
                 });
             }
         }
-        vec![format!(
-            "  orb channeled, source: {source_id} ({})\n",
-            kind.name()
-        )]
+        event_log!("  orb channeled, source: {source_id} ({})", kind.name());
     });
-    for line in log_lines {
-        append_log(line);
-    }
 }
 
 /// Activate its channeling source as the OWNER SLOT's fallback.
 pub fn orb_context_begin(hash: i32, player_slot: i32) {
-    let log_lines = STATE.with(|cell| {
+    STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         if !state.initialized {
-            return Vec::new();
+            return;
         }
         let slot = state.slot_index(player_slot);
         // The slot's potion fallback must not capture the orb's damage.
@@ -82,7 +77,8 @@ pub fn orb_context_begin(hash: i32, player_slot: i32) {
         if state.per_player[slot].active_play_source.is_some() {
             if state.per_player[slot].orb_first_trigger_used {
                 state.per_player[slot].orb_fallback = None;
-                return vec!["  orb trigger (later during play) credited to the card\n".to_owned()];
+                event_log!("  orb trigger (later during play) credited to the card");
+                return;
             }
             state.per_player[slot].orb_first_trigger_used = true;
         }
@@ -94,19 +90,16 @@ pub fn orb_context_begin(hash: i32, player_slot: i32) {
             Some(i) => {
                 state.per_player[slot].orb_fallback = Some(i);
                 let source = &state.orb_sources[i];
-                vec![format!(
-                    "  orb trigger, fallback: {} ({})\n",
+                event_log!(
+                    "  orb trigger, fallback: {} ({})",
                     source.id,
                     source.kind.name()
-                )]
+                );
             }
             None => {
                 state.per_player[slot].orb_fallback = None;
-                vec!["  orb trigger with no recorded source\n".to_owned()]
+                event_log!("  orb trigger with no recorded source");
             }
         }
     });
-    for line in log_lines {
-        append_log(line);
-    }
 }

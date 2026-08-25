@@ -1,8 +1,8 @@
 //! The data layer — combat facts, attribution, and the persisted JSON
 //! model. Engine-free: nothing here knows the engine exists. All mutable
 //! state sits in the thread-local `STATE: RefCell<State>`; [`events`] holds
-//! the borrow once, mutates through ledger's `*_in` helpers, and releases
-//! it before [`persistence::append_log`], which re-borrows.
+//! the borrow once while mutating and logging; the event-log sink owns its
+//! destination and never re-enters `STATE`.
 //!
 //! [`records`] — the persisted record types; [`events`] — the export
 //! bodies; [`ledger`] — attribution mechanics; [`persistence`] — the JSON

@@ -3,7 +3,7 @@
 
 use super::combats::load_run_combat_docs;
 use super::io::{read_file, write_file};
-use super::log::append_log;
+use crate::data::persistence::event_log;
 use crate::data::records;
 use crate::data::state::STATE;
 use crate::fail;
@@ -24,10 +24,7 @@ fn parse_run(seq: u32) -> Vec<records::CombatRec> {
 pub fn write_run_record() {
     let run_ctx = STATE.with(|s| s.borrow().run_ctx.clone());
     if parse_run(run_ctx.seq).is_empty() {
-        append_log(format!(
-            "run {} ended with no combat records\n",
-            run_ctx.seq
-        ));
+        event_log!("run {} ended with no combat records", run_ctx.seq);
         return;
     }
 
@@ -46,13 +43,13 @@ pub fn write_run_record() {
 
     crate::data::run_history::invalidate();
 
-    append_log(format!(
-        "run {} ended: {} ({}), {}\n",
+    event_log!(
+        "run {} ended: {} ({}), {}",
         run_ctx.seq,
         run_ctx.character,
         run_ctx.game_mode,
         run_ctx.outcome.name(),
-    ));
+    );
 }
 
 #[cfg(test)]
