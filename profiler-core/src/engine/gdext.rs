@@ -715,7 +715,7 @@ pub(crate) fn fail_call_failed(name: &'static str, method: ConstStringNamePtr) {
             g.warned[count] = addr;
             g.warned_count = count + 1;
         }
-        fail(format!("panel engine call failed: {name}"));
+        fail!("panel engine call failed: {name}");
     });
 }
 
@@ -727,7 +727,7 @@ fn input_singleton() -> Option<ObjectPtr> {
             g.input = global_get_singleton(g.sn_input);
             if g.input.is_null() {
                 g.input_failed = true;
-                warn("Input singleton not found; drag/tab clicks disabled".to_owned());
+                warn!("Input singleton not found; drag/tab clicks disabled");
             }
         }
         if g.input.is_null() {
@@ -774,7 +774,7 @@ fn mouse_query_failed() -> bool {
         warned
     });
     if !warned {
-        warn("Input.is_mouse_button_pressed call failed; drag/tab clicks disabled".to_owned());
+        warn!("Input.is_mouse_button_pressed call failed; drag/tab clicks disabled");
     }
     false
 }
@@ -787,7 +787,7 @@ pub(crate) fn resource_loader_singleton() -> Option<ObjectPtr> {
             g.resource_loader = global_get_singleton(g.sn_resource_loader);
             if g.resource_loader.is_null() {
                 g.resource_loader_failed = true;
-                warn("ResourceLoader singleton not found; game theme assets disabled".to_owned());
+                warn!("ResourceLoader singleton not found; game theme assets disabled");
             }
         }
         if g.resource_loader.is_null() {
@@ -816,12 +816,12 @@ pub unsafe extern "C" fn gdextension_entry(
 ) -> GDExtensionBool {
     contain("gdextension_entry", 0, || {
         let Some(resolved) = (unsafe { Api::resolve(get_proc_address) }) else {
-            fail("cannot resolve GDExtension interface".to_owned());
+            fail!("cannot resolve GDExtension interface");
             return 0;
         };
         if API.set(resolved).is_err() {
             // A second load would double-register the classes.
-            fail("GDExtension entry called twice".to_owned());
+            fail!("GDExtension entry called twice");
             return 0;
         }
         // The composition root supplies the classes before any callback.
@@ -851,7 +851,7 @@ unsafe extern "C" fn on_initialize(_userdata: *mut c_void, level: c_int) {
             register_class(library, control, class);
         }
         // Kept so headless runs can verify the class registered.
-        marker("panel class registered".to_owned());
+        marker!("panel class registered");
     });
 }
 

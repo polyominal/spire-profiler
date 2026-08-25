@@ -3,14 +3,15 @@
 //! Everything is `pub`: under the feature build `cfg(test)` is off, so
 //! `pub(crate)` items would be dead code.
 
-use std::fs;
 use std::path::{Path, PathBuf};
+use std::{fs, io};
 
 use crate::engine::object::TextAlign;
 use crate::source_kind::SourceKind;
 use crate::ui::chart_layout::Cmd;
 use crate::ui::theme::ContentBox;
 use crate::ui::ui_model::{SEG_COUNT, Section, UiRow};
+use crate::{fail, marker, warn};
 
 /// A fresh dir under the gitignored tmp/ (wiped first, so a crashed run
 /// cannot leak state).
@@ -33,6 +34,18 @@ pub fn temp_dir(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!("spire-profiler-{label}-{}-{n}", std::process::id()));
     fs::create_dir_all(&dir).expect("create temp dir");
     dir
+}
+
+pub fn emit_allocation_probe(literal: &str, integer: i64, path: &Path, err: &io::Error) {
+    fail!("{literal}");
+    warn!("integer {integer}");
+    marker!("path {}", path.display());
+    fail!(
+        "io {}: {} (os error {})",
+        literal,
+        err.kind(),
+        err.raw_os_error().unwrap_or(-1)
+    );
 }
 
 /// A synthetic UiRow; the name truncates to the fixed 64-byte field.

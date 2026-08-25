@@ -434,7 +434,7 @@ pub fn block_pool_push_in(
         return;
     }
     if slot_state.block_pool.len() >= state::caps::BLOCK_POOL {
-        fail("block pool overflow".to_owned());
+        fail!("block pool overflow");
         slot_state.pending_block_contribs.clear();
         return;
     }
@@ -449,7 +449,7 @@ pub fn block_pool_push_in(
     };
     for contrib in &slot_state.pending_block_contribs {
         if entry.mods.len() >= BlockEntry::MAX_MODS {
-            fail("block chunk modifier overflow".to_owned());
+            fail!("block chunk modifier overflow");
             break;
         }
         entry.mods.push(BlockMod {

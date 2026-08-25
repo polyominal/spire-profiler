@@ -41,6 +41,10 @@
 //! `docs/`; environment content (toolchain, headless testing, platform
 //! layout) lives in `docs/pitfalls.md`. A self-test entry point lets the
 //! host verify the bridge end-to-end under the headless gate.
+//!
+//! Console diagnostics stream `fmt::Arguments` into stderr and are
+//! allocation-free after the first stderr lock. OS errors print kind and raw
+//! code instead of `strerror`; valid UTF-8 paths are the tested path profile.
 
 #![deny(unsafe_code)]
 // Module docs are spec documentation, so a broken intra-doc link is a doc
@@ -50,6 +54,7 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 #![allow(rustdoc::private_intra_doc_links)]
 
+use std::fmt;
 use std::io::{self, Write};
 
 // The relaxations of the crate-root deny. Unsafe Rust is quarantined in
@@ -73,22 +78,31 @@ pub mod ui;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_util;
 
-fn emit(level: &str, msg: &str) {
+fn emit(level: &str, args: fmt::Arguments<'_>) {
     let mut stderr = io::stderr().lock();
     // A diagnostic sink must not turn a broken game-side pipe into a panic
     // across the C ABI.
-    let _ = writeln!(stderr, "[SpireProfiler] {level}: {msg}");
+    let _ = writeln!(stderr, "[SpireProfiler] {level}: {args}");
 }
 
-/// Reports a non-fatal error and lets the caller continue.
-pub(crate) fn fail(msg: String) {
-    emit("ERROR", &msg);
+macro_rules! fail_log {
+    ($($arg:tt)*) => {
+        $crate::emit("ERROR", format_args!($($arg)*))
+    };
 }
 
-pub(crate) fn warn(msg: String) {
-    emit("WARNING", &msg);
+macro_rules! warn_log {
+    ($($arg:tt)*) => {
+        $crate::emit("WARNING", format_args!($($arg)*))
+    };
 }
 
-pub(crate) fn marker(msg: String) {
-    emit("INFO", &msg);
+macro_rules! marker_log {
+    ($($arg:tt)*) => {
+        $crate::emit("INFO", format_args!($($arg)*))
+    };
 }
+
+pub(crate) use fail_log as fail;
+pub(crate) use marker_log as marker;
+pub(crate) use warn_log as warn;

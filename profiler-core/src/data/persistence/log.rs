@@ -40,7 +40,11 @@ pub fn append_log(line: String) {
         let sink = sink.as_mut().expect("sink was just ensured");
         if let Some(file) = sink.file.as_mut() {
             if let Err(err) = file.write_all(line.as_bytes()) {
-                fail(format!("cannot write log line: {err}"));
+                fail!(
+                    "cannot write log line: {} (os error {})",
+                    err.kind(),
+                    err.raw_os_error().unwrap_or(-1)
+                );
                 sink.file = None;
             }
             return;
@@ -53,7 +57,11 @@ pub fn append_log(line: String) {
         {
             Ok(mut file) => {
                 if let Err(err) = file.write_all(line.as_bytes()) {
-                    fail(format!("cannot write log line: {err}"));
+                    fail!(
+                        "cannot write log line: {} (os error {})",
+                        err.kind(),
+                        err.raw_os_error().unwrap_or(-1)
+                    );
                 } else {
                     sink.file = Some(file);
                 }
@@ -61,7 +69,11 @@ pub fn append_log(line: String) {
             Err(err) => {
                 if !sink.open_failure_logged {
                     sink.open_failure_logged = true;
-                    fail(format!("cannot open log file: {err}"));
+                    fail!(
+                        "cannot open log file: {} (os error {})",
+                        err.kind(),
+                        err.raw_os_error().unwrap_or(-1)
+                    );
                 }
             }
         }

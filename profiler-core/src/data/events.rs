@@ -66,10 +66,7 @@ pub fn init(data_dir: &Path) {
     for line in log_lines {
         append_log(line);
     }
-    marker(format!(
-        "core initialized, data dir: {}",
-        data_dir.display()
-    ));
+    marker!("core initialized, data dir: {}", data_dir.display());
 }
 
 /// The innermost context is where damage and block without an explicit
@@ -81,10 +78,7 @@ pub fn context_begin(source_id: &str, kind: i32, player_slot: i32) {
             return Vec::new();
         }
         if state.context_stack.len() >= caps::CONTEXT_STACK {
-            fail(format!(
-                "context stack overflow ({}) entries",
-                caps::CONTEXT_STACK
-            ));
+            fail!("context stack overflow ({}) entries", caps::CONTEXT_STACK);
             return Vec::new();
         }
         let kind = SourceKind::from_c(kind);
@@ -137,19 +131,17 @@ pub fn context_end() {
 /// between fights, so the row stays live then too; a no-op only with no
 /// combat on record.
 pub fn panel_filter_toggle(slot: u8) {
-    let label = STATE.with(|cell| {
+    let filter = STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         state.current.as_ref()?;
         let next = state.player_filter.toggle(slot);
         state.player_filter = next;
-        Some(if next == PlayerFilter::All {
-            "all".to_owned()
-        } else {
-            format!("P{}", slot + 1)
-        })
+        Some(next)
     });
-    if let Some(label) = label {
-        marker(format!("panel filter: {label}"));
+    if let Some(PlayerFilter::Player(_)) = filter {
+        marker!("panel filter: P{}", slot + 1);
+    } else if filter.is_some() {
+        marker!("panel filter: all");
     }
 }
 

@@ -31,7 +31,7 @@ pub(crate) fn ensure_font(object: &Object, state: &mut FontState, warning: &str)
             }
             None => {
                 *state = FontState::Failed;
-                warn(warning.to_owned());
+                warn!("{warning}");
                 false
             }
         },

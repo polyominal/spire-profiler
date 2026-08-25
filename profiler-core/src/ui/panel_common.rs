@@ -268,9 +268,7 @@ pub(crate) fn log_cmd_overflow_once(owner: &str) {
     CMD_OVERFLOW_LOGGED.with(|logged| {
         if !logged.get() {
             logged.set(true);
-            fail(format!(
-                "{owner}: layout command cap exceeded; tail commands dropped"
-            ));
+            fail!("{owner}: layout command cap exceeded; tail commands dropped");
         }
     });
 }

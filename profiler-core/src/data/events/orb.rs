@@ -48,7 +48,7 @@ pub fn orb_channeled(hash: i32, player_slot: i32) {
             }
             None => {
                 if state.orb_sources.len() >= caps::ORB_SOURCES {
-                    fail("orb source map overflow".to_owned());
+                    fail!("orb source map overflow");
                     return Vec::new();
                 }
                 state.orb_sources.push(OrbSource {

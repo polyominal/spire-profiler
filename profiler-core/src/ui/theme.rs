@@ -303,9 +303,9 @@ impl Theme {
             DYNAMIC_OVERFLOW_LOGGED.with(|logged| {
                 if !logged.get() {
                     logged.set(true);
-                    crate::fail(format!(
+                    crate::fail!(
                         "theme per-run asset cache full ({DYNAMIC_CACHE_CAP}); icon skipped: {path}"
-                    ));
+                    );
                 }
             });
             return None;
@@ -369,9 +369,9 @@ fn resolve_plate(state: &mut PlateState) -> bool {
     *state = match object::resource_load(PLATE_PATH).and_then(|texture| construct_plate(&texture)) {
         Some(plate) => PlateState::Loaded(plate),
         None => {
-            warn(format!(
+            warn!(
                 "theme asset failed to load: {PLATE_PATH}; panel chrome falls back to flat rects"
-            ));
+            );
             PlateState::Failed
         }
     };
@@ -473,7 +473,7 @@ fn load_asset(state: &mut AssetState, path: &str, fallback: &str) -> bool {
         }
         None => {
             *state = AssetState::Failed;
-            warn(format!("theme asset failed to load: {path}; {fallback}"));
+            warn!("theme asset failed to load: {path}; {fallback}");
         }
     }
     true
@@ -491,7 +491,7 @@ fn report_once(loaded: usize) {
     REPORTED.with(|reported| {
         if !reported.get() {
             reported.set(true);
-            marker(format!("theme assets: {loaded}/{ASSET_COUNT} loaded"));
+            marker!("theme assets: {loaded}/{ASSET_COUNT} loaded");
         }
     });
 }

@@ -30,7 +30,7 @@ pub fn card_play_started(
             .filter(|combat| !combat.finished)
             .is_none()
         {
-            fail("card_play_started called before init or outside a combat".to_owned());
+            fail!("card_play_started called before init or outside a combat");
             return Vec::new();
         }
         // Co-op plays interleave across slots.
@@ -180,7 +180,7 @@ pub fn card_generated(card_hash: i32, source_id: &str, source_kind: i32, player_
             }
             None => {
                 if state.generated_instances.len() >= caps::GENERATED_INSTANCES {
-                    fail("generated instance table overflow".to_owned());
+                    fail!("generated instance table overflow");
                     return Vec::new();
                 }
                 state.generated_instances.push(GeneratedInstance {

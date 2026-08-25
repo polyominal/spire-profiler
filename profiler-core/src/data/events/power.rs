@@ -101,7 +101,7 @@ fn record_doom_layer_in(
     player: SourceSlot,
 ) -> Vec<String> {
     if state.doom_layers.len() >= caps::DOOM_LAYERS {
-        fail("doom layer table overflow".to_owned());
+        fail!("doom layer table overflow");
         return Vec::new();
     }
     state.doom_layers.push(DoomLayer {
@@ -140,7 +140,7 @@ fn record_power_source_in(
         )];
     }
     if state.power_sources.len() >= caps::POWER_SOURCES {
-        fail("power source table overflow".to_owned());
+        fail!("power source table overflow");
         return Vec::new();
     }
     state.power_sources.push(PowerSourceEntry {
@@ -157,7 +157,7 @@ fn record_power_source_in(
     // Debuff layer for duration debuffs applied to enemies.
     if is_player == 0 && crate::data::persistence::is_duration_debuff(power_id) {
         if state.debuff_layers.len() >= caps::DEBUFF_LAYERS {
-            fail("debuff layer table overflow".to_owned());
+            fail!("debuff layer table overflow");
             return lines;
         }
         state.debuff_layers.push(DebuffLayer {
@@ -249,7 +249,7 @@ pub fn doom_target_capture(creature_hash: i32, current_hp: i32) {
             return Vec::new();
         }
         if state.doom_targets.len() >= caps::DOOM_TARGETS {
-            fail("doom target table overflow".to_owned());
+            fail!("doom target table overflow");
             return Vec::new();
         }
         let hash = ledger::u64_from_hash(creature_hash);
@@ -393,7 +393,7 @@ pub fn damage_modifier_contribution(
         let mut count = 0usize;
         for share in shares {
             if state.per_player[slot].pending_contribs.len() >= caps::PENDING_CONTRIBS {
-                fail("pending modifier contribution overflow".to_owned());
+                fail!("pending modifier contribution overflow");
                 break;
             }
             state.per_player[slot].pending_contribs.push(share);
@@ -437,7 +437,7 @@ pub fn block_modifier_contribution(
         let mut count = 0usize;
         for share in shares {
             if state.per_player[slot].pending_block_contribs.len() >= caps::PENDING_BLOCK_CONTRIBS {
-                fail("pending block modifier contribution overflow".to_owned());
+                fail!("pending block modifier contribution overflow");
                 break;
             }
             state.per_player[slot].pending_block_contribs.push(share);
@@ -681,7 +681,7 @@ fn record_str_reduction_in(
         }
     }
     if state.str_reductions.len() >= caps::STR_REDUCTIONS {
-        fail("str reduction table overflow".to_owned());
+        fail!("str reduction table overflow");
         return;
     }
     state.str_reductions.push(StrReduction {

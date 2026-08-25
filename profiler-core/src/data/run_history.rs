@@ -203,7 +203,7 @@ fn load_runs(path: &Path) -> Vec<RunEntry> {
         }
         match serde_json::from_str::<RunEntry>(line) {
             Ok(run) => runs.push(run),
-            Err(err) => crate::fail(format!("cannot parse a runs.jsonl line: {err}")),
+            Err(err) => crate::fail!("cannot parse a runs.jsonl line: {err}"),
         }
     }
     runs
@@ -214,7 +214,7 @@ fn load_combats(dir: &Path) -> Vec<CombatRec> {
     for doc in crate::data::persistence::load_combat_docs_from(dir) {
         match crate::data::records::parse_combat_doc(&doc) {
             Ok(combat) => combats.push(combat),
-            Err(err) => crate::fail(format!("cannot parse a runs/ combat file: {err}")),
+            Err(err) => crate::fail!("cannot parse a runs/ combat file: {err}"),
         }
     }
     combats
