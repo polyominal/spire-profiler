@@ -85,17 +85,17 @@ mods directory is the whole install.
   python3 -c "import json,os; p=os.path.expanduser('~/Library/Application Support/SlayTheSpire2/default/1/settings.save'); d=json.load(open(p)); d.setdefault('mod_settings',{})['mods_enabled']=True; json.dump(d,open(p,'w'))"
   ```
 
-- lldb cannot attach to the game (hardened runtime); debug via debug prints in
-  the dylib (visible in game stdout, which `headless-test` inherits) and the
-  godot log files (`<user data dir>/logs/`).
+- lldb cannot attach to the game (hardened runtime); debug via the core's
+  fail-safe stderr diagnostics (which `headless-test` captures) and the godot
+  log files (`<user data dir>/logs/`).
 
 - Marker placement differs by origin, and `headless-test` greps both sources for
   its verdict: the C\# side's `Log.Info` markers (harmony patch count, `native
   core loaded`, `GDExtension load result`, `profiler panel attached`) land in
-  `godot*.log`, while the core's `eprintln` markers (`core initialized`, `combat
-  N summary written`, `run N recorded`, `chart self-test (...):`, `panel class
-  registered`) only appear on the game process's stdout/stderr — never in the
-  log files. Do not look for core markers in `godot*.log`.
+  `godot*.log`, while the core's stderr `INFO` markers (`core initialized`,
+  `combat N summary written`, `run N recorded`, `chart self-test (...):`, `panel
+  class registered`) only appear in game process output — never in the log
+  files. Do not look for core markers in `godot*.log`.
 
 - The shim's data dir is pointed at `tmp/headless-data` (wiped per boot) via
   `SPIRE_PROFILER_DATA_DIR`, so self-test records never mix into real play data.

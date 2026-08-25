@@ -3,7 +3,7 @@
 
 use crate::data::persistence::{append_log, now_seconds, write_run_record};
 use crate::data::state::{self, RunOutcome, RunPlayer, STATE, caps};
-use crate::fail;
+use crate::{fail, marker};
 
 pub fn set_run_meta(profile_id: i32) {
     let log_lines = STATE.with(|cell| {
@@ -30,13 +30,13 @@ pub fn run_started(
     net_ids: &str,
     start_time: i64,
 ) {
+    if !STATE.with(|cell| cell.borrow().initialized) {
+        fail("run_started called before init".to_owned());
+        return;
+    }
     // A previous unclosed run is closed out as a loss.
     let close_previous = STATE.with(|cell| {
-        let state = cell.borrow_mut();
-        if !state.initialized {
-            fail("run_started called before init".to_owned());
-            return false;
-        }
+        let state = cell.borrow();
         state.run_ctx.active
     });
     if close_previous {
@@ -45,10 +45,6 @@ pub fn run_started(
     }
     let (log_lines, resumed_seq, roster) = STATE.with(|cell| {
         let mut state = cell.borrow_mut();
-        if !state.initialized {
-            fail("run_started called before init".to_owned());
-            return (Vec::new(), None, Vec::new());
-        }
         // A resumed run rejoins its earlier fragments by seed.
         let resumed = (continued != 0)
             .then(|| crate::data::run_history::continued_run_id(&state.runs_dir_full, seed))
@@ -198,7 +194,7 @@ pub fn run_ended(outcome: RunOutcome) {
         let state = cell.borrow();
         (state.run_ctx.seq, state.run_ctx.outcome)
     });
-    eprintln!("[SpireProfiler] run {seq} recorded ({})", outcome.name());
+    marker(format!("run {seq} recorded ({})", outcome.name()));
 }
 
 /// The shim forwards the displayed run's seed, `StartTime`, and profile.

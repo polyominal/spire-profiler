@@ -1,7 +1,7 @@
 //! `cargo xtask headless-test`: install the mod, boot the game headless
 //! with the self-test flag, and gate on markers in the boot output. The C#
-//! Log.Info markers land in the godot logs while the core's eprintln
-//! markers only appear on stderr, so both are combined.
+//! Log.Info markers land in the godot logs while the core's stderr
+//! markers only appear in process output, so both are combined.
 
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -130,15 +130,15 @@ fn check_patch_count(output: &str, failures: &mut Vec<String>) {
 /// gdext classes registered; `chart draw ok` proves dispatch fired with
 /// zero CallErrors.
 const GATE_MARKERS: [&str; 9] = [
-    "[SpireProfiler] chart self-test (combat):",
-    "[SpireProfiler] chart self-test (run):",
-    "[SpireProfiler] combat 1 summary written",
-    "[SpireProfiler] run 1 recorded (victory)",
+    "[SpireProfiler] INFO: chart self-test (combat):",
+    "[SpireProfiler] INFO: chart self-test (run):",
+    "[SpireProfiler] INFO: combat 1 summary written",
+    "[SpireProfiler] INFO: run 1 recorded (victory)",
     "[SpireProfiler] GDExtension load result: Ok",
     "[SpireProfiler] profiler panel attached",
-    "[SpireProfiler] panel class registered",
-    "[SpireProfiler] chart _draw active",
-    "[SpireProfiler] chart draw ok",
+    "[SpireProfiler] INFO: panel class registered",
+    "[SpireProfiler] INFO: chart _draw active",
+    "[SpireProfiler] INFO: chart draw ok",
 ];
 
 fn check_gate_markers(output: &str, failures: &mut Vec<String>) {

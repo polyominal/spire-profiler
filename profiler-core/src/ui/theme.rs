@@ -62,6 +62,7 @@ use std::cell::Cell;
 use crate::engine::gdext::RetainedVariant;
 use crate::engine::math::{Rect2, Vector2};
 use crate::engine::object;
+use crate::{marker, warn};
 
 /// Kreon Bold, 2px glyph tracking.
 pub(crate) const FONT_TITLE_PATH: &str = "res://themes/kreon_bold_glyph_space_two.tres";
@@ -368,10 +369,9 @@ fn resolve_plate(state: &mut PlateState) -> bool {
     *state = match object::resource_load(PLATE_PATH).and_then(|texture| construct_plate(&texture)) {
         Some(plate) => PlateState::Loaded(plate),
         None => {
-            eprintln!(
-                "[SpireProfiler] WARNING: theme asset failed to load: {PLATE_PATH}; \
-                 panel chrome falls back to flat rects"
-            );
+            warn(format!(
+                "theme asset failed to load: {PLATE_PATH}; panel chrome falls back to flat rects"
+            ));
             PlateState::Failed
         }
     };
@@ -473,7 +473,7 @@ fn load_asset(state: &mut AssetState, path: &str, fallback: &str) -> bool {
         }
         None => {
             *state = AssetState::Failed;
-            eprintln!("[SpireProfiler] WARNING: theme asset failed to load: {path}; {fallback}");
+            warn(format!("theme asset failed to load: {path}; {fallback}"));
         }
     }
     true
@@ -491,7 +491,7 @@ fn report_once(loaded: usize) {
     REPORTED.with(|reported| {
         if !reported.get() {
             reported.set(true);
-            eprintln!("[SpireProfiler] theme assets: {loaded}/{ASSET_COUNT} loaded");
+            marker(format!("theme assets: {loaded}/{ASSET_COUNT} loaded"));
         }
     });
 }

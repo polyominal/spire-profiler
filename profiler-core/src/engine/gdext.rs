@@ -72,6 +72,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::abi::contain;
 use crate::engine::math::Vector2;
+use crate::{fail, marker, warn};
 
 // ── engine type aliases (from gdextension_interface.h) ──────────────────────
 
@@ -702,7 +703,7 @@ unsafe fn string_name_eq(a: ConstStringNamePtr, b: ConstStringNamePtr) -> bool {
 
 /// ERROR-shaped: a CallError on a panel method is a real failure the
 /// headless audit must catch, unlike the soft degradations below.
-pub(crate) fn warn_call_failed(name: &'static str, method: ConstStringNamePtr) {
+pub(crate) fn fail_call_failed(name: &'static str, method: ConstStringNamePtr) {
     GLOBAL.with(|cell| {
         let mut g = cell.borrow_mut();
         let addr = method as usize;
@@ -714,7 +715,7 @@ pub(crate) fn warn_call_failed(name: &'static str, method: ConstStringNamePtr) {
             g.warned[count] = addr;
             g.warned_count = count + 1;
         }
-        crate::fail(format!("panel engine call failed: {name}"));
+        fail(format!("panel engine call failed: {name}"));
     });
 }
 
@@ -726,9 +727,7 @@ fn input_singleton() -> Option<ObjectPtr> {
             g.input = global_get_singleton(g.sn_input);
             if g.input.is_null() {
                 g.input_failed = true;
-                eprintln!(
-                    "[SpireProfiler] WARNING: Input singleton not found; drag/tab clicks disabled"
-                );
+                warn("Input singleton not found; drag/tab clicks disabled".to_owned());
             }
         }
         if g.input.is_null() {
@@ -775,10 +774,7 @@ fn mouse_query_failed() -> bool {
         warned
     });
     if !warned {
-        eprintln!(
-            "[SpireProfiler] WARNING: Input.is_mouse_button_pressed call failed; \
-             drag/tab clicks disabled"
-        );
+        warn("Input.is_mouse_button_pressed call failed; drag/tab clicks disabled".to_owned());
     }
     false
 }
@@ -791,10 +787,7 @@ pub(crate) fn resource_loader_singleton() -> Option<ObjectPtr> {
             g.resource_loader = global_get_singleton(g.sn_resource_loader);
             if g.resource_loader.is_null() {
                 g.resource_loader_failed = true;
-                eprintln!(
-                    "[SpireProfiler] WARNING: ResourceLoader singleton not found; \
-                     game theme assets disabled"
-                );
+                warn("ResourceLoader singleton not found; game theme assets disabled".to_owned());
             }
         }
         if g.resource_loader.is_null() {
@@ -823,12 +816,12 @@ pub unsafe extern "C" fn gdextension_entry(
 ) -> GDExtensionBool {
     contain("gdextension_entry", 0, || {
         let Some(resolved) = (unsafe { Api::resolve(get_proc_address) }) else {
-            eprintln!("[SpireProfiler] ERROR: cannot resolve GDExtension interface");
+            fail("cannot resolve GDExtension interface".to_owned());
             return 0;
         };
         if API.set(resolved).is_err() {
             // A second load would double-register the classes.
-            eprintln!("[SpireProfiler] ERROR: GDExtension entry called twice");
+            fail("GDExtension entry called twice".to_owned());
             return 0;
         }
         // The composition root supplies the classes before any callback.
@@ -858,7 +851,7 @@ unsafe extern "C" fn on_initialize(_userdata: *mut c_void, level: c_int) {
             register_class(library, control, class);
         }
         // Kept so headless runs can verify the class registered.
-        eprintln!("[SpireProfiler] panel class registered");
+        marker("panel class registered".to_owned());
     });
 }
 

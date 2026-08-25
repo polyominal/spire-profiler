@@ -10,6 +10,7 @@ use crate::engine::object::TextAlign;
 use crate::ui::chart_layout::{Cmd, TextCmd};
 use crate::ui::palette;
 use crate::ui::theme::{IconId, Plate, ScrollbarSprites, TextRole, Theme};
+use crate::warn;
 
 /// The retained Variant's object Ref keeps the Font alive between draws.
 pub(crate) enum FontState {
@@ -19,7 +20,7 @@ pub(crate) enum FontState {
 }
 
 /// A failed fetch disables text permanently.
-pub(crate) fn ensure_font(object: &Object, state: &mut FontState, warn: &str) -> bool {
+pub(crate) fn ensure_font(object: &Object, state: &mut FontState, warning: &str) -> bool {
     match state {
         FontState::Loaded(_) => true,
         FontState::Failed => false,
@@ -30,7 +31,7 @@ pub(crate) fn ensure_font(object: &Object, state: &mut FontState, warn: &str) ->
             }
             None => {
                 *state = FontState::Failed;
-                eprintln!("{warn}");
+                warn(warning.to_owned());
                 false
             }
         },

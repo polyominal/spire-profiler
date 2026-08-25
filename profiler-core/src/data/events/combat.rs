@@ -9,7 +9,7 @@ use crate::data::state::{
     Combat, OstyEntry, PlayerSlotState, STATE, SourceKind, State, TEAM_SLOT, caps,
     clamp_source_slot,
 };
-use crate::fail;
+use crate::{fail, marker};
 
 fn assert_damage_segments(combat: &Combat) {
     for card in &combat.cards {
@@ -207,13 +207,13 @@ pub fn osty_killed(player_slot: i32) {
 }
 
 pub fn combat_started(encounter_id: &str, encounter_type: &str) {
+    if !STATE.with(|cell| cell.borrow().initialized) {
+        fail("combat_started called before init".to_owned());
+        return;
+    }
     // A combat that never reported its end is flushed as interrupted.
     let interrupted = STATE.with(|cell| {
         let mut state = cell.borrow_mut();
-        if !state.initialized {
-            fail("combat_started called before init".to_owned());
-            return None;
-        }
         // Finished combats are kept for the UI summary.
         let combat = state.current.as_mut().filter(|combat| !combat.finished)?;
         if combat.plays == 0 && combat.cards.is_empty() {
@@ -227,10 +227,6 @@ pub fn combat_started(encounter_id: &str, encounter_type: &str) {
     }
     let log_lines = STATE.with(|cell| {
         let mut state = cell.borrow_mut();
-        if !state.initialized {
-            fail("combat_started called before init".to_owned());
-            return Vec::new();
-        }
         // Seeded at init as one past the store's highest id.
         state.next_combat_id += 1;
         // Per-player transient state clears wholesale at the boundary.
@@ -609,6 +605,6 @@ pub fn combat_ended() {
         write_combat_file(&combat);
     }
     if let Some(seq) = seq {
-        eprintln!("[SpireProfiler] combat {seq} summary written");
+        marker(format!("combat {seq} summary written"));
     }
 }

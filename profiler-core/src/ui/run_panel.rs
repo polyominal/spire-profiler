@@ -198,7 +198,7 @@ impl SpireProfilerRunPanel {
             &self.layout.header_cmds,
             &self.layout.cmds,
             &self.detail,
-            "[SpireProfiler] WARNING: run panel font unavailable; text disabled",
+            "run panel font unavailable; text disabled",
         );
         let icons = panel_replay::IconTextures {
             theme: &self.theme,

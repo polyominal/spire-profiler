@@ -12,7 +12,7 @@ use crate::data::persistence::{append_log, ensure_data_dir, max_combat_id};
 use crate::data::state::{
     ContextEntry, PlayerFilter, STATE, SourceKind, State, caps, clamp_source_slot,
 };
-use crate::fail;
+use crate::{fail, marker};
 
 mod card;
 mod combat;
@@ -43,11 +43,11 @@ pub use run::{
 pub use self_test::self_test;
 
 pub fn init(data_dir: &Path) {
+    if STATE.with(|cell| cell.borrow().initialized) {
+        return;
+    }
     let log_lines = STATE.with(|cell| {
         let mut state = cell.borrow_mut();
-        if state.initialized {
-            return Vec::new();
-        }
         // The conversion to a path happens once, here.
         let data_dir = PathBuf::from(data_dir);
         state.data_dir = data_dir.clone();
@@ -66,10 +66,10 @@ pub fn init(data_dir: &Path) {
     for line in log_lines {
         append_log(line);
     }
-    eprintln!(
-        "[SpireProfiler] core initialized, data dir: {data_dir}",
-        data_dir = data_dir.display()
-    );
+    marker(format!(
+        "core initialized, data dir: {}",
+        data_dir.display()
+    ));
 }
 
 /// The innermost context is where damage and block without an explicit
@@ -149,7 +149,7 @@ pub fn panel_filter_toggle(slot: u8) {
         })
     });
     if let Some(label) = label {
-        eprintln!("[SpireProfiler] panel filter: {label}");
+        marker(format!("panel filter: {label}"));
     }
 }
 
