@@ -4,6 +4,10 @@
 //! 2048-byte buffer: source ids and data-dir paths fit comfortably while a
 //! logging call's stack use stays bounded. Overlong lines end with `…`.
 //! This is the ordered gameplay/event trace, not severity-based diagnostics.
+//! TODO: sessionize and retain old trace files once unbounded growth is a
+//! demonstrated support problem.
+//! TODO: batch trace writes only if profiling shows per-line `write_all` is
+//! a measurable cost.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};

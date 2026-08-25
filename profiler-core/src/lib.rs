@@ -47,6 +47,8 @@
 //! the person running the game, not gameplay records. OS errors print kind
 //! and raw code instead of `strerror`; valid UTF-8 paths are the tested
 //! path profile.
+//! TODO: stream non-UTF-8 paths lossily if diagnostics ever need the
+//! allocation guarantee on every host path.
 //!
 //! Logging has two deliberate outputs: the stderr diagnostics above and the
 //! unlevelled gameplay event trace in `profiler.log`. A record goes to

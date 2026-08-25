@@ -4,6 +4,8 @@
 //! Borrowing discipline: every event holds the STATE borrow while mutating
 //! and may emit a trace line immediately; the `profiler.log` sink owns its
 //! path and never re-enters STATE.
+//! TODO: extend steady-state allocation freedom from trace emission to the
+//! event-state representation.
 
 use std::path::{Path, PathBuf};
 
