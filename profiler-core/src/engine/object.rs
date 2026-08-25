@@ -10,9 +10,9 @@ use std::ptr;
 use crate::engine::gdext::{
     CALL_ERROR_INVALID_METHOD, CALL_OK, CallError, ConstStringNamePtr, ConstVariantPtr,
     GDExtensionInt, GLOBAL, OPAQUE_SIZE, ObjectPtr, Opaque, RetainedVariant, VT_BOOL, VT_COLOR,
-    VT_FLOAT, VT_INT, VT_OBJECT, VT_RECT2, VT_VECTOR2, Variant, read_payload, read_vector2,
-    resource_loader_singleton, retained_object, string_variant, variant_call, variant_destroy,
-    variant_type, warn_call_failed,
+    VT_FLOAT, VT_INT, VT_OBJECT, VT_RECT2, VT_VECTOR2, Variant, fail_call_failed, read_payload,
+    read_vector2, resource_loader_singleton, retained_object, string_variant, variant_call,
+    variant_destroy, variant_type,
 };
 use crate::engine::math::{Color, Rect2, Vector2};
 
@@ -56,7 +56,7 @@ impl Object {
             // Off the init thread every cached name is null and handing the
             // engine a null method name is an engine-side null deref; report
             // once and fail the call instead.
-            warn_call_failed(name, method);
+            fail_call_failed(name, method);
             return CALL_ERROR_INVALID_METHOD;
         }
         let mut obj_v =
@@ -80,7 +80,7 @@ impl Object {
             &mut err,
         );
         if err.error != CALL_OK {
-            warn_call_failed(name, method);
+            fail_call_failed(name, method);
         }
         err.error
     }
@@ -321,7 +321,7 @@ pub(crate) fn resource_load(path: &str) -> Option<RetainedVariant> {
         &mut err,
     );
     if err.error != CALL_OK {
-        warn_call_failed("ResourceLoader.load", method);
+        fail_call_failed("ResourceLoader.load", method);
         variant_destroy(ret.0.as_mut_ptr().cast::<c_void>());
         return None;
     }
@@ -418,7 +418,7 @@ fn call_retained(
 ) -> bool {
     if method.is_null() {
         // Off-init-thread guard, mirroring `Object::call`.
-        warn_call_failed(name, method);
+        fail_call_failed(name, method);
         return false;
     }
     let mut ret = Variant::uninit();
@@ -441,7 +441,7 @@ fn call_retained(
         &mut err,
     );
     if err.error != CALL_OK {
-        warn_call_failed(name, method);
+        fail_call_failed(name, method);
         return false;
     }
     true

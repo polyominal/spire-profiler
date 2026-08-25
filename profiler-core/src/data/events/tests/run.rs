@@ -14,6 +14,30 @@ fn read_run(base: &Path) -> serde_json::Value {
 }
 
 #[test]
+fn repeated_init_keeps_the_first_data_dir() {
+    let first = scratch_dir("spire-profiler-test-init-first");
+    let second = scratch_dir("spire-profiler-test-init-second");
+    test_reset();
+    init(&first);
+    init(&second);
+
+    assert!(
+        STATE.with(|cell| cell.borrow().data_dir == first),
+        "the second data dir must not replace the initialized one"
+    );
+    let log = read_test_file(&first, "profiler.log");
+    assert_eq!(
+        log.matches("profiler core initialized").count(),
+        1,
+        "a repeated init must not append another event-log line"
+    );
+    assert!(
+        !second.join("profiler.log").exists(),
+        "a repeated init must not write through the new argument"
+    );
+}
+
+#[test]
 fn resumed_run_records_the_seed() {
     let base = scratch_dir("spire-profiler-test-resume");
     test_reset();

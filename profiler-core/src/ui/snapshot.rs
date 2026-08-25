@@ -2,6 +2,7 @@
 //! hover-detail/footer texts consumed by `chart_layout` and the panels.
 
 use crate::data::state::{CardStat, Combat, PlayerFilter, STATE};
+use crate::marker;
 use crate::ui::tooltip::{RowDetail, StatLine, StatTone};
 use crate::ui::ui_model::{self, SEG_COUNT, Section, Segment, UiMeta, UiRow, UiTab};
 use crate::ui::{chart_layout, palette};
@@ -485,8 +486,8 @@ pub fn chart_self_test() {
             width: chart_layout::PANEL_WIDTH,
             right_gutter: 0.0,
         });
-        eprintln!(
-            "[SpireProfiler] chart self-test ({}): {} rows -> {} cmds, {} hit rows, height {}",
+        marker(format!(
+            "chart self-test ({}): {} rows -> {} cmds, {} hit rows, height {}",
             if tab == UiTab::Combat {
                 "combat"
             } else {
@@ -496,7 +497,7 @@ pub fn chart_self_test() {
             layout.cmds.len(),
             layout.row_hits.len(),
             layout.height as i32,
-        );
+        ));
     }
 }
 

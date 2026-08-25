@@ -15,6 +15,7 @@ use std::hash::{Hash, Hasher};
 use crate::data::state::{CardStat, PlayerFilter, STATE};
 use crate::engine::gdext::Object;
 use crate::engine::math::{Rect2, Vector2};
+use crate::marker;
 #[cfg(test)]
 use crate::source_kind::SourceKind;
 use crate::ui::chart_layout::{self, Layout};
@@ -52,7 +53,7 @@ pub(crate) fn run_active() -> bool {
 /// Outside a run the press is ignored; the stored state carries forward.
 pub(crate) fn toggle() {
     if !run_active() {
-        eprintln!("[SpireProfiler] panel toggle: ignored (outside a run)");
+        marker("panel toggle: ignored (outside a run)".to_owned());
         return;
     }
     let next = VISIBLE.with(|v| !v.get());
@@ -119,7 +120,7 @@ impl SpireProfilerPanel {
         object.set_size(box_size);
         object.set_visible(false);
         object.set_clip_contents(true);
-        eprintln!("[SpireProfiler] panel instance created");
+        marker("panel instance created".to_owned());
         Self {
             object,
             rows: [UiRow::default(); ui_model::MAX_UI_ROWS],
@@ -183,7 +184,7 @@ impl SpireProfilerPanel {
             &self.layout.header_cmds,
             &self.layout.cmds,
             &self.detail,
-            "[SpireProfiler] WARNING: theme default font unavailable; chart text disabled",
+            "theme default font unavailable; chart text disabled",
         );
         // Count failures so `chart draw ok` fires only after a clean draw.
         let mut call_errors = 0;
@@ -235,11 +236,11 @@ impl SpireProfilerPanel {
             return;
         }
         self.logged_draw = true;
-        eprintln!(
-            "[SpireProfiler] chart _draw active: {} cmds, {} rows",
+        marker(format!(
+            "chart _draw active: {} cmds, {} rows",
             self.layout.cmds.len() + self.layout.header_cmds.len(),
             self.layout.row_hits.len()
-        );
+        ));
     }
 
     /// The `chart draw ok` marker proves clean engine calls, not just
@@ -247,10 +248,10 @@ impl SpireProfilerPanel {
     fn log_draw_ok(&mut self, call_errors: usize) {
         if !self.draw_ok_logged && call_errors == 0 {
             self.draw_ok_logged = true;
-            eprintln!(
-                "[SpireProfiler] chart draw ok: {} cmds, 0 call errors",
+            marker(format!(
+                "chart draw ok: {} cmds, 0 call errors",
                 self.layout.cmds.len() + self.layout.header_cmds.len()
-            );
+            ));
         }
     }
 

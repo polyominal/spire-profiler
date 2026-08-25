@@ -50,6 +50,8 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 #![allow(rustdoc::private_intra_doc_links)]
 
+use std::io::{self, Write};
+
 // The relaxations of the crate-root deny. Unsafe Rust is quarantined in
 // three places: the C ABI surface (raw C pointer reads, no_mangle extern
 // fns, and the catch_unwind panic-containment contract — see abi.rs's
@@ -71,10 +73,22 @@ pub mod ui;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_util;
 
-/// Reports a non-fatal error to the game console: stderr, so the line is
-/// visible in the game console and in headless output either way. Everything
-/// below the C ABI must never surface an error, so failures are logged here
-/// and swallowed — callers keep going.
+fn emit(level: &str, msg: &str) {
+    let mut stderr = io::stderr().lock();
+    // A diagnostic sink must not turn a broken game-side pipe into a panic
+    // across the C ABI.
+    let _ = writeln!(stderr, "[SpireProfiler] {level}: {msg}");
+}
+
+/// Reports a non-fatal error and lets the caller continue.
 pub(crate) fn fail(msg: String) {
-    eprintln!("[SpireProfiler] ERROR: {msg}");
+    emit("ERROR", &msg);
+}
+
+pub(crate) fn warn(msg: String) {
+    emit("WARNING", &msg);
+}
+
+pub(crate) fn marker(msg: String) {
+    emit("INFO", &msg);
 }
