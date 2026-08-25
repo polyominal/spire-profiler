@@ -1,8 +1,8 @@
 //! The data layer — combat facts, attribution, and the persisted JSON
 //! model. Engine-free: nothing here knows the engine exists. All mutable
 //! state sits in the thread-local `STATE: RefCell<State>`; [`events`] holds
-//! the borrow once while mutating and logging; the event-log sink owns its
-//! destination and never re-enters `STATE`.
+//! the borrow once while mutating and emitting the gameplay event trace;
+//! the `profiler.log` sink owns its destination and never re-enters `STATE`.
 //!
 //! [`records`] — the persisted record types; [`events`] — the export
 //! bodies; [`ledger`] — attribution mechanics; [`persistence`] — the JSON

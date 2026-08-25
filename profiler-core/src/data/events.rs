@@ -2,8 +2,8 @@
 //! taking Rust types; `abi.rs` wraps these in the C signatures.
 //!
 //! Borrowing discipline: every event holds the STATE borrow while mutating
-//! and may log immediately; the event-log sink owns its path and never
-//! re-enters STATE.
+//! and may emit a trace line immediately; the `profiler.log` sink owns its
+//! path and never re-enters STATE.
 
 use std::path::{Path, PathBuf};
 

@@ -3,6 +3,7 @@
 //! one held file; the sink never re-enters profiler state. Each line has a
 //! 2048-byte buffer: source ids and data-dir paths fit comfortably while a
 //! logging call's stack use stays bounded. Overlong lines end with `…`.
+//! This is the ordered gameplay/event trace, not severity-based diagnostics.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};

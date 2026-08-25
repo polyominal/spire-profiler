@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! <data_dir>/                            <game dir>/mod_data/spire-profiler/ by default
-//! ├── profiler.log                       append-only process log
+//! ├── profiler.log                       append-only gameplay/event trace
 //! ├── runs.jsonl                         one run record per line, rewritten atomically
 //! └── runs/<run_id>/<combat_id>.json     one write-once file per finished combat
 //! ```
