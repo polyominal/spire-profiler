@@ -19,7 +19,7 @@ use crate::marker;
 #[cfg(test)]
 use crate::source_kind::SourceKind;
 use crate::ui::chart_layout::{self, Layout};
-use crate::ui::panel_common::{self, InteractionState, PressZone};
+use crate::ui::panel_common::{self, AvatarScaleAnimation, InteractionState, PressZone};
 use crate::ui::tooltip::RowDetail;
 use crate::ui::ui_model::{self, UiMeta, UiRow, UiTab};
 use crate::ui::{panel_replay, snapshot};
@@ -108,6 +108,7 @@ pub struct SpireProfilerPanel {
     /// Roster slots parallel to the layout's `portrait_paths` (only the
     /// combat tab carries a row), for the per-frame dim mask.
     avatar_slots: Vec<u8>,
+    avatar_animation: AvatarScaleAnimation,
     dimmed_scratch: Vec<bool>,
     logged_draw: bool,
     /// The `chart draw ok` marker proves clean engine calls, not just entry.
@@ -150,6 +151,7 @@ impl SpireProfilerPanel {
             theme: crate::ui::theme::Theme::new(),
             gutter: 0.0,
             avatar_slots: Vec::new(),
+            avatar_animation: AvatarScaleAnimation::default(),
             dimmed_scratch: Vec::new(),
             logged_draw: false,
             draw_ok_logged: false,
@@ -201,6 +203,7 @@ impl SpireProfilerPanel {
             theme: &self.theme,
             portraits: &self.layout.portrait_paths,
             dimmed: &self.dimmed_scratch,
+            scales: self.avatar_animation.values(),
         };
         call_errors += panel_replay::replay_split(
             &self.object,
@@ -273,6 +276,7 @@ impl SpireProfilerPanel {
             self.legend = None;
             self.tip = None;
             self.tip_lines.clear();
+            self.avatar_animation.clear();
             return;
         }
 
@@ -318,6 +322,9 @@ impl SpireProfilerPanel {
         // scroll moves the hovered row's screen y without dirtying the
         // signature.
         self.update_frame(hover);
+        let filter = STATE.with(|s| s.borrow().player_filter);
+        self.avatar_animation
+            .advance_frame(&self.object, filter, &self.avatar_slots);
 
         // Cheap dirty check first: hash snapshot-relevant state plus the
         // hover target, so an unchanged hash ends the frame here.
@@ -365,6 +372,9 @@ impl SpireProfilerPanel {
         // row (the filter then stays All — degraded, never broken).
         let avatars = self.avatar_facts();
         self.avatar_slots = avatars.iter().map(|a| a.slot).collect();
+        let filter = STATE.with(|s| s.borrow().player_filter);
+        self.avatar_animation
+            .set_targets(filter, &self.avatar_slots);
 
         let layout = chart_layout::build(chart_layout::BuildInput {
             tab: self.active_tab,
