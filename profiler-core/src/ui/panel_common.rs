@@ -131,7 +131,7 @@ const AVATAR_ALL_SCALE: f32 = 1.0;
 const AVATAR_SELECTED_SCALE: f32 = 1.1;
 const AVATAR_EXCLUDED_SCALE: f32 = 0.95;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 struct AvatarScaleTransition {
     current: f32,
     from: f32,
@@ -173,52 +173,58 @@ impl AvatarScaleTransition {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct AvatarScaleEntry {
+    slot: u8,
+    transition: AvatarScaleTransition,
+}
+
 #[derive(Default)]
 pub(crate) struct AvatarScaleAnimation {
-    slots: Vec<u8>,
-    transitions: Vec<AvatarScaleTransition>,
+    entries: Vec<AvatarScaleEntry>,
+    /// Flat projection of the entries' current scales; replay needs a
+    /// contiguous `&[f32]`.
     scales: Vec<f32>,
     last_tick: Option<Instant>,
 }
 
 impl AvatarScaleAnimation {
     pub(crate) fn clear(&mut self) {
-        self.slots.clear();
-        self.transitions.clear();
+        self.entries.clear();
         self.scales.clear();
         self.last_tick = None;
     }
 
     pub(crate) fn set_targets(&mut self, filter: PlayerFilter, slots: &[u8]) {
-        let shared = slots.len().min(self.transitions.len());
+        let shared = slots.len().min(self.entries.len());
         for (index, &slot) in slots.iter().enumerate().take(shared) {
             // A changed slot identity is a new roster entry, not a filter
             // transition.
-            if self.slots[index] != slot {
-                self.slots[index] = slot;
-                self.transitions[index] = AvatarScaleTransition::at(Self::target(filter, slot));
+            let target = Self::target(filter, slot);
+            let entry = &mut self.entries[index];
+            if entry.slot != slot {
+                entry.slot = slot;
+                entry.transition = AvatarScaleTransition::at(target);
             } else {
-                self.transitions[index].retarget(Self::target(filter, slot));
+                entry.transition.retarget(target);
             }
-            self.scales[index] = self.transitions[index].current;
+            self.scales[index] = entry.transition.current;
         }
-        self.slots.truncate(shared);
-        self.transitions.truncate(shared);
+        self.entries.truncate(shared);
         self.scales.truncate(shared);
         for &slot in &slots[shared..] {
             let transition = AvatarScaleTransition::at(Self::target(filter, slot));
-            self.slots.push(slot);
+            self.entries.push(AvatarScaleEntry { slot, transition });
             self.scales.push(transition.current);
-            self.transitions.push(transition);
         }
     }
 
     pub(crate) fn advance_frame(&mut self, object: &Object, filter: PlayerFilter, slots: &[u8]) {
         self.set_targets(filter, slots);
         if !self
-            .transitions
+            .entries
             .iter()
-            .any(|transition| transition.current != transition.target)
+            .any(|entry| entry.transition.current != entry.transition.target)
         {
             self.last_tick = None;
             return;
@@ -236,13 +242,13 @@ impl AvatarScaleAnimation {
 
     fn advance(&mut self, delta: f32) -> bool {
         let mut needs_redraw = false;
-        for (index, transition) in self.transitions.iter_mut().enumerate() {
-            let before = transition.current;
+        for (index, entry) in self.entries.iter_mut().enumerate() {
+            let before = entry.transition.current;
             // Reaching the target still needs a draw; the preceding draw
             // showed the prior animation frame.
-            let active = transition.advance(delta);
-            needs_redraw |= active || transition.current != before;
-            self.scales[index] = transition.current;
+            let active = entry.transition.advance(delta);
+            needs_redraw |= active || entry.transition.current != before;
+            self.scales[index] = entry.transition.current;
         }
         needs_redraw
     }
