@@ -19,17 +19,21 @@ pub fn ensure_data_dir() -> bool {
         (data_dir, runs_dir)
     });
     if let Err(err) = fs::create_dir_all(&data_dir) {
-        fail(format!(
-            "cannot create data directory '{}': {err}",
-            data_dir.display()
-        ));
+        fail!(
+            "cannot create data directory '{}': {} (os error {})",
+            data_dir.display(),
+            err.kind(),
+            err.raw_os_error().unwrap_or(-1)
+        );
         return false;
     }
     if let Err(err) = fs::create_dir_all(&runs_dir) {
-        fail(format!(
-            "cannot create runs store directory '{}': {err}",
-            runs_dir.display()
-        ));
+        fail!(
+            "cannot create runs store directory '{}': {} (os error {})",
+            runs_dir.display(),
+            err.kind(),
+            err.raw_os_error().unwrap_or(-1)
+        );
         return false;
     }
     true
@@ -46,17 +50,24 @@ pub fn write_file(path: &Path, bytes: &str) -> bool {
         // Deliberately silent cleanup: the real error is already reported,
         // and a stale .tmp is inert (the next write truncates it).
         let _ = fs::remove_file(&tmp_path);
-        fail(format!("cannot write '{}': {err}", tmp_path.display()));
+        fail!(
+            "cannot write '{}': {} (os error {})",
+            tmp_path.display(),
+            err.kind(),
+            err.raw_os_error().unwrap_or(-1)
+        );
         return false;
     }
     match fs::rename(&tmp_path, path) {
         Ok(()) => true,
         Err(err) => {
             let _ = fs::remove_file(&tmp_path);
-            fail(format!(
-                "cannot move '{}' into place: {err}",
-                path.display()
-            ));
+            fail!(
+                "cannot move '{}' into place: {} (os error {})",
+                path.display(),
+                err.kind(),
+                err.raw_os_error().unwrap_or(-1)
+            );
             false
         }
     }
@@ -68,29 +79,39 @@ pub fn read_file(path: &Path) -> Option<String> {
         Ok(meta) => meta,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
         Err(err) => {
-            fail(format!("cannot open '{}': {err}", path.display()));
+            fail!(
+                "cannot open '{}': {} (os error {})",
+                path.display(),
+                err.kind(),
+                err.raw_os_error().unwrap_or(-1)
+            );
             return None;
         }
     };
     if meta.len() > MAX_JSON_SIZE as u64 {
-        fail(format!(
+        fail!(
             "'{}' is too large to read ({} bytes > {MAX_JSON_SIZE})",
             path.display(),
             meta.len()
-        ));
+        );
         return None;
     }
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(err) => {
-            fail(format!("cannot open '{}': {err}", path.display()));
+            fail!(
+                "cannot open '{}': {} (os error {})",
+                path.display(),
+                err.kind(),
+                err.raw_os_error().unwrap_or(-1)
+            );
             return None;
         }
     };
     match String::from_utf8(bytes) {
         Ok(content) => Some(content),
         Err(err) => {
-            fail(format!("'{}' is not valid UTF-8: {err}", path.display()));
+            fail!("'{}' is not valid UTF-8: {err}", path.display());
             None
         }
     }

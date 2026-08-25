@@ -13,7 +13,7 @@ pub fn rebuild_run_accumulator(seq: u32) -> (u32, u32) {
     for doc in load_run_combat_docs(seq) {
         match records::parse_combat_doc(&doc) {
             Ok(combat) => combats.push(combat),
-            Err(err) => fail(format!("cannot parse a runs/{seq} combat file: {err}")),
+            Err(err) => fail!("cannot parse a runs/{seq} combat file: {err}"),
         }
     }
     let mut cards: Vec<CardStat> = Vec::new();

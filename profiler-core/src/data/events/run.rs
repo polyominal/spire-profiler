@@ -31,7 +31,7 @@ pub fn run_started(
     start_time: i64,
 ) {
     if !STATE.with(|cell| cell.borrow().initialized) {
-        fail("run_started called before init".to_owned());
+        fail!("run_started called before init");
         return;
     }
     // A previous unclosed run is closed out as a loss.
@@ -194,7 +194,7 @@ pub fn run_ended(outcome: RunOutcome) {
         let state = cell.borrow();
         (state.run_ctx.seq, state.run_ctx.outcome)
     });
-    marker(format!("run {seq} recorded ({})", outcome.name()));
+    marker!("run {seq} recorded ({})", outcome.name());
 }
 
 /// The shim forwards the displayed run's seed, `StartTime`, and profile.

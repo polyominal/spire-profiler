@@ -81,7 +81,7 @@ pub(crate) fn contain<T>(name: &str, on_panic: T, f: impl FnOnce() -> T) -> T {
             } else {
                 "non-string panic payload".to_owned()
             };
-            fail(format!("panic in {name}: {detail}"));
+            fail!("panic in {name}: {detail}");
             on_panic
         }
     }

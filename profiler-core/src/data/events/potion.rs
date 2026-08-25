@@ -27,7 +27,7 @@ pub fn potion_context_begin(potion_id: &str, player_slot: i32) {
         // fallback outranks the potion fallback in both chains).
         ledger::clear_fallbacks_in(&mut state, player_slot);
         if state.orb_sources.len() >= caps::ORB_SOURCES {
-            fail("orb source map overflow".to_owned());
+            fail!("orb source map overflow");
             return Vec::new();
         }
         state.orb_sources.push(OrbSource {
@@ -53,7 +53,7 @@ pub fn potion_used(potion_id: &str, player_slot: i32) {
         if !potion_id.is_empty() {
             // The prefix already recorded a fallback entry.
             if state.orb_sources.len() >= caps::ORB_SOURCES {
-                fail("orb source map overflow".to_owned());
+                fail!("orb source map overflow");
                 return vec![format!("  potion used: {potion_id}\n")];
             }
             state.orb_sources.push(OrbSource {

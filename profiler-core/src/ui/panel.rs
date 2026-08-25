@@ -53,7 +53,7 @@ pub(crate) fn run_active() -> bool {
 /// Outside a run the press is ignored; the stored state carries forward.
 pub(crate) fn toggle() {
     if !run_active() {
-        marker("panel toggle: ignored (outside a run)".to_owned());
+        marker!("panel toggle: ignored (outside a run)");
         return;
     }
     let next = VISIBLE.with(|v| !v.get());
@@ -120,7 +120,7 @@ impl SpireProfilerPanel {
         object.set_size(box_size);
         object.set_visible(false);
         object.set_clip_contents(true);
-        marker("panel instance created".to_owned());
+        marker!("panel instance created");
         Self {
             object,
             rows: [UiRow::default(); ui_model::MAX_UI_ROWS],
@@ -236,11 +236,11 @@ impl SpireProfilerPanel {
             return;
         }
         self.logged_draw = true;
-        marker(format!(
+        marker!(
             "chart _draw active: {} cmds, {} rows",
             self.layout.cmds.len() + self.layout.header_cmds.len(),
             self.layout.row_hits.len()
-        ));
+        );
     }
 
     /// The `chart draw ok` marker proves clean engine calls, not just
@@ -248,10 +248,10 @@ impl SpireProfilerPanel {
     fn log_draw_ok(&mut self, call_errors: usize) {
         if !self.draw_ok_logged && call_errors == 0 {
             self.draw_ok_logged = true;
-            marker(format!(
+            marker!(
                 "chart draw ok: {} cmds, 0 call errors",
                 self.layout.cmds.len() + self.layout.header_cmds.len()
-            ));
+            );
         }
     }
 

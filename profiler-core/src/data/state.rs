@@ -168,9 +168,7 @@ pub const TEAM_SLOT: SourceSlot = 4;
 pub fn clamp_source_slot(slot: i32) -> SourceSlot {
     let clamped = slot.clamp(0, TEAM_SLOT as i32) as SourceSlot;
     if clamped as i32 != slot {
-        fail(format!(
-            "invalid source slot {slot}; clamping to {clamped} (TEAM = {TEAM_SLOT})"
-        ));
+        fail!("invalid source slot {slot}; clamping to {clamped} (TEAM = {TEAM_SLOT})");
     }
     clamped
 }
@@ -308,7 +306,7 @@ impl RunOutcome {
             1 => RunOutcome::Defeat,
             2 => RunOutcome::Abandoned,
             _ => {
-                fail(format!("invalid run outcome {code}; recording defeat"));
+                fail!("invalid run outcome {code}; recording defeat");
                 RunOutcome::Defeat
             }
         }

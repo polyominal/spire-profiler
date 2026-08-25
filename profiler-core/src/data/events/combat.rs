@@ -63,7 +63,7 @@ pub fn osty_summoned(source_id: &str, source_kind: i32, hp_amount: i32, player_s
         let slot = state.slot_index(player_slot);
         let kind = SourceKind::from_c(source_kind);
         if state.per_player[slot].osty_stack.len() >= caps::OSTY_STACK {
-            fail("osty stack overflow".to_owned());
+            fail!("osty stack overflow");
             return Vec::new();
         }
         let entry = if !source_id.is_empty() {
@@ -208,7 +208,7 @@ pub fn osty_killed(player_slot: i32) {
 
 pub fn combat_started(encounter_id: &str, encounter_type: &str) {
     if !STATE.with(|cell| cell.borrow().initialized) {
-        fail("combat_started called before init".to_owned());
+        fail!("combat_started called before init");
         return;
     }
     // A combat that never reported its end is flushed as interrupted.
@@ -605,6 +605,6 @@ pub fn combat_ended() {
         write_combat_file(&combat);
     }
     if let Some(seq) = seq {
-        marker(format!("combat {seq} summary written"));
+        marker!("combat {seq} summary written");
     }
 }

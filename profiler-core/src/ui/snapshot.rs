@@ -486,7 +486,7 @@ pub fn chart_self_test() {
             width: chart_layout::PANEL_WIDTH,
             right_gutter: 0.0,
         });
-        marker(format!(
+        marker!(
             "chart self-test ({}): {} rows -> {} cmds, {} hit rows, height {}",
             if tab == UiTab::Combat {
                 "combat"
@@ -497,7 +497,7 @@ pub fn chart_self_test() {
             layout.cmds.len(),
             layout.row_hits.len(),
             layout.height as i32,
-        ));
+        );
     }
 }
 

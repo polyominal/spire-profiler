@@ -130,10 +130,7 @@ pub fn write_combat_file(c: &Combat) {
     merge_into_run(c);
     let combat_json = build_combat_json(c);
     if combat_json.len() > MAX_JSON_SIZE {
-        fail(format!(
-            "combat {} JSON overflow; combat not written",
-            c.seq
-        ));
+        fail!("combat {} JSON overflow; combat not written", c.seq);
         return;
     }
     let path = combat_path(c.run_seq, c.seq);
@@ -141,10 +138,12 @@ pub fn write_combat_file(c: &Combat) {
         .parent()
         .expect("a store path always has a parent directory");
     if let Err(err) = fs::create_dir_all(parent) {
-        fail(format!(
-            "cannot create combat store directory '{}': {err}",
-            parent.display()
-        ));
+        fail!(
+            "cannot create combat store directory '{}': {} (os error {})",
+            parent.display(),
+            err.kind(),
+            err.raw_os_error().unwrap_or(-1)
+        );
         return;
     }
     write_file(&path, &combat_json);
