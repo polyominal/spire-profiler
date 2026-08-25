@@ -88,7 +88,7 @@ impl Verdict {
             println!("PASS");
             Ok(())
         } else {
-            println!("FAIL");
+            eprintln!("FAIL");
             bail!("headless-test: FAIL ({} gates failed)", self.failures.len())
         }
     }
@@ -113,12 +113,13 @@ fn check_patch_count(output: &str, failures: &mut Vec<String>) {
             );
         }
         Some(patch_count) => {
-            println!("[FAIL] patched methods: {patch_count} (< {MIN_PATCHES})");
+            eprintln!("headless-test: ERROR: patched methods: {patch_count} (< {MIN_PATCHES})");
             failures.push(format!("patched methods: {patch_count} (< {MIN_PATCHES})"));
         }
         None => {
-            println!(
-                "[FAIL] patch-count marker '[SpireProfiler] harmony patches applied; patched methods: N' not found"
+            eprintln!(
+                "headless-test: ERROR: patch-count marker '[SpireProfiler] harmony patches \
+                 applied; patched methods: N' not found"
             );
             failures.push("patch-count marker not found".to_owned());
         }
@@ -145,7 +146,7 @@ fn check_gate_markers(output: &str, failures: &mut Vec<String>) {
         if output.contains(marker) {
             println!("[ok] {marker}");
         } else {
-            println!("[FAIL] missing marker: {marker}");
+            eprintln!("headless-test: ERROR: missing marker: {marker}");
             failures.push(format!("missing marker: {marker}"));
         }
     }
@@ -159,12 +160,12 @@ fn check_unexpected_errors(output: &str, failures: &mut Vec<String>) {
     if unexpected.is_empty() {
         println!("[ok] no unexpected [SpireProfiler] error lines");
     } else {
-        println!(
-            "[FAIL] {} unexpected [SpireProfiler] error line(s):",
+        eprintln!(
+            "headless-test: ERROR: {} unexpected [SpireProfiler] error line(s):",
             unexpected.len()
         );
         for line in &unexpected {
-            println!("    {line}");
+            eprintln!("    {line}");
         }
         failures.push(format!(
             "{} unexpected [SpireProfiler] error line(s)",
@@ -226,7 +227,11 @@ fn run_game_captured(
     root: &Path,
 ) -> Result<(String, Duration, Option<i32>)> {
     println!("booting the game headless (first boot may take 30-60s) ...");
-    eprintln!("$ {} {}", game_exe.display(), GAME_ARGS.join(" "));
+    eprintln!(
+        "headless-test: $ {} {}",
+        game_exe.display(),
+        GAME_ARGS.join(" ")
+    );
 
     // std::process::Command (not xshell): piped stdout/stderr plus try_wait
     // polling for the watchdog.
@@ -277,7 +282,7 @@ fn run_game_captured(
     for pump in pumps {
         // Best-effort: a pump panic could drop lines the verdict needs.
         if pump.join().is_err() {
-            eprintln!("headless-test: warning: an output pump thread panicked");
+            eprintln!("headless-test: warning: output pump thread panicked");
         }
     }
     for line in receiver {
@@ -325,7 +330,7 @@ fn find_newest_log(log_dir: &Path, boot_started: SystemTime) -> (Option<PathBuf>
     match newest_boot_log(log_dir, boot_started) {
         Some((path, text)) => (Some(path), text),
         None => {
-            println!("game log: no godot*.log written during this boot");
+            eprintln!("headless-test: warning: no godot*.log written during this boot");
             (None, String::new())
         }
     }

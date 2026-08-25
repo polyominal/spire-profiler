@@ -285,7 +285,7 @@ fn remove_quarantine(shell: &Shell, path: &Path) {
         .run()
         .is_err()
     {
-        println!("warning: failed to remove quarantine attribute (ignored)");
+        eprintln!("decompile: warning: failed to remove quarantine attribute (ignored)");
     }
 }
 

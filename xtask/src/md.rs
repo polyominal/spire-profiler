@@ -28,7 +28,10 @@ pub fn fmt_md(check: bool) -> Result<()> {
         let output = formatted(&source);
         if check {
             if source != output {
-                println!("{doc}: not wrapped to {WRAP_WIDTH} columns; run `cargo xtask fmt-md`");
+                eprintln!(
+                    "fmt-md: ERROR: {doc} is not wrapped to {WRAP_WIDTH} columns; run \
+                     `cargo xtask fmt-md`"
+                );
                 drift = true;
             }
         } else {
