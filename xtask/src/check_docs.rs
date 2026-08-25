@@ -56,7 +56,7 @@ pub fn check_docs(shell: &Shell, top_offenders: Option<usize>) -> Result<()> {
         "in-house Rust density: {density:.1}% ({comments} comments / {total} comment+code lines)"
     );
     if density > DENSITY_LIMIT_PERCENT {
-        eprintln!("warning: density exceeds the {DENSITY_LIMIT_PERCENT:.0}% budget");
+        eprintln!("check-docs: warning: density exceeds the {DENSITY_LIMIT_PERCENT:.0}% budget");
     }
     report_offenders(&files, top_offenders.unwrap_or(DEFAULT_TOP_OFFENDERS));
     Ok(())

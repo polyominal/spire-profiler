@@ -42,7 +42,10 @@ pub fn run() -> Result<()> {
         return Ok(());
     }
     for (path, line, column, text) in &hits {
-        eprintln!("{}:{line}:{column}: {text}", path.display());
+        eprintln!(
+            "check-citations: ERROR: {}:{line}:{column}: {text}",
+            path.display()
+        );
     }
     bail!(
         "{} file:line citation(s): name the method and game version instead",

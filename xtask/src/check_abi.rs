@@ -41,14 +41,14 @@ pub fn run() -> Result<()> {
     match compare(&rust_text, "abi.rs", &template) {
         Ok(report) => {
             println!(
-                "check_abi: {} shim bindings verified against Rust exports",
+                "check-abi: {} shim bindings verified against Rust exports",
                 report.bindings
             );
             Ok(())
         }
         Err(errors) => {
             for error in &errors {
-                eprintln!("check_abi: ERROR: {error}");
+                eprintln!("check-abi: ERROR: {error}");
             }
             Err(anyhow::anyhow!(
                 "ABI check failed with {} error(s)",
