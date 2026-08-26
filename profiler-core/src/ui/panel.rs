@@ -440,6 +440,13 @@ impl SpireProfilerPanel {
         }
         self.dimmed_scratch.clear();
         let filter = STATE.with(|s| s.borrow().player_filter);
+        // Release build leaves the mask empty (avatars draw undimmed) instead of
+        // panicking in the contained draw path.
+        debug_assert_eq!(
+            self.layout.portrait_paths.len(),
+            self.avatar_slots.len(),
+            "the rebuild fills portrait paths and roster slots together"
+        );
         if self.layout.portrait_paths.len() == self.avatar_slots.len() {
             for &slot in &self.avatar_slots {
                 let dimmed = filter != PlayerFilter::All && filter != PlayerFilter::Player(slot);

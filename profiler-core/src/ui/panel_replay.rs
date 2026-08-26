@@ -341,17 +341,32 @@ impl IconTextures<'_> {
         let m = match icon {
             IconId::TabPlate => crate::ui::theme::TAB_PLATE_MODULATE,
             IconId::TabStroke => crate::ui::theme::TAB_STROKE_MODULATE,
-            IconId::Character(i) if self.dimmed.get(usize::from(i)) == Some(&true) => {
-                crate::ui::theme::AVATAR_DIM_MODULATE
+            IconId::Character(i) => {
+                let i = usize::from(i);
+                debug_assert!(
+                    i < self.dimmed.len(),
+                    "character icons index the parallel dim mask"
+                );
+                if self.dimmed.get(i) == Some(&true) {
+                    crate::ui::theme::AVATAR_DIM_MODULATE
+                } else {
+                    [1.0, 1.0, 1.0, 1.0]
+                }
             }
-            IconId::Character(_) => [1.0, 1.0, 1.0, 1.0],
         };
         Color::from_rgba(m[0], m[1], m[2], m[3])
     }
 
     fn scale(&self, icon: IconId) -> f32 {
         match icon {
-            IconId::Character(index) => self.scales.get(usize::from(index)).copied().unwrap_or(1.0),
+            IconId::Character(index) => {
+                let i = usize::from(index);
+                debug_assert!(
+                    i < self.scales.len(),
+                    "character icons index the parallel scale row"
+                );
+                self.scales.get(i).copied().unwrap_or(1.0)
+            }
             IconId::TabPlate | IconId::TabStroke => 1.0,
         }
     }
@@ -682,15 +697,26 @@ mod tests {
         let theme = Theme::new();
         let icons = IconTextures {
             theme: &theme,
-            portraits: &[],
-            dimmed: &[],
-            scales: &[1.1],
+            portraits: &[
+                "res://images/ui/top_panel/character_icon_ironclad.png".to_owned(),
+                "res://images/ui/top_panel/character_icon_silent.png".to_owned(),
+            ],
+            dimmed: &[true, false],
+            scales: &[1.1, 0.95],
         };
 
         assert_eq!(icons.scale(IconId::Character(0)), 1.1);
-        assert_eq!(icons.scale(IconId::Character(1)), 1.0);
+        assert_eq!(icons.scale(IconId::Character(1)), 0.95);
         assert_eq!(icons.scale(IconId::TabPlate), 1.0);
         assert_eq!(icons.scale(IconId::TabStroke), 1.0);
+        assert_eq!(
+            icons.modulate(IconId::Character(0)).as_array(),
+            crate::ui::theme::AVATAR_DIM_MODULATE,
+        );
+        assert_eq!(
+            icons.modulate(IconId::Character(1)).as_array(),
+            [1.0, 1.0, 1.0, 1.0]
+        );
     }
 
     #[test]
