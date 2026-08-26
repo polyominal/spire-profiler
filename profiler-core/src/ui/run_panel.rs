@@ -53,7 +53,7 @@ use crate::data::run_history::RunSummaryView;
 use crate::data::state::{CardStat, PlayerFilter};
 use crate::engine::gdext::Object;
 use crate::engine::math::{Rect2, Vector2};
-use crate::ui::panel_common::{self, InteractionState, PressZone};
+use crate::ui::panel_common::{self, AvatarScaleAnimation, InteractionState, PressZone};
 use crate::ui::run_layout::{
     HeaderFacts, PortraitFact, RunLayout, WIDTH, build_run_layout, character_icon_path,
     roster_entries,
@@ -131,6 +131,7 @@ pub struct SpireProfilerRunPanel {
     /// Roster slots parallel to the layout's `portrait_paths`, for the
     /// per-frame dim mask.
     avatar_slots: Vec<u8>,
+    avatar_animation: AvatarScaleAnimation,
     dimmed_scratch: Vec<bool>,
 }
 
@@ -167,6 +168,7 @@ impl SpireProfilerRunPanel {
             theme: crate::ui::theme::Theme::new(),
             gutter: 0.0,
             avatar_slots: Vec::new(),
+            avatar_animation: AvatarScaleAnimation::default(),
             dimmed_scratch: Vec::new(),
         }
     }
@@ -204,6 +206,7 @@ impl SpireProfilerRunPanel {
             theme: &self.theme,
             portraits: &self.layout.portrait_paths,
             dimmed: &self.dimmed_scratch,
+            scales: self.avatar_animation.values(),
         };
         let plate = self.theme.plate();
         if let Some(plate) = plate {
@@ -249,6 +252,13 @@ impl SpireProfilerRunPanel {
     fn resolve_dim_mask(&mut self) {
         self.dimmed_scratch.clear();
         let filter = crate::data::run_history::run_filter();
+        // Release build leaves the mask empty (avatars draw undimmed) instead of
+        // panicking in the contained draw path.
+        debug_assert_eq!(
+            self.layout.portrait_paths.len(),
+            self.avatar_slots.len(),
+            "the rebuild fills portrait paths and roster slots together"
+        );
         if self.layout.portrait_paths.len() == self.avatar_slots.len() {
             for &slot in &self.avatar_slots {
                 let dimmed = filter != PlayerFilter::All && filter != PlayerFilter::Player(slot);
@@ -388,6 +398,7 @@ impl SpireProfilerRunPanel {
             self.tip = None;
             self.tip_lines.clear();
             self.layout_valid = false;
+            self.avatar_animation.clear();
             return;
         }
         let viewport = panel_common::viewport_size(&self.object);
@@ -427,6 +438,9 @@ impl SpireProfilerRunPanel {
 
         // The tip must track a scroll without a fingerprint change.
         self.update_frame(hover);
+        let filter = crate::data::run_history::run_filter();
+        self.avatar_animation
+            .advance_frame(&self.object, filter, &self.avatar_slots);
 
         let fp = crate::data::run_history::selected_view_fingerprint().unwrap_or(0)
             ^ crate::data::run_history::run_filter_fingerprint();
@@ -450,6 +464,9 @@ impl SpireProfilerRunPanel {
             .as_ref()
             .map_or_else(HeaderFacts::default, |v| self.header_facts(v));
         self.avatar_slots = header.portraits.iter().map(|p| p.slot).collect();
+        let filter = crate::data::run_history::run_filter();
+        self.avatar_animation
+            .set_targets(filter, &self.avatar_slots);
         self.layout = build_run_layout(
             view.as_ref(),
             &header,

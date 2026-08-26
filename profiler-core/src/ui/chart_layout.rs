@@ -22,6 +22,7 @@
 //! Colors resolve from [`crate::ui::palette`], never defined here; draw
 //! commands own their text and the lists respect the command cap.
 
+use crate::engine::math::{Rect2, Vector2};
 use crate::engine::object::TextAlign;
 #[cfg(test)]
 use crate::source_kind::SourceKind;
@@ -181,6 +182,17 @@ pub struct TextureCmd {
     pub w: f32,
     pub h: f32,
     pub icon: theme::IconId,
+}
+
+impl TextureCmd {
+    pub(crate) fn scaled_rect(&self, scale: f32) -> Rect2 {
+        let size = Vector2::new(self.w * scale, self.h * scale);
+        let position = Vector2::new(
+            self.x - (size.x - self.w) / 2.0,
+            self.y - (size.y - self.h) / 2.0,
+        );
+        Rect2::new(position, size)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -940,6 +952,30 @@ pub(crate) fn truncate_marked(s: &str, max: usize) -> String {
 mod tests {
     use super::*;
     use crate::test_util::{cmd_texts as texts, test_row};
+
+    #[test]
+    fn scaled_texture_rects_keep_their_original_center() {
+        let tex = TextureCmd {
+            x: 100.0,
+            y: 40.0,
+            w: 64.0,
+            h: 64.0,
+            icon: theme::IconId::Character(0),
+        };
+
+        assert_eq!(
+            tex.scaled_rect(1.0),
+            Rect2::new(Vector2::new(100.0, 40.0), Vector2::new(64.0, 64.0))
+        );
+        assert_eq!(
+            tex.scaled_rect(1.1),
+            Rect2::new(Vector2::new(96.8, 36.8), Vector2::new(70.4, 70.4))
+        );
+        assert_eq!(
+            tex.scaled_rect(0.95),
+            Rect2::new(Vector2::new(101.6, 41.6), Vector2::new(60.8, 60.8))
+        );
+    }
 
     #[test]
     fn segment_offsets_per_mille_to_pixels_uncapped_tail() {

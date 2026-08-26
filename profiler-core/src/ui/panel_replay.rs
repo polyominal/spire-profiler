@@ -321,6 +321,8 @@ pub(crate) struct IconTextures<'a> {
     /// Parallel to `portraits`: a dimmed avatar renders at the deselect
     /// modulate (the active filter excludes that player).
     pub dimmed: &'a [bool],
+    /// Parallel to `portraits`: the current selection scale.
+    pub scales: &'a [f32],
 }
 
 impl IconTextures<'_> {
@@ -339,12 +341,34 @@ impl IconTextures<'_> {
         let m = match icon {
             IconId::TabPlate => crate::ui::theme::TAB_PLATE_MODULATE,
             IconId::TabStroke => crate::ui::theme::TAB_STROKE_MODULATE,
-            IconId::Character(i) if self.dimmed.get(usize::from(i)) == Some(&true) => {
-                crate::ui::theme::AVATAR_DIM_MODULATE
+            IconId::Character(i) => {
+                let i = usize::from(i);
+                debug_assert!(
+                    i < self.dimmed.len(),
+                    "character icons index the parallel dim mask"
+                );
+                if self.dimmed.get(i) == Some(&true) {
+                    crate::ui::theme::AVATAR_DIM_MODULATE
+                } else {
+                    [1.0, 1.0, 1.0, 1.0]
+                }
             }
-            IconId::Character(_) => [1.0, 1.0, 1.0, 1.0],
         };
         Color::from_rgba(m[0], m[1], m[2], m[3])
+    }
+
+    fn scale(&self, icon: IconId) -> f32 {
+        match icon {
+            IconId::Character(index) => {
+                let i = usize::from(index);
+                debug_assert!(
+                    i < self.scales.len(),
+                    "character icons index the parallel scale row"
+                );
+                self.scales.get(i).copied().unwrap_or(1.0)
+            }
+            IconId::TabPlate | IconId::TabStroke => 1.0,
+        }
     }
 }
 
@@ -544,9 +568,17 @@ pub(crate) fn body_band(box_height: f32, plate: bool, header_bottom: f32) -> (f3
 }
 
 pub(crate) fn clip_y_to_band(y: f32, h: f32, band: (f32, f32)) -> Option<(f32, f32)> {
+    let bottom = y + h;
     let y0 = y.max(band.0);
-    let y1 = (y + h).min(band.1);
-    (y1 > y0).then_some((y0, y1 - y0))
+    let y1 = bottom.min(band.1);
+    if y1 <= y0 {
+        return None;
+    }
+    if y0 == y && y1 == bottom {
+        Some((y, h))
+    } else {
+        Some((y0, y1 - y0))
+    }
 }
 
 // Kreon's vertical metrics per 1024 upm: ascent 997, descent 293. The
@@ -594,18 +626,20 @@ pub(crate) fn replay_cmds(
                 }
             }
             Cmd::Texture(tex) => {
-                let y = crate::ui::scroll::screen_y(tex.y, scroll);
+                let rect = tex.scaled_rect(icons.scale(tex.icon));
+                let y = crate::ui::scroll::screen_y(rect.position.y, scroll);
                 // Icons never clip mid-sprite: they pop out whole.
-                if clip_y_to_band(y, tex.h, band).is_none_or(|(y0, h)| y0 != y || h != tex.h) {
+                if clip_y_to_band(y, rect.size.y, band)
+                    .is_none_or(|(y0, h)| y0 != y || h != rect.size.y)
+                {
                     continue;
                 }
                 let Some(texture) = icons.resolve(tex.icon) else {
                     continue;
                 };
-                let pos = Vector2::new(tex.x + origin_x, y);
+                let pos = Vector2::new(rect.position.x + origin_x, y);
                 let modulate = icons.modulate(tex.icon);
-                let rect = Rect2::new(pos, Vector2::new(tex.w, tex.h));
-                if !object.draw_texture_rect(texture, rect, false, modulate) {
+                if !object.draw_texture_rect(texture, Rect2::new(pos, rect.size), false, modulate) {
                     call_errors += 1;
                 }
             }
@@ -657,6 +691,33 @@ pub(crate) fn replay_split(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_character_icons_use_the_animation_scales() {
+        let theme = Theme::new();
+        let icons = IconTextures {
+            theme: &theme,
+            portraits: &[
+                "res://images/ui/top_panel/character_icon_ironclad.png".to_owned(),
+                "res://images/ui/top_panel/character_icon_silent.png".to_owned(),
+            ],
+            dimmed: &[true, false],
+            scales: &[1.1, 0.95],
+        };
+
+        assert_eq!(icons.scale(IconId::Character(0)), 1.1);
+        assert_eq!(icons.scale(IconId::Character(1)), 0.95);
+        assert_eq!(icons.scale(IconId::TabPlate), 1.0);
+        assert_eq!(icons.scale(IconId::TabStroke), 1.0);
+        assert_eq!(
+            icons.modulate(IconId::Character(0)).as_array(),
+            crate::ui::theme::AVATAR_DIM_MODULATE,
+        );
+        assert_eq!(
+            icons.modulate(IconId::Character(1)).as_array(),
+            [1.0, 1.0, 1.0, 1.0]
+        );
+    }
 
     #[test]
     fn kreon_covers_mirrors_the_measured_cmaps() {
@@ -717,6 +778,23 @@ mod tests {
         assert_eq!(clip_y_to_band(-50.0, 30.0, band), None);
         assert_eq!(clip_y_to_band(400.0, 30.0, band), None);
         assert_eq!(clip_y_to_band(0.0, 500.0, band), Some((16.0, 364.0)));
+    }
+
+    #[test]
+    fn an_unclipped_fractional_icon_keeps_its_exact_height() {
+        let rect = crate::ui::chart_layout::TextureCmd {
+            x: 22.0,
+            y: 158.0,
+            w: 64.0,
+            h: 64.0,
+            icon: IconId::Character(0),
+        }
+        .scaled_rect(0.95);
+
+        assert_eq!(
+            clip_y_to_band(rect.position.y, rect.size.y, (0.0, 300.0)),
+            Some((rect.position.y, rect.size.y))
+        );
     }
 
     #[test]

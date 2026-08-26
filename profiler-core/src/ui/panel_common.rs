@@ -2,7 +2,9 @@
 //! `_draw` path is [`super::panel_replay`].
 
 use std::cell::Cell;
+use std::time::Instant;
 
+use crate::data::state::PlayerFilter;
 use crate::engine::gdext::Object;
 use crate::engine::math::{Rect2, Vector2};
 use crate::fail;
@@ -120,6 +122,148 @@ pub(crate) struct InteractionState {
 pub(crate) struct InteractionStep {
     pub pressed: bool,
     pub on_track: bool,
+}
+
+// The v0.111.0 run-history icons select at 1.1, deselect at 0.95, and take
+// 0.05 seconds to move between those states.
+const AVATAR_SCALE_DURATION_SECS: f32 = 0.05;
+const AVATAR_ALL_SCALE: f32 = 1.0;
+const AVATAR_SELECTED_SCALE: f32 = 1.1;
+const AVATAR_EXCLUDED_SCALE: f32 = 0.95;
+
+#[derive(Clone, Copy, Debug)]
+struct AvatarScaleTransition {
+    current: f32,
+    from: f32,
+    target: f32,
+    elapsed: f32,
+}
+
+impl AvatarScaleTransition {
+    fn at(target: f32) -> Self {
+        Self {
+            current: target,
+            from: target,
+            target,
+            elapsed: 0.0,
+        }
+    }
+
+    fn retarget(&mut self, target: f32) {
+        if self.target == target {
+            return;
+        }
+        self.from = self.current;
+        self.target = target;
+        self.elapsed = 0.0;
+    }
+
+    fn advance(&mut self, delta: f32) -> bool {
+        if self.current == self.target {
+            return false;
+        }
+        self.elapsed += delta;
+        if self.elapsed >= AVATAR_SCALE_DURATION_SECS {
+            self.current = self.target;
+            return false;
+        }
+        let progress = (self.elapsed / AVATAR_SCALE_DURATION_SECS).clamp(0.0, 1.0);
+        self.current = self.from + (self.target - self.from) * progress;
+        true
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AvatarScaleEntry {
+    slot: u8,
+    transition: AvatarScaleTransition,
+}
+
+#[derive(Default)]
+pub(crate) struct AvatarScaleAnimation {
+    entries: Vec<AvatarScaleEntry>,
+    /// Flat projection of the entries' current scales; replay needs a
+    /// contiguous `&[f32]`.
+    scales: Vec<f32>,
+    last_tick: Option<Instant>,
+}
+
+impl AvatarScaleAnimation {
+    pub(crate) fn clear(&mut self) {
+        self.entries.clear();
+        self.scales.clear();
+        self.last_tick = None;
+    }
+
+    pub(crate) fn set_targets(&mut self, filter: PlayerFilter, slots: &[u8]) {
+        let shared = slots.len().min(self.entries.len());
+        for (index, &slot) in slots.iter().enumerate().take(shared) {
+            // A changed slot identity is a new roster entry, not a filter
+            // transition.
+            let target = Self::target(filter, slot);
+            let entry = &mut self.entries[index];
+            if entry.slot != slot {
+                entry.slot = slot;
+                entry.transition = AvatarScaleTransition::at(target);
+            } else {
+                entry.transition.retarget(target);
+            }
+            self.scales[index] = entry.transition.current;
+        }
+        self.entries.truncate(shared);
+        self.scales.truncate(shared);
+        for &slot in &slots[shared..] {
+            let transition = AvatarScaleTransition::at(Self::target(filter, slot));
+            self.entries.push(AvatarScaleEntry { slot, transition });
+            self.scales.push(transition.current);
+        }
+    }
+
+    pub(crate) fn advance_frame(&mut self, object: &Object, filter: PlayerFilter, slots: &[u8]) {
+        self.set_targets(filter, slots);
+        if !self
+            .entries
+            .iter()
+            .any(|entry| entry.transition.current != entry.transition.target)
+        {
+            self.last_tick = None;
+            return;
+        }
+        let now = Instant::now();
+        let delta = self
+            .last_tick
+            .replace(now)
+            .map_or(0.0, |last| now.duration_since(last).as_secs_f32());
+        let needs_redraw = self.advance(delta);
+        if needs_redraw {
+            object.queue_redraw();
+        }
+    }
+
+    fn advance(&mut self, delta: f32) -> bool {
+        let mut needs_redraw = false;
+        for (index, entry) in self.entries.iter_mut().enumerate() {
+            let before = entry.transition.current;
+            // Reaching the target still needs a draw; the preceding draw
+            // showed the prior animation frame.
+            let active = entry.transition.advance(delta);
+            needs_redraw |= active || entry.transition.current != before;
+            self.scales[index] = entry.transition.current;
+        }
+        needs_redraw
+    }
+
+    pub(crate) fn values(&self) -> &[f32] {
+        &self.scales
+    }
+
+    fn target(filter: PlayerFilter, slot: u8) -> f32 {
+        match filter {
+            PlayerFilter::All => AVATAR_ALL_SCALE,
+            PlayerFilter::Player(selected) if selected == slot => AVATAR_SELECTED_SCALE,
+            PlayerFilter::Player(_) => AVATAR_EXCLUDED_SCALE,
+        }
+    }
 }
 
 pub(crate) struct ScrollbarFrame {
@@ -278,6 +422,66 @@ mod tests {
     use super::*;
     use crate::ui::chart_layout::RowHit;
     use crate::ui::panel_replay::body_band;
+
+    fn assert_scale(actual: f32, expected: f32) {
+        assert!(
+            (actual - expected).abs() < f32::EPSILON,
+            "scale {actual} should be {expected}"
+        );
+    }
+
+    #[test]
+    fn avatar_scales_interpolate_linearly_and_clamp() {
+        let mut animation = AvatarScaleAnimation::default();
+        animation.set_targets(PlayerFilter::All, &[0]);
+        assert_eq!(animation.values(), &[1.0]);
+
+        animation.set_targets(PlayerFilter::Player(0), &[0]);
+        assert_eq!(animation.values(), &[1.0]);
+        assert!(animation.advance(0.0));
+
+        animation.advance(0.025);
+        assert_scale(animation.values()[0], 1.05);
+
+        assert!(animation.advance(0.05));
+        assert_eq!(animation.values(), &[1.1]);
+        assert!(!animation.advance(0.0));
+
+        animation.set_targets(PlayerFilter::Player(1), &[0]);
+        assert!(animation.advance(0.05));
+        assert_eq!(animation.values(), &[0.95]);
+        assert!(!animation.advance(0.0));
+    }
+
+    #[test]
+    fn avatar_scale_retargeting_starts_from_the_current_scale() {
+        let mut animation = AvatarScaleAnimation::default();
+        animation.set_targets(PlayerFilter::All, &[0]);
+        animation.set_targets(PlayerFilter::Player(0), &[0]);
+        animation.advance(0.025);
+        assert_scale(animation.values()[0], 1.05);
+
+        animation.set_targets(PlayerFilter::All, &[0]);
+        assert_scale(animation.values()[0], 1.05);
+        animation.advance(0.025);
+        assert_scale(animation.values()[0], 1.025);
+    }
+
+    #[test]
+    fn avatar_roster_changes_initialize_new_slots_at_target() {
+        let mut animation = AvatarScaleAnimation::default();
+        animation.set_targets(PlayerFilter::All, &[0]);
+        animation.set_targets(PlayerFilter::Player(0), &[0]);
+        animation.advance(0.025);
+        animation.set_targets(PlayerFilter::Player(0), &[0, 1]);
+        assert_scale(animation.values()[0], 1.05);
+        assert_eq!(animation.values()[1], 0.95);
+
+        animation.set_targets(PlayerFilter::Player(2), &[2, 1]);
+        assert_eq!(animation.values(), &[1.1, 0.95]);
+        animation.clear();
+        assert!(animation.values().is_empty());
+    }
 
     #[test]
     fn outside_press_dismisses_only_on_the_edge_while_shown() {
