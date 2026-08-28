@@ -201,7 +201,7 @@ mod tests {
 
     #[test]
     fn combat_file_round_trips_through_parse_combat_doc() {
-        let dir = temp_dir("roundtrip");
+        let dir = unique_dir("roundtrip");
         let data = dir.join("data");
         init_state(&data);
         let c1 = synthetic_combat(); // run_seq 42

@@ -61,7 +61,7 @@ mod tests {
 
     #[test]
     fn write_run_record_appends_one_line_per_run() {
-        let dir = temp_dir("run-record");
+        let dir = unique_dir("run-record");
         let data = dir.join("data");
         std::fs::create_dir_all(&data).unwrap();
         init_state(&data);
@@ -125,7 +125,7 @@ mod tests {
 
     #[test]
     fn write_run_record_with_no_combats_logs_and_writes_nothing() {
-        let dir = temp_dir("run-record-empty");
+        let dir = unique_dir("run-record-empty");
         let data = dir.join("data");
         std::fs::create_dir_all(&data).unwrap();
         init_state(&data);

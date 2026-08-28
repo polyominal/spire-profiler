@@ -3,7 +3,7 @@
 //! https://github.com/tigerbeetle/tigerbeetle/blob/97c7a8ef385270ebe0e1b75959d3d21d134629df/docs/internals/vopr.md
 //! A seeded PRNG feeds every scenario; `SIM_SEED` overrides the default so a
 //! failing run reproduces byte-for-byte. The lifecycle walk runs 20
-//! scenarios x 40 weighted events in a scratch dir, re-checking ledger
+//! scenarios x 40 weighted events in a wiped dir, re-checking ledger
 //! invariants (segment sums, sign constraints, combat totals, queue bounds)
 //! after every event, then parses the JSON back; the block-pool test does
 //! the same against an independent naive FIFO model.
@@ -20,7 +20,7 @@ use std::path::Path;
 
 use profiler_core::data::state::{self, PendingContrib, RunOutcome, STATE, SourceKind};
 use profiler_core::data::{events, ledger, records};
-use profiler_core::test_util::scratch_dir;
+use profiler_core::test_util::wiped_dir;
 
 const DEFAULT_SEED: u64 = 0x5EED_5EED_5EED_5EED;
 const SCENARIOS: u32 = 20;
@@ -509,7 +509,7 @@ fn randomized_combat_lifecycle_invariants() {
     let base_seed = sim_seed();
     for scenario in 0..SCENARIOS {
         let mut rng = Rng::new(base_seed ^ u64::from(scenario).wrapping_mul(0x9E37_79B9_7F4A_7C15));
-        let base = scratch_dir(&format!("sim/lifecycle-{scenario}"));
+        let base = wiped_dir(&format!("sim/lifecycle-{scenario}"));
         events::test_reset();
         events::init(&base);
         events::set_run_meta(7);
@@ -898,7 +898,7 @@ fn block_pool_consume_matches_naive_model() {
     const ROUNDS: u32 = 40;
 
     let mut rng = Rng::new(sim_seed() ^ 0xB10C_3001_C0DE);
-    let base = scratch_dir("sim/blockpool");
+    let base = wiped_dir("sim/blockpool");
     events::test_reset();
     events::init(&base);
     events::combat_started("BLOCKPOOL_SIM", "test");

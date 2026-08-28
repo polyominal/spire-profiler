@@ -131,7 +131,7 @@ pub(crate) mod test_support {
     use super::bind_log_path;
     use crate::data::state::{CardStat, Combat, RunPlayer, STATE};
     use crate::source_kind::SourceKind;
-    pub(crate) use crate::test_util::temp_dir;
+    pub(crate) use crate::test_util::unique_dir;
 
     /// Points the test process's STATE at `data` (creating it), with the
     /// file paths derived the way init derives them.

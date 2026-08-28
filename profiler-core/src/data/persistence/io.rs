@@ -124,7 +124,7 @@ mod tests {
 
     #[test]
     fn ensure_data_dir_creates_both_dirs() {
-        let dir = temp_dir("ensure");
+        let dir = unique_dir("ensure");
         init_state(&dir.join("data"));
         assert!(ensure_data_dir());
         assert!(dir.join("data").is_dir());
@@ -135,7 +135,7 @@ mod tests {
     fn ensure_data_dir_reports_failure() {
         // A blocker file where a directory component belongs makes
         // create_dir_all fail without crashing.
-        let dir = temp_dir("ensure-fail");
+        let dir = unique_dir("ensure-fail");
         fs::write(dir.join("blocker"), "x").unwrap();
         init_state(&dir.join("blocker/data"));
         assert!(!ensure_data_dir());
@@ -143,7 +143,7 @@ mod tests {
 
     #[test]
     fn write_file_round_trips_and_leaves_no_temp() {
-        let dir = temp_dir("write");
+        let dir = unique_dir("write");
         let path = dir.join("f.json");
         assert!(write_file(&path, "hello"));
         assert_eq!(read_file(&path).unwrap(), "hello");
@@ -155,7 +155,7 @@ mod tests {
 
     #[test]
     fn read_file_missing_vs_empty() {
-        let dir = temp_dir("read");
+        let dir = unique_dir("read");
         assert!(read_file(&dir.join("missing.json")).is_none());
         fs::write(dir.join("empty.json"), "").unwrap();
         assert_eq!(read_file(&dir.join("empty.json")).unwrap(), "");

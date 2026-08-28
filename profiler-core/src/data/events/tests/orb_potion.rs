@@ -4,12 +4,12 @@
 use super::*;
 use crate::data::state::OrbSource;
 use crate::source_kind::SourceKind;
-use crate::test_util::scratch_dir;
+use crate::test_util::wiped_dir;
 
 #[test]
 #[allow(clippy::too_many_lines)] // a scripted end-to-end event sequence
 fn flex_potion_strength_attributes_to_the_potion_and_expires_fifo() {
-    let base = scratch_dir("spire-profiler-test-flexpotion");
+    let base = wiped_dir("spire-profiler-test-flexpotion");
     test_reset();
     init(&base);
     combat_started("FLEX_TEST", "test");
@@ -90,7 +90,7 @@ fn flex_potion_strength_attributes_to_the_potion_and_expires_fifo() {
 
 #[test]
 fn potion_sources_are_bounded_at_the_orb_source_cap() {
-    let base = scratch_dir("spire-profiler-test-potioncap");
+    let base = wiped_dir("spire-profiler-test-potioncap");
     test_reset();
     init(&base);
     combat_started("POTION_CAP_TEST", "test");
@@ -121,7 +121,7 @@ fn potion_sources_are_bounded_at_the_orb_source_cap() {
 /// first — otherwise the orb's source would capture the potion's effects.
 #[test]
 fn potion_use_clears_a_live_orb_fallback() {
-    let base = scratch_dir("spire-profiler-test-potionorb");
+    let base = wiped_dir("spire-profiler-test-potionorb");
     test_reset();
     init(&base);
     combat_started("POTION_ORB_TEST", "test");
@@ -163,7 +163,7 @@ fn potion_use_clears_a_live_orb_fallback() {
 /// happens in either direction.
 #[test]
 fn potion_fallbacks_do_not_capture_across_slots() {
-    let base = scratch_dir("spire-profiler-test-mp-potion");
+    let base = wiped_dir("spire-profiler-test-mp-potion");
     test_reset();
     init(&base);
     combat_started("MP_POTION_TEST", "test");
