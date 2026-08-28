@@ -22,7 +22,7 @@ pub fn release(shell: &Shell) -> Result<()> {
     let version = bundle_version(&bundle_dir)?;
     let out_dir = root.join(OUT_DIR);
     std::fs::create_dir_all(&out_dir)?;
-    ensure_zip(shell)?;
+    crate::ensure_cli(shell, "zip", "--version", "packaging")?;
 
     let mut zips = Vec::new();
     zips.push(zip_universal(shell, &mods_dir, &out_dir, &version)?);
@@ -127,17 +127,6 @@ fn write_checksums(out_dir: &Path, zips: &[PathBuf]) -> Result<()> {
         lines.push(format!("{}  {}", sha256_file(zip)?, name.to_string_lossy()));
     }
     std::fs::write(out_dir.join("SHA256SUMS"), lines.join("\n") + "\n")?;
-    Ok(())
-}
-
-/// Fail with the remedy, not a spawn error.
-fn ensure_zip(shell: &Shell) -> Result<()> {
-    cmd!(shell, "zip --version").read().map_err(|_| {
-        anyhow::anyhow!(
-            "packaging needs the zip CLI, which is not on PATH; install it (macOS ships it \
-             with the OS, Linux via the distro's zip package)"
-        )
-    })?;
     Ok(())
 }
 

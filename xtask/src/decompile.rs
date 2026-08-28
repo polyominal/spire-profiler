@@ -1,7 +1,8 @@
 //! `cargo xtask decompile`: recover the game's Godot source via GDRE Tools —
 //! locate the .pck, provision the pinned tool (download + SHA-256 verify),
-//! run it headless, verify the output, drop a provenance record. macOS and
-//! Linux only, mirroring the verified tool.
+//! run it headless, verify the output, drop a provenance record. Hosts are
+//! macOS/Linux (`Platform::detect`); a WSL2 host finds the Windows
+//! install's .pck through the same layout detection as discovery.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -18,19 +19,13 @@ const GDRE_VERSION: &str = "v2.5.0-beta.5";
 const GDRE_MACOS_SHA256: &str = "01211b4dd82f874bb21dfc11483d19affad9cff9c1912eacf561972b750011e6";
 const GDRE_LINUX_SHA256: &str = "6d2ae1ccf783a305b6b7891d946d723366a51da739fc755fa6d0d43b7f8eefc9";
 
-fn detect_platform() -> Result<discover::Platform> {
-    match std::env::consts::OS {
-        "macos" => Ok(discover::Platform::Macos),
-        "linux" => Ok(discover::Platform::Linux),
-        other => bail!("decompile supports macOS and Linux only (this host: {other})"),
-    }
-}
-
-fn os_name(platform: discover::Platform) -> &'static str {
-    match platform {
+fn os_name(host: discover::Platform) -> &'static str {
+    match host {
         discover::Platform::Macos => "macos",
         discover::Platform::Linux => "linux",
-        discover::Platform::Windows => "windows",
+        discover::Platform::Windows => {
+            unreachable!("Platform::detect rejects native Windows hosts")
+        }
     }
 }
 
@@ -43,14 +38,15 @@ fn default_output_dir(root: &Path) -> PathBuf {
 }
 
 pub fn decompile(shell: &Shell, output_dir: Option<PathBuf>, yes: bool) -> Result<()> {
-    let platform = detect_platform()?;
+    let host = discover::Platform::detect()?;
+    let arch = discover::Arch::detect()?;
     let root = workspace_root();
     let output_dir = output_dir.unwrap_or_else(|| default_output_dir(root));
 
-    let pck = locate_pck(platform).map_err(|e| {
+    let pck = locate_pck(host, arch).map_err(|e| {
         anyhow::anyhow!(
             "{e} (set STS2_GAME_DIR to the game root — {})",
-            platform.game_root_hint()
+            host.game_root_hint()
         )
     })?;
     // A relative STS2_GAME_DIR would feed a relative --recover arg to GDRE.
@@ -63,7 +59,7 @@ pub fn decompile(shell: &Shell, output_dir: Option<PathBuf>, yes: bool) -> Resul
 
     // Provision BEFORE the overwrite prompt: the download can fail, and the
     // wipe must never destroy a previous decompilation over a failed rerun.
-    let gdre = ensure_gdre_tools(shell, platform, root)?;
+    let gdre = ensure_gdre_tools(shell, host, root)?;
     println!("GDRE Tools: {}", gdre.display());
 
     // Overwrite semantics mirror the verified tool.
@@ -96,7 +92,7 @@ pub fn decompile(shell: &Shell, output_dir: Option<PathBuf>, yes: bool) -> Resul
         );
     }
 
-    write_provenance(&abs_output, &abs_pck, platform)?;
+    write_provenance(&abs_output, &abs_pck, host)?;
 
     println!("decompilation complete: {}", abs_output.display());
     println!(
@@ -108,97 +104,78 @@ pub fn decompile(shell: &Shell, output_dir: Option<PathBuf>, yes: bool) -> Resul
 
 /// STS2_GAME_DIR first, else the Steam library list. Only roots a readable
 /// libraryfolders.vdf enumerates are trusted (no default-root fallback).
-fn locate_pck(platform: discover::Platform) -> Result<PathBuf> {
+fn locate_pck(host: discover::Platform, arch: discover::Arch) -> Result<PathBuf> {
     if let Some(dir) = std::env::var_os("STS2_GAME_DIR") {
-        let candidate = pck_for_game_root(platform, Path::new(&dir));
+        let candidate = discover::pck_path_for(Path::new(&dir), host, arch);
         if candidate.is_file() {
             return Ok(candidate);
         }
-        return Err(game_not_found(&[candidate]));
+        return Err(searched_paths_error(
+            "the Slay the Spire 2 .pck was not found at any searched path",
+            &[candidate],
+        ));
     }
 
-    let (vdf_paths, libraries) = discover::vdf_library_roots(platform)?;
-    let candidates = pck_candidates(platform, &libraries);
+    let (vdf_paths, libraries) = discover::vdf_library_roots(host)?;
+    let candidates: Vec<PathBuf> = libraries
+        .iter()
+        .map(|lib| discover::pck_path_for(&lib.join(discover::STEAM_GAME_REL), host, arch))
+        .collect();
     // Reports like a missing VDF (the remedy is the same: install via Steam).
     if candidates.is_empty() {
-        return Err(no_steam_libraries(&vdf_paths));
+        return Err(searched_paths_error(
+            "no Steam libraryfolders.vdf found at any expected location",
+            &vdf_paths,
+        ));
     }
     for candidate in &candidates {
         if candidate.is_file() {
             return Ok(candidate.clone());
         }
     }
-    Err(game_not_found(&candidates))
+    Err(searched_paths_error(
+        "the Slay the Spire 2 .pck was not found at any searched path",
+        &candidates,
+    ))
 }
 
-fn no_steam_libraries(paths: &[PathBuf]) -> anyhow::Error {
+fn searched_paths_error(headline: &str, paths: &[PathBuf]) -> anyhow::Error {
     let listing = paths
         .iter()
         .map(|path| format!("\n  - {}", path.display()))
         .collect::<String>();
-    anyhow::anyhow!("no Steam libraryfolders.vdf found at any expected location:{listing}")
-}
-
-fn game_not_found(paths: &[PathBuf]) -> anyhow::Error {
-    let listing = paths
-        .iter()
-        .map(|path| format!("\n  - {}", path.display()))
-        .collect::<String>();
-    anyhow::anyhow!("the Slay the Spire 2 .pck was not found at any searched path:{listing}")
-}
-
-fn pck_for_game_root(platform: discover::Platform, game_root: &Path) -> PathBuf {
-    match platform {
-        discover::Platform::Macos => {
-            game_root.join("SlayTheSpire2.app/Contents/Resources/Slay the Spire 2.pck")
-        }
-        discover::Platform::Linux => game_root.join("SlayTheSpire2.pck"),
-        discover::Platform::Windows => {
-            unreachable!("decompile rejects Windows hosts at detect_platform")
-        }
-    }
+    anyhow::anyhow!("{headline}:{listing}")
 }
 
 fn release_info_for_pck(pck: &Path) -> PathBuf {
     pck.with_file_name("release_info.json")
 }
 
-fn pck_candidates(platform: discover::Platform, libraries: &[PathBuf]) -> Vec<PathBuf> {
-    libraries
-        .iter()
-        .map(|lib| pck_for_game_root(platform, &lib.join("steamapps/common/Slay the Spire 2")))
-        .collect()
-}
-
-fn gdre_exe(platform: discover::Platform, tools_dir: &Path) -> PathBuf {
-    match platform {
+fn gdre_exe(host: discover::Platform, tools_dir: &Path) -> PathBuf {
+    match host {
         discover::Platform::Macos => {
             tools_dir.join("Godot RE Tools.app/Contents/MacOS/Godot RE Tools")
         }
         discover::Platform::Linux => tools_dir.join("gdre_tools.x86_64"),
         discover::Platform::Windows => {
-            unreachable!("decompile rejects Windows hosts at detect_platform")
+            unreachable!("Platform::detect rejects native Windows hosts")
         }
     }
 }
 
 /// The release zip's asset name and pinned SHA-256, per platform.
-fn gdre_asset(platform: discover::Platform) -> (String, &'static str) {
-    let os = match platform {
-        discover::Platform::Macos => "macos",
-        discover::Platform::Linux => "linux",
-        discover::Platform::Windows => {
-            unreachable!("decompile rejects Windows hosts at detect_platform")
-        }
-    };
-    let checksum = match platform {
+fn gdre_asset(host: discover::Platform) -> (String, &'static str) {
+    let checksum = match host {
         discover::Platform::Macos => GDRE_MACOS_SHA256,
         discover::Platform::Linux => GDRE_LINUX_SHA256,
         discover::Platform::Windows => {
-            unreachable!("decompile rejects Windows hosts at detect_platform")
+            unreachable!("Platform::detect rejects native Windows hosts")
         }
     };
-    (format!("GDRE_tools-{GDRE_VERSION}-{os}.zip"), checksum)
+    (
+        format!("GDRE_tools-{GDRE_VERSION}-{}.zip", os_name(host)),
+        checksum,
+    )
 }
 
 #[cfg(unix)]
@@ -211,17 +188,18 @@ fn chmod_executable(exe: &Path) -> Result<()> {
 
 #[cfg(not(unix))]
 fn chmod_executable(_exe: &Path) -> Result<()> {
-    Err(anyhow::anyhow!("decompile requires macOS or Linux"))
+    unreachable!("Platform::detect rejects non-Unix hosts before any tool runs")
 }
 
 /// Idempotent: a rerun with the binary present skips the download.
-fn ensure_gdre_tools(shell: &Shell, platform: discover::Platform, root: &Path) -> Result<PathBuf> {
+fn ensure_gdre_tools(shell: &Shell, host: discover::Platform, root: &Path) -> Result<PathBuf> {
     let tools_dir = gdre_tools_dir(root);
-    let exe = gdre_exe(platform, &tools_dir);
+    let exe = gdre_exe(host, &tools_dir);
     if exe.is_file() {
         println!("GDRE Tools: present at {}", tools_dir.display());
     } else {
-        let (asset, checksum) = gdre_asset(platform);
+        crate::ensure_cli(shell, "unzip", "-v", "extraction")?;
+        let (asset, checksum) = gdre_asset(host);
         let url = format!(
             "https://github.com/GDRETools/gdsdecomp/releases/download/{GDRE_VERSION}/{asset}"
         );
@@ -349,7 +327,7 @@ fn reset_child_signal_dispositions(command: &mut Command) {
 #[cfg(not(unix))]
 fn reset_child_signal_dispositions(_command: &mut Command) {}
 
-fn write_provenance(output: &Path, pck: &Path, platform: discover::Platform) -> Result<()> {
+fn write_provenance(output: &Path, pck: &Path, host: discover::Platform) -> Result<()> {
     let utc = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| anyhow::anyhow!("system clock before the epoch: {e}"))?
@@ -357,7 +335,7 @@ fn write_provenance(output: &Path, pck: &Path, platform: discover::Platform) -> 
     let json = serde_json::json!({
         // Unix epoch seconds.
         "utc_timestamp": utc,
-        "host_platform": os_name(platform),
+        "host_platform": os_name(host),
         "pck_path": pck,
         "gdre_version": GDRE_VERSION,
         "gdre_export_log_present": output.join("gdre_export.log").is_file(),

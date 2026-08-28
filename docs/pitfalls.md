@@ -11,8 +11,11 @@ Prerequisites: a Steam install of Slay the Spire 2 and the pinned Rust nightly
 (`rust-toolchain.toml` auto-fetches it). No pre-installed .NET SDK, zig, or
 cross-target stds are needed — the build auto-installs the matrix's rust stds
 via rustup and bootstraps the toolchains (see "Hermetic .NET SDK bootstrap" and
-"Cross-compilation"; `install-tool` provisions all of them eagerly). Windows
-hosts cannot run `build` (the hermetic .NET bootstrap is a Unix script).
+"Cross-compilation"; `install-tool` provisions all of them eagerly). Native
+Windows hosts are rejected at `Platform::detect` by every command that touches
+the game or the toolchain bootstraps; only the repo-local gates (`smoke`,
+`check-docs`, ...) run there. The Windows-side dev environment is WSL2 — see
+the WSL2 section.
 
 ```sh
 cargo xtask install-tool   # optional: provision host tools + bootstraps up front
@@ -35,7 +38,9 @@ play the game.
 
 Game discovery: per-OS Steam default path, or `STS2_GAME_DIR` (macOS: the
 directory containing `SlayTheSpire2.app`; Windows/Linux: the directory
-containing the executable); `STS2_USER_DATA_DIR` forces the log dir.
+containing the executable); a foreign-platform tree — the Windows install
+mounted into WSL2 — is detected from its contents. `STS2_USER_DATA_DIR` forces
+the log dir.
 
 `cargo xtask release` packages the bundle as five zips under `dist/`
 (gitignored): one `-universal` archive carrying every platform's library, plus
@@ -214,11 +219,13 @@ below the cost of a full binding crate. Lessons from wiring it:
   `f32` structs — no engine calls), so they are unit-tested under nextest
   without booting Godot.
 
-## Platform layout (Windows/Linux assumptions)
+## Platform layout (native Linux still unverified)
 
-The macOS layout is inspected ground truth; Windows/Linux follow Godot export
-conventions and the v0.111.0 decompiled source, but have NOT been verified on a
-real machine. Before trusting them, check:
+The macOS and Windows layouts are verified ground truth: macOS by inspection,
+Windows against a real v0.111.0 install driven from a WSL2 host (see the WSL2
+section). The native-Linux layout follows Godot export conventions and the
+v0.111.0 decompiled source but has NOT been verified on a real machine. Before
+trusting it, check:
 
 - `ModManager.cs` (decompiled) derives the mods dir from
   `OS.GetExecutablePath()` on **every** OS — so mods always sit in `<exe
@@ -227,7 +234,7 @@ real machine. Before trusting them, check:
 - `project.godot` sets `use_custom_user_dir` + `custom_user_dir_name =
   "SlayTheSpire2"`, which is why the user-data dir is `<data
   dir>/SlayTheSpire2/` on all three OSes: `~/Library/Application Support/` on
-  macOS (confirmed), `%APPDATA%\` on Windows, `~/.local/share/` (or
+  macOS (confirmed), `%APPDATA%\` on Windows (confirmed), `~/.local/share/` (or
   `$XDG_DATA_HOME`) on Linux. The `SaveManager.cs` doc comment mentioning
   `Godot\app_userdata\sts2` on Windows is stale (pre-dates the custom user dir).
 - The Linux data dir is `data_sts2_linuxbsd_x86_64` (Godot 4 exports the Linux
@@ -237,11 +244,10 @@ real machine. Before trusting them, check:
   tree (`STS2_USER_DATA_DIR` overrides the user-data/log tree), so a wrong
   assumption is an explicit error naming the expected path, never silent
   misbehavior.
-- The **Windows layout has never been verified on a real machine**:
-  `data_sts2_windows_x86_64`, `Slay the Spire 2.exe`, `%APPDATA%\SlayTheSpire2\`
-  are convention-derived only — the same kind of guesses that were wrong on
-  Linux. Treat any Windows failure against these paths as a layout assumption
-  first; `STS2_GAME_DIR` overrides.
+- The **Linux layout has never been verified on a real machine**:
+  `data_sts2_linuxbsd_x86_64` and the bare `SlayTheSpire2` binary name are
+  convention-derived only. Treat any native-Linux failure against these paths as
+  a layout assumption first; `STS2_GAME_DIR` overrides.
 - Steam/Steam Deck users normally run the **Windows** build under Proton. Under
   Proton the game process is a Windows process, so the `windows.x86_64`
   gdextension key and the shim's `OperatingSystem.IsWindows()` branch fire —
@@ -258,13 +264,50 @@ real machine. Before trusting them, check:
 - `release_info.json` (the game's own `{"commit", "version"}` stamp, beside the
   `.pck`) is the version pin: it lives at
   `SlayTheSpire2.app/Contents/Resources/release_info.json` on macOS (verified)
-  and at `<game root>/release_info.json` on Windows/Linux. Its `version` field
-  is pinned in `xtask/src/game_version.rs` (`PIN = "v0.111.0"`): `build`,
-  `install-mod`, `headless-test`, and `decompile` all fail fast when the
-  installed game's version differs, naming both versions and the
+  and at `<game root>/release_info.json` on Windows (verified) and Linux. Its
+  `version` field is pinned in `xtask/src/game_version.rs` (`PIN = "v0.111.0"`):
+  `build`, `install-mod`, `headless-test`, and `decompile` all fail fast when
+  the installed game's version differs, naming both versions and the
   `release_info.json` path. A Steam game update therefore breaks every command
   until `PIN` is bumped deliberately and the mod is re-verified (the Harmony
   patch catalog above all) against the new game.
+
+## WSL2 host against the Windows install
+
+A shell-only WSL2 box uses the Windows game as its game instance: a Linux host
+whose tree has the Windows data dir resolves as the Windows layout, and the
+build's game inputs (the managed assemblies, `release_info.json`) are
+platform-neutral. It is the ONLY supported foreign layout — the game otherwise
+matches the host platform, and `Platform::detect` rejects native Windows hosts
+outright (the Windows-side dev environment is WSL2, full stop). Verified end to
+end against the v0.111.0 Windows install: `build`, `install-mod`, `release`,
+`decompile`, and `headless-test` PASS. Setup and traps:
+
+- No env setup is needed against a default install: discovery reads the Windows
+  Steam manifests under every `/mnt/<drive>` drive, and headless-test derives
+  `%APPDATA%` through interop (`cmd.exe` + `wslpath`). `STS2_GAME_DIR` and
+  `STS2_USER_DATA_DIR` remain the overrides for setups this misses. The
+  `/mnt/<drive>` probing assumes WSL's default automount root — a custom
+  `[automount] root` in /etc/wsl.conf is not probed.
+- Detection keys the data dir to the host arch, so an aarch64 WSL2 host (Windows
+  on ARM) finds nothing in the x86\_64 Windows install; x86\_64 is the only
+  verified WSL2 host arch.
+- headless-test spawns the Windows exe (and the `%APPDATA%` query) through WSL
+  interop, which registers at instance boot: a `.exe` spawn failing with "Exec
+  format error" means interop is off or the instance predates the config edit
+  — set `[interop] enabled=true` in /etc/wsl.conf and restart (`wsl
+  --shutdown` from Windows).
+- The self-test scratch dir crosses the boundary through a `WSLENV` `/p` bridge
+  that headless-test sets itself: interop strips every env var WSLENV does not
+  name, and `/p` translates the Linux path to its `\\wsl$` form. Self-test data
+  never touches real play data.
+- Mods consent is scoped per settings file: the first `--force-steam off` boot
+  creates `<user data>/default/1/settings.save` with mods disabled, so the first
+  headless run FAILs on missing markers — set `mod_settings.mods_enabled`
+  there once and re-run. The enable does not cover normal Steam play (the steam/
+  account-scoped settings file is a separate consent).
+- `release` and `decompile` shell out to the `zip` and `unzip` CLIs, which a
+  minimal WSL distro may lack (Arch: `pacman -S zip unzip`).
 
 ## Cross-compilation (cargo-zigbuild as the cross linker)
 
@@ -283,10 +326,10 @@ real machine. Before trusting them, check:
   — zig supplies only the linker and C libraries, so rustc still needs each
   target's std). The cross tooling is preflighted once, up front, before any
   compile: every missing piece fails the build with the exact command in the
-  error. macOS and Linux hosts both produce the full four-library bundle;
-  Windows hosts fail the build up front (the hermetic .NET bootstrap is a Unix
-  script). The `.gdextension`'s `[libraries]` section is rendered from the same
-  matrix, so the keys and the file names cannot drift.
+  error. macOS and Linux hosts both produce the full four-library bundle; native
+  Windows hosts fail at `Platform::detect` before any compile (the Windows-side
+  dev environment is WSL2). The `.gdextension`'s `[libraries]` section is
+  rendered from the same matrix, so the keys and the file names cannot drift.
 - **Windows-gnu cross-compiles via cargo-zigbuild.** Plain `zig cc` rejects
   rust's `x86_64-pc-windows-gnu` std (it links `-lmsvcrt -lmingwex -lmingw32`
   and passes a rustc-generated `-Wl,<file>.def` export list), but cargo-zigbuild
@@ -339,10 +382,10 @@ and the build shells out to that binary. Lessons from wiring it:
 - **Worktrees**: gitignored files are NOT shared across worktrees — every
   worktree bootstraps its own ~500 MB `dotnet-sdk/` (automatically, on its first
   build). There is no location override.
-- **Windows**: the vendored installer is bash (macOS/Linux). On Windows, the
-  equivalent is `dotnet-install.ps1` (same `-Channel 9.0` flag, from
-  `https://dot.net/v1/dotnet-install.ps1`); `install-tool`'s bootstrap fails
-  there with exactly that instruction.
+- **Windows**: the vendored installer is bash (macOS/Linux), and native Windows
+  hosts are rejected at `Platform::detect` before any bootstrap runs — the
+  Windows-side dev environment is WSL2 (see the WSL2 section), where the bash
+  installer applies.
 - **DOTNET\_ROOT hijack**: a relocated SDK's `dotnet` muxer consults the
   `DOTNET_ROOT` env var for its root, and a pre-existing value pointing at
   another SDK install confuses it. The xtask pins `DOTNET_ROOT` to the bootstrap
@@ -357,7 +400,9 @@ and the build shells out to that binary. Lessons from wiring it:
 
 - The game's mods directory is `<exe dir>/mods/` — on macOS
   `SlayTheSpire2.app/Contents/MacOS/mods/` (NOT a `mods/` folder next to the
-  .app — on macOS that one is unused).
+  .app — on macOS that one is unused). The game creates it on the first
+  mods-enabled boot, so discovery does not require it to exist; install-mod's
+  copy does the mkdir.
 - The mod scanner reads every `*.json` under `mods/` recursively as a manifest.
   Mod data therefore lives at the sibling `<exe dir>/mod_data/spire-profiler/`
   — deliberately OUTSIDE the sweep: an early placement under `mods/mod_data/`
@@ -432,8 +477,9 @@ gitignored (`tmp/`), never committed.
 ### Prerequisites
 
 - A purchased copy of Slay the Spire 2, installed via Steam.
-- macOS or Linux (Windows is out of scope: the verified tool only documents the
-  macOS/Linux Steam PCK layouts, so the wrapper rejects other hosts).
+- macOS, Linux, or a WSL2 host against the Windows install (native Windows hosts
+  are rejected at `Platform::detect`; the Windows install's `.pck` is found
+  through layout detection — see the WSL2 section).
 - `curl` and `unzip` on PATH (present by default on macOS and Linux; used to
   download and extract GDRE Tools).
 - Network access on first run to download GDRE Tools v2.5.0-beta.5 (~100 MB,
