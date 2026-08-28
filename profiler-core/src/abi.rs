@@ -581,17 +581,17 @@ mod tests {
 
     use super::*;
 
-    fn scratch_dir(label: &str) -> (std::path::PathBuf, CString) {
-        let dir = crate::test_util::scratch_dir(label);
-        let c_dir = CString::new(dir.to_str().expect("scratch path is UTF-8"))
-            .expect("no NUL in scratch path");
+    fn wiped_dir(label: &str) -> (std::path::PathBuf, CString) {
+        let dir = crate::test_util::wiped_dir(label);
+        let c_dir =
+            CString::new(dir.to_str().expect("wiped path is UTF-8")).expect("no NUL in wiped path");
         (dir, c_dir)
     }
 
     /// The exported surface drives the whole pipeline end to end.
     #[test]
     fn exported_surface_runs_the_self_test_pipeline() {
-        let (base, c_base) = scratch_dir("spire-profiler-abi-test");
+        let (base, c_base) = wiped_dir("spire-profiler-abi-test");
         unsafe {
             spire_profiler_test_reset();
             spire_profiler_init(c_base.as_ptr());
@@ -629,7 +629,7 @@ mod tests {
     /// A null string argument must not crash the core: the ABI maps it to "".
     #[test]
     fn null_string_arguments_are_treated_as_empty() {
-        let (_base, c_base) = scratch_dir("spire-profiler-abi-null");
+        let (_base, c_base) = wiped_dir("spire-profiler-abi-null");
         unsafe {
             spire_profiler_test_reset();
             spire_profiler_init(c_base.as_ptr());
@@ -671,7 +671,7 @@ mod tests {
     /// toggle.
     #[test]
     fn panel_toggle_export_flips_panel_state_by_run_context() {
-        let (_base, c_base) = scratch_dir("spire-profiler-abi-toggle");
+        let (_base, c_base) = wiped_dir("spire-profiler-abi-toggle");
         let char_ids = CString::new("IRONCLAD").expect("no NUL");
         let mode = CString::new("Standard").expect("no NUL");
         let seed = CString::new("TOGGLE_SEED").expect("no NUL");
@@ -720,7 +720,7 @@ mod tests {
     /// Select/clear drive the whole matching pipeline end to end.
     #[test]
     fn run_history_select_and_clear_exports_drive_the_selection() {
-        let (base, c_base) = scratch_dir("spire-profiler-abi-run-history");
+        let (base, c_base) = wiped_dir("spire-profiler-abi-run-history");
         let seed = CString::new("SELF_TEST_SEED").expect("no NUL in seed");
         unsafe {
             spire_profiler_test_reset();

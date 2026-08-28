@@ -4,7 +4,7 @@
 use super::*;
 use crate::data::persistence::{bind_log_path, reset_log_sink};
 use crate::data::state::{DebuffLayer, PowerSourceEntry};
-use crate::test_util::temp_dir;
+use crate::test_util::unique_dir;
 
 fn reset_state() {
     STATE.with(|cell| *cell.borrow_mut() = state::State::default());
@@ -12,7 +12,7 @@ fn reset_state() {
 }
 
 fn temp_log_dir(label: &str) {
-    let dir = temp_dir(&format!("ledger-{label}"));
+    let dir = unique_dir(&format!("ledger-{label}"));
     bind_log_path(&dir.join("profiler.log"));
 }
 

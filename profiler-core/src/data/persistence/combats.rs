@@ -188,7 +188,7 @@ mod tests {
 
     #[test]
     fn write_combat_file_lands_one_file_per_combat() {
-        let dir = temp_dir("store-write");
+        let dir = unique_dir("store-write");
         let data = dir.join("data");
         init_state(&data);
         let c = synthetic_combat(); // seq 7, run_seq 42, as combat_started would assign
@@ -204,7 +204,7 @@ mod tests {
 
     #[test]
     fn write_combat_file_uses_the_assigned_global_id() {
-        let dir = temp_dir("store-id");
+        let dir = unique_dir("store-id");
         let data = dir.join("data");
         init_state(&data);
         let mut c = synthetic_combat();
@@ -221,7 +221,7 @@ mod tests {
 
     #[test]
     fn write_combat_outside_a_run_lands_in_runs_zero() {
-        let dir = temp_dir("store-run-zero");
+        let dir = unique_dir("store-run-zero");
         let data = dir.join("data");
         init_state(&data);
         let mut c = synthetic_combat();
@@ -235,7 +235,7 @@ mod tests {
 
     #[test]
     fn max_combat_id_reads_filenames_only() {
-        let dir = temp_dir("store-max");
+        let dir = unique_dir("store-max");
         let data = dir.join("data");
         init_state(&data);
         fs::create_dir_all(data.join("runs/1")).unwrap();
@@ -250,7 +250,7 @@ mod tests {
 
     #[test]
     fn same_seed_replays_never_collide() {
-        let dir = temp_dir("store-replay");
+        let dir = unique_dir("store-replay");
         let data = dir.join("data");
         init_state(&data);
         let mut a1 = synthetic_combat();
@@ -298,7 +298,7 @@ mod tests {
 
     #[test]
     fn load_all_combat_docs_sorts_by_id_and_skips_garbage() {
-        let dir = temp_dir("store-load");
+        let dir = unique_dir("store-load");
         let data = dir.join("data");
         init_state(&data);
         fs::create_dir_all(data.join("runs/2")).unwrap();
@@ -316,7 +316,7 @@ mod tests {
 
     #[test]
     fn load_run_combat_docs_reads_only_that_run() {
-        let dir = temp_dir("store-run-load");
+        let dir = unique_dir("store-run-load");
         let data = dir.join("data");
         init_state(&data);
         fs::create_dir_all(data.join("runs/7")).unwrap();

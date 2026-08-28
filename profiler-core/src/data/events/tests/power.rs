@@ -3,11 +3,11 @@
 
 use super::*;
 use crate::source_kind::SourceKind;
-use crate::test_util::scratch_dir;
+use crate::test_util::wiped_dir;
 
 #[test]
 fn forge_credits_the_named_source() {
-    let base = scratch_dir("spire-profiler-test-forge");
+    let base = wiped_dir("spire-profiler-test-forge");
     test_reset();
     init(&base);
     combat_started("FORGE_TEST", "test");
@@ -24,7 +24,7 @@ fn forge_credits_the_named_source() {
 
 #[test]
 fn doom_kills_attribute_enemy_hp_to_the_doom_appliers() {
-    let base = scratch_dir("spire-profiler-test-doom");
+    let base = wiped_dir("spire-profiler-test-doom");
     test_reset();
     init(&base);
     combat_started("DOOM_TEST", "test");
@@ -76,7 +76,7 @@ fn doom_kills_attribute_enemy_hp_to_the_doom_appliers() {
 
 #[test]
 fn osty_summons_absorb_damage_for_the_player() {
-    let base = scratch_dir("spire-profiler-test-osty");
+    let base = wiped_dir("spire-profiler-test-osty");
     test_reset();
     init(&base);
     combat_started("OSTY_TEST", "test");
@@ -130,7 +130,7 @@ fn osty_summons_absorb_damage_for_the_player() {
 
 #[test]
 fn debuff_layers_attribute_poison_ticks_to_appliers() {
-    let base = scratch_dir("spire-profiler-test-debuff");
+    let base = wiped_dir("spire-profiler-test-debuff");
     test_reset();
     init(&base);
     combat_started("DEBUFF_TEST", "test");
@@ -166,7 +166,7 @@ fn debuff_layers_attribute_poison_ticks_to_appliers() {
 
 #[test]
 fn weak_and_buff_mitigation_credit_their_appliers() {
-    let base = scratch_dir("spire-profiler-test-mitigation");
+    let base = wiped_dir("spire-profiler-test-mitigation");
     test_reset();
     init(&base);
     combat_started("MITIGATION_TEST", "test");
@@ -203,7 +203,7 @@ fn weak_and_buff_mitigation_credit_their_appliers() {
 
 #[test]
 fn strength_reduction_records_mitigates_and_reverts_lifo() {
-    let base = scratch_dir("spire-profiler-test-strred");
+    let base = wiped_dir("spire-profiler-test-strred");
     test_reset();
     init(&base);
     combat_started("STRRED_TEST", "test");
@@ -246,7 +246,7 @@ fn strength_reduction_records_mitigates_and_reverts_lifo() {
 /// The TEAM value must not fabricate a `per_player` entry.
 #[test]
 fn team_slot_context_keys_a_team_row() {
-    let base = scratch_dir("spire-profiler-test-mp2-teamctx");
+    let base = wiped_dir("spire-profiler-test-mp2-teamctx");
     test_reset();
     init(&base);
     combat_started("MP2_TEAMCTX_TEST", "test");
@@ -280,7 +280,7 @@ fn team_slot_context_keys_a_team_row() {
 /// A contribution splits across both rows, each keyed at its applier's slot.
 #[test]
 fn power_appliers_record_their_slots() {
-    let base = scratch_dir("spire-profiler-test-mp2-power");
+    let base = wiped_dir("spire-profiler-test-mp2-power");
     test_reset();
     init(&base);
     combat_started("MP2_POWER_TEST", "test");

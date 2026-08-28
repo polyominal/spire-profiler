@@ -173,7 +173,7 @@ mod tests {
 
     #[test]
     fn event_log_appends_exact_lines() {
-        let dir = crate::test_util::temp_dir("event-log-lines");
+        let dir = crate::test_util::unique_dir("event-log-lines");
         let path = dir.join("profiler.log");
         bind_log_path(&path);
         event_log!("first");
@@ -183,7 +183,7 @@ mod tests {
 
     #[test]
     fn event_log_accepts_the_exact_untruncated_line() {
-        let dir = crate::test_util::temp_dir("event-log-exact");
+        let dir = crate::test_util::unique_dir("event-log-exact");
         let path = dir.join("profiler.log");
         bind_log_path(&path);
         let exact = "A".repeat(EVENT_LOG_LINE_CAP - TRUNCATION_SUFFIX.len());
@@ -200,7 +200,7 @@ mod tests {
 
     #[test]
     fn event_log_truncates_on_utf8_boundaries() {
-        let dir = crate::test_util::temp_dir("event-log-truncate");
+        let dir = crate::test_util::unique_dir("event-log-truncate");
         let path = dir.join("profiler.log");
         bind_log_path(&path);
         let long = "é".repeat(EVENT_LOG_LINE_CAP);
@@ -226,7 +226,7 @@ mod tests {
 
     #[test]
     fn event_log_reuses_the_held_handle_across_calls() {
-        let dir = crate::test_util::temp_dir("event-log-hold");
+        let dir = crate::test_util::unique_dir("event-log-hold");
         let path = dir.join("profiler.log");
         bind_log_path(&path);
         event_log!("first");
@@ -239,7 +239,7 @@ mod tests {
 
     #[test]
     fn event_log_switches_handles_when_rebound() {
-        let dir = crate::test_util::temp_dir("event-log-switch");
+        let dir = crate::test_util::unique_dir("event-log-switch");
         let a = dir.join("a");
         let b = dir.join("b");
         fs::create_dir_all(&a).unwrap();
@@ -260,7 +260,7 @@ mod tests {
 
     #[test]
     fn event_log_writes_while_state_is_borrowed() {
-        let dir = crate::test_util::temp_dir("event-log-state");
+        let dir = crate::test_util::unique_dir("event-log-state");
         let path = dir.join("profiler.log");
         bind_log_path(&path);
         STATE.with(|cell| {

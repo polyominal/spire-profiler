@@ -192,7 +192,7 @@ mod tests {
         let combat = records::parse_combat_doc(record).expect("old record parses");
         assert_eq!(combat.cards[0].player, 0, "old rows read as slot 0");
 
-        let dir = temp_dir("old-record-rebuild");
+        let dir = unique_dir("old-record-rebuild");
         let data = dir.join("data");
         init_state(&data);
         write_store_file(&data, 7, 1, record);
@@ -285,7 +285,7 @@ mod tests {
 
     #[test]
     fn rebuild_run_accumulator_folds_prior_fragments() {
-        let dir = temp_dir("rebuild-accumulator");
+        let dir = unique_dir("rebuild-accumulator");
         let data = dir.join("data");
         init_state(&data);
         write_store_fixture(
@@ -342,7 +342,7 @@ mod tests {
     fn rebuild_run_accumulator_ignores_foreign_run_directories() {
         // A combat filed under runs/6/ but stamped run.seq 5 would pass
         // the seq filter, so its absence pins that runs/6/ was not read.
-        let dir = temp_dir("rebuild-accumulator-foreign");
+        let dir = unique_dir("rebuild-accumulator-foreign");
         let data = dir.join("data");
         init_state(&data);
         write_store_file(
@@ -411,7 +411,7 @@ mod tests {
 
     #[test]
     fn rebuild_run_accumulator_matches_live_merge_field_by_field() {
-        let dir = temp_dir("rebuild-accumulator-parity");
+        let dir = unique_dir("rebuild-accumulator-parity");
         let data = dir.join("data");
         std::fs::create_dir_all(&data).unwrap();
         init_state(&data);

@@ -7,7 +7,7 @@ use std::path::Path;
 use super::*;
 use crate::data::state::RunOutcome;
 use crate::source_kind::SourceKind;
-use crate::test_util::scratch_dir;
+use crate::test_util::wiped_dir;
 
 fn seed_data(data: &Path, runs_text: &str, combats_text: &str) {
     STATE.with(|s| {
@@ -100,7 +100,7 @@ const BETA_START: i64 = 1_786_665_600;
 
 #[test]
 fn next_run_id_advances_past_runs_file_and_run_dirs() {
-    let data = scratch_dir("next-run-id");
+    let data = wiped_dir("next-run-id");
     seed_data(
         &data,
         r#"[{"run_id":9,"profile":2,"character":"A","ascension":0,"game_mode":"Standard",
@@ -115,7 +115,7 @@ fn next_run_id_advances_past_runs_file_and_run_dirs() {
         next_run_id(&data.join("runs.jsonl"), &data.join("runs")),
         13
     );
-    let empty = scratch_dir("next-run-id-empty");
+    let empty = wiped_dir("next-run-id-empty");
     assert_eq!(
         next_run_id(&empty.join("runs.jsonl"), &empty.join("runs")),
         1
@@ -124,7 +124,7 @@ fn next_run_id_advances_past_runs_file_and_run_dirs() {
 
 #[test]
 fn next_run_id_reserves_abandoned_run_dirs() {
-    let data = scratch_dir("next-run-id-abandoned");
+    let data = wiped_dir("next-run-id-abandoned");
     seed_data(&data, "[]", "[]");
     fs::create_dir_all(data.join("runs/12")).unwrap();
     assert_eq!(
@@ -140,7 +140,7 @@ fn next_run_id_reserves_abandoned_run_dirs() {
 
 #[test]
 fn continued_run_id_rejoins_the_latest_matching_fragment() {
-    let data = scratch_dir("continued-run-id");
+    let data = wiped_dir("continued-run-id");
     seed_data(
         &data,
         "[]",
@@ -165,7 +165,7 @@ fn continued_run_id_rejoins_the_latest_matching_fragment() {
 
 #[test]
 fn select_by_seed_assembles_the_full_view() {
-    let base = scratch_dir("run-history-seed");
+    let base = wiped_dir("run-history-seed");
     let data = std::path::Path::new(&base);
     seed_data(data, RUNS, COMBATS);
 
@@ -214,7 +214,7 @@ fn select_by_seed_assembles_the_full_view() {
 
 #[test]
 fn combat_only_runs_fall_back_to_a_synthesized_view() {
-    let base = scratch_dir("run-history-combats-only");
+    let base = wiped_dir("run-history-combats-only");
     let data = std::path::Path::new(&base);
     seed_data(data, "[]", COMBATS_ONLY);
 
@@ -253,7 +253,7 @@ fn combat_only_runs_fall_back_to_a_synthesized_view() {
 
 #[test]
 fn seeds_without_combats_or_entries_stay_empty() {
-    let base = scratch_dir("run-history-fallback-empty");
+    let base = wiped_dir("run-history-fallback-empty");
     let data = std::path::Path::new(&base);
     seed_data(
         data,
@@ -273,7 +273,7 @@ fn seeds_without_combats_or_entries_stay_empty() {
         select_run("", 1_786_624_800, 2),
         RunSelection::Empty
     ));
-    let fresh = scratch_dir("run-history-fallback-fresh");
+    let fresh = wiped_dir("run-history-fallback-fresh");
     let fresh_data = std::path::Path::new(&fresh);
     seed_data(fresh_data, "[]", "[]");
     assert!(matches!(
@@ -284,7 +284,7 @@ fn seeds_without_combats_or_entries_stay_empty() {
 
 #[test]
 fn closed_runs_never_take_the_fallback() {
-    let base = scratch_dir("run-history-no-fallback");
+    let base = wiped_dir("run-history-no-fallback");
     let data = std::path::Path::new(&base);
     seed_data(data, RUNS, COMBATS);
 
@@ -301,7 +301,7 @@ fn closed_runs_never_take_the_fallback() {
 
 #[test]
 fn abandoned_runs_render_the_abandoned_label() {
-    let base = scratch_dir("run-history-abandoned");
+    let base = wiped_dir("run-history-abandoned");
     let data = std::path::Path::new(&base);
     let runs = r#"[
             {"run_id":5,"profile":2,"character":"DEFECT","ascension":2,"game_mode":"Standard",
@@ -324,7 +324,7 @@ fn abandoned_runs_render_the_abandoned_label() {
 
 #[test]
 fn fallback_views_flow_through_the_selection_plumbing() {
-    let base = scratch_dir("run-history-fallback-plumbing");
+    let base = wiped_dir("run-history-fallback-plumbing");
     let data = std::path::Path::new(&base);
     seed_data(data, "[]", COMBATS_ONLY);
 
@@ -346,7 +346,7 @@ fn fallback_views_flow_through_the_selection_plumbing() {
 
 #[test]
 fn fallback_disambiguates_same_seed_replays_by_start_time() {
-    let base = scratch_dir("run-history-fallback-seq");
+    let base = wiped_dir("run-history-fallback-seq");
     let data = std::path::Path::new(&base);
     seed_data(
         data,
@@ -379,7 +379,7 @@ fn fallback_disambiguates_same_seed_replays_by_start_time() {
 
 #[test]
 fn same_seed_without_the_exact_time_selects_empty() {
-    let base = scratch_dir("run-history-tiebreak");
+    let base = wiped_dir("run-history-tiebreak");
     let data = std::path::Path::new(&base);
     let runs = r#"[
             {"run_id":1,"profile":2,"character":"A","ascension":0,"game_mode":"Daily","outcome":"victory",
@@ -397,7 +397,7 @@ fn same_seed_without_the_exact_time_selects_empty() {
 
 #[test]
 fn seed_match_with_exact_start_time_wins() {
-    let base = scratch_dir("run-history-exact-seed-time");
+    let base = wiped_dir("run-history-exact-seed-time");
     let data = std::path::Path::new(&base);
     let runs = r#"[
             {"run_id":1,"profile":2,"character":"A","ascension":0,"game_mode":"Daily","outcome":"victory",
@@ -416,7 +416,7 @@ fn seed_match_with_exact_start_time_wins() {
 
 #[test]
 fn a_wrong_seed_never_matches_even_at_the_exact_time() {
-    let base = scratch_dir("run-history-exact-no-seed");
+    let base = wiped_dir("run-history-exact-no-seed");
     let data = std::path::Path::new(&base);
     let runs = r#"[
             {"run_id":1,"profile":2,"character":"A","ascension":0,"game_mode":"Standard","outcome":"defeat",
@@ -432,7 +432,7 @@ fn a_wrong_seed_never_matches_even_at_the_exact_time() {
 
 #[test]
 fn unknown_runs_select_empty() {
-    let base = scratch_dir("run-history-empty");
+    let base = wiped_dir("run-history-empty");
     let data = std::path::Path::new(&base);
     seed_data(data, RUNS, COMBATS);
 
@@ -451,7 +451,7 @@ fn unknown_runs_select_empty() {
         RunSelection::Selected(_)
     ));
 
-    let fresh = scratch_dir("run-history-fresh");
+    let fresh = wiped_dir("run-history-fresh");
     let fresh_data = std::path::Path::new(&fresh);
     STATE.with(|s| {
         let mut st = s.borrow_mut();
@@ -464,7 +464,7 @@ fn unknown_runs_select_empty() {
         RunSelection::Empty
     ));
 
-    let bare = scratch_dir("run-history-bare");
+    let bare = wiped_dir("run-history-bare");
     let bare_data = std::path::Path::new(&bare);
     seed_data(
         bare_data,
@@ -482,7 +482,7 @@ fn unknown_runs_select_empty() {
 
 #[test]
 fn cache_reuses_until_invalidated() {
-    let base = scratch_dir("run-history-cache");
+    let base = wiped_dir("run-history-cache");
     let data = std::path::Path::new(&base);
     seed_data(data, RUNS, COMBATS);
 
@@ -507,7 +507,7 @@ fn cache_reuses_until_invalidated() {
 
 #[test]
 fn rollup_keys_on_id_and_kind_and_teams_merge() {
-    let base = scratch_dir("run-history-kinds");
+    let base = wiped_dir("run-history-kinds");
     let data = std::path::Path::new(&base);
     let runs = r#"[{"run_id":1,"profile":2,"character":"A","ascension":0,"game_mode":"Standard",
                         "outcome":"victory","seed":"K","started_at":1786579200,
@@ -546,7 +546,7 @@ fn rollup_keys_on_id_and_kind_and_teams_merge() {
 
 #[test]
 fn select_stores_and_clear_drops_the_panel_view() {
-    let base = scratch_dir("run-history-selection");
+    let base = wiped_dir("run-history-selection");
     let data = std::path::Path::new(&base);
     seed_data(data, RUNS, COMBATS);
 
@@ -634,7 +634,7 @@ fn view_fingerprint_tracks_every_view_field() {
 
 #[test]
 fn per_player_rollups_split_the_run() {
-    let base = scratch_dir("run-history-phase3-rollups");
+    let base = wiped_dir("run-history-phase3-rollups");
     let data = std::path::Path::new(&base);
     let runs = r#"[{"run_id":7,"profile":2,"character":"IRONCLAD,SILENT","ascension":0,"game_mode":"Standard",
                         "outcome":"victory","seed":"P3","started_at":1786579200,
@@ -671,7 +671,7 @@ fn per_player_rollups_split_the_run() {
 
 #[test]
 fn run_filter_toggle_selects_and_deselects_players() {
-    let base = scratch_dir("run-history-phase3-filter");
+    let base = wiped_dir("run-history-phase3-filter");
     let data = std::path::Path::new(&base);
     let runs = r#"[{"run_id":8,"profile":2,"character":"A,B","ascension":0,"game_mode":"Standard",
                         "outcome":"victory","seed":"F","started_at":1786579200,
@@ -698,7 +698,7 @@ fn run_filter_toggle_selects_and_deselects_players() {
 
 #[test]
 fn run_filter_heals_when_the_roster_lacks_the_selected_slot() {
-    let base = scratch_dir("run-history-phase3-heal");
+    let base = wiped_dir("run-history-phase3-heal");
     let data = std::path::Path::new(&base);
     let runs = r#"[{"run_id":9,"profile":2,"character":"A","ascension":0,"game_mode":"Standard",
                         "outcome":"victory","seed":"H","started_at":1786579200,

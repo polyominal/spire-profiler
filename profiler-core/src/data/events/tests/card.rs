@@ -3,11 +3,11 @@
 
 use super::*;
 use crate::source_kind::SourceKind;
-use crate::test_util::scratch_dir;
+use crate::test_util::wiped_dir;
 
 #[test]
 fn deck_and_generated_copies_of_the_same_card_credit_differently() {
-    let base = scratch_dir("spire-profiler-test-gendeck");
+    let base = wiped_dir("spire-profiler-test-gendeck");
     test_reset();
     init(&base);
     combat_started("GEN_DECK_TEST", "test");
@@ -48,7 +48,7 @@ fn deck_and_generated_copies_of_the_same_card_credit_differently() {
 
 #[test]
 fn generated_card_damage_credits_the_generator() {
-    let base = scratch_dir("spire-profiler-test-gendmg");
+    let base = wiped_dir("spire-profiler-test-gendmg");
     test_reset();
     init(&base);
     combat_started("GEN_DMG_TEST", "test");
@@ -89,7 +89,7 @@ fn generated_card_damage_credits_the_generator() {
 /// Playing all three generated cards leaves the generator at plays 1.
 #[test]
 fn plays_count_the_sources_own_triggers_only() {
-    let base = scratch_dir("spire-profiler-test-triggers");
+    let base = wiped_dir("spire-profiler-test-triggers");
     test_reset();
     init(&base);
     combat_started("TRIGGERS_TEST", "test");
@@ -155,7 +155,7 @@ fn plays_count_the_sources_own_triggers_only() {
 
 #[test]
 fn generated_card_block_credits_the_generator() {
-    let base = scratch_dir("spire-profiler-test-genblk");
+    let base = wiped_dir("spire-profiler-test-genblk");
     test_reset();
     init(&base);
     combat_started("GEN_BLK_TEST", "test");
@@ -188,7 +188,7 @@ fn generated_card_block_credits_the_generator() {
 /// A DECK copy's explicit id equals the playing card's own id: no-op.
 #[test]
 fn deck_card_own_id_as_explicit_source_is_a_no_op() {
-    let base = scratch_dir("spire-profiler-test-deckself");
+    let base = wiped_dir("spire-profiler-test-deckself");
     test_reset();
     init(&base);
     combat_started("DECK_SELF_TEST", "test");
@@ -216,7 +216,7 @@ fn deck_card_own_id_as_explicit_source_is_a_no_op() {
 
 #[test]
 fn unrelated_explicit_source_beats_the_play_source() {
-    let base = scratch_dir("spire-profiler-test-explsrc");
+    let base = wiped_dir("spire-profiler-test-explsrc");
     test_reset();
     init(&base);
     combat_started("EXPL_SRC_TEST", "test");
@@ -248,7 +248,7 @@ fn unrelated_explicit_source_beats_the_play_source() {
 /// The Crossbow shape: the context pops at the first await.
 #[test]
 fn crossbow_generation_resolves_across_the_async_gap() {
-    let base = scratch_dir("spire-profiler-test-genasync");
+    let base = wiped_dir("spire-profiler-test-genasync");
     test_reset();
     init(&base);
     combat_started("GEN_ASYNC_TEST", "test");
@@ -278,7 +278,7 @@ fn crossbow_generation_resolves_across_the_async_gap() {
 /// The fallback must never outlive its turn.
 #[test]
 fn generation_after_the_turn_boundary_has_no_source() {
-    let base = scratch_dir("spire-profiler-test-gennosrc");
+    let base = wiped_dir("spire-profiler-test-gennosrc");
     test_reset();
     init(&base);
     combat_started("GEN_NOSRC_TEST", "test");
@@ -309,7 +309,7 @@ fn generation_after_the_turn_boundary_has_no_source() {
 /// Generated cards get no ledger entry: the nested play credits the root.
 #[test]
 fn nested_generation_chain_collapses_to_the_root_generator() {
-    let base = scratch_dir("spire-profiler-test-genchain");
+    let base = wiped_dir("spire-profiler-test-genchain");
     test_reset();
     init(&base);
     combat_started("GEN_CHAIN_TEST", "test");
@@ -350,7 +350,7 @@ fn nested_generation_chain_collapses_to_the_root_generator() {
 
 #[test]
 fn relic_hook_generation_beats_the_ambient_play() {
-    let base = scratch_dir("spire-profiler-test-genrelic");
+    let base = wiped_dir("spire-profiler-test-genrelic");
     test_reset();
     init(&base);
     combat_started("GEN_RELIC_TEST", "test");
@@ -398,7 +398,7 @@ fn relic_hook_generation_beats_the_ambient_play() {
 /// With only a potion fallback active, the play credits the potion.
 #[test]
 fn potion_generated_card_credits_the_potion_kind() {
-    let base = scratch_dir("spire-profiler-test-genpotion");
+    let base = wiped_dir("spire-profiler-test-genpotion");
     test_reset();
     init(&base);
     combat_started("GEN_POTION_TEST", "test");
@@ -427,7 +427,7 @@ fn potion_generated_card_credits_the_potion_kind() {
 
 #[test]
 fn unplayed_generated_instances_contribute_nothing() {
-    let base = scratch_dir("spire-profiler-test-genunplayed");
+    let base = wiped_dir("spire-profiler-test-genunplayed");
     test_reset();
     init(&base);
     combat_started("GEN_UNPLAYED_TEST", "test");
@@ -454,7 +454,7 @@ fn unplayed_generated_instances_contribute_nothing() {
 /// A resumes — each slot's play stack survives the other's whole play.
 #[test]
 fn interleaved_plays_keep_per_slot_play_stacks() {
-    let base = scratch_dir("spire-profiler-test-mp-interleave");
+    let base = wiped_dir("spire-profiler-test-mp-interleave");
     test_reset();
     init(&base);
     combat_started("MP_INTERLEAVE_TEST", "test");
@@ -501,7 +501,7 @@ fn interleaved_plays_keep_per_slot_play_stacks() {
 /// P1 and P2 each play STRIKE: two rows, keyed (slot, id), never merged.
 #[test]
 fn same_owner_plays_produce_per_slot_rows() {
-    let base = scratch_dir("spire-profiler-test-mp2-sameowner");
+    let base = wiped_dir("spire-profiler-test-mp2-sameowner");
     test_reset();
     init(&base);
     combat_started("MP2_SAME_OWNER_TEST", "test");
@@ -540,7 +540,7 @@ fn same_owner_plays_produce_per_slot_rows() {
 /// P2 plays P1's generated instance: the row keys at the generator's slot.
 #[test]
 fn generated_card_play_credits_the_generators_slot() {
-    let base = scratch_dir("spire-profiler-test-mp2-genslot");
+    let base = wiped_dir("spire-profiler-test-mp2-genslot");
     test_reset();
     init(&base);
     combat_started("MP2_GENSLOT_TEST", "test");

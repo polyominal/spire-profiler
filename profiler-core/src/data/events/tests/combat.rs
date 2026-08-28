@@ -6,11 +6,11 @@ use super::*;
 use crate::data::records::CombatRec;
 use crate::data::state::RunOutcome;
 use crate::source_kind::SourceKind;
-use crate::test_util::scratch_dir;
+use crate::test_util::wiped_dir;
 
 #[test]
 fn relic_and_power_contexts_attribute_damage_and_block() {
-    let base = scratch_dir("spire-profiler-test-context");
+    let base = wiped_dir("spire-profiler-test-context");
     test_reset();
     init(&base);
     combat_started("CONTEXT_TEST", "test");
@@ -61,7 +61,7 @@ fn relic_and_power_contexts_attribute_damage_and_block() {
 
 #[test]
 fn power_source_decomposition_splits_modifier_damage_across_appliers() {
-    let base = scratch_dir("spire-profiler-test-decomp");
+    let base = wiped_dir("spire-profiler-test-decomp");
     test_reset();
     init(&base);
     combat_started("DECOMP_TEST", "test");
@@ -104,7 +104,7 @@ fn power_source_decomposition_splits_modifier_damage_across_appliers() {
 
 #[test]
 fn damage_segments_split_direct_modifier_and_attributed() {
-    let base = scratch_dir("spire-profiler-test-segments");
+    let base = wiped_dir("spire-profiler-test-segments");
     test_reset();
     init(&base);
     combat_started("SEGMENT_TEST", "test");
@@ -163,7 +163,7 @@ fn damage_segments_split_direct_modifier_and_attributed() {
 
 #[test]
 fn block_pool_splits_modifier_portions_on_consumption() {
-    let base = scratch_dir("spire-profiler-test-blocksplit");
+    let base = wiped_dir("spire-profiler-test-blocksplit");
     test_reset();
     init(&base);
     combat_started("BLOCKSPLIT_TEST", "test");
@@ -205,7 +205,7 @@ fn block_pool_splits_modifier_portions_on_consumption() {
 /// The Crimson Mantle shape: a proc fires after its hook's first await.
 #[test]
 fn block_after_a_hooks_async_gap_credits_the_hooks_source() {
-    let base = scratch_dir("spire-profiler-test-asyncgap");
+    let base = wiped_dir("spire-profiler-test-asyncgap");
     test_reset();
     init(&base);
     combat_started("ASYNC_GAP_TEST", "test");
@@ -232,7 +232,7 @@ fn block_after_a_hooks_async_gap_credits_the_hooks_source() {
 
 #[test]
 fn self_damage_credits_the_sources_red_segment() {
-    let base = scratch_dir("spire-profiler-test-selfdmg");
+    let base = wiped_dir("spire-profiler-test-selfdmg");
     test_reset();
     init(&base);
     combat_started("SELFDMG_TEST", "test");
@@ -283,7 +283,7 @@ fn self_damage_credits_the_sources_red_segment() {
 /// `block_pool_clear` for one slot never touches another's pool.
 #[test]
 fn block_pools_consume_and_clear_per_slot() {
-    let base = scratch_dir("spire-profiler-test-mp-blockpool");
+    let base = wiped_dir("spire-profiler-test-mp-blockpool");
     test_reset();
     init(&base);
     combat_started("MP_BLOCKPOOL_TEST", "test");
@@ -333,7 +333,7 @@ fn block_pools_consume_and_clear_per_slot() {
 
 #[test]
 fn pending_modifier_contribs_apply_per_slot() {
-    let base = scratch_dir("spire-profiler-test-mp-contrib");
+    let base = wiped_dir("spire-profiler-test-mp-contrib");
     test_reset();
     init(&base);
     combat_started("MP_CONTRIB_TEST", "test");
@@ -378,7 +378,7 @@ fn pending_modifier_contribs_apply_per_slot() {
 /// A partial death stays "completed"; a full wipe is "defeat".
 #[test]
 fn team_defeat_requires_every_slot_dead() {
-    let base = scratch_dir("spire-profiler-test-mp-defeat");
+    let base = wiped_dir("spire-profiler-test-mp-defeat");
     test_reset();
     init(&base);
     run_started("IRONCLAD", 0, "Standard", "SEED_MP_DEFEAT", 0, "", 0);
@@ -415,7 +415,7 @@ fn team_defeat_requires_every_slot_dead() {
 /// The turn boundary is team-wide.
 #[test]
 fn turn_started_clears_every_slots_fallbacks() {
-    let base = scratch_dir("spire-profiler-test-mp-turn");
+    let base = wiped_dir("spire-profiler-test-mp-turn");
     test_reset();
     init(&base);
     combat_started("MP_TURN_TEST", "test");

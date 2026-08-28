@@ -24,7 +24,7 @@ static GLOBAL: CountingAllocator = CountingAllocator;
 
 #[test]
 fn event_log_does_not_allocate_after_sink_warmup() {
-    let dir = profiler_core::test_util::temp_dir("event-log-allocation");
+    let dir = profiler_core::test_util::unique_dir("event-log-allocation");
     let path = dir.join("profiler.log");
     let long = "A".repeat(4096);
     bind_event_log_probe(&path);

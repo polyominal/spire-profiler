@@ -2,6 +2,10 @@
 //! integration tests (the latter link with the `test-support` feature).
 //! Everything is `pub`: under the feature build `cfg(test)` is off, so
 //! `pub(crate)` items would be dead code.
+//!
+//! Filesystem workspaces live under the gitignored tmp/: `wiped/` holds
+//! deterministic per-label dirs (wiped on each call), `unique/` holds
+//! per-call dirs that are never cleaned up (delete freely when it grows).
 
 use std::path::{Path, PathBuf};
 use std::{fmt, fs, io};
@@ -14,26 +18,33 @@ use crate::ui::theme::ContentBox;
 use crate::ui::ui_model::{SEG_COUNT, Section, UiRow};
 use crate::{fail, marker, warn};
 
-/// A fresh dir under the gitignored tmp/ (wiped first, so a crashed run
-/// cannot leak state).
-pub fn scratch_dir(label: &str) -> PathBuf {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+fn tmp_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("profiler-core is a workspace member")
         .join("tmp")
-        .join(label);
+}
+
+/// A fresh dir under tmp/wiped/ (wiped first, so a crashed run cannot
+/// leak state). The label must be unique per test binary: parallel tests
+/// sharing one wipe each other.
+pub fn wiped_dir(label: &str) -> PathBuf {
+    let dir = tmp_root().join("wiped").join(label);
     let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).expect("create scratch dir");
+    fs::create_dir_all(&dir).expect("create wiped dir");
     dir
 }
 
-/// Unique per process and call, so parallel runs never collide.
-pub fn temp_dir(label: &str) -> PathBuf {
+/// A dir under tmp/unique/, unique per process and call, so parallel runs
+/// never collide. Prefer `wiped_dir`; use this only when a test needs a
+/// path that has never existed or calls repeatedly with one label.
+pub fn unique_dir(label: &str) -> PathBuf {
     static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir =
-        std::env::temp_dir().join(format!("spire-profiler-{label}-{}-{n}", std::process::id()));
-    fs::create_dir_all(&dir).expect("create temp dir");
+    let dir = tmp_root()
+        .join("unique")
+        .join(format!("{label}-{}-{n}", std::process::id()));
+    fs::create_dir_all(&dir).expect("create unique dir");
     dir
 }
 
