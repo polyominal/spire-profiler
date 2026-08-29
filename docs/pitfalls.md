@@ -411,10 +411,9 @@ and the build shells out to that binary. Lessons from wiring it:
   manifests (harmless, but it hid real manifest errors).
 - `settings.save` JSON keys are snake\_case; mod consent lives at
   `mod_settings.mods_enabled` (verified against a live settings.save).
-- A single unparseable entry (a corrupted card id in an old combat record) used
-  to fail the whole file's parse at every boot; the loaders now skip the bad
-  entry and fail-log it, so one corrupt record cannot poison aggregation
-  forever.
+- The store loaders skip an unparseable entry (a corrupted card id in an old
+  combat record) and fail-log it, so one corrupt record cannot poison
+  aggregation; the rest of the file still parses.
 
 ## Game-version drift (decompiled snapshot vs the v0.111.0 pin)
 

@@ -488,6 +488,40 @@ fn negative_and_zero_wire_totals_are_dropped() {
     });
 }
 
+/// A dropped zero-total hit leaves the dealer's queued modifier shares in
+/// place; the next real hit still consumes them.
+#[test]
+fn a_dropped_zero_hit_keeps_queued_modifier_shares() {
+    let base = wiped_dir("spire-profiler-test-zerohit");
+    test_reset();
+    init(&base);
+    combat_started("ZEROHIT_TEST", "test");
+
+    card_play_started("STRIKE", 0, 1, 0, 0);
+    damage_modifier_contribution("STRENGTH_POWER", 0, 3, 0);
+    damage_dealt(DamageDealt {
+        total: 0,
+        unblocked: 0,
+        card_source_id: "STRIKE",
+        ..DamageDealt::default()
+    });
+    damage_dealt(DamageDealt {
+        total: 10,
+        unblocked: 10,
+        card_source_id: "STRIKE",
+        ..DamageDealt::default()
+    });
+    card_play_finished(0);
+    combat_ended();
+
+    let (combat, _) = read_combat(&base);
+    // The modifier's share credits its source row; STRIKE keeps its base.
+    let strike = card_row(&combat, "STRIKE");
+    assert_eq!(strike.damage_dealt, 7);
+    let strength = card_row(&combat, "STRENGTH_POWER");
+    assert_eq!(strength.dmg_modifier, 3);
+}
+
 /// A corrupt slot clamps on EVERY event: the once-only log suppresses the
 /// repeat reports, never the clamp.
 #[test]

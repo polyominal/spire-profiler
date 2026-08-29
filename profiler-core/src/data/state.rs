@@ -168,9 +168,9 @@ pub type SourceSlot = u8;
 pub const TEAM_SLOT: SourceSlot = 4;
 
 thread_local! {
-    /// A persistently corrupt wire slot is one bug, not one log line per
-    /// event; the first corrupt slot still reports.
+    /// Once-gates for corrupt wire values; see [`crate::fail_once`].
     static BAD_SLOT_LOGGED: Cell<bool> = const { Cell::new(false) };
+    static BAD_MODIFIER_KIND_LOGGED: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Unlike [`State::slot_index`] this never grows `per_player`: row-key-only
@@ -178,12 +178,10 @@ thread_local! {
 pub fn clamp_source_slot(slot: i32) -> SourceSlot {
     let clamped = slot.clamp(0, TEAM_SLOT as i32) as SourceSlot;
     if clamped as i32 != slot {
-        BAD_SLOT_LOGGED.with(|logged| {
-            if !logged.get() {
-                logged.set(true);
-                fail!("invalid source slot {slot}; clamping to {clamped} (TEAM = {TEAM_SLOT})");
-            }
-        });
+        crate::fail_once(
+            &BAD_SLOT_LOGGED,
+            format_args!("invalid source slot {slot}; clamping to {clamped} (TEAM = {TEAM_SLOT})"),
+        );
     }
     clamped
 }
@@ -196,7 +194,10 @@ pub fn clamp_modifier_kind(kind: i32) -> SourceKind {
         0 => SourceKind::Power,
         1 => SourceKind::Relic,
         _ => {
-            fail!("invalid modifier kind {kind}; clamping to power");
+            crate::fail_once(
+                &BAD_MODIFIER_KIND_LOGGED,
+                format_args!("invalid modifier kind {kind}; clamping to power"),
+            );
             SourceKind::Power
         }
     }
@@ -262,7 +263,7 @@ pub struct Combat {
     /// The record stays available for the panel after the fight.
     pub finished: bool,
     pub result: String,
-    /// Rows key on (player, id, kind); bounded at [`caps::COMBAT_CARDS`].
+    /// Bounded at [`caps::COMBAT_CARDS`].
     pub cards: Vec<CardStat>,
     pub plays: u32,
     /// Book the combat total but no row's `plays`.

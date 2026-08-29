@@ -63,6 +63,7 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 #![allow(rustdoc::private_intra_doc_links)]
 
+use std::cell::Cell;
 use std::fmt;
 use std::io::{self, Write};
 
@@ -92,6 +93,19 @@ fn emit(level: &str, args: fmt::Arguments<'_>) {
     // A diagnostic sink must not turn a broken game-side pipe into a panic
     // across the C ABI.
     let _ = writeln!(stderr, "[SpireProfiler] {level}: {args}");
+}
+
+/// A persistently corrupt wire value is one bug, not one log line per event;
+/// the first occurrence still reports.
+pub(crate) fn fail_once(
+    gate: &'static std::thread::LocalKey<Cell<bool>>,
+    args: fmt::Arguments<'_>,
+) {
+    gate.with(|logged| {
+        if !logged.replace(true) {
+            emit("ERROR", args);
+        }
+    });
 }
 
 macro_rules! fail_log {

@@ -64,7 +64,7 @@
 //! newtype (defined in [`crate::engine::object`]) and call its methods, so
 //! they never need their own unsafe.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::ptr;
 use std::sync::OnceLock;
@@ -676,13 +676,25 @@ pub(crate) fn read_vector2(variant: &Opaque) -> Option<Vector2> {
     Some(Vector2::new(value[0], value[1]))
 }
 
+std::thread_local! {
+    /// Once-gate for NUL truncation; see [`crate::fail_once`].
+    static NUL_IN_TEXT_LOGGED: Cell<bool> = const { Cell::new(false) };
+}
+
 /// String is refcounted (unlike interned StringName): without the
 /// ptr-destructor call one `_Data` would leak per draw_string.
 pub(crate) fn string_variant(text: &str) -> Variant {
     // Ids re-enter from the persisted store, so a corrupted file can smuggle
     // in a NUL; a C string ends at the first NUL anyway, so truncate and
     // degrade rather than panic the draw path every frame.
-    let text = &text[..text.find('\0').unwrap_or(text.len())];
+    let end = text.find('\0').unwrap_or(text.len());
+    if end != text.len() {
+        crate::fail_once(
+            &NUL_IN_TEXT_LOGGED,
+            format_args!("draw text holds a NUL byte; truncating"),
+        );
+    }
+    let text = &text[..end];
     let c = std::ffi::CString::new(text).expect("NUL-free after truncation");
     let mut storage = Opaque([0; OPAQUE_SIZE]);
     string_new_with_utf8_chars(storage.0.as_mut_ptr().cast::<c_void>(), c.as_ptr());
