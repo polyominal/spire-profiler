@@ -569,8 +569,9 @@ pub struct State {
     pub data_dir: PathBuf,
     pub runs_dir_full: PathBuf,
     pub runs_path_full: PathBuf,
-    /// The next combat's globally-unique id: seeded one past the store's
-    /// highest id, incremented per combat start.
+    /// The combat-id counter: seeded at boot to the store's highest id and
+    /// incremented at each combat start, so the first new combat takes
+    /// max+1.
     pub next_combat_id: u32,
     pub current: Option<Combat>,
     /// Run-level accumulator for the Run Summary tab, merged at combat

@@ -21,9 +21,11 @@ const SKIP_DIRS: &[&str] = &[
     "vendor",
 ];
 
-/// Extensions a citation may carry; matches the source types we write.
+/// Extensions a citation may carry: the source types we write plus the
+/// game's scene, resource, and script files.
 const CITATION_EXTENSIONS: &[&str] = &[
-    ".c", ".cs", ".h", ".json", ".md", ".rs", ".sh", ".snap", ".toml", ".txt",
+    ".c", ".cs", ".gd", ".h", ".json", ".md", ".rs", ".sh", ".snap", ".toml", ".tres", ".tscn",
+    ".txt",
 ];
 
 pub fn run() -> Result<()> {
@@ -113,12 +115,27 @@ mod tests {
     }
 
     #[test]
+    fn catches_scene_resource_and_script_citations() {
+        // Built at runtime so this source holds no citable `name:line`.
+        for (stem, suffix) in [
+            ("foo.tscn", ":28"),
+            ("enemy.gd", ":120-130"),
+            ("ui_theme.tres", ":5"),
+        ] {
+            let line = format!("// {stem}{suffix}");
+            assert!(citation_column(&line).is_some(), "{line}");
+        }
+    }
+
+    #[test]
     fn ignores_methods_urls_times_and_resource_paths() {
         for line in [
             "// CombatManager.StartTurn",
             "https://github.com/dotnet/install-scripts/issues",
             "12:30",
             "res://themes/kreon_bold_glyph_space_two.tres",
+            "res://ui/run.tscn",
+            "res://scripts/enemy.gd",
             "C:\\Program Files (x86)",
         ] {
             assert_eq!(citation_column(line), None, "{line}");

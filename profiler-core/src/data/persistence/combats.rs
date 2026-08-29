@@ -50,7 +50,7 @@ fn scan_combat_ids(dir: &Path) -> Vec<u32> {
     ids
 }
 
-/// The highest id in the store; boot seeds `next_combat_id` with this + 1.
+/// The highest id in the store; boot seeds `next_combat_id` with this.
 pub(crate) fn max_combat_id() -> u32 {
     let base = STATE.with(|s| s.borrow().data_dir.join(RUNS_DIR_NAME));
     let Ok(entries) = fs::read_dir(&base) else {
@@ -263,7 +263,7 @@ mod tests {
         assert_eq!(
             STATE.with(|s| s.borrow().next_combat_id),
             2,
-            "the counter resumes one past the store's highest id"
+            "the counter re-seeds to the store's highest id"
         );
         let mut b1 = synthetic_combat();
         b1.seq = 3;

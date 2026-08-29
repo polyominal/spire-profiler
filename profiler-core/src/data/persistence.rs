@@ -18,9 +18,10 @@
 //! # Identifiers
 //!
 //! Both ids are u32s derived from the store itself, never a process
-//! counter. The combat id is seeded at boot as one past the highest id
-//! among the store's file names and incremented per combat start, so the
-//! file name IS the id and same-seed replays never collide. The run id is
+//! counter. The combat id is seeded at boot to the highest id among the
+//! store's file names and incremented at each combat start, so the first
+//! new combat takes max+1, the file name IS the id, and same-seed replays
+//! never collide. The run id is
 //! max+1 over `runs.jsonl` records and the store's run directory names (an
 //! abandoned run leaves its directory but no record line); a continued run
 //! rejoins its fragments by seed instead.

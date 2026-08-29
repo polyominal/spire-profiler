@@ -32,13 +32,12 @@
 //! width, the content height capped at the viewport minus a margin)
 //! centered in the viewport, re-derived whenever the viewport size
 //! changes. `set_position` is parent-relative and the panel is reparented
-//! under the run-history screen node — but every ancestor of NRunHistory
-//! is a full-rect anchored Control with zero offsets (verified against
-//! the v0.111.0 decompile scenes: run.tscn:28/:50/:93 chain →
-//! run_history.tscn root anchors_preset=15, no offsets, same for the
-//! main-menu and game-over hosts), so parent-relative == viewport
-//! position and the viewport-space centering lands exactly. Nothing is
-//! persisted; the frame re-derives every session.
+//! under the run-history screen node — but in the v0.111.0 scenes every
+//! ancestor of NRunHistory (the chain up through the run_history.tscn and
+//! run.tscn roots; the main-menu and game-over hosts likewise) is a
+//! full-rect anchored Control with zero offsets, so parent-relative ==
+//! viewport position and the viewport-space centering lands exactly.
+//! Nothing is persisted; the frame re-derives every session.
 //!
 //! ## Headless
 //!

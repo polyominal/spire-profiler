@@ -214,7 +214,8 @@ pub fn combat_started(encounter_id: &str, encounter_type: &str) {
     }
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
-        // Seeded at init as one past the store's highest id.
+        // Init seeds at the store's highest id, so this pre-increment
+        // makes the new combat's id max+1.
         state.next_combat_id += 1;
         // Per-player transient state clears wholesale at the boundary.
         state.per_player.clear();
