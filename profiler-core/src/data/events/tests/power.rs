@@ -330,3 +330,37 @@ fn power_appliers_record_their_slots() {
         .expect("P2's BASH row");
     assert_eq!(bash.damage_dealt, 6, "BASH keeps its base 6");
 }
+
+/// The modifier kind wire codes are their own enum: 0 = power, 1 = relic;
+/// anything else clamps to power. With no recorded appliers each share
+/// keeps the modifier's own kind.
+#[test]
+fn modifier_kind_codes_map_power_and_relic_and_clamp_unknowns() {
+    let base = wiped_dir("spire-profiler-test-modkind");
+    test_reset();
+    init(&base);
+    combat_started("MODKIND_TEST", "test");
+
+    card_play_started("STRIKE", 0, 1, 0, 0);
+    damage_modifier_contribution("STRENGTH_POWER", 0, 3, 0);
+    damage_modifier_contribution("VAJRA", 1, 4, 0);
+    damage_modifier_contribution("HEX", 7, 5, 0);
+    damage_dealt(DamageDealt {
+        total: 12,
+        unblocked: 12,
+        ..DamageDealt::default()
+    });
+    card_play_finished(0);
+    combat_ended();
+
+    let (combat, _) = read_combat(&base);
+    let strength = card_row(&combat, "STRENGTH_POWER");
+    assert_eq!(
+        (strength.kind, strength.dmg_modifier),
+        (SourceKind::Power, 3)
+    );
+    let vajra = card_row(&combat, "VAJRA");
+    assert_eq!((vajra.kind, vajra.dmg_modifier), (SourceKind::Relic, 4));
+    let hex = card_row(&combat, "HEX");
+    assert_eq!((hex.kind, hex.dmg_modifier), (SourceKind::Power, 5));
+}

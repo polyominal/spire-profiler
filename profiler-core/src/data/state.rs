@@ -84,7 +84,7 @@
 //! not corrupted); timestamps differ per peer (wall-clock, and the
 //! simulation never depends on them).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -167,14 +167,39 @@ pub type SourceSlot = u8;
 /// the core keys the OSTY overflow row at it directly.
 pub const TEAM_SLOT: SourceSlot = 4;
 
+thread_local! {
+    /// A persistently corrupt wire slot is one bug, not one log line per
+    /// event; the first corrupt slot still reports.
+    static BAD_SLOT_LOGGED: Cell<bool> = const { Cell::new(false) };
+}
+
 /// Unlike [`State::slot_index`] this never grows `per_player`: row-key-only
 /// slots have no transient state.
 pub fn clamp_source_slot(slot: i32) -> SourceSlot {
     let clamped = slot.clamp(0, TEAM_SLOT as i32) as SourceSlot;
     if clamped as i32 != slot {
-        fail!("invalid source slot {slot}; clamping to {clamped} (TEAM = {TEAM_SLOT})");
+        BAD_SLOT_LOGGED.with(|logged| {
+            if !logged.get() {
+                logged.set(true);
+                fail!("invalid source slot {slot}; clamping to {clamped} (TEAM = {TEAM_SLOT})");
+            }
+        });
     }
     clamped
+}
+
+/// The modifier contributions' kind codes are their own wire enum: 0 =
+/// Power, 1 = Relic — not the context ordering of [`SourceKind::from_c`].
+/// A modifier credit is never a card, so unknown codes clamp to Power.
+pub fn clamp_modifier_kind(kind: i32) -> SourceKind {
+    match kind {
+        0 => SourceKind::Power,
+        1 => SourceKind::Relic,
+        _ => {
+            fail!("invalid modifier kind {kind}; clamping to power");
+            SourceKind::Power
+        }
+    }
 }
 
 /// Lives here because it is state owned by [`State`]; `ui_model` stays the
@@ -701,6 +726,16 @@ mod tests {
                 "from_c({kind}) must clamp to a catalogued kind"
             );
         }
+    }
+
+    #[test]
+    fn modifier_kind_codes_map_power_and_relic_and_clamp_unknowns() {
+        assert_eq!(clamp_modifier_kind(0), SourceKind::Power);
+        assert_eq!(clamp_modifier_kind(1), SourceKind::Relic);
+        // Not the context ordering: there 2 reads as Card, here as Power.
+        assert_eq!(clamp_modifier_kind(2), SourceKind::Power);
+        assert_eq!(clamp_modifier_kind(-1), SourceKind::Power);
+        assert_eq!(clamp_modifier_kind(i32::MAX), SourceKind::Power);
     }
 
     #[test]

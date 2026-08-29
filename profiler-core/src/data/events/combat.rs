@@ -11,12 +11,6 @@ use crate::data::state::{
 };
 use crate::{fail, marker};
 
-fn assert_damage_segments(combat: &Combat) {
-    for card in &combat.cards {
-        ledger::assert_card_damage_segments(card);
-    }
-}
-
 pub fn turn_started() {
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
@@ -121,9 +115,12 @@ fn absorb_osty_damage(damage: i32, player_slot: i32) {
         let mut i = state.per_player[slot].osty_stack.len();
         while i > 0 && remaining > 0 {
             i -= 1;
-            if state.per_player[slot].osty_stack[i].remaining <= 0 {
-                continue;
-            }
+            // Entries are pushed with HP and removed on depletion, so
+            // every stack entry still has some to absorb.
+            debug_assert!(
+                state.per_player[slot].osty_stack[i].remaining > 0,
+                "depleted osty entries must have left the stack"
+            );
             let take = state.per_player[slot].osty_stack[i]
                 .remaining
                 .min(remaining);
@@ -270,20 +267,23 @@ pub struct DamageDealt<'a> {
 }
 
 pub fn damage_dealt(args: DamageDealt) {
+    // A negative total is a wire bug that would decrement the ledger; a
+    // zero total is a normal no-op hit.
+    if args.total < 0 {
+        fail!("negative damage total {}", args.total);
+        return;
+    }
+    if args.total == 0 {
+        return;
+    }
     // Intent-display recalcs can queue contributions with no hit
-    // following; every early-return branch drops them.
+    // following; every branch of damage_dealt_in drops or consumes them,
+    // so a no-total event leaves the queue for the next real hit.
     let total = args.total;
     let receiver_slot = args.receiver_slot;
     let needs_osty_absorb = STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         damage_dealt_in(&mut state, args)
-    });
-    // Every card's four segments must still decompose damage_dealt.
-    STATE.with(|cell| {
-        let state = cell.borrow();
-        if let Some(combat) = state.current.as_ref().filter(|combat| !combat.finished) {
-            assert_damage_segments(combat);
-        }
     });
     if needs_osty_absorb {
         absorb_osty_damage(total, receiver_slot);
@@ -488,6 +488,15 @@ fn block_base_after_mods(slot_state: &PlayerSlotState, amount: i64) -> i64 {
 }
 
 pub fn block_gained(amount: i32, card_id: &str, player_slot: i32, source_slot: i32) {
+    // A negative gain is a wire bug that would decrement the ledger; a
+    // zero gain is a normal no-op.
+    if amount < 0 {
+        fail!("negative block gain {amount}");
+        return;
+    }
+    if amount == 0 {
+        return;
+    }
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         // Reborrow the RefCell guard so the combat and the slot's

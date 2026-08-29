@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::data::records::CombatRec;
-use crate::data::state::RunOutcome;
+use crate::data::state::{RunOutcome, TEAM_SLOT};
 use crate::source_kind::SourceKind;
 use crate::test_util::wiped_dir;
 
@@ -439,4 +439,81 @@ fn turn_started_clears_every_slots_fallbacks() {
         assert!(state.per_player[1].potion_fallback.is_none());
     });
     combat_ended();
+}
+
+/// A negative total is a wire bug; dropping it must not decrement the
+/// ledger. Zero is a normal no-op hit.
+#[test]
+fn negative_and_zero_wire_totals_are_dropped() {
+    let base = wiped_dir("spire-profiler-test-negative");
+    test_reset();
+    init(&base);
+    combat_started("NEGATIVE_TEST", "test");
+
+    card_play_started("STRIKE", 0, 1, 0, 0);
+    damage_dealt(DamageDealt {
+        total: 5,
+        unblocked: 5,
+        card_source_id: "STRIKE",
+        ..DamageDealt::default()
+    });
+    damage_dealt(DamageDealt {
+        total: -3,
+        unblocked: -3,
+        card_source_id: "STRIKE",
+        ..DamageDealt::default()
+    });
+    damage_dealt(DamageDealt {
+        total: 0,
+        unblocked: 0,
+        card_source_id: "STRIKE",
+        ..DamageDealt::default()
+    });
+    block_gained(4, "STRIKE", 0, 0);
+    block_gained(-2, "STRIKE", 0, 0);
+    block_gained(0, "STRIKE", 0, 0);
+    card_play_finished(0);
+    combat_ended();
+
+    let (combat, _) = read_combat(&base);
+    assert_eq!(combat.damage_received, 0);
+    let strike = card_row(&combat, "STRIKE");
+    assert_eq!(strike.damage_dealt, 5);
+    assert_eq!(strike.block_gained, 4);
+    assert_eq!(combat.cards.len(), 1, "no rows for the dropped events");
+    STATE.with(|cell| {
+        let state = cell.borrow();
+        let combat = state.current.as_ref().expect("combat exists");
+        assert_eq!(combat.block_total, 4);
+    });
+}
+
+/// A corrupt slot clamps on EVERY event: the once-only log suppresses the
+/// repeat reports, never the clamp.
+#[test]
+fn a_corrupt_slot_clamps_on_every_event() {
+    let base = wiped_dir("spire-profiler-test-slotclamp");
+    test_reset();
+    init(&base);
+    combat_started("SLOTCLAMP_TEST", "test");
+
+    context_begin("ENEMY_POWER", 2, 99);
+    damage_dealt(DamageDealt {
+        total: 2,
+        unblocked: 2,
+        ..DamageDealt::default()
+    });
+    context_begin("ALLY_POWER", 2, -7);
+    damage_dealt(DamageDealt {
+        total: 3,
+        unblocked: 3,
+        ..DamageDealt::default()
+    });
+    combat_ended();
+
+    let (combat, _) = read_combat(&base);
+    let enemy = card_row(&combat, "ENEMY_POWER");
+    assert_eq!((enemy.player, enemy.damage_dealt), (TEAM_SLOT, 2));
+    let ally = card_row(&combat, "ALLY_POWER");
+    assert_eq!((ally.player, ally.damage_dealt), (0, 3));
 }

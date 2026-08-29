@@ -316,6 +316,7 @@ pub unsafe extern "C" fn spire_profiler_player_died(player_slot: i32) {
     });
 }
 
+/// `kind` is a modifier wire code: 0 = power, 1 = relic.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_damage_modifier_contribution(
     modifier_id: *const c_char,
@@ -332,6 +333,7 @@ pub unsafe extern "C" fn spire_profiler_damage_modifier_contribution(
     };
 }
 
+/// `kind` is a modifier wire code: 0 = power, 1 = relic.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_block_modifier_contribution(
     modifier_id: *const c_char,

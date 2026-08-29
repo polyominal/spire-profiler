@@ -6,7 +6,7 @@ use crate::data::ledger::AsyncFallback;
 use crate::data::persistence::event_log;
 use crate::data::state::{
     DebuffLayer, DoomLayer, DoomTarget, EnemyHit, PowerSourceEntry, STATE, SourceKind, SourceSlot,
-    State, StrReduction, TEAM_SLOT, caps,
+    State, StrReduction, TEAM_SLOT, caps, clamp_modifier_kind,
 };
 use crate::fail;
 
@@ -354,11 +354,7 @@ pub fn damage_modifier_contribution(
         if !state.initialized || contribution <= 0 {
             return;
         }
-        let mod_kind = if kind == 1 {
-            SourceKind::Relic
-        } else {
-            SourceKind::Power
-        };
+        let mod_kind = clamp_modifier_kind(kind);
         // Each share carries its applier's slot; the no-applier fallback
         // rides the DEALER's slot.
         let shares = ledger::split_over_appliers_in(
@@ -394,11 +390,7 @@ pub fn block_modifier_contribution(
         if !state.initialized || contribution <= 0 {
             return;
         }
-        let mod_kind = if kind == 1 {
-            SourceKind::Relic
-        } else {
-            SourceKind::Power
-        };
+        let mod_kind = clamp_modifier_kind(kind);
         // Same applier-slot stamping as the damage path.
         let shares = ledger::split_over_appliers_in(
             &state,
