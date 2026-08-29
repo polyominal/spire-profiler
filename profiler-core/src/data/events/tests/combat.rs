@@ -10,10 +10,7 @@ use crate::test_util::wiped_dir;
 
 #[test]
 fn relic_and_power_contexts_attribute_damage_and_block() {
-    let base = wiped_dir("spire-profiler-test-context");
-    test_reset();
-    init(&base);
-    combat_started("CONTEXT_TEST", "test");
+    let base = combat_fixture("CONTEXT_TEST");
 
     context_begin("MERCURY_HOURGLASS", 1, 0);
     damage_dealt(DamageDealt {
@@ -61,10 +58,7 @@ fn relic_and_power_contexts_attribute_damage_and_block() {
 
 #[test]
 fn power_source_decomposition_splits_modifier_damage_across_appliers() {
-    let base = wiped_dir("spire-profiler-test-decomp");
-    test_reset();
-    init(&base);
-    combat_started("DECOMP_TEST", "test");
+    let base = combat_fixture("DECOMP_TEST");
 
     card_play_started("DEMON_FORM", 0, 1, 0, 0);
     power_applied("STRENGTH_POWER", 3, 0, 1, 0);
@@ -104,10 +98,7 @@ fn power_source_decomposition_splits_modifier_damage_across_appliers() {
 
 #[test]
 fn damage_segments_split_direct_modifier_and_attributed() {
-    let base = wiped_dir("spire-profiler-test-segments");
-    test_reset();
-    init(&base);
-    combat_started("SEGMENT_TEST", "test");
+    let base = combat_fixture("SEGMENT_TEST");
 
     card_play_started("INFLAME", 0, 1, 0, 0);
     power_applied("STRENGTH_POWER", 2, 0, 1, 0);
@@ -163,10 +154,7 @@ fn damage_segments_split_direct_modifier_and_attributed() {
 
 #[test]
 fn block_pool_splits_modifier_portions_on_consumption() {
-    let base = wiped_dir("spire-profiler-test-blocksplit");
-    test_reset();
-    init(&base);
-    combat_started("BLOCKSPLIT_TEST", "test");
+    let base = combat_fixture("BLOCKSPLIT_TEST");
 
     card_play_started("FOOTWORK", 0, 1, 0, 0);
     power_applied("DEXTERITY_POWER", 2, 0, 1, 0);
@@ -205,10 +193,7 @@ fn block_pool_splits_modifier_portions_on_consumption() {
 /// The Crimson Mantle shape: a proc fires after its hook's first await.
 #[test]
 fn block_after_a_hooks_async_gap_credits_the_hooks_source() {
-    let base = wiped_dir("spire-profiler-test-asyncgap");
-    test_reset();
-    init(&base);
-    combat_started("ASYNC_GAP_TEST", "test");
+    let base = combat_fixture("ASYNC_GAP_TEST");
     turn_started();
 
     context_begin("CRIMSON_MANTLE_POWER", 2, 0);
@@ -232,10 +217,7 @@ fn block_after_a_hooks_async_gap_credits_the_hooks_source() {
 
 #[test]
 fn self_damage_credits_the_sources_red_segment() {
-    let base = wiped_dir("spire-profiler-test-selfdmg");
-    test_reset();
-    init(&base);
-    combat_started("SELFDMG_TEST", "test");
+    let base = combat_fixture("SELFDMG_TEST");
 
     card_play_started("BLOODLETTING", 0, 1, 0, 0);
     damage_dealt(DamageDealt {
@@ -283,10 +265,7 @@ fn self_damage_credits_the_sources_red_segment() {
 /// `block_pool_clear` for one slot never touches another's pool.
 #[test]
 fn block_pools_consume_and_clear_per_slot() {
-    let base = wiped_dir("spire-profiler-test-mp-blockpool");
-    test_reset();
-    init(&base);
-    combat_started("MP_BLOCKPOOL_TEST", "test");
+    combat_fixture("MP_BLOCKPOOL_TEST");
 
     card_play_started("DEFEND", 0, 1, 0, 0);
     block_gained(5, "DEFEND", 0, 0);
@@ -333,10 +312,7 @@ fn block_pools_consume_and_clear_per_slot() {
 
 #[test]
 fn pending_modifier_contribs_apply_per_slot() {
-    let base = wiped_dir("spire-profiler-test-mp-contrib");
-    test_reset();
-    init(&base);
-    combat_started("MP_CONTRIB_TEST", "test");
+    let base = combat_fixture("MP_CONTRIB_TEST");
 
     card_play_started("STRIKE", 0, 1, 0, 0);
     card_play_started("BASH", 0, 1, 0, 1);
@@ -415,10 +391,7 @@ fn team_defeat_requires_every_slot_dead() {
 /// The turn boundary is team-wide.
 #[test]
 fn turn_started_clears_every_slots_fallbacks() {
-    let base = wiped_dir("spire-profiler-test-mp-turn");
-    test_reset();
-    init(&base);
-    combat_started("MP_TURN_TEST", "test");
+    combat_fixture("MP_TURN_TEST");
 
     card_play_started("ZAP", 0, 1, 0, 0);
     orb_channeled(1001, 0);
@@ -445,10 +418,7 @@ fn turn_started_clears_every_slots_fallbacks() {
 /// ledger. Zero is a normal no-op hit.
 #[test]
 fn negative_and_zero_wire_totals_are_dropped() {
-    let base = wiped_dir("spire-profiler-test-negative");
-    test_reset();
-    init(&base);
-    combat_started("NEGATIVE_TEST", "test");
+    let base = combat_fixture("NEGATIVE_TEST");
 
     card_play_started("STRIKE", 0, 1, 0, 0);
     damage_dealt(DamageDealt {
@@ -492,10 +462,7 @@ fn negative_and_zero_wire_totals_are_dropped() {
 /// place; the next real hit still consumes them.
 #[test]
 fn a_dropped_zero_hit_keeps_queued_modifier_shares() {
-    let base = wiped_dir("spire-profiler-test-zerohit");
-    test_reset();
-    init(&base);
-    combat_started("ZEROHIT_TEST", "test");
+    let base = combat_fixture("ZEROHIT_TEST");
 
     card_play_started("STRIKE", 0, 1, 0, 0);
     damage_modifier_contribution("STRENGTH_POWER", 0, 3, 0);
@@ -526,10 +493,7 @@ fn a_dropped_zero_hit_keeps_queued_modifier_shares() {
 /// repeat reports, never the clamp.
 #[test]
 fn a_corrupt_slot_clamps_on_every_event() {
-    let base = wiped_dir("spire-profiler-test-slotclamp");
-    test_reset();
-    init(&base);
-    combat_started("SLOTCLAMP_TEST", "test");
+    let base = combat_fixture("SLOTCLAMP_TEST");
 
     context_begin("ENEMY_POWER", 2, 99);
     damage_dealt(DamageDealt {

@@ -177,27 +177,13 @@ pub fn write_combat_file(c: &Combat) {
 mod tests {
     use super::*;
     use crate::data::persistence::test_support::*;
+    use crate::test_util::combat_ids;
 
     fn store_ids(data: &std::path::Path) -> Vec<u32> {
-        let mut ids: Vec<u32> = Vec::new();
-        let runs = data.join("runs");
-        for run in fs::read_dir(&runs).expect("runs dir exists").flatten() {
-            let run_dir = run.path();
-            if !run_dir.is_dir() {
-                continue;
-            }
-            for entry in fs::read_dir(&run_dir).expect("run dir exists").flatten() {
-                let name = entry.file_name();
-                let name = name.to_string_lossy();
-                if let Some(stem) = name.strip_suffix(".json")
-                    && let Ok(id) = stem.parse::<u32>()
-                {
-                    ids.push(id);
-                }
-            }
-        }
-        ids.sort_unstable();
-        ids
+        combat_ids(&data.join("runs"))
+            .into_iter()
+            .map(|(_, id)| id)
+            .collect()
     }
 
     #[test]

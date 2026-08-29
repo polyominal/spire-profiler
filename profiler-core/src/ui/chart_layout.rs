@@ -974,6 +974,17 @@ mod tests {
     use super::*;
     use crate::test_util::{cmd_texts as texts, test_row};
 
+    /// The tab/rows/meta core of a BuildInput with default chrome; a
+    /// test overlays its tweaks via `..build_input(..)`.
+    fn build_input(tab: UiTab, rows: &[UiRow], meta: UiMeta) -> BuildInput<'_> {
+        BuildInput {
+            tab,
+            rows,
+            meta,
+            ..BuildInput::default()
+        }
+    }
+
     #[test]
     fn scaled_texture_rects_keep_their_original_center() {
         let tex = TextureCmd {
@@ -1072,13 +1083,10 @@ mod tests {
             "BYGONE_EFFIGY",
         );
         build(BuildInput {
-            tab: UiTab::Combat,
-            rows: &rows,
-            meta,
             flat_chrome,
             tab_sprites,
             right_gutter,
-            ..BuildInput::default()
+            ..build_input(UiTab::Combat, &rows, meta)
         })
     }
 
@@ -1205,12 +1213,7 @@ mod tests {
             ),
         ];
         let meta = UiMeta::default();
-        let l = build(BuildInput {
-            tab: UiTab::Combat,
-            rows: &rows,
-            meta,
-            ..BuildInput::default()
-        });
+        let l = build(build_input(UiTab::Combat, &rows, meta));
 
         let mut found_share = false;
         let mut found_self_value = false;
@@ -1239,12 +1242,7 @@ mod tests {
             0,
             [0, 0, 0, 0, 0, 0, 1000],
         )];
-        let l = build(BuildInput {
-            tab: UiTab::Combat,
-            rows: &rows,
-            meta: UiMeta::default(),
-            ..BuildInput::default()
-        });
+        let l = build(build_input(UiTab::Combat, &rows, UiMeta::default()));
         let all: Vec<&str> = texts(&l.cmds).collect();
         assert!(
             all.iter().any(|t| t.contains("BLOODLETTING")),
@@ -1279,12 +1277,7 @@ mod tests {
             dps_x10: -1,
             ..UiMeta::default()
         };
-        let l = build(BuildInput {
-            tab: UiTab::Run,
-            rows: &rows,
-            meta,
-            ..BuildInput::default()
-        });
+        let l = build(build_input(UiTab::Run, &rows, meta));
 
         let dps_dash = texts(&l.header_cmds).any(|t| t.contains("DPS —"));
         assert!(dps_dash);
@@ -1342,11 +1335,8 @@ mod tests {
                 enc,
             );
             build(BuildInput {
-                tab: UiTab::Combat,
-                rows: &rows,
-                meta,
                 flat_chrome,
-                ..BuildInput::default()
+                ..build_input(UiTab::Combat, &rows, meta)
             })
         };
         // A free fn, not a closure: the return borrows the layout alone,
@@ -1416,12 +1406,7 @@ mod tests {
             [1000, 0, 0, 0, 0, 0, 0],
         )];
         for tab in [UiTab::Combat, UiTab::Run] {
-            let l = build(BuildInput {
-                tab,
-                rows: &rows,
-                meta: UiMeta::default(),
-                ..BuildInput::default()
-            });
+            let l = build(build_input(tab, &rows, UiMeta::default()));
             assert!(
                 !texts(&l.header_cmds).any(|t| t == "All" || t == "P1" || t == "P2"),
                 "the avatar row carries the filter state, never a text label"
@@ -1464,11 +1449,8 @@ mod tests {
             [1000, 0, 0, 0, 0, 0, 0],
         )];
         build(BuildInput {
-            tab: UiTab::Combat,
-            rows: &rows,
-            meta: UiMeta::default(),
             avatars,
-            ..BuildInput::default()
+            ..build_input(UiTab::Combat, &rows, UiMeta::default())
         })
     }
 
@@ -1553,11 +1535,8 @@ mod tests {
             [1000, 0, 0, 0, 0, 0, 0],
         )];
         let l = build(BuildInput {
-            tab: UiTab::Run,
-            rows: &rows,
-            meta: UiMeta::default(),
             avatars: &avatar_facts(),
-            ..BuildInput::default()
+            ..build_input(UiTab::Run, &rows, UiMeta::default())
         });
         assert_eq!(icons_of(&l).len(), 2, "the run tab carries the row");
         assert_eq!(l.avatar_hits.len(), 2);
@@ -1623,11 +1602,8 @@ mod tests {
             ..UiMeta::default()
         };
         let l = build(BuildInput {
-            tab: UiTab::Run,
-            rows: &rows,
-            meta,
             skip_chrome: true,
-            ..BuildInput::default()
+            ..build_input(UiTab::Run, &rows, meta)
         });
         assert!(l.tab_hits.is_empty(), "no tab strip without chrome");
         assert!(
@@ -1678,12 +1654,7 @@ mod tests {
                 [500, 0, 0, 0, 0, 0, 0],
             );
         }
-        let l = build(BuildInput {
-            tab: UiTab::Combat,
-            rows: &rows,
-            meta: UiMeta::default(),
-            ..BuildInput::default()
-        });
+        let l = build(build_input(UiTab::Combat, &rows, UiMeta::default()));
 
         assert_eq!(l.row_hits.len(), ui_model::MAX_UI_ROWS);
         for hit in &l.row_hits {
@@ -1718,11 +1689,8 @@ mod tests {
         )];
         let track_w = |width: f32| {
             let l = build(BuildInput {
-                tab: UiTab::Combat,
-                rows: &rows,
-                meta: UiMeta::default(),
                 width,
-                ..BuildInput::default()
+                ..build_input(UiTab::Combat, &rows, UiMeta::default())
             });
             assert_eq!(l.width, width, "the layout reports the build width");
             l.cmds
@@ -1911,12 +1879,7 @@ mod tests {
                 [1000, 0, 0, 0, 0, 0, 0],
             ),
         ];
-        let l = build(BuildInput {
-            tab: UiTab::Combat,
-            rows: &rows,
-            meta: UiMeta::default(),
-            ..BuildInput::default()
-        });
+        let l = build(build_input(UiTab::Combat, &rows, UiMeta::default()));
         let find = |text: &str| {
             l.cmds
                 .iter()
@@ -2065,14 +2028,11 @@ mod tests {
             "BYGONE_EFFIGY",
         );
         build(BuildInput {
-            tab: UiTab::Combat,
-            rows: &rows,
-            meta,
             footer: "Total 32 damage in 2 turns",
             hover_row: Some(0),
             flat_chrome,
             tab_sprites: !flat_chrome,
-            ..BuildInput::default()
+            ..build_input(UiTab::Combat, &rows, meta)
         })
     }
 

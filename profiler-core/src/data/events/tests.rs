@@ -5,6 +5,7 @@
 use super::*;
 use crate::data::records::{CardRec, CombatRec};
 use crate::data::state::CardStat;
+use crate::test_util::{combat_ids, wiped_dir};
 
 mod card;
 mod combat;
@@ -13,44 +14,25 @@ mod power;
 mod run;
 mod self_test;
 
+/// The standard test opening: a wiped data dir, a fresh core, and a
+/// running combat. The encounter id doubles as the wiped-dir label, so
+/// each test passes its own.
+fn combat_fixture(encounter: &str) -> PathBuf {
+    let base = wiped_dir(&format!("spire-profiler-test-{encounter}"));
+    test_reset();
+    init(&base);
+    combat_started(encounter, "test");
+    base
+}
+
 fn read_test_file(base: &Path, name: &str) -> String {
     std::fs::read_to_string(base.join(name)).expect("test file missing")
 }
 
 fn read_all_combats(base: &Path) -> Vec<(CombatRec, serde_json::Value)> {
     let runs_dir = base.join("runs");
-    let mut ids: Vec<(u32, u32)> = Vec::new(); // (run id, combat id)
-    for run in std::fs::read_dir(&runs_dir)
-        .expect("runs dir exists")
-        .flatten()
-    {
-        let run_dir = run.path();
-        if !run_dir.is_dir() {
-            continue;
-        }
-        for entry in std::fs::read_dir(&run_dir)
-            .expect("run dir exists")
-            .flatten()
-        {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            let Some(stem) = name.strip_suffix(".json") else {
-                continue;
-            };
-            let Ok(id) = stem.parse::<u32>() else {
-                continue;
-            };
-            let run_id = run_dir
-                .file_name()
-                .expect("run dir has a name")
-                .to_string_lossy()
-                .parse::<u32>()
-                .expect("run dirs are numeric");
-            ids.push((run_id, id));
-        }
-    }
-    ids.sort_unstable_by_key(|&(_, id)| id);
-    ids.iter()
+    combat_ids(&runs_dir)
+        .iter()
         .map(|&(run_id, id)| {
             let text = std::fs::read_to_string(
                 runs_dir.join(run_id.to_string()).join(format!("{id}.json")),

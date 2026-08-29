@@ -48,6 +48,40 @@ pub fn unique_dir(label: &str) -> PathBuf {
     dir
 }
 
+/// The combat store under `runs_dir` as (run id, combat id) pairs, in
+/// combat-id order; a non-numeric run dir or a file without an
+/// `<id>.json` name is skipped.
+pub fn combat_ids(runs_dir: &Path) -> Vec<(u32, u32)> {
+    let mut ids: Vec<(u32, u32)> = Vec::new();
+    for run in fs::read_dir(runs_dir).expect("runs dir exists").flatten() {
+        let run_dir = run.path();
+        if !run_dir.is_dir() {
+            continue;
+        }
+        let Ok(run_id) = run_dir
+            .file_name()
+            .expect("run dir has a name")
+            .to_string_lossy()
+            .parse::<u32>()
+        else {
+            continue;
+        };
+        for entry in fs::read_dir(&run_dir).expect("run dir exists").flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let Some(stem) = name.strip_suffix(".json") else {
+                continue;
+            };
+            let Ok(id) = stem.parse::<u32>() else {
+                continue;
+            };
+            ids.push((run_id, id));
+        }
+    }
+    ids.sort_unstable_by_key(|&(_, id)| id);
+    ids
+}
+
 pub fn emit_allocation_probe(literal: &str, integer: i64, path: &Path, err: &io::Error) {
     fail!("{literal}");
     warn!("integer {integer}");

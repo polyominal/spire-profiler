@@ -3,14 +3,10 @@
 
 use super::*;
 use crate::source_kind::SourceKind;
-use crate::test_util::wiped_dir;
 
 #[test]
 fn forge_credits_the_named_source() {
-    let base = wiped_dir("spire-profiler-test-forge");
-    test_reset();
-    init(&base);
-    combat_started("FORGE_TEST", "test");
+    let base = combat_fixture("FORGE_TEST");
 
     forge("FURNACE_POWER", 2, 3, 0);
 
@@ -24,10 +20,7 @@ fn forge_credits_the_named_source() {
 
 #[test]
 fn doom_kills_attribute_enemy_hp_to_the_doom_appliers() {
-    let base = wiped_dir("spire-profiler-test-doom");
-    test_reset();
-    init(&base);
-    combat_started("DOOM_TEST", "test");
+    let base = combat_fixture("DOOM_TEST");
 
     card_play_started("DEATHBRINGER", 0, 1, 0, 0);
     power_applied("DOOM_POWER", 4, 42, 0, 0);
@@ -76,10 +69,7 @@ fn doom_kills_attribute_enemy_hp_to_the_doom_appliers() {
 
 #[test]
 fn osty_summons_absorb_damage_for_the_player() {
-    let base = wiped_dir("spire-profiler-test-osty");
-    test_reset();
-    init(&base);
-    combat_started("OSTY_TEST", "test");
+    let base = combat_fixture("OSTY_TEST");
 
     card_play_started("BODYGUARD", 0, 1, 0, 0);
     osty_summoned("BODYGUARD", 0, 5, 0);
@@ -130,10 +120,7 @@ fn osty_summons_absorb_damage_for_the_player() {
 
 #[test]
 fn debuff_layers_attribute_poison_ticks_to_appliers() {
-    let base = wiped_dir("spire-profiler-test-debuff");
-    test_reset();
-    init(&base);
-    combat_started("DEBUFF_TEST", "test");
+    let base = combat_fixture("DEBUFF_TEST");
 
     card_play_started("BOUNCING_FLASK", 0, 1, 0, 0);
     power_applied("POISON_POWER", 3, 42, 0, 0);
@@ -166,10 +153,7 @@ fn debuff_layers_attribute_poison_ticks_to_appliers() {
 
 #[test]
 fn weak_and_buff_mitigation_credit_their_appliers() {
-    let base = wiped_dir("spire-profiler-test-mitigation");
-    test_reset();
-    init(&base);
-    combat_started("MITIGATION_TEST", "test");
+    let base = combat_fixture("MITIGATION_TEST");
 
     card_play_started("MALAISE", 0, 1, 0, 0);
     power_applied("WEAK_POWER", 2, 42, 0, 0);
@@ -203,10 +187,7 @@ fn weak_and_buff_mitigation_credit_their_appliers() {
 
 #[test]
 fn strength_reduction_records_mitigates_and_reverts_lifo() {
-    let base = wiped_dir("spire-profiler-test-strred");
-    test_reset();
-    init(&base);
-    combat_started("STRRED_TEST", "test");
+    let base = combat_fixture("STRRED_TEST");
 
     card_play_started("PIERCING_WAIL", 0, 1, 0, 0);
     power_decreased("STRENGTH_POWER", 8, 42, 0, 0);
@@ -246,10 +227,7 @@ fn strength_reduction_records_mitigates_and_reverts_lifo() {
 /// The TEAM value must not fabricate a `per_player` entry.
 #[test]
 fn team_slot_context_keys_a_team_row() {
-    let base = wiped_dir("spire-profiler-test-mp2-teamctx");
-    test_reset();
-    init(&base);
-    combat_started("MP2_TEAMCTX_TEST", "test");
+    combat_fixture("MP2_TEAMCTX_TEST");
 
     context_begin("MALEVOLENCE_POWER", 2, 4);
     damage_dealt(DamageDealt {
@@ -280,10 +258,7 @@ fn team_slot_context_keys_a_team_row() {
 /// A contribution splits across both rows, each keyed at its applier's slot.
 #[test]
 fn power_appliers_record_their_slots() {
-    let base = wiped_dir("spire-profiler-test-mp2-power");
-    test_reset();
-    init(&base);
-    combat_started("MP2_POWER_TEST", "test");
+    combat_fixture("MP2_POWER_TEST");
 
     card_play_started("INFLAME", 0, 1, 0, 0);
     power_applied("STRENGTH_POWER", 2, 0, 1, 0);
@@ -336,10 +311,7 @@ fn power_appliers_record_their_slots() {
 /// keeps the modifier's own kind.
 #[test]
 fn modifier_kind_codes_map_power_and_relic_and_clamp_unknowns() {
-    let base = wiped_dir("spire-profiler-test-modkind");
-    test_reset();
-    init(&base);
-    combat_started("MODKIND_TEST", "test");
+    let base = combat_fixture("MODKIND_TEST");
 
     card_play_started("STRIKE", 0, 1, 0, 0);
     damage_modifier_contribution("STRENGTH_POWER", 0, 3, 0);

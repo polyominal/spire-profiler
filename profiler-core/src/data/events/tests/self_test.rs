@@ -94,10 +94,7 @@ fn self_test_pipeline_writes_combat_and_run_files() {
 
 #[test]
 fn combat_tab_rows_and_footer_render_generator_and_forge() {
-    let base = wiped_dir("spire-profiler-test-ui");
-    test_reset();
-    init(&base);
-    combat_started("UI_TEST", "test");
+    combat_fixture("UI_TEST");
     card_play_started("INFERNAL_BLADE", 0, 1, 0, 0);
     card_generated(9001, "", 0, 0);
     card_play_finished(0);
