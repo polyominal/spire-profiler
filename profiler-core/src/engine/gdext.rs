@@ -679,7 +679,11 @@ pub(crate) fn read_vector2(variant: &Opaque) -> Option<Vector2> {
 /// String is refcounted (unlike interned StringName): without the
 /// ptr-destructor call one `_Data` would leak per draw_string.
 pub(crate) fn string_variant(text: &str) -> Variant {
-    let c = std::ffi::CString::new(text).expect("chart text has no NUL byte");
+    // Ids re-enter from the persisted store, so a corrupted file can smuggle
+    // in a NUL; a C string ends at the first NUL anyway, so truncate and
+    // degrade rather than panic the draw path every frame.
+    let text = &text[..text.find('\0').unwrap_or(text.len())];
+    let c = std::ffi::CString::new(text).expect("NUL-free after truncation");
     let mut storage = Opaque([0; OPAQUE_SIZE]);
     string_new_with_utf8_chars(storage.0.as_mut_ptr().cast::<c_void>(), c.as_ptr());
     let variant = Variant::from_value(VT_STRING, storage.0.as_ptr().cast::<c_void>());
