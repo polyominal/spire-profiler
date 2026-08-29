@@ -136,8 +136,9 @@ fn absorb_osty_damage(damage: i32, player_slot: i32) {
                 let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
                     return;
                 };
-                let index = ledger::get_or_create_card_kind(combat, player, &id, kind);
-                combat.cards[index].block_effective += take;
+                if let Some(index) = ledger::get_or_create_card_kind(combat, player, &id, kind) {
+                    combat.cards[index].block_effective += take;
+                }
             }
             state.per_player[slot].osty_stack[i].remaining -= take;
             remaining -= take;
@@ -150,9 +151,11 @@ fn absorb_osty_damage(damage: i32, player_slot: i32) {
                 return;
             };
             // The overflow has no player owner: key it at the TEAM slot.
-            let index =
-                ledger::get_or_create_card_kind(combat, TEAM_SLOT, "OSTY", SourceKind::Osty);
-            combat.cards[index].block_effective += remaining;
+            if let Some(index) =
+                ledger::get_or_create_card_kind(combat, TEAM_SLOT, "OSTY", SourceKind::Osty)
+            {
+                combat.cards[index].block_effective += remaining;
+            }
         }
         event_log!(
             "  osty absorbed {damage} damage ({} from summon sources)",
@@ -182,11 +185,12 @@ pub fn osty_killed(player_slot: i32) {
         {
             // A generated instance's play credits its generator's slot.
             let row_slot = state.per_player[slot].active_play_source_slot;
-            let index = ledger::get_or_create_card_kind(combat, row_slot, &id, kind);
-            combat.cards[index].block_effective -= remaining;
-            state.per_player[slot].osty_stack.clear();
-            event_log!("  osty died: -{remaining} effective block on '{id}'");
-            return;
+            if let Some(index) = ledger::get_or_create_card_kind(combat, row_slot, &id, kind) {
+                combat.cards[index].block_effective -= remaining;
+                state.per_player[slot].osty_stack.clear();
+                event_log!("  osty died: -{remaining} effective block on '{id}'");
+                return;
+            }
         }
         state.per_player[slot].osty_stack.clear();
         event_log!("  osty killed, stack cleared");
@@ -409,12 +413,13 @@ fn record_osty_dealt_in(
             return;
         };
         let row_slot = clamp_source_slot(card_source_slot);
-        let index = ledger::get_or_create_card(combat, row_slot, source);
-        let card = &mut combat.cards[index];
-        card.damage_dealt += total as i64;
-        card.dmg_direct += total as i64;
-        card.damage_blocked += blocked as i64;
-        ledger::assert_card_damage_segments(card);
+        if let Some(index) = ledger::get_or_create_card(combat, row_slot, source) {
+            let card = &mut combat.cards[index];
+            card.damage_dealt += total as i64;
+            card.dmg_direct += total as i64;
+            card.damage_blocked += blocked as i64;
+            ledger::assert_card_damage_segments(card);
+        }
     }
     state.slot_state_mut(dealer_slot).pending_contribs.clear();
     event_log!("  osty dealt {total} damage via '{source}'");

@@ -1,29 +1,16 @@
 //! The on-disk write entry point the events layer calls besides the combat
 //! finalizer: the run finalizer, which rewrites `runs.jsonl` atomically.
 
-use super::combats::load_run_combat_docs;
+use super::combats::{load_run_combat_docs, parse_combat_docs};
 use super::io::{read_file, write_file};
 use crate::data::persistence::event_log;
 use crate::data::records;
 use crate::data::state::STATE;
-use crate::fail;
-
-/// Parses one run's combat docs into combat records.
-fn parse_run(seq: u32) -> Vec<records::CombatRec> {
-    let mut combats = Vec::new();
-    for doc in load_run_combat_docs(seq) {
-        match records::parse_combat_doc(&doc) {
-            Ok(combat) => combats.push(combat),
-            Err(err) => fail!("cannot parse a runs/{seq} combat file: {err}"),
-        }
-    }
-    combats
-}
 
 /// The record comes from the run context: identity and header facts only.
 pub fn write_run_record() {
     let run_ctx = STATE.with(|s| s.borrow().run_ctx.clone());
-    if parse_run(run_ctx.seq).is_empty() {
+    if parse_combat_docs(&load_run_combat_docs(run_ctx.seq)).is_empty() {
         event_log!("run {} ended with no combat records", run_ctx.seq);
         return;
     }

@@ -53,9 +53,10 @@
 //! `STATE: RefCell<State>`. Each function borrows State, mutates, and logs
 //! through the state-independent event sink. A `&mut Combat` cannot escape
 //! the `STATE.with` closure, so the `_in` helpers take `&mut State`. The
-//! `get_or_create_card*`
-//! functions return the entry's INDEX: a `Vec` push reallocates the buffer
-//! but never moves existing elements, so the index stays valid.
+//! `get_or_create_card*` functions return the entry's INDEX ([`None`] at
+//! the [`state::caps::COMBAT_CARDS`] cap — the caller drops the event):
+//! a `Vec` push reallocates the buffer but never moves existing elements,
+//! so the index stays valid.
 
 use crate::data::persistence::event_log;
 #[cfg(test)]
@@ -151,7 +152,11 @@ fn attribute_debuff_damage_in(
             (amount * layer.duration) / total_duration
         };
         if share > 0 {
-            let index = get_or_create_card_kind(combat, layer.player, &layer.source_id, layer.kind);
+            let Some(index) =
+                get_or_create_card_kind(combat, layer.player, &layer.source_id, layer.kind)
+            else {
+                continue;
+            };
             let card = &mut combat.cards[index];
             card.damage_dealt += share;
             card.dmg_attributed += share;
@@ -171,14 +176,22 @@ fn find_card(combat: &Combat, slot: SourceSlot, id: &str) -> Option<usize> {
         .position(|card| card.player == slot && card.id == id)
 }
 
+/// The row's index — valid for the combat's lifetime — or [`None`] at the
+/// [`state::caps::COMBAT_CARDS`] cap: the caller drops the event rather
+/// than index a row that does not exist. An existing row still resolves
+/// at the cap.
 pub fn get_or_create_card_kind(
     combat: &mut Combat,
     slot: SourceSlot,
     id: &str,
     kind: SourceKind,
-) -> usize {
+) -> Option<usize> {
     if let Some(index) = find_card(combat, slot, id) {
-        return index;
+        return Some(index);
+    }
+    if combat.cards.len() >= state::caps::COMBAT_CARDS {
+        fail!("combat card table overflow; row '{id}' dropped");
+        return None;
     }
     combat.cards.push(CardStat {
         player: slot,
@@ -186,10 +199,10 @@ pub fn get_or_create_card_kind(
         kind,
         ..CardStat::default()
     });
-    combat.cards.len() - 1
+    Some(combat.cards.len() - 1)
 }
 
-pub fn get_or_create_card(combat: &mut Combat, slot: SourceSlot, id: &str) -> usize {
+pub fn get_or_create_card(combat: &mut Combat, slot: SourceSlot, id: &str) -> Option<usize> {
     get_or_create_card_kind(combat, slot, id, SourceKind::Card)
 }
 
@@ -221,13 +234,13 @@ pub fn resolve_card_in(
         && Some(explicit_id) != slot_state.active_play_card_id.as_deref()
     {
         (
-            get_or_create_card(combat, explicit_slot, explicit_id),
+            get_or_create_card(combat, explicit_slot, explicit_id)?,
             explicit_slot,
         )
     } else if let Some((id, kind)) = slot_state.active_play_source.clone() {
         let row_slot = slot_state.active_play_source_slot;
         (
-            get_or_create_card_kind(combat, row_slot, &id, kind),
+            get_or_create_card_kind(combat, row_slot, &id, kind)?,
             row_slot,
         )
     } else if let Some(top) = state.context_stack.last() {
@@ -236,7 +249,7 @@ pub fn resolve_card_in(
         let kind = top.kind;
         let row_slot = top.slot;
         (
-            get_or_create_card_kind(combat, row_slot, &id, kind),
+            get_or_create_card_kind(combat, row_slot, &id, kind)?,
             row_slot,
         )
     } else if let Some(i) = slot_state.orb_fallback {
@@ -244,7 +257,7 @@ pub fn resolve_card_in(
         let id = source.id.clone();
         let kind = source.kind;
         (
-            get_or_create_card_kind(combat, slot as SourceSlot, &id, kind),
+            get_or_create_card_kind(combat, slot as SourceSlot, &id, kind)?,
             slot as SourceSlot,
         )
     } else if let Some(i) = slot_state.potion_fallback {
@@ -252,7 +265,7 @@ pub fn resolve_card_in(
         let id = source.id.clone();
         let kind = source.kind;
         (
-            get_or_create_card_kind(combat, slot as SourceSlot, &id, kind),
+            get_or_create_card_kind(combat, slot as SourceSlot, &id, kind)?,
             slot as SourceSlot,
         )
     } else {
@@ -262,7 +275,7 @@ pub fn resolve_card_in(
         }
         let last = state.last_source.clone()?;
         (
-            get_or_create_card_kind(combat, last.slot, &last.id, last.kind),
+            get_or_create_card_kind(combat, last.slot, &last.id, last.kind)?,
             last.slot,
         )
     };
@@ -288,7 +301,7 @@ fn resolve_damage_route(
     let (index, row_slot, indirect) =
         if !explicit_id.is_empty() && Some(explicit_id) != slot.active_play_card_id.as_deref() {
             (
-                get_or_create_card(combat, explicit_slot, explicit_id),
+                get_or_create_card(combat, explicit_slot, explicit_id)?,
                 explicit_slot,
                 false,
             )
@@ -297,14 +310,14 @@ fn resolve_damage_route(
             let id = source.id.clone();
             let kind = source.kind;
             (
-                get_or_create_card_kind(combat, caller_slot, &id, kind),
+                get_or_create_card_kind(combat, caller_slot, &id, kind)?,
                 caller_slot,
                 true,
             )
         } else if let Some((id, kind)) = slot.active_play_source.clone() {
             let row_slot = slot.active_play_source_slot;
             (
-                get_or_create_card_kind(combat, row_slot, &id, kind),
+                get_or_create_card_kind(combat, row_slot, &id, kind)?,
                 row_slot,
                 false,
             )
@@ -313,7 +326,7 @@ fn resolve_damage_route(
             let kind = top.kind;
             let row_slot = top.slot;
             (
-                get_or_create_card_kind(combat, row_slot, &id, kind),
+                get_or_create_card_kind(combat, row_slot, &id, kind)?,
                 row_slot,
                 kind == SourceKind::Power,
             )
@@ -323,7 +336,7 @@ fn resolve_damage_route(
             let id = source.id.clone();
             let kind = source.kind;
             (
-                get_or_create_card_kind(combat, caller_slot, &id, kind),
+                get_or_create_card_kind(combat, caller_slot, &id, kind)?,
                 caller_slot,
                 false,
             )
@@ -370,7 +383,7 @@ pub fn resolve_damage_source_in(
     let last_source = state.last_source.clone()?;
     let combat = state.current.as_mut().filter(|combat| !combat.finished)?;
     let index =
-        get_or_create_card_kind(combat, last_source.slot, &last_source.id, last_source.kind);
+        get_or_create_card_kind(combat, last_source.slot, &last_source.id, last_source.kind)?;
     debug_assert!(
         index < combat.cards.len(),
         "last-source route index {index} out of {} cards",
@@ -516,8 +529,9 @@ fn consume_block_chunk_in(combat: &mut Combat, chunk: &mut BlockEntry, take: i64
     }
     base_delta += take - allocated;
     let mut credited: i64 = 0;
-    if base_delta > 0 {
-        let index = get_or_create_card_kind(combat, chunk.player, &chunk.id, chunk.kind);
+    if base_delta > 0
+        && let Some(index) = get_or_create_card_kind(combat, chunk.player, &chunk.id, chunk.kind)
+    {
         combat.cards[index].block_effective += base_delta;
         credited += base_delta;
     }
@@ -528,8 +542,9 @@ fn consume_block_chunk_in(combat: &mut Combat, chunk: &mut BlockEntry, take: i64
             m.consumed <= m.original,
             "modifier consumed over its original"
         );
-        if mod_deltas[j] > 0 {
-            let index = get_or_create_card_kind(combat, m.player, &m.id, m.kind);
+        if mod_deltas[j] > 0
+            && let Some(index) = get_or_create_card_kind(combat, m.player, &m.id, m.kind)
+        {
             combat.cards[index].blk_modifier += mod_deltas[j];
             credited += mod_deltas[j];
         }
@@ -646,7 +661,11 @@ pub fn apply_pending_contribs_in(state: &mut state::State, attacker_index: usize
         assert_card_damage_segments(attacker);
     }
     for contrib in &pending {
-        let index = get_or_create_card_kind(combat, contrib.player, &contrib.id, contrib.kind);
+        let Some(index) =
+            get_or_create_card_kind(combat, contrib.player, &contrib.id, contrib.kind)
+        else {
+            continue;
+        };
         let source = &mut combat.cards[index];
         source.damage_dealt += contrib.amount;
         source.dmg_modifier += contrib.amount;

@@ -13,6 +13,7 @@ use super::io::{ensure_data_dir, read_file, write_file};
 use super::runs::merge_into_run;
 use super::{MAX_JSON_SIZE, RUNS_DIR_NAME};
 use crate::data::persistence::event_log;
+use crate::data::records;
 use crate::data::state::{Combat, STATE};
 use crate::fail;
 
@@ -120,6 +121,19 @@ pub(crate) fn load_combat_docs_from(dir: &Path) -> Vec<String> {
 pub(crate) fn load_all_combat_docs() -> Vec<String> {
     let dir = STATE.with(|s| s.borrow().data_dir.join(RUNS_DIR_NAME));
     load_combat_docs_from(&dir)
+}
+
+/// Parses store documents in order; a bad document is fail-logged and
+/// skipped, never fatal to the rest of the store.
+pub(crate) fn parse_combat_docs(docs: &[String]) -> Vec<records::CombatRec> {
+    let mut combats = Vec::new();
+    for doc in docs {
+        match records::parse_combat_doc(doc) {
+            Ok(combat) => combats.push(combat),
+            Err(err) => fail!("cannot parse a runs/ combat file: {err}"),
+        }
+    }
+    combats
 }
 
 /// Atomic and write-once; a form crossing [`MAX_JSON_SIZE`] is refused.

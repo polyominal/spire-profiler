@@ -118,6 +118,10 @@ const _: () = assert!(
 );
 
 const _: () = assert!(
+    caps::RUN_CARDS >= caps::COMBAT_CARDS,
+    "the run card table must hold at least one full combat's rows"
+);
+const _: () = assert!(
     caps::MAX_PLAYERS == 4,
     "caps::MAX_PLAYERS must stay 4: the game's lobby cap bounds the player slots"
 );
@@ -233,6 +237,7 @@ pub struct Combat {
     /// The record stays available for the panel after the fight.
     pub finished: bool,
     pub result: String,
+    /// Rows key on (player, id, kind); bounded at [`caps::COMBAT_CARDS`].
     pub cards: Vec<CardStat>,
     pub plays: u32,
     /// Book the combat total but no row's `plays`.
@@ -575,7 +580,7 @@ pub struct State {
     pub next_combat_id: u32,
     pub current: Option<Combat>,
     /// Run-level accumulator for the Run Summary tab, merged at combat
-    /// write and cleared at run start.
+    /// write and cleared at run start; bounded at [`caps::RUN_CARDS`].
     pub run_cards: Vec<CardStat>,
     pub run_turns: u32,
     pub run_combats: u32,
@@ -658,6 +663,14 @@ pub mod caps {
     pub const PENDING_CONTRIBS: usize = 16;
     pub const STR_REDUCTIONS: usize = 64;
     pub const DEBUFF_LAYERS: usize = 64;
+    /// One combat's distinct (player, id, kind) rows: four slots' deck ids
+    /// (upgraded variants included) plus the relic/power/potion catalogs —
+    /// a few hundred in the worst real combat.
+    pub const COMBAT_CARDS: usize = 512;
+    /// One run's card-stat rows (the run accumulator, the history
+    /// roll-ups): the same id space across every combat of the run, so
+    /// strictly more rows than one combat.
+    pub const RUN_CARDS: usize = 1024;
 }
 
 thread_local! {

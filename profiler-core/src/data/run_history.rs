@@ -74,7 +74,9 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use crate::data::persistence::{card_stat_from_rec, merge_card_stat};
+use crate::data::persistence::{
+    CardStatKey, card_stat_from_rec, load_combat_docs_from, parse_combat_docs, upsert_card_stat,
+};
 use crate::data::records::{CombatRec, PlayerRec};
 use crate::data::state::{CardStat, PlayerFilter, RunOutcome, STATE, TEAM_SLOT};
 
@@ -210,14 +212,7 @@ fn load_runs(path: &Path) -> Vec<RunEntry> {
 }
 
 fn load_combats(dir: &Path) -> Vec<CombatRec> {
-    let mut combats = Vec::new();
-    for doc in crate::data::persistence::load_combat_docs_from(dir) {
-        match crate::data::records::parse_combat_doc(&doc) {
-            Ok(combat) => combats.push(combat),
-            Err(err) => crate::fail!("cannot parse a runs/ combat file: {err}"),
-        }
-    }
-    combats
+    parse_combat_docs(&load_combat_docs_from(dir))
 }
 
 /// The `seq` of the most recent combat record carrying `seed`; O(history)
@@ -333,7 +328,7 @@ fn build_view(entry: &RunEntry, combats: &[CombatRec]) -> RunSummaryView {
     view
 }
 
-/// Keyed on (id, kind) and TEAM-merged; rows keep first-seen order.
+/// TEAM-merged; rows keep first-seen order.
 fn roll_up_cards(combats: &[CombatRec], run_id: u32) -> Vec<CardStat> {
     let mut rollup: Vec<CardStat> = Vec::new();
     for combat in combats {
@@ -342,22 +337,9 @@ fn roll_up_cards(combats: &[CombatRec], run_id: u32) -> Vec<CardStat> {
             continue;
         }
         for rec in &combat.cards {
-            let src = card_stat_from_rec(rec);
-            let dst = if let Some(dst) = rollup
-                .iter_mut()
-                .find(|r| r.id == src.id && r.kind == src.kind)
-            {
-                dst
-            } else {
-                rollup.push(CardStat {
-                    id: src.id.clone(),
-                    kind: src.kind,
-                    player: TEAM_SLOT,
-                    ..CardStat::default()
-                });
-                rollup.last_mut().expect("row was just pushed")
-            };
-            merge_card_stat(dst, &src);
+            let mut row = card_stat_from_rec(rec);
+            row.player = TEAM_SLOT;
+            upsert_card_stat(&mut rollup, &row, CardStatKey::TeamMerged);
         }
     }
     rollup
@@ -376,21 +358,7 @@ fn roll_up_cards_for_slot(combats: &[CombatRec], run_id: u32, slot: u8) -> Vec<C
             if src.player != slot {
                 continue;
             }
-            let dst = if let Some(dst) = rollup
-                .iter_mut()
-                .find(|r| r.id == src.id && r.kind == src.kind)
-            {
-                dst
-            } else {
-                rollup.push(CardStat {
-                    id: src.id.clone(),
-                    kind: src.kind,
-                    player: slot,
-                    ..CardStat::default()
-                });
-                rollup.last_mut().expect("row was just pushed")
-            };
-            merge_card_stat(dst, &src);
+            upsert_card_stat(&mut rollup, &src, CardStatKey::TeamMerged);
         }
     }
     rollup
