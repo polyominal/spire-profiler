@@ -9,6 +9,8 @@ use crate::engine::gdext::Object;
 use crate::engine::math::{Rect2, Vector2};
 use crate::fail;
 use crate::ui::chart_layout::{self, Cmd, RectCmd};
+use crate::ui::theme::Theme;
+use crate::ui::tooltip::{self, RowDetail, TipLine};
 use crate::ui::ui_model::UiTab;
 
 pub(crate) fn over_panel(rect: Rect2, mouse: Vector2) -> bool {
@@ -62,6 +64,17 @@ pub(crate) fn hover_row(
     chart_layout::row_at(hits, local_y + scroll)
 }
 
+/// Wheel deltas queue between frames (one cell per panel) and drain into
+/// the panel's pending amount at every refresh.
+pub(crate) fn queue_scroll(queue: &Cell<f32>, delta: f32) {
+    queue.set(queue.get() + delta);
+}
+
+/// Read-and-clear.
+pub(crate) fn take_queued_scroll(queue: &Cell<f32>) -> f32 {
+    queue.replace(0.0)
+}
+
 /// The pending amount is read AND cleared every frame; the header rides
 /// in both content and box heights, so it cancels out of the overflow.
 pub(crate) fn wheel_scroll(
@@ -80,6 +93,35 @@ pub(crate) fn wheel_scroll(
     if *scroll != old_scroll {
         object.queue_redraw();
     }
+}
+
+/// Fixed row heights mean the gutter can never change the overflow
+/// verdict and oscillate.
+pub(crate) fn scrollbar_gutter(content_height: f32, box_height: f32, has_sprites: bool) -> f32 {
+    if content_height > box_height && has_sprites {
+        crate::ui::scroll::GUTTER
+    } else {
+        0.0
+    }
+}
+
+/// None when the bar is hidden (content fits, or sprites failed).
+pub(crate) fn scrollbar_geom(
+    theme: &Theme,
+    box_size: Vector2,
+    header_bottom: f32,
+    content_height: f32,
+    scroll: f32,
+) -> Option<crate::ui::scroll::ScrollbarGeom> {
+    theme.scrollbar()?;
+    let plate = theme.plate().is_some();
+    crate::ui::scroll::scrollbar_geom(
+        box_size,
+        plate,
+        crate::ui::panel_replay::body_band(box_size.y, plate, header_bottom),
+        content_height,
+        scroll,
+    )
 }
 
 /// The scrollbar track is not a zone — it is hit-tested in screen space.
@@ -269,6 +311,40 @@ impl AvatarScaleAnimation {
 pub(crate) struct ScrollbarFrame {
     pub geom: Option<crate::ui::scroll::ScrollbarGeom>,
     pub content_height: f32,
+}
+
+/// An empty detail reshapes to no lines; the line cap derives from the
+/// box height, so a stale larger box can never leave a tip exceeding the
+/// new y-band.
+pub(crate) fn reshape_tip(detail: &RowDetail, box_height: f32) -> Vec<TipLine> {
+    if detail.is_empty() {
+        Vec::new()
+    } else {
+        tooltip::shape(detail, tooltip::max_tip_lines(box_height))
+    }
+}
+
+/// The dim mask parallels the icon row: excluded players render at the
+/// game's deselect modulate. A roster/slot mismatch leaves the mask empty
+/// (release draws avatars undimmed) instead of panicking in the contained
+/// draw path.
+pub(crate) fn fill_dim_mask(
+    portrait_count: usize,
+    slots: &[u8],
+    filter: PlayerFilter,
+    dimmed: &mut Vec<bool>,
+) {
+    dimmed.clear();
+    debug_assert_eq!(
+        portrait_count,
+        slots.len(),
+        "the rebuild fills portrait paths and roster slots together"
+    );
+    if portrait_count == slots.len() {
+        for &slot in slots {
+            dimmed.push(filter != PlayerFilter::All && filter != PlayerFilter::Player(slot));
+        }
+    }
 }
 
 /// While active, maps the cursor's y to the scroll offset (the game's

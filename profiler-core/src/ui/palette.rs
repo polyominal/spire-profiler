@@ -6,10 +6,9 @@
 //! views can drift.
 
 use crate::engine::math::Vector2;
-use crate::engine::object::TextAlign;
 use crate::source_kind::SourceKind;
-use crate::ui::chart_layout::{self, Cmd, RectCmd, TextCmd};
-use crate::ui::theme::{self, TextRole};
+use crate::ui::chart_layout::{self, Cmd};
+use crate::ui::theme;
 use crate::ui::ui_model::{Section, Segment};
 
 pub type Color = [f32; 4];
@@ -218,33 +217,22 @@ pub(crate) const LEGEND_ENTRIES: &[LegendEntry] = &[
 ];
 
 pub(crate) fn emit_legend(cmds: &mut Vec<Cmd>, x: f32, y_in: f32) -> f32 {
+    let mut sink = chart_layout::CmdSink::new(cmds, "legend");
     let mut y = y_in;
     for entry in LEGEND_ENTRIES {
-        chart_layout::push_cmd(
-            cmds,
-            Cmd::Rect(RectCmd {
-                x,
-                y: y + LEGEND_CHIP_Y,
-                w: LEGEND_CHIP_W,
-                h: LEGEND_CHIP_H,
-                color: slot_color(entry.slot, entry.section, entry.kind),
-            }),
-            "legend",
+        sink.rect(
+            x,
+            y + LEGEND_CHIP_Y,
+            LEGEND_CHIP_W,
+            LEGEND_CHIP_H,
+            slot_color(entry.slot, entry.section, entry.kind),
         );
-        chart_layout::push_cmd(
-            cmds,
-            Cmd::Text(TextCmd {
-                x: x + LEGEND_CHIP_W + 6.0,
-                y: y + LEGEND_TEXT_Y,
-                size: theme::SIZE_TOOLTIP,
-                color: COL_DIM,
-                role: TextRole::Body,
-                shadow: false,
-                outline: false,
-                align: TextAlign::Left,
-                text: entry.label.to_owned(),
-            }),
-            "legend",
+        sink.text(
+            x + LEGEND_CHIP_W + 6.0,
+            y + LEGEND_TEXT_Y,
+            theme::SIZE_TOOLTIP,
+            COL_DIM,
+            entry.label,
         );
         y += LEGEND_LINE_H;
     }

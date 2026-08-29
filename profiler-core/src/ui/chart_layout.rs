@@ -276,33 +276,53 @@ pub(crate) fn push_cmd(cmds: &mut Vec<Cmd>, cmd: Cmd, owner: &str) {
     cmds.push(cmd);
 }
 
-impl Layout {
-    fn rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: Color) {
+/// The emitters' shared target: the command list under construction plus
+/// the owner label the cap overflow reports under. Both layouts and the
+/// legend emit through one, so the command shapes cannot drift.
+pub(crate) struct CmdSink<'a> {
+    cmds: &'a mut Vec<Cmd>,
+    owner: &'static str,
+}
+
+impl<'a> CmdSink<'a> {
+    pub(crate) fn new(cmds: &'a mut Vec<Cmd>, owner: &'static str) -> Self {
+        CmdSink { cmds, owner }
+    }
+
+    pub(crate) fn rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: Color) {
         push_cmd(
-            &mut self.cmds,
+            self.cmds,
             Cmd::Rect(RectCmd { x, y, w, h, color }),
-            "chart",
+            self.owner,
         );
     }
 
-    fn texture(&mut self, x: f32, y: f32, w: f32, h: f32, icon: theme::IconId) {
+    pub(crate) fn texture(&mut self, x: f32, y: f32, w: f32, h: f32, icon: theme::IconId) {
         push_cmd(
-            &mut self.cmds,
+            self.cmds,
             Cmd::Texture(TextureCmd { x, y, w, h, icon }),
-            "chart",
+            self.owner,
         );
     }
 
-    fn text(&mut self, x: f32, y: f32, size: i32, color: Color, s: impl Into<String>) {
+    pub(crate) fn text(&mut self, x: f32, y: f32, size: i32, color: Color, s: impl Into<String>) {
         self.text_ex(x, y, size, color, TextRole::Body, false, s);
     }
 
-    fn text_right(&mut self, x: f32, width: f32, y: f32, size: i32, color: Color, s: String) {
+    pub(crate) fn text_right(
+        &mut self,
+        x: f32,
+        width: f32,
+        y: f32,
+        size: i32,
+        color: Color,
+        s: String,
+    ) {
         if s.is_empty() {
             return;
         }
         push_cmd(
-            &mut self.cmds,
+            self.cmds,
             Cmd::Text(TextCmd {
                 x,
                 y,
@@ -314,14 +334,14 @@ impl Layout {
                 align: TextAlign::Right(width),
                 text: s,
             }),
-            "chart",
+            self.owner,
         );
     }
 
     /// The meta block: the engine's width clip keeps content from bleeding
     /// past the right edge (the band scissor bounds y only).
     #[allow(clippy::too_many_arguments)] // a draw command's full parameter list
-    fn text_left_clipped(
+    pub(crate) fn text_left_clipped(
         &mut self,
         x: f32,
         width: f32,
@@ -335,7 +355,7 @@ impl Layout {
             return;
         }
         push_cmd(
-            &mut self.cmds,
+            self.cmds,
             Cmd::Text(TextCmd {
                 x,
                 y,
@@ -347,12 +367,12 @@ impl Layout {
                 align: TextAlign::LeftClipped(width),
                 text: s,
             }),
-            "chart",
+            self.owner,
         );
     }
 
     #[allow(clippy::too_many_arguments)] // a draw command's full parameter list
-    fn text_ex(
+    pub(crate) fn text_ex(
         &mut self,
         x: f32,
         y: f32,
@@ -367,7 +387,7 @@ impl Layout {
             return;
         }
         push_cmd(
-            &mut self.cmds,
+            self.cmds,
             Cmd::Text(TextCmd {
                 x,
                 y,
@@ -379,8 +399,36 @@ impl Layout {
                 align: TextAlign::Left,
                 text: s,
             }),
-            "chart",
+            self.owner,
         );
+    }
+
+    pub(crate) fn title_text(&mut self, x: f32, y: f32, s: impl Into<String>) {
+        let s = s.into();
+        if s.is_empty() {
+            return;
+        }
+        push_cmd(
+            self.cmds,
+            Cmd::Text(TextCmd {
+                x,
+                y,
+                size: theme::SIZE_HEADER,
+                color: COL_GOLD,
+                role: TextRole::Title,
+                shadow: false,
+                outline: true,
+                align: TextAlign::Left,
+                text: s,
+            }),
+            self.owner,
+        );
+    }
+}
+
+impl Layout {
+    fn sink(&mut self) -> CmdSink<'_> {
+        CmdSink::new(&mut self.cmds, "chart")
     }
 }
 
@@ -518,7 +566,7 @@ pub(crate) fn build(input: BuildInput<'_>) -> Layout {
     l.height = y + content.bottom_pad;
     l.header_cmds = l.cmds.drain(..header_len).collect();
     if !input.skip_chrome && input.flat_chrome {
-        insert_borders(&mut l);
+        insert_borders(&mut l.header_cmds, "chart", l.width, l.height);
     }
     l
 }
@@ -526,21 +574,8 @@ pub(crate) fn build(input: BuildInput<'_>) -> Layout {
 /// No portrait: the 40px band cannot hold the game's 64px portrait.
 fn emit_title(l: &mut Layout, g: &Geom) -> f32 {
     let y: f32 = g.content.top;
-    push_cmd(
-        &mut l.cmds,
-        Cmd::Text(TextCmd {
-            x: g.content.x,
-            y: y + TITLE_Y,
-            size: theme::SIZE_HEADER,
-            color: COL_GOLD,
-            role: TextRole::Title,
-            shadow: false,
-            outline: true,
-            align: TextAlign::Left,
-            text: "Contribution".to_owned(),
-        }),
-        "chart",
-    );
+    l.sink()
+        .title_text(g.content.x, y + TITLE_Y, "Contribution");
     y + HEADER_H
 }
 
@@ -560,7 +595,7 @@ fn emit_avatars(l: &mut Layout, input: &BuildInput<'_>, g: &Geom, y_in: f32) -> 
             continue;
         }
         // The portrait art is square, so the destination rect is too.
-        l.texture(
+        l.sink().texture(
             x,
             y_in,
             AVATAR_H,
@@ -590,9 +625,11 @@ fn emit_tabs(l: &mut Layout, input: &BuildInput<'_>, g: &Geom, y_in: f32) -> f32
         if input.tab_sprites {
             // The plate and stroke share one 515×181 draw frame, so both
             // draw into the tab box.
-            l.texture(x, y, TAB_W, TABS_H, theme::IconId::TabPlate);
+            l.sink()
+                .texture(x, y, TAB_W, TABS_H, theme::IconId::TabPlate);
             if active {
-                l.texture(x, y, TAB_W, TABS_H, theme::IconId::TabStroke);
+                l.sink()
+                    .texture(x, y, TAB_W, TABS_H, theme::IconId::TabStroke);
             }
         }
         push_cmd(
@@ -611,7 +648,8 @@ fn emit_tabs(l: &mut Layout, input: &BuildInput<'_>, g: &Geom, y_in: f32) -> f32
             "chart",
         );
         if active && !input.tab_sprites {
-            l.rect(x + 24.0, y + TABS_H - 8.0, TAB_W - 48.0, 2.0, COL_GOLD);
+            l.sink()
+                .rect(x + 24.0, y + TABS_H - 8.0, TAB_W - 48.0, 2.0, COL_GOLD);
         }
         l.tab_hits.push(TabHit {
             x0: x,
@@ -629,7 +667,7 @@ fn emit_meta(l: &mut Layout, input: &BuildInput<'_>, g: &Geom, y_in: f32) -> f32
     if input.tab == UiTab::Combat {
         let enc = input.meta.encounter_str();
         if !enc.is_empty() {
-            l.text_left_clipped(
+            l.sink().text_left_clipped(
                 g.content.x,
                 g.content.w,
                 y + META_Y,
@@ -641,7 +679,7 @@ fn emit_meta(l: &mut Layout, input: &BuildInput<'_>, g: &Geom, y_in: f32) -> f32
             y += META_H;
         }
     }
-    l.text_left_clipped(
+    l.sink().text_left_clipped(
         g.content.x,
         g.content.w,
         y + META_Y,
@@ -662,13 +700,14 @@ fn emit_sections(l: &mut Layout, input: &BuildInput<'_>, g: &Geom, y_in: f32) ->
     y
 }
 /// A PanelContainer stylebox would paint over the _draw output, so the
-/// border is drawn as commands, pinned at the front of the header.
-fn insert_borders(l: &mut Layout) {
-    let borders = crate::ui::panel_common::border_rects(l.width, l.height);
-    if l.header_cmds.len() + borders.len() <= MAX_CMDS {
-        l.header_cmds.splice(0..0, borders);
+/// border is drawn as commands, pinned at the front of the header. The
+/// splice bypasses `push_cmd`, so the cap is re-checked here.
+pub(crate) fn insert_borders(header_cmds: &mut Vec<Cmd>, owner: &str, width: f32, height: f32) {
+    let borders = crate::ui::panel_common::border_rects(width, height);
+    if header_cmds.len() + borders.len() <= MAX_CMDS {
+        header_cmds.splice(0..0, borders);
     } else {
-        crate::ui::panel_common::log_cmd_overflow_once("chart");
+        crate::ui::panel_common::log_cmd_overflow_once(owner);
     }
 }
 
@@ -681,47 +720,27 @@ fn tab_from_index(i: usize) -> UiTab {
 
 /// One shape for every section, so two headers can't drift into
 /// underline-crosses-glyphs.
-fn emit_section_header(cmds: &mut Vec<Cmd>, owner: &'static str, g: &Geom, y: f32, name: &str) {
+fn emit_section_header(sink: &mut CmdSink, g: &Geom, y: f32, name: &str) {
     let rows_w = g.content.w;
-    push_cmd(
-        cmds,
-        Cmd::Rect(RectCmd {
-            x: g.content.x,
-            y,
-            w: rows_w,
-            h: SECTION_HEADER_H,
-            color: COL_HEADER_BG,
-        }),
-        owner,
-    );
-    push_cmd(
-        cmds,
-        Cmd::Rect(RectCmd {
-            x: g.content.x,
-            y: y + SECTION_UNDERLINE_Y,
-            w: rows_w,
-            h: SECTION_UNDERLINE_H,
-            color: COL_GOLD,
-        }),
-        owner,
+    sink.rect(g.content.x, y, rows_w, SECTION_HEADER_H, COL_HEADER_BG);
+    sink.rect(
+        g.content.x,
+        y + SECTION_UNDERLINE_Y,
+        rows_w,
+        SECTION_UNDERLINE_H,
+        COL_GOLD,
     );
     if name.is_empty() {
         return;
     }
-    push_cmd(
-        cmds,
-        Cmd::Text(TextCmd {
-            x: g.content.x + 8.0,
-            y: y + SECTION_TITLE_Y,
-            size: theme::SIZE_BODY,
-            color: COL_GOLD,
-            role: TextRole::Title,
-            shadow: true,
-            outline: false,
-            align: TextAlign::Left,
-            text: name.to_owned(),
-        }),
-        owner,
+    sink.text_ex(
+        g.content.x + 8.0,
+        y + SECTION_TITLE_Y,
+        SIZE_BODY,
+        COL_GOLD,
+        TextRole::Title,
+        true,
+        name,
     );
 }
 
@@ -733,7 +752,7 @@ fn emit_section(
     y_in: f32,
 ) -> f32 {
     let mut y = y_in;
-    emit_section_header(&mut l.cmds, "chart", g, y, section.name());
+    emit_section_header(&mut l.sink(), g, y, section.name());
     y += SECTION_HEADER_H;
 
     let mut any = false;
@@ -746,7 +765,7 @@ fn emit_section(
         y += ROW_H;
     }
     if !any {
-        l.text(
+        l.sink().text(
             g.content.x + 8.0,
             y + ROW_TEXT_Y,
             SIZE_BODY,
@@ -778,10 +797,10 @@ fn emit_row(l: &mut Layout, g: &Geom, row: &UiRow, flat: usize, hovered: bool, y
 fn emit_row_background(l: &mut Layout, g: &Geom, flat: usize, hovered: bool, y: f32) {
     let rows_w = g.content.w;
     if flat.is_multiple_of(2) {
-        l.rect(g.content.x, y, rows_w, ROW_H, COL_ROW_ALT);
+        l.sink().rect(g.content.x, y, rows_w, ROW_H, COL_ROW_ALT);
     }
     if hovered {
-        l.rect(g.content.x, y, rows_w, ROW_H, COL_HOVER);
+        l.sink().rect(g.content.x, y, rows_w, ROW_H, COL_HOVER);
     }
 }
 
@@ -791,18 +810,20 @@ fn emit_name(l: &mut Layout, g: &Geom, row: &UiRow, hanging: bool, is_self: bool
     let name_x = g.content.x + 4.0 + if hanging { SELF_INDENT } else { 0.0 };
     let name_color = if is_self { COL_SELF } else { COL_CREAM };
     if hanging {
-        l.text(name_x, base_y, SIZE_BODY, name_color, "+ self damage");
+        l.sink()
+            .text(name_x, base_y, SIZE_BODY, name_color, "+ self damage");
     } else {
         // The kind marker is its own color run; the name follows at the
         // fixed advance.
         let name_run_x = match kind_prefix(row.kind) {
             Some(prefix) => {
-                l.text(name_x, base_y, SIZE_BODY, prefix.color, prefix.text);
+                l.sink()
+                    .text(name_x, base_y, SIZE_BODY, prefix.color, prefix.text);
                 name_x + PREFIX_ADVANCE
             }
             None => name_x,
         };
-        l.text(
+        l.sink().text(
             name_run_x,
             base_y,
             SIZE_BODY,
@@ -815,7 +836,7 @@ fn emit_name(l: &mut Layout, g: &Geom, row: &UiRow, hanging: bool, is_self: bool
 /// Omitted on hanging self rows (the positive row showed it).
 fn emit_plays(l: &mut Layout, g: &Geom, row: &UiRow, hanging: bool, base_y: f32) {
     if row.plays > 0 && !hanging {
-        l.text(
+        l.sink().text(
             g.content.x + NAME_W,
             base_y,
             SIZE_BODY,
@@ -827,13 +848,13 @@ fn emit_plays(l: &mut Layout, g: &Geom, row: &UiRow, hanging: bool, base_y: f32)
 
 fn emit_segments(l: &mut Layout, g: &Geom, row: &UiRow, y: f32) {
     let bar_y = y + (ROW_H - BAR_H) / 2.0;
-    l.rect(g.bar_x, bar_y, g.bar_w, BAR_H, COL_TRACK);
+    l.sink().rect(g.bar_x, bar_y, g.bar_w, BAR_H, COL_TRACK);
     let segs = segment_offsets(&row.seg_milli, g.bar_w);
     for (segment, seg) in Segment::ALL.iter().zip(segs.iter()) {
         if seg.w <= 0.0 {
             continue;
         }
-        l.rect(
+        l.sink().rect(
             g.bar_x + seg.x,
             bar_y,
             seg.w,
@@ -849,7 +870,7 @@ fn emit_value(l: &mut Layout, g: &Geom, row: &UiRow, is_self: bool, base_y: f32)
     let value_color = if is_self { COL_SELF } else { COL_CREAM };
     let width = g.content.right() - g.value_x;
     if is_self {
-        l.text_right(
+        l.sink().text_right(
             g.value_x,
             width,
             base_y,
@@ -859,7 +880,7 @@ fn emit_value(l: &mut Layout, g: &Geom, row: &UiRow, is_self: bool, base_y: f32)
         );
     } else {
         // Truncating division: whole.frac percent.
-        l.text_right(
+        l.sink().text_right(
             g.value_x,
             width,
             base_y,
@@ -918,7 +939,7 @@ fn emit_lines(l: &mut Layout, text: &str, x: f32, y_in: f32, line_h: f32, color:
         if line.is_empty() {
             continue;
         }
-        l.text(x, y + ROW_TEXT_Y, SIZE_BODY, color, line);
+        l.sink().text(x, y + ROW_TEXT_Y, SIZE_BODY, color, line);
         y += line_h;
     }
     y
@@ -1761,6 +1782,26 @@ mod tests {
             l.cmds.len()
         );
         assert_eq!(l.row_hits.len(), ui_model::MAX_UI_ROWS);
+    }
+
+    #[test]
+    fn insert_borders_splices_only_under_the_cap() {
+        let border = || {
+            Cmd::Rect(RectCmd {
+                x: 0.0,
+                y: 0.0,
+                w: 0.0,
+                h: 0.0,
+                color: COL_TRACK,
+            })
+        };
+        let mut full: Vec<Cmd> = (0..MAX_CMDS).map(|_| border()).collect();
+        insert_borders(&mut full, "chart", 100.0, 100.0);
+        assert_eq!(full.len(), MAX_CMDS, "at the cap the borders are dropped");
+
+        let mut empty = Vec::new();
+        insert_borders(&mut empty, "chart", 100.0, 100.0);
+        assert_eq!(empty.len(), 4, "under the cap the four edges splice in");
     }
 
     #[test]
