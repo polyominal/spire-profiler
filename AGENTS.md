@@ -31,7 +31,8 @@ Comment density across in-house Rust must stay at most 15% of comment+code
 lines, measured with `cargo xtask check-docs` (a line counter over
 `profiler-core/src`, `profiler-core/tests`, and `xtask/src`; doc comments count,
 and tests are part of the whole-repo metric). The gate fails on any `cargo doc`
-warning and prints the most over-budget files for per-file drift.
+warning and prints the files contributing the most comment lines for per-file
+drift.
 
 Priorities: clarity first, size second. A comment passes the bar when a tired
 reader could explain why the next code exists without reading it; if not, make
@@ -146,8 +147,9 @@ for (k, &milli) in seg_milli.iter().enumerate() {
 - All mutable state lives in one thread-local `RefCell<State>`: the game's logic
   loop is single-threaded, so this is both sufficient and the cheapest correct
   design. Do not add locks or atomics.
-- Hold the borrow once per event: mutate, collect log lines, release, then write
-  the log (the log sink re-borrows; a nested borrow panics).
+- Hold one `borrow_mut` per event. The log sink owns its own thread-local,
+  separate from `STATE`, so logging while the state borrow is held is safe (a
+  test pins this); the sink must never re-borrow `STATE`.
 - Fixed-capacity tables are bounded `Vec`s with caps named in `caps`. Overflow
   fails loudly via `fail`; it never grows the table silently and never panics.
   Give every cap a one-line rationale.

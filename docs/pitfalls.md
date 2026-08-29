@@ -22,7 +22,7 @@ cargo xtask install-tool   # optional: provision host tools + bootstraps up fron
 cargo xtask build          # cross-platform mod bundle (runs check-abi inside)
 cargo xtask release        # build + package the mod as release zips under dist/
 cargo xtask install-mod    # copy the bundle into the game's mods directory
-cargo xtask smoke          # commit gate: fmt, clippy, citations, tests
+cargo xtask smoke          # commit gate: fmt, fmt-md, clippy, citations, tests
 cargo xtask check-abi      # standalone shim<->Rust ABI check (38 bindings)
 cargo xtask check-citations # fail on file:line citations in comments/docs
 cargo xtask headless-test  # install, then boot the game headless (~30s)
@@ -335,9 +335,10 @@ end against the v0.111.0 Windows install: `build`, `install-mod`, `release`,
   and passes a rustc-generated `-Wl,<file>.def` export list), but cargo-zigbuild
   rewrites the linker invocation, filters the `.def` argument, and supplies the
   mingw CRT pieces itself. Verified: cargo-zigbuild 0.23.0 + zig 0.16.0 produce
-  a PE32+ `profiler_core.dll` exporting all 41 profiler ABI symbols. Note the
-  DLL links UCRT api-sets (`api-ms-win-crt-*`), i.e. Windows 10+ — fine for a
-  game whose own floor is Windows 10, but not loadable on Win7/8.
+  a PE32+ `profiler_core.dll` exporting all 39 profiler ABI symbols plus
+  `gdextension_entry`. Note the DLL links UCRT api-sets (`api-ms-win-crt-*`),
+  i.e. Windows 10+ — fine for a game whose own floor is Windows 10, but not
+  loadable on Win7/8.
 - The Linux `.so` is built with the target triple
   `x86_64-unknown-linux-gnu.2.17`: cargo-zigbuild passes the glibc floor to zig
   cc, and `llvm-objdump -T` confirms no symbol requires more than `GLIBC_2.17`
@@ -410,10 +411,10 @@ and the build shells out to that binary. Lessons from wiring it:
   manifests (harmless, but it hid real manifest errors).
 - `settings.save` JSON keys are snake\_case; mod consent lives at
   `mod_settings.mods_enabled` (verified against a live settings.save).
-- A single unparseable entry (a corrupted card id in an old combat record) makes
-  the whole-file parse fail at every boot; fresh entries parse fine. Keep
-  whole-file parse failures recoverable (quarantine/rotate the bad entry) rather
-  than letting one corrupt record poison aggregation forever.
+- A single unparseable entry (a corrupted card id in an old combat record) used
+  to fail the whole file's parse at every boot; the loaders now skip the bad
+  entry and fail-log it, so one corrupt record cannot poison aggregation
+  forever.
 
 ## Game-version drift (decompiled snapshot vs the v0.111.0 pin)
 
