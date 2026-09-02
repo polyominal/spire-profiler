@@ -314,7 +314,7 @@ fn modifier_kind_codes_map_power_and_relic_and_clamp_unknowns() {
     let base = combat_fixture("MODKIND_TEST");
 
     card_play_started("STRIKE", 0, 1, 0, 0);
-    damage_modifier_contribution("STRENGTH_POWER", 0, 3, 0);
+    damage_modifier_contribution("STRENGTH_POWER", 2, 3, 0);
     damage_modifier_contribution("VAJRA", 1, 4, 0);
     damage_modifier_contribution("HEX", 7, 5, 0);
     damage_dealt(DamageDealt {

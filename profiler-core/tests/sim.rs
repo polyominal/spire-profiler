@@ -270,7 +270,7 @@ fn drive_common_event(rng: &mut Rng, follow_up: &mut bool, roll: u64) {
         34..=37 => {
             events::damage_modifier_contribution(
                 rng.pick(&POWER_POOL),
-                rng.range_i32(0, 1),
+                rng.range_i32(0, 2),
                 rng.range_i32(1, 8),
                 0,
             );
@@ -278,7 +278,7 @@ fn drive_common_event(rng: &mut Rng, follow_up: &mut bool, roll: u64) {
         }
         38..=41 => events::block_modifier_contribution(
             rng.pick(&POWER_POOL),
-            rng.range_i32(0, 1),
+            rng.range_i32(0, 2),
             rng.range_i32(1, 8),
             0,
         ),

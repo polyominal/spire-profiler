@@ -186,13 +186,13 @@ pub fn clamp_source_slot(slot: i32) -> SourceSlot {
     clamped
 }
 
-/// The modifier contributions' kind codes are their own wire enum: 0 =
-/// Power, 1 = Relic — not the context ordering of [`SourceKind::from_c`].
-/// A modifier credit is never a card, so unknown codes clamp to Power.
+/// The modifier contributions' kind codes are the context enum's relic and
+/// power values (1 = Relic, 2 = Power); the shim sends nothing else. A
+/// modifier credit is never a card, so unknown codes clamp to Power.
 pub fn clamp_modifier_kind(kind: i32) -> SourceKind {
     match kind {
-        0 => SourceKind::Power,
         1 => SourceKind::Relic,
+        2 => SourceKind::Power,
         _ => {
             crate::fail_once(
                 &BAD_MODIFIER_KIND_LOGGED,
