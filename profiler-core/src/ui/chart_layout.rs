@@ -949,7 +949,7 @@ fn emit_lines(l: &mut Layout, text: &str, x: f32, y_in: f32, line_h: f32, color:
 // TODO: truncate by rendered width, not bytes — a long localized name can
 // still run into the plays column. That needs font metrics, and measuring
 // dispatches ON the engine-created Font object, a call shape the fork
-// discipline forbids (docs/pitfalls.md); a safe route would be width
+// discipline forbids (docs/gdextension.md); a safe route would be width
 // tables measured once through the shim's managed fonts.
 pub(crate) fn truncate(s: &str, max: usize) -> &str {
     &s[..s.floor_char_boundary(max.min(s.len()))]

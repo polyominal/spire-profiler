@@ -9,7 +9,7 @@
 /*  Upgrade procedure: re-fetch from the tag, re-verify the sha256, then   */
 /*  re-check the godot crate's bundled bindings against it (cargo xtask   */
 /*  check-abi + headless boot), then update this banner. Do not upgrade   */
-/*  casually — see docs/pitfalls.md.                                       */
+/*  casually — see docs/gdextension.md.                                    */
 /**************************************************************************/
 /**************************************************************************/
 /*  gdextension_interface.h                                               */

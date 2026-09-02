@@ -38,8 +38,8 @@
 //! thread-local `RefCell<State>` because the game's logic loop is
 //! single-threaded. Unsafe Rust is quarantined in the three modules above,
 //! each with its reason documented. Specs live in the module docs, not in
-//! `docs/`; environment content (toolchain, headless testing, platform
-//! layout) lives in `docs/pitfalls.md`. A self-test entry point lets the
+//! `docs/`; environment content (building, verification, GDExtension
+//! interop, platform layout) lives in the `docs/` guides. A self-test entry point lets the
 //! host verify the bridge end-to-end under the headless gate.
 //!
 //! Console diagnostics stream `fmt::Arguments` into stderr and are

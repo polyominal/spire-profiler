@@ -34,7 +34,8 @@ mod flags {
         src "./src/main.rs"
 
         cmd xtask {
-            /// Format check + clippy + nextest + citation check: the commit gate.
+            /// Format check (rust + markdown) + clippy + nextest + citation check:
+            /// the commit gate.
             cmd smoke {}
             /// Install the pinned toolchain and verify the dev tools.
             cmd install-tool {}

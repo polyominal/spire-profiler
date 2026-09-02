@@ -21,8 +21,8 @@ legacy compatibility.
   mandates that all commits and PRs are made by humans.
 - The `profiler-core` crate is not a public library. Prefer private visibility;
   avoid `pub` unless the item needs it.
-- The markdown docs (README.md, AGENTS.md, docs/pitfalls.md) are wrapped at 80
-  columns by `cargo xtask fmt-md`; run it after doc edits instead of reflowing
+- The markdown docs are wrapped at 80 columns by `cargo xtask fmt-md` (the file
+  set is pinned in the fmt-md task); run it after doc edits instead of reflowing
   by hand. `smoke` runs `fmt-md --check`, which fails on wrapping drift.
 
 ## Comments
@@ -78,7 +78,8 @@ Additional rules:
 - The design specs live in the Rust source as module docs (`//!`), not in
   `docs/`; the doc sits in the same diff as the code it describes, and
   `#[deny(rustdoc::broken_intra_doc_links)]` keeps its links compile-time
-  checked. `docs/` holds `pitfalls.md` (environment content with no Rust anchor)
+  checked. `docs/` holds the environment guides — `build.md`, `verify.md`,
+  `gdextension.md`, and `game.md` (environment content with no Rust anchor) —
   and `images/` (assets referenced by the markdown docs); the crate overview
   lives in `lib.rs`.
 - Every sentence must teach something the code cannot, in the fewest words that

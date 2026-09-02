@@ -36,8 +36,9 @@ own panel.
 - The crate overview (architecture, layers, and the standing contracts) is the
   module doc at the top of `profiler-core/src/lib.rs`; each subsystem's spec
   sits in its own module doc next to the code.
-- `docs/pitfalls.md`: environment traps (toolchain, headless testing,
-  GDExtension interop, and platform layout).
+- `docs/`: environment guides — building (`build.md`), verification gates and
+  headless testing (`verify.md`), GDExtension interop (`gdextension.md`), and
+  the game environment (`game.md`).
 
 ## Roadmap
 

@@ -247,8 +247,7 @@ public static class SpireProfilerMod
             // parent hop lands inside mods/. Climb two hops to the game dir:
             // the data files must sit at <game dir>/mod_data/spire-profiler,
             // the sibling of mods/ — the mod scanner sweeps every *.json
-            // under mods/ as a manifest (see docs/pitfalls.md "StS2 modding
-            // environment"). SPIRE_PROFILER_DATA_DIR overrides the location:
+            // under mods/ as a manifest (see docs/game.md). SPIRE_PROFILER_DATA_DIR overrides the location:
             // headless-test points it at a scratch dir so its self-test
             // records never mix into real play data.
             var modsDir = Path.GetDirectoryName(modDir) ?? ".";
@@ -318,9 +317,8 @@ public static class SpireProfilerMod
     // surround itself: its Control is plate-box-sized with ClipContents on
     // (its scroll needs it), so a fullscreen ColorRect added immediately
     // BEFORE the panel (same parent, drawn behind it) carries the dimmer —
-    // the game's screen backdrop (StsColors.screenBackdrop, 80% black; the
-    // core names the same alpha BACKDROP_ALPHA in theme.rs, the source of
-    // truth the literal below mirrors). MouseFilter.Stop makes the dimmer
+    // the game's screen backdrop (StsColors.screenBackdrop, 80% black).
+    // MouseFilter.Stop makes the dimmer
     // swallow clicks so they never reach the game while the panel is up
     // (modal). Each backdrop's Visible mirrors its panel's every frame in
     // OnProcessFrame; being plain ColorRects, they need no fallback
