@@ -61,7 +61,8 @@ pub fn init(data_dir: &Path) {
     });
     bind_log_path(&data_dir.join("profiler.log"));
     let _ = ensure_data_dir();
-    // One past the highest id in the store's file names.
+    // Seeded at the store's highest id; combat start increments before
+    // taking it, so the first new combat gets max+1.
     STATE.with(|cell| cell.borrow_mut().next_combat_id = max_combat_id());
     event_log!(
         "profiler core initialized; data dir: {}",
@@ -90,11 +91,6 @@ pub fn context_begin(source_id: &str, kind: i32, player_slot: i32) {
             kind,
             slot,
         });
-        // The stack must still be within bounds.
-        debug_assert!(
-            state.context_stack.len() <= caps::CONTEXT_STACK,
-            "context stack grew past its cap"
-        );
         state.last_source = Some(ContextEntry {
             id: source_id.to_owned(),
             kind,
@@ -111,14 +107,9 @@ pub fn context_begin(source_id: &str, kind: i32, player_slot: i32) {
 pub fn context_end() {
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
-        if state.context_stack.is_empty() {
-            return;
+        if let Some(top) = state.context_stack.pop() {
+            event_log!("  context end: {}", top.id);
         }
-        let top = state
-            .context_stack
-            .pop()
-            .expect("context stack was just checked non-empty");
-        event_log!("  context end: {}", top.id);
     });
 }
 

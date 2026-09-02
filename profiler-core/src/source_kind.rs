@@ -1,6 +1,8 @@
 //! The five ledger-row source kinds: the stored `kind: u8` decoded at the
 //! JSON boundary, and the C context code clamped at the ABI boundary.
 
+use std::cell::Cell;
+
 use serde::{Deserialize, Serialize};
 
 #[repr(u8)]
@@ -15,6 +17,10 @@ pub enum SourceKind {
     Osty = 4,
 }
 
+std::thread_local! {
+    static BAD_KIND_LOGGED: Cell<bool> = const { Cell::new(false) };
+}
+
 impl SourceKind {
     pub const ALL: [SourceKind; 5] = [
         SourceKind::Card,
@@ -24,10 +30,17 @@ impl SourceKind {
         SourceKind::Osty,
     ];
 
-    /// The shim sends only card/relic/power for contexts; anything outside
-    /// clamps to Power, matching the old boundary behavior.
+    /// The shim sends only card/relic/power for contexts; anything
+    /// outside clamps to Power (logged once).
     pub fn from_c(kind: i32) -> SourceKind {
-        match kind.clamp(0, SourceKind::Power as i32) {
+        let clamped = kind.clamp(0, SourceKind::Power as i32);
+        if clamped != kind {
+            crate::fail_once(
+                &BAD_KIND_LOGGED,
+                format_args!("invalid context kind {kind}; clamping to power"),
+            );
+        }
+        match clamped {
             0 => SourceKind::Card,
             1 => SourceKind::Relic,
             _ => SourceKind::Power,

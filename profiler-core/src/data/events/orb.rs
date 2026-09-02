@@ -19,14 +19,11 @@ pub fn orb_channeled(hash: i32, player_slot: i32) {
         if let Some(top) = state.context_stack.last() {
             source_id = Some(top.id.clone());
             kind = top.kind;
-        } else if state.current.is_some() {
-            if let Some((id, play_kind)) = state.per_player[slot].active_play_source.clone() {
-                source_id = Some(id);
-                kind = play_kind;
-            } else if let Some(last_source) = state.last_source.clone() {
-                source_id = Some(last_source.id);
-                kind = last_source.kind;
-            }
+        } else if state.current.is_some()
+            && let Some((id, play_kind)) = state.per_player[slot].active_play_source.clone()
+        {
+            source_id = Some(id);
+            kind = play_kind;
         } else if let Some(last_source) = state.last_source.clone() {
             source_id = Some(last_source.id);
             kind = last_source.kind;

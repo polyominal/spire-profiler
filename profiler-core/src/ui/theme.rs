@@ -82,9 +82,6 @@ pub(crate) const PLATE_SHADOW_MODULATE: [f32; 4] = [0.0, 0.0, 0.0, 0.25098];
 /// Down-right hang past the plate.
 pub(crate) const PLATE_SHADOW_OFFSET: f32 = 8.0;
 
-#[allow(dead_code)]
-pub(crate) const BACKDROP_ALPHA: f32 = 0.8;
-
 pub(crate) const SCROLL_TRACK_CENTER_PATH: &str =
     "res://images/atlases/ui_atlas.sprites/scrollbar_track_center.tres";
 pub(crate) const SCROLL_TRACK_EDGE_PATH: &str =

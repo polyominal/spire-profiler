@@ -1,6 +1,11 @@
-//! Potion use: the prefix/postfix pair that drives the potion fallback
-//! (`potion_context_begin` sets it BEFORE the effects run, `potion_used`
-//! bumps the counter and refreshes it after).
+//! Potion use: the prefix/postfix pair that drives the potion fallback.
+//! `CombatHistory.PotionUsed` fires only after `PotionModel.OnUse`
+//! completes (inside `OnUseWrapper`) — too late for powers applied during
+//! OnUse — so the shim prefixes `OnUseWrapper`: `potion_context_begin` sets
+//! the fallback BEFORE the effects run. The `PotionUsed` postfix
+//! (`potion_used`) books the use: counter bump plus a fresh hash-0 entry
+//! re-pointing the fallback. Both pushes land in the shared `orb_sources`
+//! table, bounded by `caps::ORB_SOURCES`.
 
 use crate::data::ledger;
 use crate::data::persistence::event_log;

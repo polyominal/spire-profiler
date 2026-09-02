@@ -38,8 +38,8 @@
 //! thread-local `RefCell<State>` because the game's logic loop is
 //! single-threaded. Unsafe Rust is quarantined in the three modules above,
 //! each with its reason documented. Specs live in the module docs, not in
-//! `docs/`; environment content (toolchain, headless testing, platform
-//! layout) lives in `docs/pitfalls.md`. A self-test entry point lets the
+//! `docs/`; environment content (building, verification, GDExtension
+//! interop, platform layout) lives in the `docs/` guides. A self-test entry point lets the
 //! host verify the bridge end-to-end under the headless gate.
 //!
 //! Console diagnostics stream `fmt::Arguments` into stderr and are
@@ -63,6 +63,7 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 #![allow(rustdoc::private_intra_doc_links)]
 
+use std::cell::Cell;
 use std::fmt;
 use std::io::{self, Write};
 
@@ -92,6 +93,19 @@ fn emit(level: &str, args: fmt::Arguments<'_>) {
     // A diagnostic sink must not turn a broken game-side pipe into a panic
     // across the C ABI.
     let _ = writeln!(stderr, "[SpireProfiler] {level}: {args}");
+}
+
+/// A persistently corrupt wire value is one bug, not one log line per event;
+/// the first occurrence still reports.
+pub(crate) fn fail_once(
+    gate: &'static std::thread::LocalKey<Cell<bool>>,
+    args: fmt::Arguments<'_>,
+) {
+    gate.with(|logged| {
+        if !logged.replace(true) {
+            emit("ERROR", args);
+        }
+    });
 }
 
 macro_rules! fail_log {

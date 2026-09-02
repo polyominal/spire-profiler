@@ -84,7 +84,7 @@
 //! not corrupted); timestamps differ per peer (wall-clock, and the
 //! simulation never depends on them).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -117,6 +117,10 @@ const _: () = assert!(
     "SourceKind::Osty must be the last of the five kinds (discriminant 4)"
 );
 
+const _: () = assert!(
+    caps::RUN_CARDS >= caps::COMBAT_CARDS,
+    "the run card table must hold at least one full combat's rows"
+);
 const _: () = assert!(
     caps::MAX_PLAYERS == 4,
     "caps::MAX_PLAYERS must stay 4: the game's lobby cap bounds the player slots"
@@ -163,14 +167,39 @@ pub type SourceSlot = u8;
 /// the core keys the OSTY overflow row at it directly.
 pub const TEAM_SLOT: SourceSlot = 4;
 
+thread_local! {
+    static BAD_SLOT_LOGGED: Cell<bool> = const { Cell::new(false) };
+    static BAD_MODIFIER_KIND_LOGGED: Cell<bool> = const { Cell::new(false) };
+}
+
 /// Unlike [`State::slot_index`] this never grows `per_player`: row-key-only
 /// slots have no transient state.
 pub fn clamp_source_slot(slot: i32) -> SourceSlot {
     let clamped = slot.clamp(0, TEAM_SLOT as i32) as SourceSlot;
     if clamped as i32 != slot {
-        fail!("invalid source slot {slot}; clamping to {clamped} (TEAM = {TEAM_SLOT})");
+        crate::fail_once(
+            &BAD_SLOT_LOGGED,
+            format_args!("invalid source slot {slot}; clamping to {clamped} (TEAM = {TEAM_SLOT})"),
+        );
     }
     clamped
+}
+
+/// The modifier contributions' kind codes are the context enum's relic and
+/// power values (1 = Relic, 2 = Power); the shim sends nothing else. A
+/// modifier credit is never a card, so unknown codes clamp to Power.
+pub fn clamp_modifier_kind(kind: i32) -> SourceKind {
+    match kind {
+        1 => SourceKind::Relic,
+        2 => SourceKind::Power,
+        _ => {
+            crate::fail_once(
+                &BAD_MODIFIER_KIND_LOGGED,
+                format_args!("invalid modifier kind {kind}; clamping to power"),
+            );
+            SourceKind::Power
+        }
+    }
 }
 
 /// Lives here because it is state owned by [`State`]; `ui_model` stays the
@@ -233,6 +262,7 @@ pub struct Combat {
     /// The record stays available for the panel after the fight.
     pub finished: bool,
     pub result: String,
+    /// Bounded at [`caps::COMBAT_CARDS`].
     pub cards: Vec<CardStat>,
     pub plays: u32,
     /// Book the combat total but no row's `plays`.
@@ -569,12 +599,13 @@ pub struct State {
     pub data_dir: PathBuf,
     pub runs_dir_full: PathBuf,
     pub runs_path_full: PathBuf,
-    /// The next combat's globally-unique id: seeded one past the store's
-    /// highest id, incremented per combat start.
+    /// The combat-id counter: seeded at boot to the store's highest id and
+    /// incremented at each combat start, so the first new combat takes
+    /// max+1.
     pub next_combat_id: u32,
     pub current: Option<Combat>,
     /// Run-level accumulator for the Run Summary tab, merged at combat
-    /// write and cleared at run start.
+    /// write and cleared at run start; bounded at [`caps::RUN_CARDS`].
     pub run_cards: Vec<CardStat>,
     pub run_turns: u32,
     pub run_combats: u32,
@@ -640,23 +671,71 @@ impl State {
 }
 
 pub mod caps {
+    /// Open hook contexts at one instant: each relic/power hook's begin
+    /// push pairs with an end pop, so the cap bounds how deep hooks nest
+    /// into each other, not the combat's hook count.
     pub const CONTEXT_STACK: usize = 32;
+    /// Channeling sources keyed by orb hash (a re-channel upserts) plus
+    /// two hash-0 potion entries per use; nothing leaves the table before
+    /// the combat boundary, so whole-combat potion uses drive the worst
+    /// case.
     pub const ORB_SOURCES: usize = 32;
     /// The game's lobby cap; per-player state never needs a fifth PLAYER.
     pub const MAX_PLAYERS: usize = 4;
     /// The four player slots plus the TEAM slot, so a corrupt wire slot
     /// can never index out of bounds.
     pub const MAX_PLAYER_SLOTS: usize = 5;
+    /// One chunk per distinct block source still holding block in one
+    /// slot's pool: same-source chunks merge, blocked damage drains FIFO,
+    /// and the slot's turn boundary clears the pool.
     pub const BLOCK_POOL: usize = 64;
+    /// Modifier shares awaiting the next block gain, one per recorded
+    /// applier per modifier event; that gain attaches the queue to one
+    /// chunk (at most a chunk's `MAX_MODS` slices) and clears it.
     pub const PENDING_BLOCK_CONTRIBS: usize = 16;
+    /// One entry per (power, source, slot) applier trio: repeat
+    /// applications merge into an existing entry and the combat boundary
+    /// clears the table, so it holds one combat's distinct appliers per
+    /// power.
     pub const POWER_SOURCES: usize = 128;
+    /// One entry per generated card instance hash, updated in place when
+    /// the same instance regenerates and cleared only at the combat
+    /// boundary, so it grows with one combat's distinct generated copies.
     pub const GENERATED_INSTANCES: usize = 64;
+    /// One layer per recorded Doom application on an enemy, drained FIFO
+    /// at that creature's Doom kill (depleted layers leave) and cleared at
+    /// the combat boundary, so it holds applications still awaiting a
+    /// kill.
     pub const DOOM_LAYERS: usize = 64;
+    /// One capture per living doomed creature in a single DoomKill batch;
+    /// the postfix drains the whole table, so the cap sizes one kill
+    /// batch, never a lifetime count.
     pub const DOOM_TARGETS: usize = 16;
+    /// One entry per Osty summon on the owner's slot, popped as absorbed
+    /// damage depletes it and cleared when the Osty dies, so it holds only
+    /// summons with unabsorbed HP.
     pub const OSTY_STACK: usize = 32;
+    /// Modifier shares awaiting the dealer's next landed hit, one per
+    /// recorded applier per modifier event; the hit carves them out of its
+    /// damage and an unlanded one drops them, so the queue never spans
+    /// hits.
     pub const PENDING_CONTRIBS: usize = 16;
+    /// One entry per (creature, reducer source, slot) trio, merged on
+    /// repeat and consumed LIFO when the enemy's Strength rises again, so
+    /// it holds each creature's reductions still standing.
     pub const STR_REDUCTIONS: usize = 64;
+    /// One layer per duration-debuff application on an enemy (vulnerable,
+    /// weak, poison): turn-end decrements consume the layers FIFO and drop
+    /// depleted ones, and poison ticks split by duration fraction.
     pub const DEBUFF_LAYERS: usize = 64;
+    /// One combat's distinct (player, id, kind) rows: four slots' deck ids
+    /// (upgraded variants included) plus the relic/power/potion catalogs —
+    /// a few hundred in the worst real combat.
+    pub const COMBAT_CARDS: usize = 512;
+    /// One run's card-stat rows (the run accumulator, the history
+    /// roll-ups): the same id space across every combat of the run, so
+    /// strictly more rows than one combat.
+    pub const RUN_CARDS: usize = 1024;
 }
 
 thread_local! {
@@ -687,6 +766,15 @@ mod tests {
                 "from_c({kind}) must clamp to a catalogued kind"
             );
         }
+    }
+
+    #[test]
+    fn modifier_kind_codes_map_power_and_relic_and_clamp_unknowns() {
+        assert_eq!(clamp_modifier_kind(1), SourceKind::Relic);
+        assert_eq!(clamp_modifier_kind(2), SourceKind::Power);
+        assert_eq!(clamp_modifier_kind(0), SourceKind::Power);
+        assert_eq!(clamp_modifier_kind(-1), SourceKind::Power);
+        assert_eq!(clamp_modifier_kind(i32::MAX), SourceKind::Power);
     }
 
     #[test]

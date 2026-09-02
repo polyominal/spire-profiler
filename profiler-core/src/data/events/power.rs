@@ -6,7 +6,7 @@ use crate::data::ledger::AsyncFallback;
 use crate::data::persistence::event_log;
 use crate::data::state::{
     DebuffLayer, DoomLayer, DoomTarget, EnemyHit, PowerSourceEntry, STATE, SourceKind, SourceSlot,
-    State, StrReduction, TEAM_SLOT, caps,
+    State, StrReduction, TEAM_SLOT, caps, clamp_modifier_kind,
 };
 use crate::fail;
 
@@ -169,8 +169,9 @@ fn record_power_source_in(
     }
 }
 
-/// On the PLAYER the decrease consumes the recorded appliers FIFO so
-/// expired Strength is never credited again.
+/// On the PLAYER the decrease is a temporary-power expiry (FlexPotionPower
+/// applies −5 Strength at side turn end): consume the amount from the
+/// recorded appliers FIFO so the expired grant is never credited again.
 pub fn power_decreased(
     power_id: &str,
     amount: i32,
@@ -292,11 +293,12 @@ fn attribute_doom_target_in(state: &mut State, creature_hash: u64, hp: i64) -> b
             let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
                 return false;
             };
-            let index = ledger::get_or_create_card_kind(combat, player, &source_id, kind);
-            let card = &mut combat.cards[index];
-            card.damage_dealt += take;
-            card.dmg_attributed += take;
-            ledger::assert_card_damage_segments(card);
+            if let Some(index) = ledger::get_or_create_card_kind(combat, player, &source_id, kind) {
+                let card = &mut combat.cards[index];
+                card.damage_dealt += take;
+                card.dmg_attributed += take;
+                ledger::assert_card_damage_segments(card);
+            }
         }
         remaining -= take;
         state.doom_layers[i].amount -= take;
@@ -327,12 +329,14 @@ fn attribute_doom_target_in(state: &mut State, creature_hash: u64, hp: i64) -> b
                 let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
                     return false;
                 };
-                let index =
-                    ledger::get_or_create_card_kind(combat, TEAM_SLOT, "DOOM", SourceKind::Card);
-                let card = &mut combat.cards[index];
-                card.damage_dealt += remaining;
-                card.dmg_attributed += remaining;
-                ledger::assert_card_damage_segments(card);
+                if let Some(index) =
+                    ledger::get_or_create_card_kind(combat, TEAM_SLOT, "DOOM", SourceKind::Card)
+                {
+                    let card = &mut combat.cards[index];
+                    card.damage_dealt += remaining;
+                    card.dmg_attributed += remaining;
+                    ledger::assert_card_damage_segments(card);
+                }
             }
         }
     }
@@ -351,11 +355,7 @@ pub fn damage_modifier_contribution(
         if !state.initialized || contribution <= 0 {
             return;
         }
-        let mod_kind = if kind == 1 {
-            SourceKind::Relic
-        } else {
-            SourceKind::Power
-        };
+        let mod_kind = clamp_modifier_kind(kind);
         // Each share carries its applier's slot; the no-applier fallback
         // rides the DEALER's slot.
         let shares = ledger::split_over_appliers_in(
@@ -391,11 +391,7 @@ pub fn block_modifier_contribution(
         if !state.initialized || contribution <= 0 {
             return;
         }
-        let mod_kind = if kind == 1 {
-            SourceKind::Relic
-        } else {
-            SourceKind::Power
-        };
+        let mod_kind = clamp_modifier_kind(kind);
         // Same applier-slot stamping as the damage path.
         let shares = ledger::split_over_appliers_in(
             &state,
@@ -442,9 +438,10 @@ pub fn weak_mitigation(prevented: i32, dealer_hash: u64) {
             let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
                 return;
             };
-            let index = ledger::get_or_create_card_kind(combat, player, &source_id, kind);
-            combat.cards[index].mitigate_debuff += prevented as i64;
-            event_log!("  weak mitigation +{prevented} credited to '{source_id}'");
+            if let Some(index) = ledger::get_or_create_card_kind(combat, player, &source_id, kind) {
+                combat.cards[index].mitigate_debuff += prevented as i64;
+                event_log!("  weak mitigation +{prevented} credited to '{source_id}'");
+            }
         } else {
             event_log!("  weak mitigation +{prevented} with no recorded layer (uncredited)");
         }
@@ -479,9 +476,11 @@ pub fn buff_mitigation(power_id: &str, prevented: i32) {
             return;
         };
         for share in shares {
-            let index =
-                ledger::get_or_create_card_kind(combat, share.player, &share.id, share.kind);
-            combat.cards[index].mitigate_buff += share.amount;
+            if let Some(index) =
+                ledger::get_or_create_card_kind(combat, share.player, &share.id, share.kind)
+            {
+                combat.cards[index].mitigate_buff += share.amount;
+            }
         }
         event_log!("  buff mitigation {power_id} +{prevented} split across {count} appliers");
     });
@@ -511,9 +510,7 @@ pub fn forge(source_id: &str, source_kind: i32, amount: i32, player_slot: i32) {
                 return;
             };
             let row_slot = crate::data::state::clamp_source_slot(player_slot);
-            Some(ledger::get_or_create_card_kind(
-                combat, row_slot, source_id, kind,
-            ))
+            ledger::get_or_create_card_kind(combat, row_slot, source_id, kind)
         } else {
             ledger::resolve_card_in(
                 &mut state,
@@ -594,8 +591,10 @@ pub(super) fn apply_str_mitigation_in(state: &mut State, dealer_hash: u64) {
         } else {
             (effective * r.amount) / total_reduction
         };
-        if share > 0 {
-            let index = ledger::get_or_create_card_kind(combat, r.player, &r.source_id, r.kind);
+        if share > 0
+            && let Some(index) =
+                ledger::get_or_create_card_kind(combat, r.player, &r.source_id, r.kind)
+        {
             combat.cards[index].mitigate_str += share;
             allocated += share;
         }

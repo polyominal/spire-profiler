@@ -9,7 +9,14 @@ use comrak::{Options, markdown_to_commonmark};
 
 use crate::workspace_root;
 
-const DOCS: &[&str] = &["README.md", "AGENTS.md", "docs/pitfalls.md"];
+const DOCS: &[&str] = &[
+    "README.md",
+    "AGENTS.md",
+    "docs/build.md",
+    "docs/verify.md",
+    "docs/gdextension.md",
+    "docs/game.md",
+];
 
 const WRAP_WIDTH: usize = 80;
 

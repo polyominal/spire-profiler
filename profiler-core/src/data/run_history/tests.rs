@@ -21,6 +21,15 @@ fn seed_data(data: &Path, runs_text: &str, combats_text: &str) {
     write_combats_fixture(data, combats_text);
 }
 
+/// These tests seed a match, so Empty is a broken fixture, not a branch:
+/// unwrap the view or name the seed that failed.
+fn selected(seed: &str, started_at: i64, profile: i32) -> Box<RunSummaryView> {
+    match select_run(seed, started_at, profile) {
+        RunSelection::Selected(view) => view,
+        RunSelection::Empty => panic!("{seed} must match"),
+    }
+}
+
 fn write_runs_fixture(data: &Path, runs_text: &str) {
     let runs: serde_json::Value = serde_json::from_str(runs_text).expect("runs fixture parses");
     let mut lines = String::new();
@@ -169,9 +178,7 @@ fn select_by_seed_assembles_the_full_view() {
     let data = std::path::Path::new(&base);
     seed_data(data, RUNS, COMBATS);
 
-    let RunSelection::Selected(view) = select_run("BETA", BETA_START, 2) else {
-        panic!("BETA must match");
-    };
+    let view = selected("BETA", BETA_START, 2);
     assert_eq!(view.run_id, 2);
     assert_eq!(view.character, "IRONCLAD");
     assert_eq!(view.ascension, 7);
@@ -218,9 +225,7 @@ fn combat_only_runs_fall_back_to_a_synthesized_view() {
     let data = std::path::Path::new(&base);
     seed_data(data, "[]", COMBATS_ONLY);
 
-    let RunSelection::Selected(view) = select_run("GAMMA", 0, 4) else {
-        panic!("GAMMA must fall back to its combats");
-    };
+    let view = selected("GAMMA", 0, 4);
     assert_eq!(view.run_id, 3);
     assert_eq!(view.character, "SHROUD");
     assert_eq!(view.ascension, 1);
@@ -288,13 +293,9 @@ fn closed_runs_never_take_the_fallback() {
     let data = std::path::Path::new(&base);
     seed_data(data, RUNS, COMBATS);
 
-    let RunSelection::Selected(defeat) = select_run("BETA", BETA_START, 2) else {
-        panic!("BETA must match");
-    };
+    let defeat = selected("BETA", BETA_START, 2);
     assert_eq!(defeat.result, "Defeat");
-    let RunSelection::Selected(won) = select_run("ALPHA", 1_786_579_200, 2) else {
-        panic!("ALPHA must match");
-    };
+    let won = selected("ALPHA", 1_786_579_200, 2);
     assert_eq!(won.outcome, Some(RunOutcome::Victory));
     assert_eq!(won.result, "Victory");
 }
@@ -311,9 +312,7 @@ fn abandoned_runs_render_the_abandoned_label() {
         ]"#;
     seed_data(data, runs, "[]");
 
-    let RunSelection::Selected(view) = select_run("GAMMA", 1_786_579_200, 2) else {
-        panic!("GAMMA must match");
-    };
+    let view = selected("GAMMA", 1_786_579_200, 2);
     assert_eq!(view.outcome, Some(RunOutcome::Abandoned));
     assert_eq!(view.result, "Abandoned");
     assert_eq!(
@@ -330,9 +329,7 @@ fn fallback_views_flow_through_the_selection_plumbing() {
 
     assert!(select("GAMMA", 0, 4));
     assert!(screen_open(), "select marks the screen open");
-    let RunSelection::Selected(expected) = select_run("GAMMA", 0, 4) else {
-        panic!("GAMMA must fall back");
-    };
+    let expected = selected("GAMMA", 0, 4);
     let stored = selected_view().expect("fallback selection stored");
     assert_eq!(&*expected, &stored);
     assert_eq!(stored.result, "Unfinished");
@@ -360,16 +357,12 @@ fn fallback_disambiguates_same_seed_replays_by_start_time() {
                  "run":{"seq":6,"character":"IRONCLAD","ascension":2,"game_mode":"Standard","seed":"OMEGA"},
                  "cards":[]}]"#,
     );
-    let RunSelection::Selected(view) = select_run("OMEGA", 1050, 2) else {
-        panic!("OMEGA must fall back");
-    };
+    let view = selected("OMEGA", 1050, 2);
     assert_eq!(view.run_id, 4, "the closest group wins, not the latest");
     assert_eq!(view.character, "DEFECT");
     assert_eq!(view.combats.len(), 1, "replays never merge");
     assert_eq!(view.combats[0].seq, 1);
-    let RunSelection::Selected(view) = select_run("OMEGA", 2050, 2) else {
-        panic!("OMEGA must fall back");
-    };
+    let view = selected("OMEGA", 2050, 2);
     assert_eq!(view.run_id, 6);
     assert!(matches!(
         select_run("OMEGA", 10_000, 2),
@@ -407,9 +400,7 @@ fn seed_match_with_exact_start_time_wins() {
         ]"#;
     seed_data(data, runs, "[]");
 
-    let RunSelection::Selected(view) = select_run("DAILY", 1_786_579_200, 2) else {
-        panic!("DAILY must match");
-    };
+    let view = selected("DAILY", 1_786_579_200, 2);
     assert_eq!(view.run_id, 1);
     assert_eq!(view.character, "A");
 }
@@ -473,9 +464,7 @@ fn unknown_runs_select_empty() {
                 "ended_at":1786579800,"combats":0}]"#,
         "[]",
     );
-    let RunSelection::Selected(view) = select_run("BARE", 1_786_579_200, 2) else {
-        panic!("BARE must match");
-    };
+    let view = selected("BARE", 1_786_579_200, 2);
     assert!(view.combats.is_empty());
     assert!(view.rollup.is_empty());
 }
@@ -486,22 +475,16 @@ fn cache_reuses_until_invalidated() {
     let data = std::path::Path::new(&base);
     seed_data(data, RUNS, COMBATS);
 
-    let RunSelection::Selected(first) = select_run("BETA", BETA_START, 2) else {
-        panic!("BETA must match");
-    };
+    let first = selected("BETA", BETA_START, 2);
     assert_eq!(first.rollup[0].damage_dealt, 70);
 
     let tweaked = COMBATS.replace("\"damage_dealt\":40", "\"damage_dealt\":400");
     write_combats_fixture(data, &tweaked);
-    let RunSelection::Selected(second) = select_run("BETA", BETA_START, 2) else {
-        panic!("BETA must match");
-    };
+    let second = selected("BETA", BETA_START, 2);
     assert_eq!(second.rollup[0].damage_dealt, 70);
 
     invalidate();
-    let RunSelection::Selected(third) = select_run("BETA", BETA_START, 2) else {
-        panic!("BETA must match");
-    };
+    let third = selected("BETA", BETA_START, 2);
     assert_eq!(third.rollup[0].damage_dealt, 430);
 }
 
@@ -523,9 +506,7 @@ fn rollup_keys_on_id_and_kind_and_teams_merge() {
                            ]}]"#;
     seed_data(data, runs, combats);
 
-    let RunSelection::Selected(view) = select_run("K", 1_786_579_200, 2) else {
-        panic!("K must match");
-    };
+    let view = selected("K", 1_786_579_200, 2);
     let ids: Vec<(String, SourceKind)> =
         view.rollup.iter().map(|r| (r.id.clone(), r.kind)).collect();
     assert_eq!(
@@ -651,9 +632,7 @@ fn per_player_rollups_split_the_run() {
                            ]}]"#;
     seed_data(data, runs, combats);
 
-    let RunSelection::Selected(view) = select_run("P3", 1_786_579_200, 2) else {
-        panic!("P3 must match");
-    };
+    let view = selected("P3", 1_786_579_200, 2);
     assert_eq!(view.player_rollups.len(), 2);
     assert_eq!(view.player_rollups[0].slot, 0);
     assert_eq!(view.player_rollups[0].cards.len(), 1);

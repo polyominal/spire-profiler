@@ -14,9 +14,11 @@
 
 use crate::data::run_history::RunSummaryView;
 use crate::data::state::CardStat;
+#[cfg(test)]
 use crate::engine::object::TextAlign;
 use crate::ui::chart_layout::{self, Cmd, truncate};
-use crate::ui::palette::{self, COL_GOLD, Color};
+use crate::ui::palette;
+#[cfg(test)]
 use crate::ui::panel_common;
 use crate::ui::theme::{self, TextRole};
 use crate::ui::ui_model::{UiMeta, UiRow, UiTab};
@@ -133,123 +135,8 @@ pub struct RunLayout {
 }
 
 impl RunLayout {
-    fn texture(&mut self, x: f32, y: f32, w: f32, h: f32, icon: theme::IconId) {
-        chart_layout::push_cmd(
-            &mut self.cmds,
-            Cmd::Texture(chart_layout::TextureCmd { x, y, w, h, icon }),
-            "run panel",
-        );
-    }
-
-    fn text(&mut self, x: f32, y: f32, size: i32, color: Color, s: impl Into<String>) {
-        self.text_ex(x, y, size, color, TextRole::Body, false, s);
-    }
-
-    fn text_right(&mut self, x: f32, width: f32, y: f32, size: i32, color: Color, s: String) {
-        if s.is_empty() {
-            return;
-        }
-        chart_layout::push_cmd(
-            &mut self.cmds,
-            Cmd::Text(chart_layout::TextCmd {
-                x,
-                y,
-                size,
-                color,
-                role: TextRole::Body,
-                shadow: false,
-                outline: false,
-                align: TextAlign::Right(width),
-                text: s,
-            }),
-            "run panel",
-        );
-    }
-
-    /// The width clip is the backstop: the band scissor bounds y only.
-    #[allow(clippy::too_many_arguments)] // a draw command's full parameter list
-    fn text_left_clipped(
-        &mut self,
-        x: f32,
-        width: f32,
-        y: f32,
-        size: i32,
-        color: Color,
-        role: TextRole,
-        s: String,
-    ) {
-        if s.is_empty() {
-            return;
-        }
-        chart_layout::push_cmd(
-            &mut self.cmds,
-            Cmd::Text(chart_layout::TextCmd {
-                x,
-                y,
-                size,
-                color,
-                role,
-                shadow: false,
-                outline: false,
-                align: TextAlign::LeftClipped(width),
-                text: s,
-            }),
-            "run panel",
-        );
-    }
-
-    #[allow(clippy::too_many_arguments)] // a draw command's full parameter list
-    fn text_ex(
-        &mut self,
-        x: f32,
-        y: f32,
-        size: i32,
-        color: Color,
-        role: TextRole,
-        shadow: bool,
-        s: impl Into<String>,
-    ) {
-        let s = s.into();
-        if s.is_empty() {
-            return;
-        }
-        chart_layout::push_cmd(
-            &mut self.cmds,
-            Cmd::Text(chart_layout::TextCmd {
-                x,
-                y,
-                size,
-                color,
-                role,
-                shadow,
-                outline: false,
-                align: TextAlign::Left,
-                text: s,
-            }),
-            "run panel",
-        );
-    }
-
-    fn title_text(&mut self, x: f32, y: f32, s: impl Into<String>) {
-        let s = s.into();
-        if s.is_empty() {
-            return;
-        }
-        chart_layout::push_cmd(
-            &mut self.cmds,
-            Cmd::Text(chart_layout::TextCmd {
-                x,
-                y,
-                size: theme::SIZE_HEADER,
-                color: COL_GOLD,
-                role: TextRole::Title,
-                shadow: false,
-                outline: true,
-                align: TextAlign::Left,
-                text: s,
-            }),
-            "run panel",
-        );
+    fn sink(&mut self) -> chart_layout::CmdSink<'_> {
+        chart_layout::CmdSink::new(&mut self.cmds, "run panel")
     }
 
     fn splice_chart(&mut self, chart: &chart_layout::Layout, y_offset: f32) {
@@ -339,7 +226,7 @@ pub(crate) fn build_run_layout(
     l.height = y + content.bottom_pad;
     l.header_cmds = l.cmds.drain(..header_len).collect();
     if flat_chrome {
-        insert_borders(&mut l);
+        chart_layout::insert_borders(&mut l.header_cmds, "run panel", l.width, l.height);
     }
     l
 }
@@ -351,7 +238,7 @@ fn build_empty_state(mut l: RunLayout, flat_chrome: bool) -> RunLayout {
     y += 6.0;
     let header_len = l.cmds.len();
     l.header_bottom = y;
-    l.text(
+    l.sink().text(
         content.x + 8.0,
         y + 25.0,
         SIZE_BODY,
@@ -359,7 +246,7 @@ fn build_empty_state(mut l: RunLayout, flat_chrome: bool) -> RunLayout {
         "no profiling history for this run",
     );
     y += 30.0;
-    l.text(
+    l.sink().text(
         content.x + 8.0,
         y + 25.0,
         SIZE_BODY,
@@ -370,13 +257,13 @@ fn build_empty_state(mut l: RunLayout, flat_chrome: bool) -> RunLayout {
     l.height = y + l.content.bottom_pad;
     l.header_cmds = l.cmds.drain(..header_len).collect();
     if flat_chrome {
-        insert_borders(&mut l);
+        chart_layout::insert_borders(&mut l.header_cmds, "run panel", l.width, l.height);
     }
     l
 }
 
 fn emit_title(l: &mut RunLayout, content: &theme::ContentBox, y_in: f32) -> f32 {
-    l.title_text(content.x, y_in + 30.0, "Run Summary");
+    l.sink().title_text(content.x, y_in + 30.0, "Run Summary");
     y_in + TITLE_H
 }
 
@@ -397,7 +284,7 @@ fn emit_header(
             continue;
         }
         // The portrait art is square, so the destination rect is too.
-        l.texture(
+        l.sink().texture(
             x,
             y_in,
             ICON_ROW_H,
@@ -422,7 +309,7 @@ fn emit_header(
     // clips there instead of drawing over the icons.
     let block_x = x + 8.0;
     let block_w = (content.right() - block_x).max(0.0);
-    l.text_right(
+    l.sink().text_right(
         block_x,
         block_w,
         y_in + IDENTITY_BASELINE,
@@ -430,7 +317,7 @@ fn emit_header(
         palette::COL_CREAM,
         identity_line(view),
     );
-    l.text_right(
+    l.sink().text_right(
         block_x,
         block_w,
         y_in + SEED_BASELINE,
@@ -443,9 +330,10 @@ fn emit_header(
 
 fn emit_identity(l: &mut RunLayout, view: &RunSummaryView, x: f32, y_in: f32) -> f32 {
     let left = x + 8.0;
-    l.text_left_clipped(
+    let width = (l.content.right() - left).max(0.0);
+    l.sink().text_left_clipped(
         left,
-        (l.content.right() - left).max(0.0),
+        width,
         y_in + 25.0,
         SIZE_BODY,
         palette::COL_CREAM,
@@ -457,9 +345,10 @@ fn emit_identity(l: &mut RunLayout, view: &RunSummaryView, x: f32, y_in: f32) ->
 
 fn emit_seed(l: &mut RunLayout, view: &RunSummaryView, x: f32, y_in: f32) -> f32 {
     let left = x + 8.0;
-    l.text_left_clipped(
+    let width = (l.content.right() - left).max(0.0);
+    l.sink().text_left_clipped(
         left,
-        (l.content.right() - left).max(0.0),
+        width,
         y_in + 25.0,
         SIZE_BODY,
         palette::COL_DIM,
@@ -470,7 +359,7 @@ fn emit_seed(l: &mut RunLayout, view: &RunSummaryView, x: f32, y_in: f32) -> f32
 }
 
 fn emit_meta(l: &mut RunLayout, content: &theme::ContentBox, meta: &UiMeta, y_in: f32) -> f32 {
-    l.text_left_clipped(
+    l.sink().text_left_clipped(
         content.x,
         content.w,
         y_in + chart_layout::META_Y,
@@ -513,11 +402,6 @@ fn emit_chart(
     });
     l.splice_chart(&chart, y_in);
     y_in + chart.height
-}
-
-fn insert_borders(l: &mut RunLayout) {
-    l.header_cmds
-        .splice(0..0, panel_common::border_rects(l.width, l.height));
 }
 
 #[cfg(test)]

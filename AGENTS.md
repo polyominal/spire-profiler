@@ -21,8 +21,8 @@ legacy compatibility.
   mandates that all commits and PRs are made by humans.
 - The `profiler-core` crate is not a public library. Prefer private visibility;
   avoid `pub` unless the item needs it.
-- The markdown docs (README.md, AGENTS.md, docs/pitfalls.md) are wrapped at 80
-  columns by `cargo xtask fmt-md`; run it after doc edits instead of reflowing
+- The markdown docs are wrapped at 80 columns by `cargo xtask fmt-md` (the file
+  set is pinned in the fmt-md task); run it after doc edits instead of reflowing
   by hand. `smoke` runs `fmt-md --check`, which fails on wrapping drift.
 
 ## Comments
@@ -31,7 +31,8 @@ Comment density across in-house Rust must stay at most 15% of comment+code
 lines, measured with `cargo xtask check-docs` (a line counter over
 `profiler-core/src`, `profiler-core/tests`, and `xtask/src`; doc comments count,
 and tests are part of the whole-repo metric). The gate fails on any `cargo doc`
-warning and prints the most over-budget files for per-file drift.
+warning and prints the files contributing the most comment lines for per-file
+drift.
 
 Priorities: clarity first, size second. A comment passes the bar when a tired
 reader could explain why the next code exists without reading it; if not, make
@@ -77,7 +78,8 @@ Additional rules:
 - The design specs live in the Rust source as module docs (`//!`), not in
   `docs/`; the doc sits in the same diff as the code it describes, and
   `#[deny(rustdoc::broken_intra_doc_links)]` keeps its links compile-time
-  checked. `docs/` holds `pitfalls.md` (environment content with no Rust anchor)
+  checked. `docs/` holds the environment guides — `build.md`, `verify.md`,
+  `gdextension.md`, and `game.md` (environment content with no Rust anchor) —
   and `images/` (assets referenced by the markdown docs); the crate overview
   lives in `lib.rs`.
 - Every sentence must teach something the code cannot, in the fewest words that
@@ -146,8 +148,9 @@ for (k, &milli) in seg_milli.iter().enumerate() {
 - All mutable state lives in one thread-local `RefCell<State>`: the game's logic
   loop is single-threaded, so this is both sufficient and the cheapest correct
   design. Do not add locks or atomics.
-- Hold the borrow once per event: mutate, collect log lines, release, then write
-  the log (the log sink re-borrows; a nested borrow panics).
+- Hold one `borrow_mut` per event. The log sink owns its own thread-local,
+  separate from `STATE`, so logging while the state borrow is held is safe (a
+  test pins this); the sink must never re-borrow `STATE`.
 - Fixed-capacity tables are bounded `Vec`s with caps named in `caps`. Overflow
   fails loudly via `fail`; it never grows the table silently and never panics.
   Give every cap a one-line rationale.

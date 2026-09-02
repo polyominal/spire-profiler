@@ -2,20 +2,13 @@
 //! merge, the save+quit+resume rebuild, and the shared per-field fold.
 
 use super::combat_doc::card_stat_from_rec;
-use super::combats::load_run_combat_docs;
-use crate::data::records;
-use crate::data::state::{CardStat, Combat, STATE};
+use super::combats::{load_run_combat_docs, parse_combat_docs};
+use crate::data::state::{self, CardStat, Combat, STATE};
 use crate::fail;
 
 /// The Run Summary tab survives a save+quit+resume.
 pub fn rebuild_run_accumulator(seq: u32) -> (u32, u32) {
-    let mut combats: Vec<records::CombatRec> = Vec::new();
-    for doc in load_run_combat_docs(seq) {
-        match records::parse_combat_doc(&doc) {
-            Ok(combat) => combats.push(combat),
-            Err(err) => fail!("cannot parse a runs/{seq} combat file: {err}"),
-        }
-    }
+    let combats = parse_combat_docs(&load_run_combat_docs(seq));
     let mut cards: Vec<CardStat> = Vec::new();
     let mut turns = 0u32;
     let mut count = 0u32;
@@ -27,15 +20,7 @@ pub fn rebuild_run_accumulator(seq: u32) -> (u32, u32) {
         count += 1;
         turns += combat.turns;
         for rec in &combat.cards {
-            let card = card_stat_from_rec(rec);
-            if let Some(dst) = cards
-                .iter_mut()
-                .find(|rc| rc.id == card.id && rc.kind == card.kind && rc.player == card.player)
-            {
-                merge_card_stat(dst, &card);
-            } else {
-                cards.push(card);
-            }
+            upsert_card_stat(&mut cards, &card_stat_from_rec(rec), CardStatKey::PerSource);
         }
     }
     STATE.with(|s| {
@@ -43,15 +28,7 @@ pub fn rebuild_run_accumulator(seq: u32) -> (u32, u32) {
         state.run_turns += turns;
         state.run_combats += count;
         for card in &cards {
-            if let Some(dst) = state
-                .run_cards
-                .iter_mut()
-                .find(|rc| rc.id == card.id && rc.kind == card.kind && rc.player == card.player)
-            {
-                merge_card_stat(dst, card);
-            } else {
-                state.run_cards.push(card.clone());
-            }
+            upsert_card_stat(&mut state.run_cards, card, CardStatKey::PerSource);
         }
     });
     (count, turns)
@@ -70,30 +47,44 @@ pub fn merge_into_run(c: &Combat) {
         }
         state.run_turns += c.turns;
         state.run_combats += 1;
-        // Rows key on (player, id, kind).
         for card in &c.cards {
-            let dst = if let Some(dst) = state
-                .run_cards
-                .iter_mut()
-                .find(|rc| rc.id == card.id && rc.kind == card.kind && rc.player == card.player)
-            {
-                dst
-            } else {
-                state.run_cards.push(CardStat {
-                    id: card.id.clone(),
-                    kind: card.kind,
-                    player: card.player,
-                    ..CardStat::default()
-                });
-                state.run_cards.last_mut().expect("row was just pushed")
-            };
-            merge_card_stat(dst, card);
+            upsert_card_stat(&mut state.run_cards, card, CardStatKey::PerSource);
         }
     });
 }
 
+/// Which rows one upsert may merge into.
+#[derive(Clone, Copy)]
+pub(crate) enum CardStatKey {
+    /// Per-source rows: the player slot is part of the key.
+    PerSource,
+    /// TEAM merge: every player's same-id rows fold into one row.
+    TeamMerged,
+}
+
+/// Folds `card`'s stats into the first row matching the key, else appends
+/// it as a new row; at [`state::caps::RUN_CARDS`] a new row is
+/// fail-logged and dropped (existing rows still merge).
+pub(crate) fn upsert_card_stat(cards: &mut Vec<CardStat>, card: &CardStat, key: CardStatKey) {
+    let matches = |row: &CardStat| match key {
+        CardStatKey::PerSource => {
+            row.id == card.id && row.kind == card.kind && row.player == card.player
+        }
+        CardStatKey::TeamMerged => row.id == card.id && row.kind == card.kind,
+    };
+    if let Some(dst) = cards.iter_mut().find(|row| matches(row)) {
+        merge_card_stat(dst, card);
+        return;
+    }
+    if cards.len() >= state::caps::RUN_CARDS {
+        fail!("card-stat table overflow; row '{}' dropped", card.id);
+        return;
+    }
+    cards.push(card.clone());
+}
+
 /// Adds every numeric field of `src` into `dst`.
-pub(crate) fn merge_card_stat(dst: &mut CardStat, src: &CardStat) {
+fn merge_card_stat(dst: &mut CardStat, src: &CardStat) {
     dst.plays += src.plays;
     dst.damage_dealt += src.damage_dealt;
     dst.damage_blocked += src.damage_blocked;
@@ -116,7 +107,7 @@ mod tests {
     use crate::data::persistence::build_combat_json;
     use crate::data::persistence::test_support::*;
     use crate::data::records;
-    use crate::data::state::RunPlayer;
+    use crate::data::state::{RunPlayer, caps};
     use crate::source_kind::SourceKind;
 
     #[test]
@@ -457,5 +448,65 @@ mod tests {
                 assert_card_stat_eq(rebuilt, expected);
             }
         });
+    }
+
+    #[test]
+    fn upsert_key_chooses_whether_player_splits_rows() {
+        let row = |player: u8| CardStat {
+            id: "STRIKE".to_owned(),
+            kind: SourceKind::Card,
+            player,
+            plays: 1,
+            damage_dealt: 5,
+            ..CardStat::default()
+        };
+
+        let mut rows: Vec<CardStat> = Vec::new();
+        upsert_card_stat(&mut rows, &row(0), CardStatKey::PerSource);
+        upsert_card_stat(&mut rows, &row(1), CardStatKey::PerSource);
+        assert_eq!(rows.len(), 2, "PerSource keeps each player's row");
+        assert_eq!((rows[0].plays, rows[1].plays), (1, 1));
+
+        let mut team: Vec<CardStat> = Vec::new();
+        upsert_card_stat(&mut team, &row(0), CardStatKey::TeamMerged);
+        upsert_card_stat(&mut team, &row(1), CardStatKey::TeamMerged);
+        assert_eq!(
+            team.len(),
+            1,
+            "TeamMerged folds same-id rows across players"
+        );
+        assert_eq!(team[0].player, 0, "the row keeps the first-seen player");
+        assert_eq!((team[0].plays, team[0].damage_dealt), (2, 10));
+    }
+
+    #[test]
+    fn upsert_drops_new_rows_at_the_run_cap_but_still_merges() {
+        let row = |id: &str| CardStat {
+            id: id.to_owned(),
+            kind: SourceKind::Card,
+            player: 0,
+            ..CardStat::default()
+        };
+        let mut rows: Vec<CardStat> = Vec::new();
+        for i in 0..caps::RUN_CARDS {
+            upsert_card_stat(&mut rows, &row(&format!("C{i}")), CardStatKey::PerSource);
+        }
+        assert_eq!(rows.len(), caps::RUN_CARDS);
+        upsert_card_stat(&mut rows, &row("EXTRA"), CardStatKey::PerSource);
+        assert_eq!(rows.len(), caps::RUN_CARDS, "the cap must not grow");
+        assert!(!rows.iter().any(|r| r.id == "EXTRA"));
+        // A full table still folds stats into existing rows.
+        upsert_card_stat(
+            &mut rows,
+            &CardStat {
+                id: "C0".to_owned(),
+                kind: SourceKind::Card,
+                player: 0,
+                plays: 7,
+                ..CardStat::default()
+            },
+            CardStatKey::PerSource,
+        );
+        assert_eq!(rows[0].plays, 7);
     }
 }

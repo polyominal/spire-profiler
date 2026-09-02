@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::data::persistence::{bind_log_path, reset_log_sink};
-use crate::data::state::{DebuffLayer, PowerSourceEntry};
+use crate::data::state::{DebuffLayer, PowerSourceEntry, caps};
 use crate::test_util::unique_dir;
 
 fn reset_state() {
@@ -596,4 +596,33 @@ fn resolve_card_is_none_without_a_combat() {
     reset_state();
     assert!(resolve("STRIKE", 0, 0).is_none());
     assert!(STATE.with(|cell| cell.borrow().current.is_none()));
+}
+
+#[test]
+fn get_or_create_drops_new_rows_at_the_combat_cap_but_still_resolves_rows() {
+    reset_state();
+    start_combat();
+    STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        let combat = state.current.as_mut().expect("combat exists");
+        for i in 0..caps::COMBAT_CARDS {
+            let id = format!("C{i}");
+            assert_eq!(
+                get_or_create_card_kind(combat, 0, &id, SourceKind::Card),
+                Some(i),
+                "filling up to the cap must succeed"
+            );
+        }
+        assert_eq!(
+            get_or_create_card_kind(combat, 0, "EXTRA", SourceKind::Card),
+            None,
+            "at the cap a new row must be dropped, not indexed"
+        );
+        assert_eq!(combat.cards.len(), caps::COMBAT_CARDS);
+        assert_eq!(
+            get_or_create_card_kind(combat, 0, "C5", SourceKind::Card),
+            Some(5),
+            "an existing row still resolves at the cap"
+        );
+    });
 }

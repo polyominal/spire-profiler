@@ -18,9 +18,10 @@
 //! # Identifiers
 //!
 //! Both ids are u32s derived from the store itself, never a process
-//! counter. The combat id is seeded at boot as one past the highest id
-//! among the store's file names and incremented per combat start, so the
-//! file name IS the id and same-seed replays never collide. The run id is
+//! counter. The combat id is seeded at boot to the highest id among the
+//! store's file names and incremented at each combat start, so the first
+//! new combat takes max+1, the file name IS the id, and same-seed replays
+//! never collide. The run id is
 //! max+1 over `runs.jsonl` records and the store's run directory names (an
 //! abandoned run leaves its directory but no record line); a continued run
 //! rejoins its fragments by seed instead.
@@ -106,10 +107,10 @@ mod writes;
 pub use combat_doc::build_combat_json;
 pub(crate) use combat_doc::card_stat_from_rec;
 pub use combats::write_combat_file;
-pub(crate) use combats::{load_combat_docs_from, max_combat_id};
+pub(crate) use combats::{load_combat_docs_from, max_combat_id, parse_combat_docs};
 pub use io::{ensure_data_dir, read_file, write_file};
 pub(crate) use log::{append_log, bind_log_path, event_log, reset_log_sink};
-pub(crate) use runs::merge_card_stat;
+pub(crate) use runs::{CardStatKey, upsert_card_stat};
 pub use runs::{merge_into_run, rebuild_run_accumulator};
 pub use time::now_seconds;
 pub use writes::write_run_record;

@@ -13,6 +13,7 @@ use super::io::{ensure_data_dir, read_file, write_file};
 use super::runs::merge_into_run;
 use super::{MAX_JSON_SIZE, RUNS_DIR_NAME};
 use crate::data::persistence::event_log;
+use crate::data::records;
 use crate::data::state::{Combat, STATE};
 use crate::fail;
 
@@ -50,7 +51,7 @@ fn scan_combat_ids(dir: &Path) -> Vec<u32> {
     ids
 }
 
-/// The highest id in the store; boot seeds `next_combat_id` with this + 1.
+/// The highest id in the store; boot seeds `next_combat_id` with this.
 pub(crate) fn max_combat_id() -> u32 {
     let base = STATE.with(|s| s.borrow().data_dir.join(RUNS_DIR_NAME));
     let Ok(entries) = fs::read_dir(&base) else {
@@ -122,6 +123,19 @@ pub(crate) fn load_all_combat_docs() -> Vec<String> {
     load_combat_docs_from(&dir)
 }
 
+/// Parses store documents in order; a bad document is fail-logged and
+/// skipped, never fatal to the rest of the store.
+pub(crate) fn parse_combat_docs(docs: &[String]) -> Vec<records::CombatRec> {
+    let mut combats = Vec::new();
+    for doc in docs {
+        match records::parse_combat_doc(doc) {
+            Ok(combat) => combats.push(combat),
+            Err(err) => fail!("cannot parse a runs/ combat file: {err}"),
+        }
+    }
+    combats
+}
+
 /// Atomic and write-once; a form crossing [`MAX_JSON_SIZE`] is refused.
 pub fn write_combat_file(c: &Combat) {
     if !ensure_data_dir() {
@@ -163,27 +177,13 @@ pub fn write_combat_file(c: &Combat) {
 mod tests {
     use super::*;
     use crate::data::persistence::test_support::*;
+    use crate::test_util::combat_ids;
 
     fn store_ids(data: &std::path::Path) -> Vec<u32> {
-        let mut ids: Vec<u32> = Vec::new();
-        let runs = data.join("runs");
-        for run in fs::read_dir(&runs).expect("runs dir exists").flatten() {
-            let run_dir = run.path();
-            if !run_dir.is_dir() {
-                continue;
-            }
-            for entry in fs::read_dir(&run_dir).expect("run dir exists").flatten() {
-                let name = entry.file_name();
-                let name = name.to_string_lossy();
-                if let Some(stem) = name.strip_suffix(".json")
-                    && let Ok(id) = stem.parse::<u32>()
-                {
-                    ids.push(id);
-                }
-            }
-        }
-        ids.sort_unstable();
-        ids
+        combat_ids(&data.join("runs"))
+            .into_iter()
+            .map(|(_, id)| id)
+            .collect()
     }
 
     #[test]
@@ -263,7 +263,7 @@ mod tests {
         assert_eq!(
             STATE.with(|s| s.borrow().next_combat_id),
             2,
-            "the counter resumes one past the store's highest id"
+            "the counter re-seeds to the store's highest id"
         );
         let mut b1 = synthetic_combat();
         b1.seq = 3;

@@ -32,13 +32,12 @@
 //! width, the content height capped at the viewport minus a margin)
 //! centered in the viewport, re-derived whenever the viewport size
 //! changes. `set_position` is parent-relative and the panel is reparented
-//! under the run-history screen node — but every ancestor of NRunHistory
-//! is a full-rect anchored Control with zero offsets (verified against
-//! the v0.111.0 decompile scenes: run.tscn:28/:50/:93 chain →
-//! run_history.tscn root anchors_preset=15, no offsets, same for the
-//! main-menu and game-over hosts), so parent-relative == viewport
-//! position and the viewport-space centering lands exactly. Nothing is
-//! persisted; the frame re-derives every session.
+//! under the run-history screen node — but in the v0.111.0 scenes every
+//! ancestor of NRunHistory (the chain up through the run_history.tscn and
+//! run.tscn roots; the main-menu and game-over hosts likewise) is a
+//! full-rect anchored Control with zero offsets, so parent-relative ==
+//! viewport position and the viewport-space centering lands exactly.
+//! Nothing is persisted; the frame re-derives every session.
 //!
 //! ## Headless
 //!
@@ -50,7 +49,7 @@
 use std::cell::Cell;
 
 use crate::data::run_history::RunSummaryView;
-use crate::data::state::{CardStat, PlayerFilter};
+use crate::data::state::CardStat;
 use crate::engine::gdext::Object;
 use crate::engine::math::{Rect2, Vector2};
 use crate::ui::panel_common::{self, AvatarScaleAnimation, InteractionState, PressZone};
@@ -70,11 +69,11 @@ thread_local! {
 }
 
 pub(crate) fn queue_scroll(delta: f32) {
-    QUEUED_SCROLL.with(|c| c.set(c.get() + delta));
+    QUEUED_SCROLL.with(|q| panel_common::queue_scroll(q, delta));
 }
 
 pub(crate) fn take_queued_scroll() -> f32 {
-    QUEUED_SCROLL.with(|c| c.replace(0.0))
+    QUEUED_SCROLL.with(panel_common::take_queued_scroll)
 }
 
 /// Shown only while the run-history screen is open AND this flag is set.
@@ -247,24 +246,24 @@ impl SpireProfilerRunPanel {
         );
     }
 
-    /// The per-frame dim mask parallel to the icon row: excluded players
-    /// render at the game's deselect modulate.
     fn resolve_dim_mask(&mut self) {
-        self.dimmed_scratch.clear();
         let filter = crate::data::run_history::run_filter();
-        // Release build leaves the mask empty (avatars draw undimmed) instead of
-        // panicking in the contained draw path.
-        debug_assert_eq!(
+        panel_common::fill_dim_mask(
             self.layout.portrait_paths.len(),
-            self.avatar_slots.len(),
-            "the rebuild fills portrait paths and roster slots together"
+            &self.avatar_slots,
+            filter,
+            &mut self.dimmed_scratch,
         );
-        if self.layout.portrait_paths.len() == self.avatar_slots.len() {
-            for &slot in &self.avatar_slots {
-                let dimmed = filter != PlayerFilter::All && filter != PlayerFilter::Player(slot);
-                self.dimmed_scratch.push(dimmed);
-            }
-        }
+    }
+
+    fn scrollbar_geom(&self, box_size: Vector2) -> Option<crate::ui::scroll::ScrollbarGeom> {
+        panel_common::scrollbar_geom(
+            &self.theme,
+            box_size,
+            self.layout.header_bottom,
+            self.layout.height,
+            self.scroll,
+        )
     }
 
     fn apply_modal_geometry(&mut self) {
@@ -283,17 +282,6 @@ impl SpireProfilerRunPanel {
     /// press on one dismisses like any other outside press.
     fn plate_rect(&self) -> Option<Rect2> {
         self.plate_pos.map(|pos| Rect2::new(pos, self.box_size))
-    }
-
-    fn reshape_tip(&mut self) {
-        self.tip_lines = if self.detail.is_empty() {
-            Vec::new()
-        } else {
-            crate::ui::tooltip::shape(
-                &self.detail,
-                crate::ui::tooltip::max_tip_lines(self.box_size.y),
-            )
-        };
     }
 
     /// Runs before the dirty-check early-outs: a scroll moves the hovered
@@ -344,28 +332,6 @@ impl SpireProfilerRunPanel {
         }
     }
 
-    /// Fixed row heights mean the gutter can never change the overflow
-    /// verdict and oscillate.
-    fn scrollbar_gutter(&self) -> f32 {
-        if self.layout.height > self.box_size.y && self.theme.scrollbar().is_some() {
-            crate::ui::scroll::GUTTER
-        } else {
-            0.0
-        }
-    }
-
-    fn scrollbar_geom(&self, box_size: Vector2) -> Option<crate::ui::scroll::ScrollbarGeom> {
-        self.theme.scrollbar()?;
-        let plate = self.theme.plate().is_some();
-        crate::ui::scroll::scrollbar_geom(
-            box_size,
-            plate,
-            panel_replay::body_band(box_size.y, plate, self.layout.header_bottom),
-            self.layout.height,
-            self.scroll,
-        )
-    }
-
     /// An unmapped id yields no portrait, never a guess.
     fn header_facts(&self, view: &RunSummaryView) -> HeaderFacts {
         let portraits = roster_entries(view)
@@ -405,17 +371,22 @@ impl SpireProfilerRunPanel {
         if viewport != self.viewport_seen {
             self.viewport_seen = viewport;
             self.apply_modal_geometry();
-            self.reshape_tip();
+            self.tip_lines = panel_common::reshape_tip(&self.detail, self.box_size.y);
         }
         let Some(plate_rect) = self.plate_rect() else {
             return;
         };
-        let gutter = self.scrollbar_gutter();
+        let gutter = panel_common::scrollbar_gutter(
+            self.layout.height,
+            self.box_size.y,
+            self.theme.scrollbar().is_some(),
+        );
         if gutter != self.gutter {
             self.gutter = gutter;
             self.layout_valid = false;
         }
-        let mouse = self.mouse_position();
+        panel_common::viewport_mouse(&self.object, &mut self.mouse);
+        let mouse = self.mouse;
         self.interaction(plate_rect, mouse);
 
         panel_common::wheel_scroll(
@@ -487,9 +458,8 @@ impl SpireProfilerRunPanel {
                 detail_cards,
             )
         });
-        // The tip's line cap comes from the box height: re-derive first.
         self.apply_modal_geometry();
-        self.reshape_tip();
+        self.tip_lines = panel_common::reshape_tip(&self.detail, self.box_size.y);
         self.update_frame(hover);
         self.object.queue_redraw();
     }
@@ -530,11 +500,6 @@ impl SpireProfilerRunPanel {
             // active avatar returns to All, any other selects it.
             crate::data::run_history::toggle_run_filter(slot);
         }
-    }
-
-    fn mouse_position(&mut self) -> Vector2 {
-        panel_common::viewport_mouse(&self.object, &mut self.mouse);
-        self.mouse
     }
 }
 

@@ -12,7 +12,7 @@
 use std::cell::Cell;
 use std::hash::{Hash, Hasher};
 
-use crate::data::state::{CardStat, PlayerFilter, STATE};
+use crate::data::state::{CardStat, STATE};
 use crate::engine::gdext::Object;
 use crate::engine::math::{Rect2, Vector2};
 use crate::marker;
@@ -35,11 +35,11 @@ thread_local! {
 }
 
 pub(crate) fn queue_scroll(delta: f32) {
-    QUEUED_SCROLL.with(|c| c.set(c.get() + delta));
+    QUEUED_SCROLL.with(|q| panel_common::queue_scroll(q, delta));
 }
 
 pub(crate) fn take_queued_scroll() -> f32 {
-    QUEUED_SCROLL.with(|c| c.replace(0.0))
+    QUEUED_SCROLL.with(panel_common::take_queued_scroll)
 }
 
 pub(crate) fn visible() -> bool {
@@ -284,7 +284,7 @@ impl SpireProfilerPanel {
         if viewport != self.viewport_seen {
             self.viewport_seen = viewport;
             self.apply_modal_geometry();
-            self.reshape_tip();
+            self.tip_lines = panel_common::reshape_tip(&self.detail, self.box_size.y);
         }
         // Presses, wheel input, and hover treat the strip as part of the
         // panel (a tab press must not dismiss, and every hit table is
@@ -292,12 +292,17 @@ impl SpireProfilerPanel {
         let Some(control_rect) = self.control_rect() else {
             return;
         };
-        let gutter = self.scrollbar_gutter();
+        let gutter = panel_common::scrollbar_gutter(
+            self.layout.height,
+            self.box_size.y,
+            self.theme.scrollbar().is_some(),
+        );
         if gutter != self.gutter {
             self.gutter = gutter;
             self.sig = None;
         }
-        let mouse = self.mouse_position();
+        panel_common::viewport_mouse(&self.object, &mut self.mouse);
+        let mouse = self.mouse;
         self.interaction(control_rect, mouse);
         self.apply_wheel_scroll(control_rect, mouse);
 
@@ -391,22 +396,10 @@ impl SpireProfilerPanel {
             right_gutter: self.gutter,
         });
         self.layout = layout;
-        // The tip's line cap comes from the box height: a tip capped to a
-        // stale (larger) box could exceed the new y-band.
         self.apply_modal_geometry();
-        self.reshape_tip();
+        self.tip_lines = panel_common::reshape_tip(&self.detail, self.box_size.y);
         self.update_frame(hover);
         self.object.queue_redraw();
-    }
-
-    /// Fixed row heights mean the gutter can never change the overflow
-    /// verdict and oscillate.
-    fn scrollbar_gutter(&self) -> f32 {
-        if self.layout.height > self.box_size.y && self.theme.scrollbar().is_some() {
-            crate::ui::scroll::GUTTER
-        } else {
-            0.0
-        }
     }
 
     /// An unmapped character id yields no avatar, never a guess.
@@ -438,32 +431,21 @@ impl SpireProfilerPanel {
         for path in &self.layout.portrait_paths {
             changed |= self.theme.resolve_dynamic(path);
         }
-        self.dimmed_scratch.clear();
         let filter = STATE.with(|s| s.borrow().player_filter);
-        // Release build leaves the mask empty (avatars draw undimmed) instead of
-        // panicking in the contained draw path.
-        debug_assert_eq!(
+        panel_common::fill_dim_mask(
             self.layout.portrait_paths.len(),
-            self.avatar_slots.len(),
-            "the rebuild fills portrait paths and roster slots together"
+            &self.avatar_slots,
+            filter,
+            &mut self.dimmed_scratch,
         );
-        if self.layout.portrait_paths.len() == self.avatar_slots.len() {
-            for &slot in &self.avatar_slots {
-                let dimmed = filter != PlayerFilter::All && filter != PlayerFilter::Player(slot);
-                self.dimmed_scratch.push(dimmed);
-            }
-        }
         changed
     }
 
-    /// None when the bar is hidden (content fits, or sprites failed).
     fn scrollbar_geom(&self, box_size: Vector2) -> Option<crate::ui::scroll::ScrollbarGeom> {
-        self.theme.scrollbar()?;
-        let plate = self.theme.plate().is_some();
-        crate::ui::scroll::scrollbar_geom(
+        panel_common::scrollbar_geom(
+            &self.theme,
             box_size,
-            plate,
-            panel_replay::body_band(box_size.y, plate, self.layout.header_bottom),
+            self.layout.header_bottom,
             self.layout.height,
             self.scroll,
         )
@@ -513,17 +495,6 @@ impl SpireProfilerPanel {
         let strip = Vector2::new(0.0, self.layout.strip_h);
         self.plate_pos
             .map(|pos| Rect2::new(pos - strip, self.box_size))
-    }
-
-    fn reshape_tip(&mut self) {
-        self.tip_lines = if self.detail.is_empty() {
-            Vec::new()
-        } else {
-            crate::ui::tooltip::shape(
-                &self.detail,
-                crate::ui::tooltip::max_tip_lines(self.box_size.y),
-            )
-        };
     }
 
     /// Runs before the dirty-check early-outs: a scroll moves the hovered
@@ -623,11 +594,6 @@ impl SpireProfilerPanel {
             crate::data::events::panel_filter_toggle(slot);
             self.sig = None; // rebuild with the filter applied
         }
-    }
-
-    fn mouse_position(&mut self) -> Vector2 {
-        panel_common::viewport_mouse(&self.object, &mut self.mouse);
-        self.mouse
     }
 }
 

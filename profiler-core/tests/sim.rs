@@ -20,7 +20,7 @@ use std::path::Path;
 
 use profiler_core::data::state::{self, PendingContrib, RunOutcome, STATE, SourceKind};
 use profiler_core::data::{events, ledger, records};
-use profiler_core::test_util::wiped_dir;
+use profiler_core::test_util::{combat_ids, wiped_dir};
 
 const DEFAULT_SEED: u64 = 0x5EED_5EED_5EED_5EED;
 const SCENARIOS: u32 = 20;
@@ -174,8 +174,6 @@ fn check_card_invariants(combat: &state::Combat, step: u32) {
             "step {step}: card {id}: block_gained must never go negative",
             id = card.id
         );
-        // osty_killed removes the summon's unabsorbed HP from the killer's
-        // credit.
         assert!(
             card.blk_modifier >= 0,
             "step {step}: card {id}: block modifier credits must be non-negative",
@@ -343,6 +341,8 @@ fn drive_rare_event(rng: &mut Rng, roll: u64) {
                 ..events::DamageDealt::default()
             });
         }
+        // osty_killed removes the summon's unabsorbed HP from the killer's
+        // credit.
         73 => events::osty_killed(0),
         74..=75 => events::forge(
             if rng.below(2) == 0 {
@@ -546,44 +546,16 @@ fn randomized_combat_lifecycle_invariants() {
     }
 }
 
-fn store_combat_ids(runs_dir: &Path) -> Vec<u32> {
-    let mut ids: Vec<u32> = fs::read_dir(runs_dir)
-        .expect("runs dir must be written")
-        .flatten()
-        .filter_map(|entry| {
-            let run_dir = entry.path();
-            if !run_dir.is_dir() {
-                return None;
-            }
-            run_dir
-                .file_name()
-                .and_then(|name| name.to_string_lossy().parse::<u32>().ok())
-        })
-        .flat_map(|run_id| {
-            fs::read_dir(runs_dir.join(run_id.to_string()))
-                .expect("run dir must be written")
-                .flatten()
-                .filter_map(move |entry| {
-                    let name = entry.file_name();
-                    let name = name.to_string_lossy();
-                    let stem = name.strip_suffix(".json")?;
-                    stem.parse::<u32>().ok()
-                })
-        })
-        .collect();
-    ids.sort_unstable();
-    ids
-}
-
 fn check_written_files(base: &Path, player_died: bool) {
     let runs_dir = base.join("runs");
-    let ids = store_combat_ids(&runs_dir);
+    let ids: Vec<u32> = combat_ids(&runs_dir)
+        .into_iter()
+        .map(|(_, id)| id)
+        .collect();
     assert_eq!(ids.len(), 1, "exactly one combat record per scenario");
     let combats_text =
         fs::read_to_string(runs_dir.join("1").join("1.json")).expect("combat file must be written");
-    let parsed = [records::parse_combat_doc(&combats_text).expect("combat doc must parse back")];
-    assert_eq!(parsed.len(), 1, "exactly one combat record per scenario");
-    let rec = &parsed[0];
+    let rec = records::parse_combat_doc(&combats_text).expect("combat doc must parse back");
     assert_eq!(rec.combat_id, 1, "the scenario's only combat is seq 1");
     assert_eq!(
         rec.result,
@@ -596,7 +568,7 @@ fn check_written_files(base: &Path, player_died: bool) {
         !combats_text.contains("\"origin\""),
         "the persisted record must contain no origin field"
     );
-    check_wire_shape(&combats_text, rec);
+    check_wire_shape(&combats_text, &rec);
     // The persisted record must mirror the finished in-memory combat
     // (the write/read pairing rule).
     STATE.with(|cell| {
@@ -715,11 +687,9 @@ fn check_run_and_store_files(base: &Path, player_died: bool) {
             .expect("runs.jsonl must hold one run line"),
     )
     .expect("the run line must be valid JSON");
-    let runs = [runs];
-    assert_eq!(runs.len(), 1, "exactly one run record per scenario");
-    assert_eq!(runs[0]["run_id"], 1);
+    assert_eq!(runs["run_id"], 1);
     assert_eq!(
-        runs[0]["outcome"],
+        runs["outcome"],
         if player_died { "defeat" } else { "victory" },
         "the run record's outcome must mirror the walk's player death"
     );

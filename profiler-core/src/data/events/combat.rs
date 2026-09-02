@@ -11,12 +11,6 @@ use crate::data::state::{
 };
 use crate::{fail, marker};
 
-fn assert_damage_segments(combat: &Combat) {
-    for card in &combat.cards {
-        ledger::assert_card_damage_segments(card);
-    }
-}
-
 pub fn turn_started() {
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
@@ -121,9 +115,12 @@ fn absorb_osty_damage(damage: i32, player_slot: i32) {
         let mut i = state.per_player[slot].osty_stack.len();
         while i > 0 && remaining > 0 {
             i -= 1;
-            if state.per_player[slot].osty_stack[i].remaining <= 0 {
-                continue;
-            }
+            // Entries are pushed with HP and removed on depletion, so
+            // every stack entry still has some to absorb.
+            debug_assert!(
+                state.per_player[slot].osty_stack[i].remaining > 0,
+                "depleted osty entries must have left the stack"
+            );
             let take = state.per_player[slot].osty_stack[i]
                 .remaining
                 .min(remaining);
@@ -136,8 +133,9 @@ fn absorb_osty_damage(damage: i32, player_slot: i32) {
                 let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
                     return;
                 };
-                let index = ledger::get_or_create_card_kind(combat, player, &id, kind);
-                combat.cards[index].block_effective += take;
+                if let Some(index) = ledger::get_or_create_card_kind(combat, player, &id, kind) {
+                    combat.cards[index].block_effective += take;
+                }
             }
             state.per_player[slot].osty_stack[i].remaining -= take;
             remaining -= take;
@@ -150,9 +148,11 @@ fn absorb_osty_damage(damage: i32, player_slot: i32) {
                 return;
             };
             // The overflow has no player owner: key it at the TEAM slot.
-            let index =
-                ledger::get_or_create_card_kind(combat, TEAM_SLOT, "OSTY", SourceKind::Osty);
-            combat.cards[index].block_effective += remaining;
+            if let Some(index) =
+                ledger::get_or_create_card_kind(combat, TEAM_SLOT, "OSTY", SourceKind::Osty)
+            {
+                combat.cards[index].block_effective += remaining;
+            }
         }
         event_log!(
             "  osty absorbed {damage} damage ({} from summon sources)",
@@ -182,11 +182,12 @@ pub fn osty_killed(player_slot: i32) {
         {
             // A generated instance's play credits its generator's slot.
             let row_slot = state.per_player[slot].active_play_source_slot;
-            let index = ledger::get_or_create_card_kind(combat, row_slot, &id, kind);
-            combat.cards[index].block_effective -= remaining;
-            state.per_player[slot].osty_stack.clear();
-            event_log!("  osty died: -{remaining} effective block on '{id}'");
-            return;
+            if let Some(index) = ledger::get_or_create_card_kind(combat, row_slot, &id, kind) {
+                combat.cards[index].block_effective -= remaining;
+                state.per_player[slot].osty_stack.clear();
+                event_log!("  osty died: -{remaining} effective block on '{id}'");
+                return;
+            }
         }
         state.per_player[slot].osty_stack.clear();
         event_log!("  osty killed, stack cleared");
@@ -214,7 +215,8 @@ pub fn combat_started(encounter_id: &str, encounter_type: &str) {
     }
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
-        // Seeded at init as one past the store's highest id.
+        // Init seeds at the store's highest id, so this pre-increment
+        // makes the new combat's id max+1.
         state.next_combat_id += 1;
         // Per-player transient state clears wholesale at the boundary.
         state.per_player.clear();
@@ -265,20 +267,23 @@ pub struct DamageDealt<'a> {
 }
 
 pub fn damage_dealt(args: DamageDealt) {
+    // A negative total is a wire bug that would decrement the ledger; a
+    // zero total is a normal no-op hit.
+    if args.total < 0 {
+        fail!("negative damage total {}", args.total);
+        return;
+    }
+    if args.total == 0 {
+        return;
+    }
     // Intent-display recalcs can queue contributions with no hit
-    // following; every early-return branch drops them.
+    // following; every branch of damage_dealt_in drops or consumes them,
+    // so a no-total event leaves the queue for the next real hit.
     let total = args.total;
     let receiver_slot = args.receiver_slot;
     let needs_osty_absorb = STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         damage_dealt_in(&mut state, args)
-    });
-    // Every card's four segments must still decompose damage_dealt.
-    STATE.with(|cell| {
-        let state = cell.borrow();
-        if let Some(combat) = state.current.as_ref().filter(|combat| !combat.finished) {
-            assert_damage_segments(combat);
-        }
     });
     if needs_osty_absorb {
         absorb_osty_damage(total, receiver_slot);
@@ -408,12 +413,13 @@ fn record_osty_dealt_in(
             return;
         };
         let row_slot = clamp_source_slot(card_source_slot);
-        let index = ledger::get_or_create_card(combat, row_slot, source);
-        let card = &mut combat.cards[index];
-        card.damage_dealt += total as i64;
-        card.dmg_direct += total as i64;
-        card.damage_blocked += blocked as i64;
-        ledger::assert_card_damage_segments(card);
+        if let Some(index) = ledger::get_or_create_card(combat, row_slot, source) {
+            let card = &mut combat.cards[index];
+            card.damage_dealt += total as i64;
+            card.dmg_direct += total as i64;
+            card.damage_blocked += blocked as i64;
+            ledger::assert_card_damage_segments(card);
+        }
     }
     state.slot_state_mut(dealer_slot).pending_contribs.clear();
     event_log!("  osty dealt {total} damage via '{source}'");
@@ -482,6 +488,15 @@ fn block_base_after_mods(slot_state: &PlayerSlotState, amount: i64) -> i64 {
 }
 
 pub fn block_gained(amount: i32, card_id: &str, player_slot: i32, source_slot: i32) {
+    // A negative gain is a wire bug that would decrement the ledger; a
+    // zero gain is a normal no-op.
+    if amount < 0 {
+        fail!("negative block gain {amount}");
+        return;
+    }
+    if amount == 0 {
+        return;
+    }
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         // Reborrow the RefCell guard so the combat and the slot's

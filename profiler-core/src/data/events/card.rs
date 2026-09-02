@@ -54,12 +54,18 @@ pub fn card_play_started(
         let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
             return;
         };
+        // No row means the whole event is dropped: plays, play_depth, and
+        // the active play's slot state all stay untouched, so the plays
+        // identity holds.
+        let Some(index) =
+            ledger::get_or_create_card_kind(combat, play_slot, &play_source.0, play_source.1)
+        else {
+            return;
+        };
         let slot_state = &mut state.per_player[slot];
         slot_state.active_play_source_slot = play_slot;
         // The FIRST orb trigger credits the channeling source.
         slot_state.orb_first_trigger_used = false;
-        let index =
-            ledger::get_or_create_card_kind(combat, play_slot, &play_source.0, play_source.1);
         record_card_play_in(combat, slot_state, index, card_id, !generated);
         slot_state.play_depth += 1;
         combat.plays += 1;
@@ -155,7 +161,13 @@ pub fn card_generated(card_hash: i32, source_id: &str, source_kind: i32, player_
         if kind != SourceKind::Card
             && let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished)
         {
-            let index = ledger::get_or_create_card_kind(combat, player, &resolved_source, kind);
+            // Without the row the trigger cannot be counted (the plays
+            // identity), so the whole event drops.
+            let Some(index) =
+                ledger::get_or_create_card_kind(combat, player, &resolved_source, kind)
+            else {
+                return;
+            };
             combat.cards[index].plays += 1;
             combat.generation_triggers += 1;
         }
