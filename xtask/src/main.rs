@@ -210,6 +210,17 @@ pub(crate) fn sha256_file(path: &Path) -> Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+/// Fail with the remedy, not a raw spawn error, before the work runs.
+pub(crate) fn ensure_cli(shell: &Shell, tool: &str, probe_arg: &str, purpose: &str) -> Result<()> {
+    Shell::cmd(shell, tool).arg(probe_arg).read().map_err(|_| {
+        anyhow::anyhow!(
+            "{purpose} needs the {tool} CLI, which is not on PATH; install it (macOS ships \
+             it with the OS, Linux via the distro's {tool} package)"
+        )
+    })?;
+    Ok(())
+}
+
 fn smoke(shell: &Shell) -> Result<()> {
     cmd!(shell, "cargo fmt --all -- --check").run()?;
     md::fmt_md(true)?;
@@ -226,6 +237,9 @@ fn smoke(shell: &Shell) -> Result<()> {
 /// The build bootstraps these lazily when missing, so install-tool is the
 /// optional up-front/offline path, not a prerequisite.
 fn install_tool(shell: &Shell) -> Result<()> {
+    // Same host gate as build: the toolchain bootstraps are Unix-only.
+    discover::Platform::detect()?;
+
     let tool_checks: [(&[&str], String, String, Option<&str>); 3] = [
         (
             &["cargo", "nextest", "--version"],

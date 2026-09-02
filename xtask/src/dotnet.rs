@@ -22,11 +22,7 @@ pub fn bootstrap_dir() -> PathBuf {
 }
 
 pub fn binary_in(dir: &Path) -> PathBuf {
-    if std::env::consts::OS == "windows" {
-        dir.join("dotnet.exe")
-    } else {
-        dir.join("dotnet")
-    }
+    dir.join("dotnet")
 }
 
 pub fn installer_script() -> PathBuf {
@@ -167,14 +163,6 @@ pub fn ensure_bootstrap_in(shell: &Shell, dir: &Path) -> Result<()> {
             dir.display()
         );
         std::fs::remove_dir_all(dir)?;
-    }
-    if std::env::consts::OS == "windows" {
-        return Err(anyhow::anyhow!(
-            "dotnet bootstrap: the vendored installer is a shell script (macOS/Linux); on \
-             Windows run the official installer with `powershell -File tools/dotnet-install.ps1 \
-             -Channel {DOTNET_CHANNEL} -InstallDir dotnet-sdk` (from \
-             https://dot.net/v1/dotnet-install.ps1)"
-        ));
     }
     println!(
         "dotnet bootstrap: downloading the pinned SDK {DOTNET_CHANNEL} into {} (first run \

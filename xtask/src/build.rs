@@ -11,13 +11,8 @@ use crate::{bundle, check_abi, cross, discover, game_version, git, shim, workspa
 
 pub fn build(shell: &Shell) -> Result<()> {
     let root = workspace_root();
-    let platform = discover::Platform::detect()?;
-    if platform == discover::Platform::Windows {
-        return Err(anyhow::anyhow!(
-            "the bundle can only be built on a macOS or Linux host (the hermetic \
-             .NET SDK bootstrap is a Unix script)"
-        ));
-    }
+    // Cheap host rejection before the expensive cross matrix runs.
+    discover::Platform::detect()?;
 
     check_abi::run()?;
 

@@ -39,7 +39,7 @@ pub fn headless_test(shell: &Shell) -> Result<()> {
     // Refuse to boot a game the mod was not verified against.
     game_version::check_pin(&game)?;
 
-    let log_dir = home_log_dir()?;
+    let log_dir = game_log_dir(game.platform)?;
     let root = workspace_root();
 
     // A scratch dir keeps the self-test from polluting the real play data.
@@ -49,8 +49,7 @@ pub fn headless_test(shell: &Shell) -> Result<()> {
     // Bounds which godot log belongs to this run: a stale log must never
     // satisfy the verdict.
     let boot_started = SystemTime::now();
-    let (game_out, boot_duration, exit_code) =
-        run_game_captured(&game.game_exe, &scratch_data_dir, root)?;
+    let (game_out, boot_duration, exit_code) = run_game_captured(&game, &scratch_data_dir, root)?;
     let (log_path, log_text) = find_newest_log(&log_dir, boot_started);
 
     let combined = format!("{log_text}\n{game_out}");
@@ -174,12 +173,12 @@ fn check_unexpected_errors(output: &str, failures: &mut Vec<String>) {
     }
 }
 
-/// Honors STS2_USER_DATA_DIR, then falls back to the per-OS user-data dir.
-fn home_log_dir() -> Result<PathBuf> {
+/// Honors STS2_USER_DATA_DIR, then falls back to the game platform's
+/// user-data dir.
+fn game_log_dir(platform: discover::Platform) -> Result<PathBuf> {
     if let Some(dir) = std::env::var_os("STS2_USER_DATA_DIR") {
         return Ok(PathBuf::from(dir).join("logs"));
     }
-    let platform = discover::Platform::detect()?;
     Ok(user_data_dir(platform)?.join("logs"))
 }
 
@@ -190,22 +189,10 @@ fn user_data_dir(platform: discover::Platform) -> Result<PathBuf> {
             let home = std::env::var_os("HOME").ok_or_else(no_user_data_home)?;
             Ok(PathBuf::from(home).join("Library/Application Support/SlayTheSpire2"))
         }
-        discover::Platform::Windows => {
-            // Windows-only paths must not get the host separator from join.
-            match std::env::var_os("APPDATA") {
-                Some(appdata) => Ok(PathBuf::from(format!(
-                    r"{}\SlayTheSpire2",
-                    appdata.to_string_lossy()
-                ))),
-                None => {
-                    let profile = std::env::var_os("HOME").ok_or_else(no_user_data_home)?;
-                    Ok(PathBuf::from(format!(
-                        r"{}\AppData\Roaming\SlayTheSpire2",
-                        profile.to_string_lossy()
-                    )))
-                }
-            }
-        }
+        // The game is the WSL2-mounted Windows install: ask Windows for
+        // %APPDATA% through interop (which headless-test needs anyway to
+        // spawn the exe).
+        discover::Platform::Windows => windows_user_data_dir(),
         discover::Platform::Linux => {
             let home = std::env::var_os("HOME").ok_or_else(no_user_data_home)?;
             match std::env::var_os("XDG_DATA_HOME") {
@@ -216,34 +203,105 @@ fn user_data_dir(platform: discover::Platform) -> Result<PathBuf> {
     }
 }
 
+fn windows_user_data_dir() -> Result<PathBuf> {
+    // chcp 65001 puts cmd's stdout in UTF-8, so a non-ASCII profile name
+    // survives the codepage crossing into from_utf8_lossy.
+    let win_appdata = run_trimmed(
+        "cmd.exe",
+        &["/c", "chcp 65001 >nul & echo %APPDATA%"],
+        "querying %APPDATA% via WSL interop (enable [interop] in /etc/wsl.conf, or set \
+         STS2_USER_DATA_DIR to skip the query)",
+    )?;
+    let wsl_appdata = run_trimmed(
+        "wslpath",
+        &["-u", &win_appdata],
+        &format!("translating {win_appdata} with wslpath"),
+    )?;
+    Ok(PathBuf::from(wsl_appdata).join("SlayTheSpire2"))
+}
+
+/// Trimmed stdout of a command; a spawn failure, a non-zero exit, and
+/// empty output are each an error carrying the caller's context.
+fn run_trimmed(program: &str, args: &[&str], context: &str) -> Result<String> {
+    let output = Command::new(program)
+        .args(args)
+        .output()
+        .map_err(|e| anyhow::anyhow!("{context}: {e}"))?;
+    if !output.status.success() {
+        // stderr usually names the real failure (e.g. wslpath's "No such
+        // file or directory"); status alone does not.
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        let detail = if stderr.is_empty() {
+            String::new()
+        } else {
+            format!(": {stderr}")
+        };
+        bail!("{context}: exited with{}{detail}", output.status);
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if stdout.is_empty() {
+        bail!("{context}: produced no output");
+    }
+    Ok(stdout)
+}
+
+/// WSL interop inherits only the env vars WSLENV names; the /p flag
+/// hands the Windows side the \\wsl$ translation of the Linux path.
+fn share_path_with_windows(command: &mut Command, var: &str) {
+    let existing = std::env::var("WSLENV").unwrap_or_default();
+    command.env("WSLENV", merged_wslenv(&existing, var));
+}
+
+/// Any existing spec for the same var is replaced: stale flags (no /p, or
+/// /l) would otherwise compete with the translation.
+fn merged_wslenv(existing: &str, var: &str) -> String {
+    let mut wslenv: Vec<String> = existing
+        .split(':')
+        .filter(|entry| !entry.is_empty() && entry.split('/').next() != Some(var))
+        .map(str::to_owned)
+        .collect();
+    wslenv.push(format!("{var}/p"));
+    wslenv.join(":")
+}
+
 fn no_user_data_home() -> anyhow::Error {
     anyhow::anyhow!("the home directory is not available and STS2_USER_DATA_DIR is unset")
 }
 
 /// Tees combined output to stderr while capturing it for the verdict.
 fn run_game_captured(
-    game_exe: &Path,
+    game: &discover::GamePaths,
     scratch_data_dir: &Path,
     root: &Path,
 ) -> Result<(String, Duration, Option<i32>)> {
     println!("booting the game headless (first boot may take 30-60s) ...");
     eprintln!(
         "headless-test: $ {} {}",
-        game_exe.display(),
+        game.game_exe.display(),
         GAME_ARGS.join(" ")
     );
 
     // std::process::Command (not xshell): piped stdout/stderr plus try_wait
     // polling for the watchdog.
-    let mut child = Command::new(game_exe)
+    let mut command = Command::new(&game.game_exe);
+    command
         .args(GAME_ARGS)
         .env("SPIRE_PROFILER_DATA_DIR", scratch_data_dir)
         .current_dir(root)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    // A Windows game means a WSL2 host (Platform::detect rejects native
+    // Windows). Without this bridge the shim would write self-test data
+    // into the real play data dir.
+    if game.platform == discover::Platform::Windows {
+        share_path_with_windows(&mut command, "SPIRE_PROFILER_DATA_DIR");
+    }
+
+    let mut child = command
         .spawn()
-        .map_err(|e| anyhow::anyhow!("spawning {}: {e}", game_exe.display()))?;
+        .map_err(|e| anyhow::anyhow!("spawning {}: {e}", game.game_exe.display()))?;
 
     let streams: [Box<dyn std::io::Read + Send>; 2] = [
         Box::new(child.stdout.take().expect("stdout was piped")),
@@ -336,6 +394,13 @@ fn find_newest_log(log_dir: &Path, boot_started: SystemTime) -> (Option<PathBuf>
     }
 }
 
+/// The log's mtime comes from the game's clock, `boot_started` from the
+/// host's; under WSL2 the Windows game and the WSL clock skew after a
+/// Windows sleep, and a strictly in-window filter would drop this run's
+/// fresh log. The verdict still gates on the process output, so the
+/// slack cannot let a stale log pass on its own.
+const LOG_CLOCK_SLACK: Duration = Duration::from_secs(60);
+
 fn newest_boot_log(log_dir: &Path, boot_started: SystemTime) -> Option<(PathBuf, String)> {
     let entries = std::fs::read_dir(log_dir).ok()?;
     let mut candidates: Vec<(SystemTime, PathBuf)> = entries
@@ -351,7 +416,7 @@ fn newest_boot_log(log_dir: &Path, boot_started: SystemTime) -> Option<(PathBuf,
             let modified = entry.metadata().ok()?.modified().ok()?;
             Some((modified, entry.path()))
         })
-        .filter(|(modified, _)| *modified >= boot_started)
+        .filter(|(modified, _)| *modified + LOG_CLOCK_SLACK >= boot_started)
         .collect();
     candidates.sort_by_key(|candidate| candidate.0);
     let (_, path) = candidates.pop()?;
@@ -362,4 +427,24 @@ fn newest_boot_log(log_dir: &Path, boot_started: SystemTime) -> Option<(PathBuf,
 /// Tagged \[SpireProfiler\] and reads as an error.
 fn is_unexpected_error(line: &str) -> bool {
     line.contains("[SpireProfiler]") && line.contains("ERROR")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wslenv_merge_appends_the_translation_flag() {
+        assert_eq!(merged_wslenv("", "FOO"), "FOO/p");
+        assert_eq!(merged_wslenv("BAR/l", "FOO"), "BAR/l:FOO/p");
+    }
+
+    #[test]
+    fn wslenv_merge_replaces_stale_specs_of_the_same_var() {
+        assert_eq!(merged_wslenv("FOO", "FOO"), "FOO/p");
+        assert_eq!(merged_wslenv("FOO/l:BAR", "FOO"), "BAR:FOO/p");
+        assert_eq!(merged_wslenv("FOO/l:FOO/p:BAR", "FOO"), "BAR:FOO/p");
+        // A var whose name merely starts with the var's is untouched.
+        assert_eq!(merged_wslenv("FOOBAR/l", "FOO"), "FOOBAR/l:FOO/p");
+    }
 }
