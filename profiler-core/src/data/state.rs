@@ -168,7 +168,6 @@ pub type SourceSlot = u8;
 pub const TEAM_SLOT: SourceSlot = 4;
 
 thread_local! {
-    /// Once-gates for corrupt wire values; see [`crate::fail_once`].
     static BAD_SLOT_LOGGED: Cell<bool> = const { Cell::new(false) };
     static BAD_MODIFIER_KIND_LOGGED: Cell<bool> = const { Cell::new(false) };
 }
@@ -672,22 +671,62 @@ impl State {
 }
 
 pub mod caps {
+    /// Open hook contexts at one instant: each relic/power hook's begin
+    /// push pairs with an end pop, so the cap bounds how deep hooks nest
+    /// into each other, not the combat's hook count.
     pub const CONTEXT_STACK: usize = 32;
+    /// Channeling sources keyed by orb hash (a re-channel upserts) plus
+    /// two hash-0 potion entries per use; nothing leaves the table before
+    /// the combat boundary, so whole-combat potion uses drive the worst
+    /// case.
     pub const ORB_SOURCES: usize = 32;
     /// The game's lobby cap; per-player state never needs a fifth PLAYER.
     pub const MAX_PLAYERS: usize = 4;
     /// The four player slots plus the TEAM slot, so a corrupt wire slot
     /// can never index out of bounds.
     pub const MAX_PLAYER_SLOTS: usize = 5;
+    /// One chunk per distinct block source still holding block in one
+    /// slot's pool: same-source chunks merge, blocked damage drains FIFO,
+    /// and the slot's turn boundary clears the pool.
     pub const BLOCK_POOL: usize = 64;
+    /// Modifier shares awaiting the next block gain, one per recorded
+    /// applier per modifier event; that gain attaches the queue to one
+    /// chunk (at most a chunk's `MAX_MODS` slices) and clears it.
     pub const PENDING_BLOCK_CONTRIBS: usize = 16;
+    /// One entry per (power, source, slot) applier trio: repeat
+    /// applications merge into an existing entry and the combat boundary
+    /// clears the table, so it holds one combat's distinct appliers per
+    /// power.
     pub const POWER_SOURCES: usize = 128;
+    /// One entry per generated card instance hash, updated in place when
+    /// the same instance regenerates and cleared only at the combat
+    /// boundary, so it grows with one combat's distinct generated copies.
     pub const GENERATED_INSTANCES: usize = 64;
+    /// One layer per recorded Doom application on an enemy, drained FIFO
+    /// at that creature's Doom kill (depleted layers leave) and cleared at
+    /// the combat boundary, so it holds applications still awaiting a
+    /// kill.
     pub const DOOM_LAYERS: usize = 64;
+    /// One capture per living doomed creature in a single DoomKill batch;
+    /// the postfix drains the whole table, so the cap sizes one kill
+    /// batch, never a lifetime count.
     pub const DOOM_TARGETS: usize = 16;
+    /// One entry per Osty summon on the owner's slot, popped as absorbed
+    /// damage depletes it and cleared when the Osty dies, so it holds only
+    /// summons with unabsorbed HP.
     pub const OSTY_STACK: usize = 32;
+    /// Modifier shares awaiting the dealer's next landed hit, one per
+    /// recorded applier per modifier event; the hit carves them out of its
+    /// damage and an unlanded one drops them, so the queue never spans
+    /// hits.
     pub const PENDING_CONTRIBS: usize = 16;
+    /// One entry per (creature, reducer source, slot) trio, merged on
+    /// repeat and consumed LIFO when the enemy's Strength rises again, so
+    /// it holds each creature's reductions still standing.
     pub const STR_REDUCTIONS: usize = 64;
+    /// One layer per duration-debuff application on an enemy (vulnerable,
+    /// weak, poison): turn-end decrements consume the layers FIFO and drop
+    /// depleted ones, and poison ticks split by duration fraction.
     pub const DEBUFF_LAYERS: usize = 64;
     /// One combat's distinct (player, id, kind) rows: four slots' deck ids
     /// (upgraded variants included) plus the relic/power/potion catalogs —
@@ -731,10 +770,9 @@ mod tests {
 
     #[test]
     fn modifier_kind_codes_map_power_and_relic_and_clamp_unknowns() {
-        assert_eq!(clamp_modifier_kind(0), SourceKind::Power);
         assert_eq!(clamp_modifier_kind(1), SourceKind::Relic);
-        // Not the context ordering: there 2 reads as Card, here as Power.
         assert_eq!(clamp_modifier_kind(2), SourceKind::Power);
+        assert_eq!(clamp_modifier_kind(0), SourceKind::Power);
         assert_eq!(clamp_modifier_kind(-1), SourceKind::Power);
         assert_eq!(clamp_modifier_kind(i32::MAX), SourceKind::Power);
     }

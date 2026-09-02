@@ -7,7 +7,6 @@ use std::time::Instant;
 use crate::data::state::PlayerFilter;
 use crate::engine::gdext::Object;
 use crate::engine::math::{Rect2, Vector2};
-use crate::fail;
 use crate::ui::chart_layout::{self, Cmd, RectCmd};
 use crate::ui::theme::Theme;
 use crate::ui::tooltip::{self, RowDetail, TipLine};
@@ -70,7 +69,6 @@ pub(crate) fn queue_scroll(queue: &Cell<f32>, delta: f32) {
     queue.set(queue.get() + delta);
 }
 
-/// Read-and-clear.
 pub(crate) fn take_queued_scroll(queue: &Cell<f32>) -> f32 {
     queue.replace(0.0)
 }
@@ -485,12 +483,10 @@ thread_local! {
 }
 
 pub(crate) fn log_cmd_overflow_once(owner: &str) {
-    CMD_OVERFLOW_LOGGED.with(|logged| {
-        if !logged.get() {
-            logged.set(true);
-            fail!("{owner}: layout command cap exceeded; tail commands dropped");
-        }
-    });
+    crate::fail_once(
+        &CMD_OVERFLOW_LOGGED,
+        format_args!("{owner}: layout command cap exceeded; tail commands dropped"),
+    );
 }
 
 #[cfg(test)]

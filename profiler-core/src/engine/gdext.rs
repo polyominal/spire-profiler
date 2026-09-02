@@ -677,7 +677,6 @@ pub(crate) fn read_vector2(variant: &Opaque) -> Option<Vector2> {
 }
 
 std::thread_local! {
-    /// Once-gate for NUL truncation; see [`crate::fail_once`].
     static NUL_IN_TEXT_LOGGED: Cell<bool> = const { Cell::new(false) };
 }
 
