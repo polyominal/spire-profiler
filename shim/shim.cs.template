@@ -1242,7 +1242,7 @@ internal static class PatchBlockPoolClear
 /// v0.111.0 source) — too late for power attribution, because potions like
 /// FlexPotion apply their powers during OnUse. Prefix OnUseWrapper instead
 /// so the potion fallback exists before the effects run; the PotionUsed
-/// postfix below only bumps the potions_used counter.
+/// postfix below books the use (the counter plus a fresh fallback entry).
 /// </summary>
 [HarmonyPatch(typeof(PotionModel), nameof(PotionModel.OnUseWrapper))]
 internal static class PatchPotionContextBegin

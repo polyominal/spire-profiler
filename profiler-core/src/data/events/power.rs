@@ -169,8 +169,9 @@ fn record_power_source_in(
     }
 }
 
-/// On the PLAYER the decrease consumes the recorded appliers FIFO so
-/// expired Strength is never credited again.
+/// On the PLAYER the decrease is a temporary-power expiry (FlexPotionPower
+/// applies −5 Strength at side turn end): consume the amount from the
+/// recorded appliers FIFO so the expired grant is never credited again.
 pub fn power_decreased(
     power_id: &str,
     amount: i32,
