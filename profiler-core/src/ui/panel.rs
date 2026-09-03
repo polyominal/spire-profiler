@@ -22,7 +22,7 @@ use crate::ui::chart_layout::{self, Layout};
 use crate::ui::panel_common::{self, AvatarScaleAnimation, InteractionState, PressZone};
 use crate::ui::tooltip::RowDetail;
 use crate::ui::ui_model::{self, UiMeta, UiRow, UiTab};
-use crate::ui::{panel_replay, snapshot};
+use crate::ui::{panel_body, panel_replay, snapshot};
 
 thread_local! {
     static VISIBLE: Cell<bool> = const { Cell::new(false) };
@@ -75,6 +75,7 @@ pub(crate) fn enable_for_selftest() {
 /// The class name must stay `SpireProfilerPanel`.
 pub struct SpireProfilerPanel {
     object: Object,
+    children: panel_body::PanelChildren,
     rows: [UiRow; ui_model::MAX_UI_ROWS],
     row_count: usize,
     meta: UiMeta,
@@ -103,6 +104,7 @@ pub struct SpireProfilerPanel {
     viewport_seen: Option<Vector2>,
     mouse: Vector2,
     font: panel_replay::FontState,
+    font_plan: panel_replay::FontPlan,
     theme: crate::ui::theme::Theme,
     gutter: f32,
     /// Roster slots parallel to the layout's `portrait_paths` (only the
@@ -111,7 +113,9 @@ pub struct SpireProfilerPanel {
     avatar_animation: AvatarScaleAnimation,
     dimmed_scratch: Vec<bool>,
     logged_draw: bool,
-    /// The `chart draw ok` marker proves clean engine calls, not just entry.
+    logged_body_draw: bool,
+    logged_overlay_draw: bool,
+    /// The `chart draw ok` marker proves clean parent calls, not just entry.
     draw_ok_logged: bool,
 }
 
@@ -124,6 +128,7 @@ impl SpireProfilerPanel {
         marker!("panel instance created");
         Self {
             object,
+            children: panel_body::PanelChildren::default(),
             rows: [UiRow::default(); ui_model::MAX_UI_ROWS],
             row_count: 0,
             meta: UiMeta::default(),
@@ -148,19 +153,27 @@ impl SpireProfilerPanel {
             viewport_seen: None,
             mouse: Vector2::ZERO,
             font: panel_replay::FontState::Unfetched,
+            font_plan: panel_replay::FontPlan::default(),
             theme: crate::ui::theme::Theme::new(),
             gutter: 0.0,
             avatar_slots: Vec::new(),
             avatar_animation: AvatarScaleAnimation::default(),
             dimmed_scratch: Vec::new(),
             logged_draw: false,
+            logged_body_draw: false,
+            logged_overlay_draw: false,
             draw_ok_logged: false,
         }
     }
 
-    /// Replays the body (translated, scissored), then the pinned header
-    /// over it — the floating tab strip, title, avatar row, and meta line
-    /// never move.
+    /// Registration runs this once the boxed state address is stable.
+    pub(crate) fn attach_children(&mut self) {
+        self.children =
+            panel_body::PanelChildren::attach(self.object, panel_body::OwnerRef::Combat(self));
+    }
+
+    /// Draws the pinned chrome — plate, tab strip, and header. Rows and
+    /// overlays are drawn by the two child Controls.
     pub(crate) fn draw(&mut self) {
         if self.sig.is_none() {
             return;
@@ -176,19 +189,15 @@ impl SpireProfilerPanel {
             // Newly loaded roster avatars change the header.
             self.sig = None;
         }
-        // Hoisted ahead of `fonts` to avoid a second mutable borrow.
-        let scrollbar_sprites = self.theme.scrollbar();
-        let scrollbar_geom = self.scrollbar_geom(self.box_size);
         let fonts = panel_replay::Fonts::new(
             &self.object,
             &mut self.font,
             &self.theme,
-            &self.layout.header_cmds,
-            &self.layout.cmds,
-            &self.detail,
+            self.font_plan,
             "theme default font unavailable; chart text disabled",
         );
-        // Count failures so `chart draw ok` fires only after a clean draw.
+        // Count failures so `chart draw ok` fires only after a clean parent
+        // draw.
         let mut call_errors = 0;
         let plate = self.theme.plate();
         call_errors += draw_pinned_chrome(
@@ -205,23 +214,78 @@ impl SpireProfilerPanel {
             dimmed: &self.dimmed_scratch,
             scales: self.avatar_animation.values(),
         };
-        call_errors += panel_replay::replay_split(
+        // Plate mode skips the fill: a flat rect would blank the border art.
+        if plate.is_none() {
+            call_errors += panel_replay::draw_header_fill(
+                &self.object,
+                self.origin_x,
+                self.layout.width,
+                self.layout.header_bottom,
+            );
+        }
+        call_errors += panel_replay::replay_cmds(
             &self.object,
             &fonts,
             &self.layout.header_cmds,
-            &self.layout.cmds,
-            self.layout.header_bottom,
-            self.layout.width,
-            plate.is_some(),
-            self.origin_x,
-            self.scroll,
-            self.box_size.y,
+            Vector2::new(self.origin_x, 0.0),
             &icons,
         );
-        call_errors += panel_replay::draw_overlays(
+        self.log_draw_ok(call_errors);
+    }
+
+    /// The rows child's `_draw`; commands are translated into child space.
+    pub(crate) fn draw_body(&mut self, body: &Object) {
+        if self.sig.is_none() {
+            return;
+        }
+        if !self.logged_body_draw {
+            self.logged_body_draw = true;
+            marker!("chart body _draw active");
+        }
+        let fonts = panel_replay::Fonts::new(
             &self.object,
+            &mut self.font,
+            &self.theme,
+            self.font_plan,
+            "theme default font unavailable; chart text disabled",
+        );
+        let icons = panel_replay::IconTextures {
+            theme: &self.theme,
+            portraits: &self.layout.portrait_paths,
+            dimmed: &self.dimmed_scratch,
+            scales: self.avatar_animation.values(),
+        };
+        panel_replay::replay_cmds(
+            body,
             &fonts,
-            plate,
+            &self.layout.cmds,
+            Vector2::new(0.0, -(self.layout.header_bottom + self.scroll)),
+            &icons,
+        );
+    }
+
+    /// The overlay child's `_draw`.
+    pub(crate) fn draw_overlay(&mut self, overlay: &Object) {
+        if self.sig.is_none() {
+            return;
+        }
+        if !self.logged_overlay_draw {
+            self.logged_overlay_draw = true;
+            marker!("chart overlay _draw active");
+        }
+        let scrollbar_sprites = self.theme.scrollbar();
+        let scrollbar_geom = self.scrollbar_geom(self.box_size);
+        let fonts = panel_replay::Fonts::new(
+            &self.object,
+            &mut self.font,
+            &self.theme,
+            self.font_plan,
+            "theme default font unavailable; text disabled",
+        );
+        let _ = panel_replay::draw_overlays(
+            overlay,
+            &fonts,
+            self.theme.plate(),
             scrollbar_sprites.zip(scrollbar_geom),
             self.origin_x,
             self.legend,
@@ -229,7 +293,6 @@ impl SpireProfilerPanel {
             self.tip,
             &self.tip_lines,
         );
-        self.log_draw_ok(call_errors);
     }
 
     /// One-shot entry marker: the headless gate greps `chart _draw
@@ -246,13 +309,13 @@ impl SpireProfilerPanel {
         );
     }
 
-    /// The `chart draw ok` marker proves clean engine calls, not just
-    /// entry.
+    /// The `chart draw ok` marker proves clean parent engine calls, not
+    /// just entry; child-call failures surface via `fail_call_failed`.
     fn log_draw_ok(&mut self, call_errors: usize) {
         if !self.draw_ok_logged && call_errors == 0 {
             self.draw_ok_logged = true;
             marker!(
-                "chart draw ok: {} cmds, 0 call errors",
+                "chart draw ok: {} cmds, 0 parent call errors",
                 self.layout.cmds.len() + self.layout.header_cmds.len()
             );
         }
@@ -396,10 +459,12 @@ impl SpireProfilerPanel {
             right_gutter: self.gutter,
         });
         self.layout = layout;
+        self.font_plan =
+            panel_replay::FontPlan::scan(&self.layout.header_cmds, &self.layout.cmds, &self.detail);
         self.apply_modal_geometry();
         self.tip_lines = panel_common::reshape_tip(&self.detail, self.box_size.y);
         self.update_frame(hover);
-        self.object.queue_redraw();
+        self.queue_panel_redraw();
     }
 
     /// An unmapped character id yields no avatar, never a guess.
@@ -455,13 +520,19 @@ impl SpireProfilerPanel {
     /// the dirty checks must not be the ones to catch it.
     fn apply_wheel_scroll(&mut self, rect: Rect2, mouse: Vector2) {
         panel_common::wheel_scroll(
-            &self.object,
+            self.children.objects(),
             &mut self.scroll,
             &mut self.pending_scroll,
             rect,
             mouse,
             self.layout.height,
         );
+    }
+
+    /// A content change redraws every panel-owned canvas item.
+    fn queue_panel_redraw(&mut self) {
+        self.object.queue_redraw();
+        self.children.queue_redraw();
     }
 
     /// The Control rect itself is applied later by the frame step, which
@@ -535,15 +606,24 @@ impl SpireProfilerPanel {
         let frame = Rect2::new(frame.position - strip, frame.size + strip);
         panel_common::apply_control_frame(&self.object, frame, &mut self.applied_frame);
         self.origin_x = origin_x;
+        let body_frame = panel_common::body_frame(
+            self.origin_x,
+            self.box_size,
+            self.theme.plate().is_some(),
+            self.layout.header_bottom,
+        );
+        self.children.update_frames(frame, body_frame);
         let legend = legend.map(|rect| Rect2::new(rect.position - frame.position, rect.size));
         if legend != self.legend {
             self.legend = legend;
             self.object.queue_redraw();
+            self.children.queue_overlay_redraw();
         }
         let tip = tip.map(|tip| Rect2::new(tip.position - frame.position, tip.size));
         if tip != self.tip {
             self.tip = tip;
             self.object.queue_redraw();
+            self.children.queue_overlay_redraw();
         }
     }
 
@@ -561,7 +641,7 @@ impl SpireProfilerPanel {
             content_height: self.layout.height,
         };
         let step = panel_common::interaction_step(
-            &self.object,
+            self.children.objects(),
             rect,
             mouse,
             &mut self.interaction,

@@ -49,10 +49,6 @@ pub fn apply_scroll(offset: f32, delta_px: f32, box_height: f32, content_height:
     (offset + delta_px).clamp(0.0, max_scroll)
 }
 
-pub fn screen_y(content_y: f32, offset: f32) -> f32 {
-    content_y - offset
-}
-
 pub(crate) const GUTTER: f32 = 32.0;
 
 /// Narrower than the game's 48px strip; the art stretches.
@@ -216,7 +212,7 @@ mod tests {
             let geom = scrollbar_geom(box_size, plate, band, 512.0, 0.0).expect("overflowing");
             assert_eq!(geom.track.position.y, band.0, "plate={plate}");
             let pad = if plate {
-                crate::ui::theme::PLATE_PAD_BOTTOM
+                crate::ui::theme::PLATE_OUTER_PAD_BOTTOM
             } else {
                 crate::ui::theme::FLAT_PAD
             };

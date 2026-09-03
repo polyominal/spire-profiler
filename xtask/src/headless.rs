@@ -125,10 +125,10 @@ fn check_patch_count(output: &str, failures: &mut Vec<String>) {
     }
 }
 
-/// The shim's load/attach markers and the registration line prove both
-/// gdext classes registered; `chart draw ok` proves dispatch fired with
-/// zero CallErrors.
-const GATE_MARKERS: [&str; 9] = [
+/// The shim's load/attach markers and the registration line prove the
+/// gdext classes registered; the draw markers prove parent and both child
+/// dispatches fired, and `chart draw ok` proves clean parent CallErrors.
+const GATE_MARKERS: [&str; 11] = [
     "[SpireProfiler] INFO: chart self-test (combat):",
     "[SpireProfiler] INFO: chart self-test (run):",
     "[SpireProfiler] INFO: combat 1 summary written",
@@ -137,6 +137,8 @@ const GATE_MARKERS: [&str; 9] = [
     "[SpireProfiler] profiler panel attached",
     "[SpireProfiler] INFO: panel class registered",
     "[SpireProfiler] INFO: chart _draw active",
+    "[SpireProfiler] INFO: chart body _draw active",
+    "[SpireProfiler] INFO: chart overlay _draw active",
     "[SpireProfiler] INFO: chart draw ok",
 ];
 

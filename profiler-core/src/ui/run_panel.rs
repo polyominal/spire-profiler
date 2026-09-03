@@ -59,7 +59,7 @@ use crate::ui::run_layout::{
 };
 use crate::ui::tooltip::RowDetail;
 use crate::ui::ui_model::{self, UiRow};
-use crate::ui::{chart_layout, panel_replay};
+use crate::ui::{chart_layout, panel_body, panel_replay};
 
 thread_local! {
     static RUN_MANUAL_VISIBLE: Cell<bool> = const { Cell::new(false) };
@@ -97,6 +97,7 @@ const INITIAL_BOX_H: f32 = 300.0;
 /// `SpireProfilerRunPanel`.
 pub struct SpireProfilerRunPanel {
     object: Object,
+    children: panel_body::PanelChildren,
     view_fp: u64,
     /// False until the first build, so the empty notice renders initially.
     layout_valid: bool,
@@ -107,7 +108,7 @@ pub struct SpireProfilerRunPanel {
     hover_row: Option<usize>,
     detail: RowDetail,
     interaction: InteractionState,
-    /// The body draws translated by this offset, scissored to the band.
+    /// The rows child draws translated by this offset; its rect clips.
     scroll: f32,
     /// Input arrives as events while the offset only moves per frame.
     pending_scroll: f32,
@@ -125,6 +126,7 @@ pub struct SpireProfilerRunPanel {
     viewport_seen: Option<Vector2>,
     mouse: Vector2,
     font: panel_replay::FontState,
+    font_plan: panel_replay::FontPlan,
     theme: crate::ui::theme::Theme,
     gutter: f32,
     /// Roster slots parallel to the layout's `portrait_paths`, for the
@@ -144,6 +146,7 @@ impl SpireProfilerRunPanel {
         object.set_clip_contents(true);
         Self {
             object,
+            children: panel_body::PanelChildren::default(),
             view_fp: 0,
             layout_valid: false,
             layout: RunLayout::default(),
@@ -164,12 +167,25 @@ impl SpireProfilerRunPanel {
             viewport_seen: None,
             mouse: Vector2::ZERO,
             font: panel_replay::FontState::Unfetched,
+            font_plan: panel_replay::FontPlan::default(),
             theme: crate::ui::theme::Theme::new(),
             gutter: 0.0,
             avatar_slots: Vec::new(),
             avatar_animation: AvatarScaleAnimation::default(),
             dimmed_scratch: Vec::new(),
         }
+    }
+
+    /// Registration runs this once the boxed state address is stable.
+    pub(crate) fn attach_children(&mut self) {
+        self.children =
+            panel_body::PanelChildren::attach(self.object, panel_body::OwnerRef::Run(self));
+    }
+
+    /// A content change redraws every panel-owned canvas item.
+    fn queue_panel_redraw(&mut self) {
+        self.object.queue_redraw();
+        self.children.queue_redraw();
     }
 
     /// Call errors are dropped rather than counted: this class must stay
@@ -189,16 +205,11 @@ impl SpireProfilerRunPanel {
         // render at the game's deselect modulate. Runs before `fonts`
         // borrows `self.font`.
         self.resolve_dim_mask();
-        // Hoisted ahead of `fonts` to avoid a second mutable borrow.
-        let scrollbar_sprites = self.theme.scrollbar();
-        let scrollbar_geom = self.scrollbar_geom(self.box_size);
         let fonts = panel_replay::Fonts::new(
             &self.object,
             &mut self.font,
             &self.theme,
-            &self.layout.header_cmds,
-            &self.layout.cmds,
-            &self.detail,
+            self.font_plan,
             "run panel font unavailable; text disabled",
         );
         let icons = panel_replay::IconTextures {
@@ -220,29 +231,12 @@ impl SpireProfilerRunPanel {
                 0.0,
             );
         }
-        let _ = panel_replay::replay_split(
+        let _ = panel_replay::replay_cmds(
             &self.object,
             &fonts,
             &self.layout.header_cmds,
-            &self.layout.cmds,
-            self.layout.header_bottom,
-            self.layout.width,
-            plate.is_some(),
-            self.origin_x,
-            self.scroll,
-            self.box_size.y,
+            Vector2::new(self.origin_x, 0.0),
             &icons,
-        );
-        let _ = panel_replay::draw_overlays(
-            &self.object,
-            &fonts,
-            plate,
-            scrollbar_sprites.zip(scrollbar_geom),
-            self.origin_x,
-            self.legend,
-            &mut self.legend_cmds,
-            self.tip,
-            &self.tip_lines,
         );
     }
 
@@ -253,6 +247,54 @@ impl SpireProfilerRunPanel {
             &self.avatar_slots,
             filter,
             &mut self.dimmed_scratch,
+        );
+    }
+
+    /// The rows child's `_draw`; commands are translated into child space.
+    pub(crate) fn draw_body(&mut self, body: &Object) {
+        let fonts = panel_replay::Fonts::new(
+            &self.object,
+            &mut self.font,
+            &self.theme,
+            self.font_plan,
+            "run panel font unavailable; text disabled",
+        );
+        let icons = panel_replay::IconTextures {
+            theme: &self.theme,
+            portraits: &self.layout.portrait_paths,
+            dimmed: &self.dimmed_scratch,
+            scales: self.avatar_animation.values(),
+        };
+        panel_replay::replay_cmds(
+            body,
+            &fonts,
+            &self.layout.cmds,
+            Vector2::new(0.0, -(self.layout.header_bottom + self.scroll)),
+            &icons,
+        );
+    }
+
+    /// The overlay child's `_draw`.
+    pub(crate) fn draw_overlay(&mut self, overlay: &Object) {
+        let scrollbar_sprites = self.theme.scrollbar();
+        let scrollbar_geom = self.scrollbar_geom(self.box_size);
+        let fonts = panel_replay::Fonts::new(
+            &self.object,
+            &mut self.font,
+            &self.theme,
+            self.font_plan,
+            "run panel font unavailable; text disabled",
+        );
+        let _ = panel_replay::draw_overlays(
+            overlay,
+            &fonts,
+            self.theme.plate(),
+            scrollbar_sprites.zip(scrollbar_geom),
+            self.origin_x,
+            self.legend,
+            &mut self.legend_cmds,
+            self.tip,
+            &self.tip_lines,
         );
     }
 
@@ -320,15 +362,24 @@ impl SpireProfilerRunPanel {
         let (frame, origin_x) = crate::ui::tooltip::frame(plate_rect, legend, tip);
         panel_common::apply_control_frame(&self.object, frame, &mut self.applied_frame);
         self.origin_x = origin_x;
+        let body_frame = panel_common::body_frame(
+            self.origin_x,
+            self.box_size,
+            self.theme.plate().is_some(),
+            self.layout.header_bottom,
+        );
+        self.children.update_frames(frame, body_frame);
         let legend = legend.map(|rect| Rect2::new(rect.position - frame.position, rect.size));
         if legend != self.legend {
             self.legend = legend;
             self.object.queue_redraw();
+            self.children.queue_overlay_redraw();
         }
         let tip = tip.map(|tip| Rect2::new(tip.position - frame.position, tip.size));
         if tip != self.tip {
             self.tip = tip;
             self.object.queue_redraw();
+            self.children.queue_overlay_redraw();
         }
     }
 
@@ -390,7 +441,7 @@ impl SpireProfilerRunPanel {
         self.interaction(plate_rect, mouse);
 
         panel_common::wheel_scroll(
-            &self.object,
+            self.children.objects(),
             &mut self.scroll,
             &mut self.pending_scroll,
             plate_rect,
@@ -458,10 +509,12 @@ impl SpireProfilerRunPanel {
                 detail_cards,
             )
         });
+        self.font_plan =
+            panel_replay::FontPlan::scan(&self.layout.header_cmds, &self.layout.cmds, &self.detail);
         self.apply_modal_geometry();
         self.tip_lines = panel_common::reshape_tip(&self.detail, self.box_size.y);
         self.update_frame(hover);
-        self.object.queue_redraw();
+        self.queue_panel_redraw();
     }
 
     fn interaction(&mut self, rect: Rect2, mouse: Vector2) {
@@ -477,7 +530,7 @@ impl SpireProfilerRunPanel {
                 .map_or(PressZone::Inert, PressZone::Avatar)
         });
         let step = panel_common::interaction_step(
-            &self.object,
+            self.children.objects(),
             rect,
             mouse,
             &mut self.interaction,

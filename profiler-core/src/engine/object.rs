@@ -32,6 +32,9 @@ pub enum TextAlign {
     Center(f32),
 }
 
+/// `Control.MouseFilter.IGNORE` in the engine's wire representation.
+const MOUSE_FILTER_IGNORE: i64 = 2;
+
 impl TextAlign {
     fn engine_args(self) -> (i64, f64) {
         match self {
@@ -109,13 +112,29 @@ impl Object {
         self.call("set_visible", method, &[arg.const_ptr()], &mut ret);
     }
 
-    /// Clips this Control's drawing to its own rect, the panels' scroll box.
+    /// Clips this Control's canvas item to its own rect.
     pub(crate) fn set_clip_contents(self, clip: bool) {
         let value = clip;
         let arg = Variant::from_value(VT_BOOL, (&value as *const bool).cast::<c_void>());
         let mut ret = Variant::uninit();
         let method = GLOBAL.with(|g| g.borrow().sn_set_clip_contents);
         self.call("set_clip_contents", method, &[arg.const_ptr()], &mut ret);
+    }
+
+    /// The child must never swallow the parent's gui input.
+    pub(crate) fn set_mouse_filter_ignore(self) {
+        let value = MOUSE_FILTER_IGNORE;
+        let arg = Variant::from_value(VT_INT, (&value as *const i64).cast::<c_void>());
+        let mut ret = Variant::uninit();
+        let method = GLOBAL.with(|g| g.borrow().sn_set_mouse_filter);
+        self.call("set_mouse_filter", method, &[arg.const_ptr()], &mut ret);
+    }
+
+    pub(crate) fn add_child(self, child: Object) {
+        let arg = Variant::from_value(VT_OBJECT, (&child.0 as *const ObjectPtr).cast::<c_void>());
+        let mut ret = Variant::uninit();
+        let method = GLOBAL.with(|g| g.borrow().sn_add_child);
+        self.call("add_child", method, &[arg.const_ptr()], &mut ret);
     }
 
     pub(crate) fn queue_redraw(self) {

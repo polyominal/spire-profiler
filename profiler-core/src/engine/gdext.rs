@@ -1,9 +1,11 @@
 //! Hand-rolled minimal GDExtension FFI — the crate's engine-facing surface:
 //! a direct binding to the engine's `GDExtensionInterface` (vendored header
 //! `vendor/gdextension_interface.h`, Godot 4.5.1). Exports
-//! `gdextension_entry` and registers both panel classes as `Control`
-//! subclasses with one virtual (`_draw`) and a zero-argument `refresh`
-//! method the shim calls every frame.
+//! `gdextension_entry` and registers the parent panel classes as `Control`
+//! subclasses with one virtual (`_draw`) and the zero-argument `refresh`
+//! method the shim calls every frame. Each parent natively instantiates the
+//! shared child class through [`instantiate_class`]; that class exposes only
+//! `_draw`.
 //!
 //! # Native code never inspects engine input events — scroll arrives from the shim
 //!
@@ -138,6 +140,7 @@ type ClassMethodCallFn = unsafe extern "C" fn(
     *mut CallError,
 );
 type PtrDestructorFn = unsafe extern "C" fn(TypePtr);
+pub(crate) type ObjectId = u64;
 
 /// Every field is a function pointer, so the struct is `Sync`.
 #[derive(Clone, Copy)]
@@ -153,6 +156,8 @@ struct Api {
     classdb_register_extension_class_method:
         unsafe extern "C" fn(ClassLibraryPtr, ConstStringNamePtr, *const ClassMethodInfo),
     object_set_instance: unsafe extern "C" fn(ObjectPtr, ConstStringNamePtr, ClassInstancePtr),
+    object_get_instance_from_id: unsafe extern "C" fn(ObjectId) -> ObjectPtr,
+    object_get_instance_id: unsafe extern "C" fn(ObjectPtr) -> ObjectId,
     global_get_singleton: unsafe extern "C" fn(ConstStringNamePtr) -> ObjectPtr,
     get_variant_from_type_constructor: unsafe extern "C" fn(c_int) -> FromTypeConstructorFn,
     variant_get_ptr_internal_getter: unsafe extern "C" fn(c_int) -> Option<InternalGetterFn>,
@@ -193,6 +198,8 @@ impl Api {
                     c"classdb_register_extension_class_method",
                 )?,
                 object_set_instance: lookup(get, c"object_set_instance")?,
+                object_get_instance_from_id: lookup(get, c"object_get_instance_from_id")?,
+                object_get_instance_id: lookup(get, c"object_get_instance_id")?,
                 global_get_singleton: lookup(get, c"global_get_singleton")?,
                 get_variant_from_type_constructor: lookup(
                     get,
@@ -254,6 +261,14 @@ fn classdb_register_extension_class_method(
 
 fn object_set_instance(obj: ObjectPtr, class: ConstStringNamePtr, instance: ClassInstancePtr) {
     unsafe { (api().object_set_instance)(obj, class, instance) };
+}
+
+fn object_get_instance_from_id(id: ObjectId) -> ObjectPtr {
+    unsafe { (api().object_get_instance_from_id)(id) }
+}
+
+fn object_get_instance_id(obj: ObjectPtr) -> ObjectId {
+    unsafe { (api().object_get_instance_id)(obj) }
 }
 
 fn global_get_singleton(name: ConstStringNamePtr) -> ObjectPtr {
@@ -419,6 +434,8 @@ pub(crate) struct Global {
     pub(crate) sn_get_theme_default_font: StringNamePtr,
     pub(crate) sn_get_visible_rect: StringNamePtr,
     pub(crate) sn_set_clip_contents: StringNamePtr,
+    pub(crate) sn_add_child: StringNamePtr,
+    pub(crate) sn_set_mouse_filter: StringNamePtr,
     pub(crate) sn_resource_loader: StringNamePtr,
     pub(crate) sn_load: StringNamePtr,
     pub(crate) sn_style_box_texture: StringNamePtr,
@@ -461,6 +478,8 @@ impl Global {
             sn_get_theme_default_font: ptr::null_mut(),
             sn_get_visible_rect: ptr::null_mut(),
             sn_set_clip_contents: ptr::null_mut(),
+            sn_add_child: ptr::null_mut(),
+            sn_set_mouse_filter: ptr::null_mut(),
             sn_resource_loader: ptr::null_mut(),
             sn_load: ptr::null_mut(),
             sn_style_box_texture: ptr::null_mut(),
@@ -487,31 +506,28 @@ thread_local! {
     pub(crate) static GLOBAL: RefCell<Global> = const { RefCell::new(Global::new()) };
 }
 
-static CLASSES: OnceLock<[EngineClass; 2]> = OnceLock::new();
+static CLASSES: OnceLock<[EngineClass; 3]> = OnceLock::new();
 
 /// The engine layer never sees the concrete panel type.
 pub(crate) struct EngineClass {
-    label: &'static str,
     name: &'static CStr,
     /// The interned StringName, filled by `init_string_names`.
     name_ptr: AtomicUsize,
     create: unsafe fn(Object) -> *mut c_void,
     free: unsafe fn(*mut c_void),
     draw: unsafe fn(*mut c_void),
-    refresh: unsafe fn(*mut c_void),
+    refresh: Option<unsafe fn(*mut c_void)>,
 }
 
 impl EngineClass {
     pub(crate) const fn new(
-        label: &'static str,
         name: &'static CStr,
         create: unsafe fn(Object) -> *mut c_void,
         free: unsafe fn(*mut c_void),
         draw: unsafe fn(*mut c_void),
-        refresh: unsafe fn(*mut c_void),
+        refresh: Option<unsafe fn(*mut c_void)>,
     ) -> Self {
         EngineClass {
-            label,
             name,
             name_ptr: AtomicUsize::new(0),
             create,
@@ -531,6 +547,15 @@ impl EngineClass {
     }
 }
 
+pub(crate) fn object_id(object: Object) -> ObjectId {
+    object_get_instance_id(object.0)
+}
+
+pub(crate) fn object_from_id(id: ObjectId) -> Option<Object> {
+    let object = object_get_instance_from_id(id);
+    (!object.is_null()).then_some(Object(object))
+}
+
 /// The owning class plus its state pointer.
 struct Instance {
     class: &'static EngineClass,
@@ -539,6 +564,28 @@ struct Instance {
 
 // Every engine callback runs through [`crate::abi::contain`]: a panic
 // unwinding into the engine would crash the game.
+
+/// What the shim's `ClassDB.Instantiate` does, minus the managed
+/// round-trip: runs the class's own create path, so the instance binding
+/// (and its later free) is indistinguishable from a shim-created panel.
+/// The class resolves by name, never table position: an index that ever
+/// drifted onto a panel class would recurse through `attach_children`
+/// without terminating.
+pub(crate) fn instantiate_class(name: &CStr) -> Option<Object> {
+    let classes = CLASSES.get()?;
+    let class = classes
+        .iter()
+        .find(|class| class.name.to_bytes() == name.to_bytes())?;
+    let class_userdata = (class as *const EngineClass).cast_mut().cast::<c_void>();
+    // Safety: identical to the engine invoking the callback; the function
+    // is contain-wrapped and self-contained.
+    let obj = unsafe { create_instance(class_userdata, 0) };
+    if obj.is_null() {
+        None
+    } else {
+        Some(Object(obj))
+    }
+}
 
 /// The storage `Box` is deliberately leaked: StringName is interned and
 /// engine-managed.
@@ -575,6 +622,8 @@ fn init_string_names() {
         g.sn_get_theme_default_font = make_string_name(c"get_theme_default_font");
         g.sn_get_visible_rect = make_string_name(c"get_visible_rect");
         g.sn_set_clip_contents = make_string_name(c"set_clip_contents");
+        g.sn_add_child = make_string_name(c"add_child");
+        g.sn_set_mouse_filter = make_string_name(c"set_mouse_filter");
         g.sn_resource_loader = make_string_name(c"ResourceLoader");
         g.sn_load = make_string_name(c"load");
         g.sn_style_box_texture = make_string_name(c"StyleBoxTexture");
@@ -923,6 +972,9 @@ fn register_class(
     };
     classdb_register_extension_class5(library, class_name, parent, &info);
 
+    if class.refresh.is_none() {
+        return;
+    }
     let method = ClassMethodInfo {
         name: GLOBAL.with(|g| g.borrow().sn_refresh),
         method_userdata: class_userdata,
@@ -950,33 +1002,37 @@ unsafe extern "C" fn create_instance(
     _notify_postinitialize: GDExtensionBool,
 ) -> ObjectPtr {
     let class = unsafe { &*class_userdata.cast::<EngineClass>() };
-    contain(
-        &format!("{} create_instance", class.label),
-        ptr::null_mut(),
-        || {
-            let control = GLOBAL.with(|g| g.borrow().sn_control);
-            let obj = classdb_construct_object(control);
-            if obj.is_null() {
-                return ptr::null_mut();
-            }
-            // A panic inside `create` is swallowed but leaks the constructed
-            // Control: the engine only learns of the instance through
-            // `object_set_instance`, which the panic skips. Accepted — a
-            // cleanup path would risk a double free.
-            let state = unsafe { (class.create)(Object(obj)) };
-            let instance = Box::into_raw(Box::new(Instance { class, state })).cast::<c_void>();
-            let class_name = class
-                .name_ptr()
-                .expect("the class name was interned at Scene init");
-            object_set_instance(obj, class_name, instance);
-            obj
-        },
-    )
+    let label = class
+        .name
+        .to_str()
+        .expect("registered class names are UTF-8");
+    contain(&format!("{label} create_instance"), ptr::null_mut(), || {
+        let control = GLOBAL.with(|g| g.borrow().sn_control);
+        let obj = classdb_construct_object(control);
+        if obj.is_null() {
+            return ptr::null_mut();
+        }
+        // A panic inside `create` is swallowed but leaks the constructed
+        // Control: the engine only learns of the instance through
+        // `object_set_instance`, which the panic skips. Accepted — a
+        // cleanup path would risk a double free.
+        let state = unsafe { (class.create)(Object(obj)) };
+        let instance = Box::into_raw(Box::new(Instance { class, state })).cast::<c_void>();
+        let class_name = class
+            .name_ptr()
+            .expect("the class name was interned at Scene init");
+        object_set_instance(obj, class_name, instance);
+        obj
+    })
 }
 
 unsafe extern "C" fn free_instance(class_userdata: *mut c_void, instance: ClassInstancePtr) {
     let class = unsafe { &*class_userdata.cast::<EngineClass>() };
-    contain(&format!("{} free_instance", class.label), (), || {
+    let label = class
+        .name
+        .to_str()
+        .expect("registered class names are UTF-8");
+    contain(&format!("{label} free_instance"), (), || {
         if instance.is_null() {
             return;
         }
@@ -1015,7 +1071,13 @@ unsafe extern "C" fn draw_virtual(
         "panel"
     } else {
         // Safety: instance is the object_set_instance pointer for a live panel.
-        unsafe { (*instance.cast::<Instance>()).class.label }
+        unsafe {
+            (*instance.cast::<Instance>())
+                .class
+                .name
+                .to_str()
+                .expect("registered class names are UTF-8")
+        }
     };
     contain(&format!("{label} _draw"), (), || {
         if instance.is_null() {
@@ -1035,6 +1097,13 @@ unsafe extern "C" fn refresh_call(
     error_out: *mut CallError,
 ) {
     let class = unsafe { &*method_userdata.cast::<EngineClass>() };
+    let Some(refresh) = class.refresh else {
+        return;
+    };
+    let label = class
+        .name
+        .to_str()
+        .expect("registered class names are UTF-8");
     if !error_out.is_null() {
         unsafe {
             (*error_out).error = CALL_OK;
@@ -1042,12 +1111,12 @@ unsafe extern "C" fn refresh_call(
             (*error_out).expected = 0;
         }
     }
-    contain(&format!("{} refresh", class.label), (), || {
+    contain(&format!("{label} refresh"), (), || {
         if instance.is_null() {
             return;
         }
         // Safety: instance is the object_set_instance pointer for a live panel.
         let header = unsafe { &*instance.cast::<Instance>() };
-        unsafe { (header.class.refresh)(header.state) };
+        unsafe { refresh(header.state) };
     });
 }

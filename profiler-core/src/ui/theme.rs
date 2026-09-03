@@ -32,8 +32,9 @@
 //! pinned from `hover_tip.tscn`: L55/T43/R91/B32, tiled), its shadow
 //! 8px down-right at 25% black. [`content_box`] is the single
 //! content-area computation: the plate body (box minus the shadow inset)
-//! further inset by the content padding L22/T16/R37/B20, minus the 32px
-//! scrollbar gutter while the bar shows. The right pad is asymmetric on
+//! further inset by the content padding L22/T16/R37/B20 — the bottom line
+//! lands 28 above the outer box, B20 plus the shadow inset — minus the
+//! 32px scrollbar gutter while the bar shows. The right pad is asymmetric on
 //! purpose — the plate's right nine-patch slice is 91px against 55px
 //! left, and the scene compensates with the wider right margin. In the
 //! flat fallback the insets reduce to the pre-plate 12px geometry.
@@ -410,13 +411,16 @@ pub(crate) const PLATE_PAD_TOP: f32 = 16.0;
 /// The scene's margin_right (45) measures from the OUTER box; the body
 /// already insets the 8px shadow, so the plate-relative pad is 37.
 pub(crate) const PLATE_PAD_RIGHT: f32 = 37.0;
-/// The scene's margin_bottom (28) minus the 8px shadow allowance.
+/// The scene's bottom margin measured from the outer box; the scroll
+/// viewport and layout slack both stop here.
+pub(crate) const PLATE_OUTER_PAD_BOTTOM: f32 = 28.0;
+/// The bottom margin measured from the plate body, for tooltip and legend
+/// geometry that already works in body coordinates.
 pub(crate) const PLATE_PAD_BOTTOM: f32 = 20.0;
 
-// The pads are the scene's margins minus the external-shadow allowance;
-// pin the derivation so an edit re-derives deliberately.
+// Pin the outer-to-body coordinate conversion so an edit re-derives it.
 const _: () = assert!(PLATE_PAD_RIGHT == 45.0 - PLATE_SHADOW_OFFSET);
-const _: () = assert!(PLATE_PAD_BOTTOM == 28.0 - PLATE_SHADOW_OFFSET);
+const _: () = assert!(PLATE_PAD_BOTTOM == PLATE_OUTER_PAD_BOTTOM - PLATE_SHADOW_OFFSET);
 
 /// The pre-plate geometry; a failed plate degrades to exactly this.
 pub(crate) const FLAT_PAD: f32 = 12.0;
@@ -428,9 +432,9 @@ pub struct ContentBox {
     pub x: f32,
     pub top: f32,
     pub w: f32,
-    /// The slack below the last content line, so scrolled content never
-    /// ends flush against the plate's bottom edge.
-    pub bottom_pad: f32,
+    /// Slack measured from the outer box, so scrolling never ends content
+    /// flush against the visible bottom edge.
+    pub outer_bottom_pad: f32,
 }
 
 impl ContentBox {
@@ -446,14 +450,14 @@ pub(crate) fn content_box(width: f32, plate: bool, right_gutter: f32) -> Content
             x: PLATE_PAD_LEFT,
             top: PLATE_PAD_TOP,
             w: width - PLATE_SHADOW_OFFSET - PLATE_PAD_LEFT - PLATE_PAD_RIGHT - right_gutter,
-            bottom_pad: PLATE_PAD_BOTTOM,
+            outer_bottom_pad: PLATE_OUTER_PAD_BOTTOM,
         }
     } else {
         ContentBox {
             x: FLAT_PAD,
             top: FLAT_PAD,
             w: width - 2.0 * FLAT_PAD - right_gutter,
-            bottom_pad: FLAT_PAD,
+            outer_bottom_pad: FLAT_PAD,
         }
     }
 }
@@ -548,7 +552,7 @@ mod tests {
         assert_eq!(plate.x, PLATE_PAD_LEFT);
         assert_eq!(plate.top, PLATE_PAD_TOP);
         assert_eq!(plate.right(), width - PLATE_SHADOW_OFFSET - PLATE_PAD_RIGHT);
-        assert_eq!(plate.bottom_pad, PLATE_PAD_BOTTOM);
+        assert_eq!(plate.outer_bottom_pad, PLATE_OUTER_PAD_BOTTOM);
 
         let guttered = content_box(width, true, 32.0);
         assert_eq!(guttered.x, plate.x);
@@ -558,7 +562,7 @@ mod tests {
         assert_eq!(flat.x, FLAT_PAD);
         assert_eq!(flat.top, FLAT_PAD);
         assert_eq!(flat.right(), width - FLAT_PAD);
-        assert_eq!(flat.bottom_pad, FLAT_PAD);
+        assert_eq!(flat.outer_bottom_pad, FLAT_PAD);
     }
 
     #[test]

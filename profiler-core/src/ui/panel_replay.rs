@@ -1,8 +1,8 @@
 //! The panels' draw backend — the `_draw`-path plumbing shared by the two
-//! panels: the per-frame font set with the panel-wide glyph-coverage
+//! panels: the font set with the panel-wide glyph-coverage
 //! fallback, the text-effect passes, the chrome paints, and the draw-
 //! command replay itself. Everything rides the FFI through the safe
-//! `Object` newtype; the scissor math is pure and unit-tested.
+//! `Object` newtype.
 
 use crate::engine::gdext::{Object, RetainedVariant};
 use crate::engine::math::{Color, Rect2, Vector2};
@@ -107,6 +107,47 @@ pub(crate) fn kreon_covers(text: &str) -> bool {
 
 /// The fallback is panel-wide: per-string selection would mix typefaces
 /// across rows of one column.
+///
+/// The coverage scan runs once per layout rebuild (`FontPlan::scan`), so
+/// the chrome and body draws each resolve fonts without re-scanning.
+#[derive(Clone, Copy, Default)]
+pub(crate) enum FontPlan {
+    #[default]
+    NoText,
+    Kreon,
+    Fallback,
+}
+
+impl FontPlan {
+    pub(crate) fn scan(
+        header: &[Cmd],
+        body: &[Cmd],
+        detail: &crate::ui::tooltip::RowDetail,
+    ) -> FontPlan {
+        let mut plan = if detail.is_empty() {
+            FontPlan::NoText
+        } else {
+            FontPlan::Kreon
+        };
+        for text in detail.texts() {
+            if !kreon_covers(text) {
+                plan = FontPlan::Fallback;
+            }
+        }
+        for cmd in header.iter().chain(body.iter()) {
+            if let Cmd::Text(text) = cmd {
+                if matches!(plan, FontPlan::NoText) {
+                    plan = FontPlan::Kreon;
+                }
+                if !kreon_covers(&text.text) {
+                    plan = FontPlan::Fallback;
+                }
+            }
+        }
+        plan
+    }
+}
+
 pub(crate) struct Fonts<'a> {
     default: Option<&'a RetainedVariant>,
     title: Option<&'a RetainedVariant>,
@@ -119,33 +160,21 @@ impl<'a> Fonts<'a> {
         object: &Object,
         default_state: &'a mut FontState,
         theme: &'a Theme,
-        header: &[Cmd],
-        body: &[Cmd],
-        detail: &crate::ui::tooltip::RowDetail,
+        plan: FontPlan,
         warn: &str,
     ) -> Fonts<'a> {
-        let has_text = header
-            .iter()
-            .chain(body.iter())
-            .any(|cmd| matches!(cmd, Cmd::Text(_)))
-            || !detail.is_empty();
-        if has_text {
+        if !matches!(plan, FontPlan::NoText) {
             ensure_font(object, default_state, warn);
         }
         let default = match &*default_state {
             FontState::Loaded(font) => Some(font),
             _ => None,
         };
-        let force_default = detail.texts().any(|text| !kreon_covers(text))
-            || header
-                .iter()
-                .chain(body.iter())
-                .any(|cmd| matches!(cmd, Cmd::Text(t) if !kreon_covers(&t.text)));
         Fonts {
             default,
             title: theme.face(TextRole::Title),
             body: theme.face(TextRole::Body),
-            force_default,
+            force_default: matches!(plan, FontPlan::Fallback),
         }
     }
 
@@ -439,7 +468,7 @@ pub(crate) fn draw_legend(
                 ));
             }
             Cmd::Text(t) => {
-                errors += replay_text_cmd(object, fonts, t, 0.0, 0.0);
+                errors += replay_text_cmd(object, fonts, t, Vector2::ZERO);
             }
             Cmd::Texture(_) => {}
         }
@@ -473,20 +502,11 @@ pub(crate) fn draw_overlays(
     errors
 }
 
-fn replay_text_cmd(
-    object: &Object,
-    fonts: &Fonts,
-    text: &TextCmd,
-    origin_x: f32,
-    scroll: f32,
-) -> usize {
+fn replay_text_cmd(object: &Object, fonts: &Fonts, text: &TextCmd, offset: Vector2) -> usize {
     let Some(font) = fonts.for_role(text.role) else {
         return 0;
     };
-    let pos = Vector2::new(
-        text.x + origin_x,
-        crate::ui::scroll::screen_y(text.y, scroll),
-    );
+    let pos = Vector2::new(text.x + offset.x, text.y + offset.y);
     if text.outline {
         return draw_outlined_text(
             object,
@@ -544,22 +564,14 @@ pub(crate) fn draw_scrollbar(
     errors
 }
 
-// The engine's `clip_contents` scissors at the Control's rect, but the
-// plate's visible viewport is inset from that rect (content pads, the
-// plate art's transparent tail, the drop shadow). Scrolled rows straddling
-// those bands read as glyphs outside the plate on the dimmer. One canvas
-// item has one clip rect, and draws are only legal in the item's own
-// `_draw`, so a Mask/Content split would need a third extension class:
-// the replay scissors the body to the band instead. Rects clip exactly;
-// text and icons draw only fully inside, so a straddling row pops out
-// whole rather than bleeding mid-glyph. The engine clip stays as the
-// outer net; the tooltip never passes through the replay.
+// The body child's rect, scrollbar track, and hover gate all consume this
+// one band, so their boundaries cannot drift.
 
 /// The body band's y-span in box-local coordinates — the scroll viewport:
 /// the same span the scrollbar's track uses.
 pub(crate) fn body_band(box_height: f32, plate: bool, header_bottom: f32) -> (f32, f32) {
     let pad_bottom = if plate {
-        crate::ui::theme::PLATE_PAD_BOTTOM
+        crate::ui::theme::PLATE_OUTER_PAD_BOTTOM
     } else {
         crate::ui::theme::FLAT_PAD
     };
@@ -567,59 +579,24 @@ pub(crate) fn body_band(box_height: f32, plate: bool, header_bottom: f32) -> (f3
     (top, (box_height - pad_bottom).max(top))
 }
 
-pub(crate) fn clip_y_to_band(y: f32, h: f32, band: (f32, f32)) -> Option<(f32, f32)> {
-    let bottom = y + h;
-    let y0 = y.max(band.0);
-    let y1 = bottom.min(band.1);
-    if y1 <= y0 {
-        return None;
-    }
-    if y0 == y && y1 == bottom {
-        Some((y, h))
-    } else {
-        Some((y0, y1 - y0))
-    }
-}
-
-// Kreon's vertical metrics per 1024 upm: ascent 997, descent 293. The
-// fallback font differs slightly; the cull is a scissor, so slack is
-// cosmetic.
-const FONT_ASCENT_PER_EM: f32 = 997.0 / 1024.0;
-const FONT_DESCENT_PER_EM: f32 = 293.0 / 1024.0;
-/// The text effects' overshoot past the glyph band: the outline rim's 1px
-/// diagonal passes above, the header shadow's (5,4) offset below.
-const TEXT_RIM_UP: f32 = 1.0;
-const TEXT_SHADOW_DOWN: f32 = 4.0;
-
-/// Text is never clipped mid-glyph: a straddling command does not draw.
-pub(crate) fn text_inside_band(baseline: f32, size: i32, band: (f32, f32)) -> bool {
-    let s = f32::max(size as f32, 1.0);
-    let top = baseline - s * FONT_ASCENT_PER_EM - TEXT_RIM_UP;
-    let bottom = baseline + s * FONT_DESCENT_PER_EM + TEXT_SHADOW_DOWN;
-    top >= band.0 && bottom <= band.1
-}
-
-/// Replays one command list, returning the engine-call failure count.
-#[allow(clippy::too_many_arguments)] // a draw call's full parameter list
+/// Replays one command list translated by `offset`, returning the
+/// engine-call failure count.
 pub(crate) fn replay_cmds(
     object: &Object,
     fonts: &Fonts,
     cmds: &[Cmd],
-    origin_x: f32,
-    scroll: f32,
+    offset: Vector2,
     icons: &IconTextures,
-    band: (f32, f32),
 ) -> usize {
     let mut call_errors = 0usize;
     for cmd in cmds {
         match cmd {
             Cmd::Rect(rect) => {
-                let y = crate::ui::scroll::screen_y(rect.y, scroll);
-                let Some((y, h)) = clip_y_to_band(y, rect.h, band) else {
-                    continue;
-                };
                 if !object.draw_rect(
-                    Rect2::new(Vector2::new(rect.x + origin_x, y), Vector2::new(rect.w, h)),
+                    Rect2::new(
+                        Vector2::new(rect.x + offset.x, rect.y + offset.y),
+                        Vector2::new(rect.w, rect.h),
+                    ),
                     Color::from_rgba(rect.color[0], rect.color[1], rect.color[2], rect.color[3]),
                 ) {
                     call_errors += 1;
@@ -627,65 +604,21 @@ pub(crate) fn replay_cmds(
             }
             Cmd::Texture(tex) => {
                 let rect = tex.scaled_rect(icons.scale(tex.icon));
-                let y = crate::ui::scroll::screen_y(rect.position.y, scroll);
-                // Icons never clip mid-sprite: they pop out whole.
-                if clip_y_to_band(y, rect.size.y, band)
-                    .is_none_or(|(y0, h)| y0 != y || h != rect.size.y)
-                {
-                    continue;
-                }
                 let Some(texture) = icons.resolve(tex.icon) else {
                     continue;
                 };
-                let pos = Vector2::new(rect.position.x + origin_x, y);
+                let pos = rect.position + offset;
                 let modulate = icons.modulate(tex.icon);
                 if !object.draw_texture_rect(texture, Rect2::new(pos, rect.size), false, modulate) {
                     call_errors += 1;
                 }
             }
             Cmd::Text(text) => {
-                let baseline = crate::ui::scroll::screen_y(text.y, scroll);
-                if !text_inside_band(baseline, text.size, band) {
-                    continue;
-                }
-                call_errors += replay_text_cmd(object, fonts, text, origin_x, scroll);
+                call_errors += replay_text_cmd(object, fonts, text, offset);
             }
         }
     }
     call_errors
-}
-
-/// Body first, then the pinned header over it; the flat fallback repaints
-/// the header zone over any body pixels that straddled upward.
-#[allow(clippy::too_many_arguments)] // one frame's full replay context; bundling it further is artificial
-pub(crate) fn replay_split(
-    object: &Object,
-    fonts: &Fonts,
-    header: &[Cmd],
-    body: &[Cmd],
-    header_bottom: f32,
-    width: f32,
-    plate: bool,
-    origin_x: f32,
-    scroll: f32,
-    box_height: f32,
-    icons: &IconTextures,
-) -> usize {
-    let band = body_band(box_height, plate, header_bottom);
-    let mut errors = replay_cmds(object, fonts, body, origin_x, scroll, icons, band);
-    if !plate {
-        errors += draw_header_fill(object, origin_x, width, header_bottom);
-    }
-    errors += replay_cmds(
-        object,
-        fonts,
-        header,
-        origin_x,
-        0.0,
-        icons,
-        (0.0, box_height),
-    );
-    errors
 }
 
 #[cfg(test)]
@@ -759,7 +692,7 @@ mod tests {
     fn body_band_spans_from_the_header_to_the_bottom_pad() {
         assert_eq!(
             body_band(400.0, true, 154.0),
-            (154.0, 400.0 - crate::ui::theme::PLATE_PAD_BOTTOM)
+            (154.0, 400.0 - crate::ui::theme::PLATE_OUTER_PAD_BOTTOM)
         );
         assert_eq!(
             body_band(400.0, false, 150.0),
@@ -767,53 +700,5 @@ mod tests {
         );
         // A degenerate box collapses to an empty band, never inverted.
         assert_eq!(body_band(100.0, true, 154.0), (154.0, 154.0));
-    }
-
-    #[test]
-    fn clip_y_to_band_clips_or_drops() {
-        let band = (16.0, 380.0);
-        assert_eq!(clip_y_to_band(100.0, 32.0, band), Some((100.0, 32.0)));
-        assert_eq!(clip_y_to_band(-10.0, 40.0, band), Some((16.0, 14.0)));
-        assert_eq!(clip_y_to_band(370.0, 40.0, band), Some((370.0, 10.0)));
-        assert_eq!(clip_y_to_band(-50.0, 30.0, band), None);
-        assert_eq!(clip_y_to_band(400.0, 30.0, band), None);
-        assert_eq!(clip_y_to_band(0.0, 500.0, band), Some((16.0, 364.0)));
-    }
-
-    #[test]
-    fn an_unclipped_fractional_icon_keeps_its_exact_height() {
-        let rect = crate::ui::chart_layout::TextureCmd {
-            x: 22.0,
-            y: 158.0,
-            w: 64.0,
-            h: 64.0,
-            icon: IconId::Character(0),
-        }
-        .scaled_rect(0.95);
-
-        assert_eq!(
-            clip_y_to_band(rect.position.y, rect.size.y, (0.0, 300.0)),
-            Some((rect.position.y, rect.size.y))
-        );
-    }
-
-    #[test]
-    fn text_inside_band_requires_the_full_glyph_band() {
-        let band = (16.0, 380.0);
-        // A 24px row's glyph band spans baseline −24.4 .. +10.9 (ascent
-        // 23.4 + 1 rim, descent 6.9 + 4 shadow).
-        assert!(text_inside_band(60.0, 24, band));
-        assert!(!text_inside_band(30.0, 24, band), "ascent crosses the top");
-        assert!(
-            !text_inside_band(375.0, 24, band),
-            "shadow crosses the bottom"
-        );
-        assert!(text_inside_band(60.0, 32, band));
-        assert!(!text_inside_band(40.0, 32, band));
-        let ascent = 24.0 * FONT_ASCENT_PER_EM + TEXT_RIM_UP;
-        let descent = 24.0 * FONT_DESCENT_PER_EM + TEXT_SHADOW_DOWN;
-        assert!(text_inside_band(band.0 + ascent, 24, band));
-        assert!(text_inside_band(band.1 - descent, 24, band));
-        assert!(!text_inside_band(band.0 + ascent - 0.5, 24, band));
     }
 }

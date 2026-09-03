@@ -4,9 +4,9 @@ expression: "crate::test_util::dump_layout(&l.header_cmds, &l.cmds)"
 ---
 -- header --
 rect x=0.0 y=0.0 w=780.0 h=1.0 #4D66B399
-rect x=0.0 y=495.0 w=780.0 h=1.0 #4D66B399
-rect x=0.0 y=0.0 w=1.0 h=496.0 #4D66B399
-rect x=779.0 y=0.0 w=1.0 h=496.0 #4D66B399
+rect x=0.0 y=497.0 w=780.0 h=1.0 #4D66B399
+rect x=0.0 y=0.0 w=1.0 h=498.0 #4D66B399
+rect x=779.0 y=0.0 w=1.0 h=498.0 #4D66B399
 text x=130.0 y=56.0 size=32 role=Title shadow align=center w=256.0 #FFF6E2FF "This Combat"
 rect x=154.0 y=82.0 w=208.0 h=2.0 #EFC851FF
 text x=394.0 y=56.0 size=32 role=Title shadow align=center w=256.0 #FFF6E280 "Run Summary"
