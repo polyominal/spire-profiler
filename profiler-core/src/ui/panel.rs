@@ -614,17 +614,14 @@ impl SpireProfilerPanel {
         );
         self.children.update_frames(frame, body_frame);
         let legend = legend.map(|rect| Rect2::new(rect.position - frame.position, rect.size));
-        if legend != self.legend {
-            self.legend = legend;
-            self.object.queue_redraw();
-            self.children.queue_overlay_redraw();
-        }
+        panel_common::apply_overlay_rect(
+            &mut self.legend,
+            legend,
+            &self.object,
+            &mut self.children,
+        );
         let tip = tip.map(|tip| Rect2::new(tip.position - frame.position, tip.size));
-        if tip != self.tip {
-            self.tip = tip;
-            self.object.queue_redraw();
-            self.children.queue_overlay_redraw();
-        }
+        panel_common::apply_overlay_rect(&mut self.tip, tip, &self.object, &mut self.children);
     }
 
     /// Tab clicks switch tabs; a press outside the panel (plate + strip)

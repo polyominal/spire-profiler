@@ -471,6 +471,23 @@ pub(crate) fn apply_control_frame(
     true
 }
 
+/// Stores the frame-local legend/tip rect and, on change only, redraws
+/// the panel and the overlay child — a steady frame must not re-issue
+/// engine calls.
+pub(crate) fn apply_overlay_rect(
+    slot: &mut Option<Rect2>,
+    rect: Option<Rect2>,
+    object: &Object,
+    children: &mut crate::ui::panel_body::PanelChildren,
+) {
+    if *slot == rect {
+        return;
+    }
+    *slot = rect;
+    object.queue_redraw();
+    children.queue_overlay_redraw();
+}
+
 /// The viewport's visible size, or None when the panel is not in the tree
 /// (init runs before `AddChild`).
 pub(crate) fn viewport_size(object: &Object) -> Option<Vector2> {
