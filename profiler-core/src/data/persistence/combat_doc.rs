@@ -97,12 +97,12 @@ fn card_doc(card: &crate::data::state::CardStat) -> CardDoc<'_> {
 
 /// Serializes one combat record.
 pub fn build_combat_json(c: &Combat) -> String {
-    let run = (c.run_seq > 0).then(|| RunDoc {
-        seq: c.run_seq,
-        character: &c.run_character,
-        ascension: c.run_ascension,
-        game_mode: &c.run_game_mode,
-        seed: &c.run_seed,
+    let run = c.run.as_ref().map(|run| RunDoc {
+        seq: run.seq,
+        character: &run.character,
+        ascension: run.ascension,
+        game_mode: &run.game_mode,
+        seed: &run.seed,
     });
     let cards = c.cards.iter().map(card_doc).collect();
     let doc = CombatDoc {
@@ -154,7 +154,7 @@ mod tests {
     #[test]
     fn build_combat_json_omits_run_when_absent() {
         let mut c = synthetic_combat();
-        c.run_seq = 0;
+        c.run = None;
         c.players.clear();
         let json = build_combat_json(&c);
         assert!(!json.contains(r#""run":"#));

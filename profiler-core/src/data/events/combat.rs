@@ -6,7 +6,7 @@ use crate::data::ledger;
 use crate::data::ledger::AsyncFallback;
 use crate::data::persistence::{event_log, now_seconds, write_combat_file};
 use crate::data::state::{
-    Combat, OstyEntry, PlayerSlotState, STATE, SourceKind, State, TEAM_SLOT, caps,
+    Combat, OstyEntry, PlayerSlotState, RunSnapshot, STATE, SourceKind, State, TEAM_SLOT, caps,
     clamp_source_slot,
 };
 use crate::{fail, marker};
@@ -226,11 +226,13 @@ pub fn combat_started(encounter_id: &str, encounter_type: &str) {
             encounter_id: encounter_id.to_owned(),
             encounter_type: encounter_type.to_owned(),
             started_at: now_seconds(),
-            run_seq: state.run_ctx.seq,
-            run_character: state.run_ctx.character.clone(),
-            run_ascension: state.run_ctx.ascension,
-            run_game_mode: state.run_ctx.game_mode.clone(),
-            run_seed: state.run_ctx.seed.clone(),
+            run: state.run_ctx.active.then(|| RunSnapshot {
+                seq: state.run_ctx.seq,
+                character: state.run_ctx.character.clone(),
+                ascension: state.run_ctx.ascension,
+                game_mode: state.run_ctx.game_mode.clone(),
+                seed: state.run_ctx.seed.clone(),
+            }),
             // The roster is in-memory only.
             players: state.run_ctx.players.clone(),
             ..Combat::default()

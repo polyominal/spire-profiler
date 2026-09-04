@@ -147,7 +147,7 @@ pub fn write_combat_file(c: &Combat) {
         fail!("combat {} JSON overflow; combat not written", c.seq);
         return;
     }
-    let path = combat_path(c.run_seq, c.seq);
+    let path = combat_path(c.run.as_ref().map_or(0, |run| run.seq), c.seq);
     let parent = path
         .parent()
         .expect("a store path always has a parent directory");
@@ -191,7 +191,7 @@ mod tests {
         let dir = unique_dir("store-write");
         let data = dir.join("data");
         init_state(&data);
-        let c = synthetic_combat(); // seq 7, run_seq 42, as combat_started would assign
+        let c = synthetic_combat(); // seq 7, run 42, as combat_started would assign
         write_combat_file(&c);
         let path = data.join("runs/42/7.json");
         let content = fs::read_to_string(&path).expect("store file written");
@@ -225,7 +225,7 @@ mod tests {
         let data = dir.join("data");
         init_state(&data);
         let mut c = synthetic_combat();
-        c.run_seq = 0;
+        c.run = None;
         write_combat_file(&c);
         let path = data.join("runs/0/7.json");
         let content = fs::read_to_string(&path).expect("store file written");
@@ -267,10 +267,10 @@ mod tests {
         );
         let mut b1 = synthetic_combat();
         b1.seq = 3;
-        b1.run_seq = 43;
+        b1.run = Some(synthetic_run(43));
         let mut b2 = synthetic_combat();
         b2.seq = 4;
-        b2.run_seq = 43;
+        b2.run = Some(synthetic_run(43));
         b2.encounter_id = "FROZEN_COUNCIL".to_owned();
         write_combat_file(&b1);
         write_combat_file(&b2);

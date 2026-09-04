@@ -416,3 +416,24 @@ fn run_started_stamps_the_forwarded_start_time() {
         "the 0 fallback stamps the session clock ({fallback})"
     );
 }
+#[test]
+fn combat_after_run_end_joins_no_run() {
+    let base = wiped_dir("spire-profiler-test-post-run-combat");
+    test_reset();
+    init(&base);
+    run_started("IRONCLAD", 0, "Standard", "SEED_POST", 0, "", 0);
+    combat_started("FIRST", "test");
+    combat_ended();
+    run_ended(RunOutcome::Victory);
+
+    // run_ctx keeps the closed run's seq; the stamp must not reuse it.
+    combat_started("SECOND", "test");
+    combat_ended();
+
+    let mut ids = crate::test_util::combat_ids(&base.join("runs"));
+    ids.sort();
+    assert_eq!(ids, [(0, 2), (1, 1)]);
+    let text = read_test_file(&base, "runs/0/2.json");
+    let doc: serde_json::Value = serde_json::from_str(&text).expect("combat doc parses");
+    assert!(doc.get("run").is_none());
+}

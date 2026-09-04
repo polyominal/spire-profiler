@@ -273,13 +273,8 @@ pub struct Combat {
     pub damage_received: i64,
     pub block_total: i64,
     pub potions_used: u32,
-    // Run context stamped at combat start.
-    pub run_seq: u32,
-    pub run_character: String,
-    pub run_ascension: i32,
-    pub run_game_mode: String,
-    /// So a resumed run's fragments re-join by seed.
-    pub run_seed: String,
+    /// The run identity stamped at combat start; `None` outside a run.
+    pub run: Option<RunSnapshot>,
     /// In-memory only.
     pub players: Vec<RunPlayer>,
 }
@@ -301,11 +296,7 @@ impl Default for Combat {
             damage_received: 0,
             block_total: 0,
             potions_used: 0,
-            run_seq: 0,
-            run_character: String::new(),
-            run_ascension: -1,
-            run_game_mode: String::new(),
-            run_seed: String::new(),
+            run: None,
             players: Vec::new(),
         }
     }
@@ -322,6 +313,18 @@ impl Combat {
     pub fn active_mut(current: &mut Option<Combat>) -> Option<&mut Combat> {
         current.as_mut().filter(|combat| !combat.finished)
     }
+}
+
+/// The run identity a combat was fought under. `None` serializes as the
+/// absent run block (see the persistence module doc).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RunSnapshot {
+    pub seq: u32,
+    pub character: String,
+    pub ascension: i32,
+    pub game_mode: String,
+    /// So a resumed run's fragments re-join by seed.
+    pub seed: String,
 }
 
 /// The run record carries slot + character; the net id stays in-memory.

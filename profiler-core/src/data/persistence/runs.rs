@@ -39,7 +39,8 @@ pub fn rebuild_run_accumulator(seq: u32) -> (u32, u32) {
 pub fn merge_into_run(c: &Combat) {
     STATE.with(|s| {
         let mut state = s.borrow_mut();
-        if !state.run_ctx.active || c.run_seq == 0 || c.run_seq != state.run_ctx.seq {
+        let Some(run) = &c.run else { return };
+        if !state.run_ctx.active || run.seq != state.run_ctx.seq {
             return;
         }
         if state.run_seq_accumulated != state.run_ctx.seq {
@@ -245,10 +246,10 @@ mod tests {
             st.run_seq_accumulated = 42;
         });
         let mut c = synthetic_combat();
-        c.run_seq = 0; // outside any run
+        c.run = None; // outside any run
         merge_into_run(&c);
         let mut foreign = synthetic_combat();
-        foreign.run_seq = 99; // another run
+        foreign.run = Some(synthetic_run(99)); // another run
         merge_into_run(&foreign);
         STATE.with(|s| {
             let st = s.borrow();

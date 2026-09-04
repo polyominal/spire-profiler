@@ -66,7 +66,7 @@ mod tests {
             st.run_ctx.outcome = RunOutcome::Victory;
             st.run_ctx.players = synthetic_roster();
         });
-        let c = synthetic_combat(); // run_seq 42, seq 7
+        let c = synthetic_combat(); // run 42, seq 7
         write_store_file(&data, 42, 7, &build_combat_json(&c));
 
         write_run_record();
@@ -100,7 +100,7 @@ mod tests {
             st.run_ctx.outcome = RunOutcome::Defeat;
         });
         let mut c2 = synthetic_combat();
-        c2.run_seq = 43;
+        c2.run = Some(synthetic_run(43));
         c2.seq = 8;
         write_store_file(&data, 43, 8, &build_combat_json(&c2));
         write_run_record();

@@ -41,7 +41,7 @@
 //! combat_id, started_at, encounter_id,
 //! result ("completed" | "defeat" | "interrupted"),
 //! turns, damage_received,
-//! run: {seq, character, ascension, game_mode, seed}   // absent when run_seq == 0
+//! run: {seq, character, ascension, game_mode, seed}   // absent for out-of-run combats
 //! cards: [{id, kind, plays, damage_dealt, damage_blocked,
 //!          block_gained, block_effective, forge, dmg_direct, dmg_attributed,
 //!          dmg_modifier, blk_modifier,
@@ -130,7 +130,7 @@ pub(crate) mod test_support {
     // re-pointing, the synthetic combat, and the store-file helper every
     // suite reuses, so each suite's `tests` module stays small.
     use super::bind_log_path;
-    use crate::data::state::{CardStat, Combat, RunPlayer, STATE};
+    use crate::data::state::{CardStat, Combat, RunPlayer, RunSnapshot, STATE};
     use crate::source_kind::SourceKind;
     pub(crate) use crate::test_util::unique_dir;
 
@@ -156,6 +156,16 @@ pub(crate) mod test_support {
         }]
     }
 
+    pub(crate) fn synthetic_run(seq: u32) -> RunSnapshot {
+        RunSnapshot {
+            seq,
+            character: "SHROUD".to_owned(),
+            ascension: 5,
+            game_mode: "standard".to_owned(),
+            seed: String::new(),
+        }
+    }
+
     /// Every serialized field; OMNI_CARD is fictional because no real card
     /// populates every field.
     pub(crate) fn synthetic_combat() -> Combat {
@@ -167,10 +177,7 @@ pub(crate) mod test_support {
             result: "completed".to_owned(),
             turns: 5,
             damage_received: 33,
-            run_seq: 42,
-            run_character: "SHROUD".to_owned(),
-            run_ascension: 5,
-            run_game_mode: "standard".to_owned(),
+            run: Some(synthetic_run(42)),
             players: synthetic_roster(),
             cards: vec![
                 CardStat {
