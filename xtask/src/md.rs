@@ -27,13 +27,17 @@ fn formatted(source: &str) -> String {
 }
 
 pub fn fmt_md(check: bool) -> Result<()> {
-    let mut drift = false;
-    for doc in DOCS {
+    let read_formatted = |doc: &str| -> Result<(String, String)> {
         let path = workspace_root().join(doc);
         let source =
             fs::read_to_string(&path).with_context(|| format!("while attempting to read {doc}"))?;
         let output = formatted(&source);
-        if check {
+        Ok((source, output))
+    };
+    if check {
+        let mut drift = false;
+        for doc in DOCS {
+            let (source, output) = read_formatted(doc)?;
             if source != output {
                 eprintln!(
                     "fmt-md: ERROR: {doc} is not wrapped to {WRAP_WIDTH} columns; run \
@@ -41,13 +45,17 @@ pub fn fmt_md(check: bool) -> Result<()> {
                 );
                 drift = true;
             }
-        } else {
-            fs::write(&path, output).with_context(|| format!("while attempting to write {doc}"))?;
+        }
+        if drift {
+            bail!("markdown docs drift from the formatter");
+        }
+    } else {
+        for doc in DOCS {
+            let (_, output) = read_formatted(doc)?;
+            fs::write(workspace_root().join(doc), output)
+                .with_context(|| format!("while attempting to write {doc}"))?;
             println!("{doc}: formatted");
         }
-    }
-    if drift {
-        bail!("markdown docs drift from the formatter");
     }
     Ok(())
 }
