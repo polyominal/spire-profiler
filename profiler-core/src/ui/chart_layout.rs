@@ -518,8 +518,6 @@ pub(crate) fn tab_at(l: &Layout, x: f32, y: f32) -> Option<UiTab> {
         .map(|hit| hit.tab)
 }
 
-const TAB_LABELS: [&str; 2] = ["This Combat", "Run Summary"];
-
 pub(crate) fn build(input: BuildInput<'_>) -> Layout {
     let mut content = theme::content_box(input.width, !input.flat_chrome, input.right_gutter);
     // Chrome-less starts at y 0 so the caller's splice translation is
@@ -617,13 +615,13 @@ fn emit_avatars(l: &mut Layout, input: &BuildInput<'_>, g: &Geom, y_in: f32) -> 
     if drew { y_in + AVATAR_H } else { y_in }
 }
 
-fn emit_tabs(l: &mut Layout, input: &BuildInput<'_>, g: &Geom, y_in: f32) -> f32 {
+fn emit_tabs(l: &mut Layout, input: &BuildInput<'_>, g: &Geom, y_in: f32) {
     let y = y_in;
-    let strip_w = TAB_W * TAB_LABELS.len() as f32 + TAB_GAP;
+    let strip_w = TAB_W * UiTab::ALL.len() as f32 + TAB_GAP;
     let x0 = g.content.x + ((g.content.w - strip_w) / 2.0).max(0.0);
-    for (i, label) in TAB_LABELS.iter().enumerate() {
+    for (i, tab) in UiTab::ALL.into_iter().enumerate() {
         let x = x0 + i as f32 * (TAB_W + TAB_GAP);
-        let active = input.tab == tab_from_index(i);
+        let active = input.tab == tab;
         if input.tab_sprites {
             // The plate and stroke share one 515×181 draw frame, so both
             // draw into the tab box.
@@ -658,10 +656,9 @@ fn emit_tabs(l: &mut Layout, input: &BuildInput<'_>, g: &Geom, y_in: f32) -> f32
             y0: y,
             x1: x + TAB_W,
             y1: y + TABS_H,
-            tab: tab_from_index(i),
+            tab,
         });
     }
-    y + TABS_H + 8.0
 }
 
 fn emit_meta(l: &mut Layout, input: &BuildInput<'_>, g: &Geom, y_in: f32) -> f32 {
@@ -710,13 +707,6 @@ pub(crate) fn insert_borders(header_cmds: &mut Vec<Cmd>, owner: &str, width: f32
         header_cmds.splice(0..0, borders);
     } else {
         crate::ui::panel_common::log_cmd_overflow_once(owner);
-    }
-}
-
-fn tab_from_index(i: usize) -> UiTab {
-    match i {
-        0 => UiTab::Combat,
-        _ => UiTab::Run,
     }
 }
 

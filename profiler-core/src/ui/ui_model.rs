@@ -13,6 +13,19 @@ pub enum UiTab {
     Run = 1,
 }
 
+impl UiTab {
+    pub const ALL: [UiTab; 2] = [UiTab::Combat, UiTab::Run];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            UiTab::Combat => "This Combat",
+            UiTab::Run => "Run Summary",
+        }
+    }
+}
+
+const _: () = assert!(UiTab::ALL.len() == 2);
+
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Section {
