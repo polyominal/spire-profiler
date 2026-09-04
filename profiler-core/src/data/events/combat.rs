@@ -530,7 +530,7 @@ pub fn player_died(player_slot: i32) {
 pub fn combat_ended() {
     // write_combat_file re-borrows STATE, so the finished record is staged
     // and written after the borrow releases.
-    let (seq, record) = STATE.with(|cell| {
+    let staged: Option<Combat> = STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         // The game only loses when EVERY player is dead, so the record is a
         // defeat iff every slot that appeared has its death flag set. Only
@@ -542,21 +542,16 @@ pub fn combat_ended() {
                 .iter()
                 .take(caps::MAX_PLAYERS)
                 .all(|slot| slot.died);
-        let Some(combat) = Combat::active_mut(&mut state.current) else {
-            return (None, None);
-        };
+        let combat = Combat::active_mut(&mut state.current)?;
         if team_defeat {
             combat.result = "defeat".to_owned();
         }
         combat.finished = true;
-        let seq = combat.seq;
-        let record = combat.clone();
-        (Some(seq), Some(record))
+        Some(combat.clone())
     });
-    if let Some(combat) = record {
+    if let Some(combat) = staged {
+        let seq = combat.seq;
         write_combat_file(&combat);
-    }
-    if let Some(seq) = seq {
         marker!("combat {seq} summary written");
     }
 }
