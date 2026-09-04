@@ -9,7 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::combat_doc::build_combat_json;
-use super::io::{ensure_data_dir, read_file, write_file};
+use super::io::{ReadFile, ensure_data_dir, read_file, write_file};
 use super::runs::merge_into_run;
 use super::{MAX_JSON_SIZE, RUNS_DIR_NAME};
 use crate::data::persistence::event_log;
@@ -25,6 +25,12 @@ fn combat_path(run_seq: u32, id: u32) -> PathBuf {
             .join(run_seq.to_string())
             .join(format!("{id}.json"))
     })
+}
+
+pub(crate) struct StoredCombatDoc {
+    path_run_id: u32,
+    path_combat_id: u32,
+    doc: String,
 }
 
 /// The `<digits>.json` combat-file ids in one directory, sorted; anything
@@ -72,7 +78,7 @@ pub(crate) fn max_combat_id() -> u32 {
 }
 
 /// One run's documents in id order; unreadable files are skipped.
-pub(crate) fn load_run_combat_docs(run_id: u32) -> Vec<String> {
+pub(crate) fn load_run_combat_docs(run_id: u32) -> Vec<StoredCombatDoc> {
     let dir = STATE.with(|s| {
         s.borrow()
             .data_dir
@@ -81,15 +87,19 @@ pub(crate) fn load_run_combat_docs(run_id: u32) -> Vec<String> {
     });
     let mut docs = Vec::new();
     for id in scan_combat_ids(&dir) {
-        if let Some(content) = read_file(&dir.join(format!("{id}.json"))) {
-            docs.push(content);
+        if let ReadFile::Content(content) = read_file(&dir.join(format!("{id}.json"))) {
+            docs.push(StoredCombatDoc {
+                path_run_id: run_id,
+                path_combat_id: id,
+                doc: content,
+            });
         }
     }
     docs
 }
 
 /// The whole history, oldest first.
-pub(crate) fn load_combat_docs_from(dir: &Path) -> Vec<String> {
+pub(crate) fn load_combat_docs_from(dir: &Path) -> Vec<StoredCombatDoc> {
     let Ok(entries) = fs::read_dir(dir) else {
         return Vec::new();
     };
@@ -109,8 +119,12 @@ pub(crate) fn load_combat_docs_from(dir: &Path) -> Vec<String> {
     let mut docs = Vec::with_capacity(ids.len());
     for (run_seq, id) in ids {
         let path = dir.join(run_seq.to_string()).join(format!("{id}.json"));
-        if let Some(content) = read_file(&path) {
-            docs.push(content);
+        if let ReadFile::Content(content) = read_file(&path) {
+            docs.push(StoredCombatDoc {
+                path_run_id: run_seq,
+                path_combat_id: id,
+                doc: content,
+            });
         }
     }
     docs
@@ -121,19 +135,54 @@ pub(crate) fn load_combat_docs_from(dir: &Path) -> Vec<String> {
 pub(crate) fn load_all_combat_docs() -> Vec<String> {
     let dir = STATE.with(|s| s.borrow().data_dir.join(RUNS_DIR_NAME));
     load_combat_docs_from(&dir)
+        .into_iter()
+        .map(|stored| stored.doc)
+        .collect()
 }
 
 /// Parses store documents in order; a bad document is fail-logged and
 /// skipped, never fatal to the rest of the store.
-pub(crate) fn parse_combat_docs(docs: &[String]) -> Vec<records::CombatRec> {
+pub(crate) fn parse_combat_docs(docs: &[StoredCombatDoc]) -> Vec<records::CombatRec> {
     let mut combats = Vec::new();
-    for doc in docs {
-        match records::parse_combat_doc(doc) {
-            Ok(combat) => combats.push(combat),
-            Err(err) => fail!("cannot parse a runs/ combat file: {err}"),
+    for stored in docs {
+        let combat = match records::parse_combat_doc(&stored.doc) {
+            Ok(combat) => combat,
+            Err(err) => {
+                fail!("cannot parse a runs/ combat file: {err}");
+                continue;
+            }
+        };
+        if combat_identity_matches_path(&combat, stored) {
+            combats.push(combat);
         }
     }
     combats
+}
+
+fn combat_identity_matches_path(combat: &records::CombatRec, stored: &StoredCombatDoc) -> bool {
+    if combat.combat_id != stored.path_combat_id {
+        fail!(
+            "combat {} is stamped {} but filed as {}",
+            stored.path_combat_id,
+            combat.combat_id,
+            stored.path_combat_id
+        );
+        return false;
+    }
+    let stamped_run = combat.run.as_ref().map(|run| run.seq);
+    let path_run = (stored.path_run_id != 0).then_some(stored.path_run_id);
+    if stamped_run != path_run {
+        let stamped = stamped_run
+            .map(|seq| seq.to_string())
+            .unwrap_or_else(|| "no run".to_owned());
+        fail!(
+            "combat {} is stamped run {stamped} but filed under run {}",
+            stored.path_combat_id,
+            stored.path_run_id
+        );
+        return false;
+    }
+    true
 }
 
 /// Atomic and write-once; a form crossing [`MAX_JSON_SIZE`] is refused.
@@ -166,7 +215,9 @@ pub fn write_combat_file(c: &Combat) {
         "combat {} ended: {} ({}), {} plays, {} cards tracked; stored at {}",
         c.seq,
         c.encounter_id,
-        c.result,
+        c.result()
+            .expect("only a finished combat record reaches the writer")
+            .name(),
         c.plays,
         c.cards.len(),
         path.display()
@@ -326,12 +377,37 @@ mod tests {
         fs::write(data.join("runs/9/99.json"), r#"{"combat_id":99}"#).unwrap();
         let docs = load_run_combat_docs(7);
         assert_eq!(docs.len(), 2);
-        assert!(docs[0].contains(r#""combat_id":1"#));
-        assert!(docs[1].contains(r#""combat_id":2"#));
+        assert!(docs[0].doc.contains(r#""combat_id":1"#));
+        assert!(docs[1].doc.contains(r#""combat_id":2"#));
         assert_eq!(load_run_combat_docs(9).len(), 1);
         assert!(
             load_run_combat_docs(5).is_empty(),
             "absent run dir is empty"
         );
+    }
+
+    #[test]
+    fn parse_combat_docs_rejects_path_identity_mismatches() {
+        let dir = unique_dir("store-identity");
+        let data = dir.join("data");
+        init_state(&data);
+        fs::create_dir_all(data.join("runs/5")).unwrap();
+        fs::create_dir_all(data.join("runs/0")).unwrap();
+        fs::write(
+            data.join("runs/5/4.json"),
+            r#"{"combat_id":4,"run":{"seq":6}}"#,
+        )
+        .unwrap();
+        fs::write(
+            data.join("runs/5/5.json"),
+            r#"{"combat_id":6,"run":{"seq":5}}"#,
+        )
+        .unwrap();
+        fs::write(data.join("runs/0/7.json"), r#"{"combat_id":7}"#).unwrap();
+
+        let combats = parse_combat_docs(&load_combat_docs_from(&data.join("runs")));
+        assert_eq!(combats.len(), 1);
+        assert_eq!(combats[0].combat_id, 7);
+        assert!(combats[0].run.is_none());
     }
 }

@@ -8,8 +8,8 @@
 use crate::data::ledger;
 use crate::data::persistence::event_log;
 use crate::data::state::{
-    ActivePlay, Combat, GeneratedInstance, PlayerSlotState, STATE, SourceKind, SourceSlot, State,
-    caps, clamp_source_slot,
+    ActivePlay, Combat, Fallback, GeneratedInstance, PlayerSlotState, STATE, SourceKind,
+    SourceSlot, State, caps, clamp_source_slot,
 };
 use crate::fail;
 
@@ -49,8 +49,8 @@ pub fn card_play_started(
         let Some(combat) = Combat::active_mut(&mut state.current) else {
             return;
         };
-        // No row means the whole event is dropped: plays, play_depth, and
-        // the active play's slot state all stay untouched, so the plays
+        // No row means the whole event is dropped: plays and the active
+        // play's slot state all stay untouched, so the plays
         // identity holds.
         let Some(index) =
             ledger::get_or_create_card_kind(combat, play_slot, &play_source.0, play_source.1)
@@ -58,10 +58,11 @@ pub fn card_play_started(
             return;
         };
         let slot_state = &mut state.per_player[slot];
-        // The FIRST orb trigger credits the channeling source.
-        slot_state.orb_first_trigger_used = false;
+        debug_assert!(
+            slot_state.active_play.is_none(),
+            "same-slot plays cannot nest"
+        );
         record_card_play_in(combat, slot_state, index, play_slot, card_id, !generated);
-        slot_state.play_depth += 1;
         combat.plays += 1;
         if generated {
             // Generated plays count toward the combat total but not the
@@ -100,6 +101,7 @@ fn record_card_play_in(
         kind: card.kind,
         row_slot: play_slot,
         card_id: card_id.to_owned(),
+        orb_first_trigger_used: false,
     });
 }
 
@@ -118,18 +120,11 @@ fn load_play_metadata_in(state: &State, card_hash: i32) -> Option<GeneratedInsta
 pub fn card_play_finished(player_slot: i32) {
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
-        if !state
-            .current
-            .as_ref()
-            .is_some_and(|combat| !combat.finished)
-        {
+        if Combat::active(&state.current).is_none() {
             return;
         }
         let slot_state = state.slot_state_mut(player_slot);
-        slot_state.play_depth = slot_state.play_depth.saturating_sub(1);
-        if slot_state.play_depth == 0 {
-            slot_state.active_play = None;
-        }
+        slot_state.active_play = None;
     });
 }
 
@@ -226,13 +221,12 @@ fn resolve_cause_in(
         .and_then(|slot| slot.active_play.clone())
     {
         Some((play.id, play.kind))
-    } else if let Some(i) = state
+    } else if let Some(Fallback::Potion(source)) = state
         .per_player
         .get(ambient)
-        .and_then(|slot| slot.potion_fallback)
+        .and_then(|slot| slot.fallback.clone())
     {
-        let source = &state.orb_sources[i];
-        Some((source.id.clone(), source.kind))
+        Some((source.id, source.kind))
     } else {
         // The async gap: the causing hook already returned (its context
         // popped at the first await), but `last_source` still names it.

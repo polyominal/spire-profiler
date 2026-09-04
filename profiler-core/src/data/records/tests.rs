@@ -2,32 +2,35 @@
 //! contract: parse tolerance and the run record's byte-for-byte schema.
 
 use super::*;
-use crate::data::state::{RunContext, RunOutcome, RunPlayer};
+use crate::data::state::{CombatResult, EndedRun, RunContext, RunOutcome, RunPlayer, RunSnapshot};
 use crate::source_kind::SourceKind;
 
-fn run_context() -> RunContext {
-    RunContext {
-        active: true,
-        seq: 9,
-        character: "IRONCLAD".to_owned(),
-        ascension: 3,
-        game_mode: "standard".to_owned(),
-        seed: "SEED123".to_owned(),
-        started_at: 1_786_579_200, // 2026-08-13T00:00:00Z in epoch seconds
-        ended_at: 1_786_597_200,   // 2026-08-13T00:30:00Z
-        outcome: RunOutcome::Victory,
-        players: vec![
-            RunPlayer {
-                slot: 0,
-                net_id: "1".to_owned(),
+fn run_context() -> EndedRun {
+    EndedRun {
+        context: RunContext {
+            run: RunSnapshot {
+                seq: 9,
                 character: "IRONCLAD".to_owned(),
+                ascension: 3,
+                game_mode: "standard".to_owned(),
+                seed: "SEED123".to_owned(),
             },
-            RunPlayer {
-                slot: 1,
-                net_id: "2".to_owned(),
-                character: "SILENT".to_owned(),
-            },
-        ],
+            started_at: 1_786_579_200, // 2026-08-13T00:00:00Z in epoch seconds
+            players: vec![
+                RunPlayer {
+                    slot: 0,
+                    net_id: "1".to_owned(),
+                    character: "IRONCLAD".to_owned(),
+                },
+                RunPlayer {
+                    slot: 1,
+                    net_id: "2".to_owned(),
+                    character: "SILENT".to_owned(),
+                },
+            ],
+        },
+        outcome: RunOutcome::Victory,
+        ended_at: 1_786_597_200, // 2026-08-13T00:30:00Z
     }
 }
 
@@ -56,7 +59,7 @@ fn parse_combat_doc_ignores_unknown_fields_and_fills_defaults() {
 
     assert_eq!(c.combat_id, 1);
     assert_eq!(c.encounter_id, "A");
-    assert_eq!(c.result, "completed");
+    assert_eq!(c.result, CombatResult::Completed);
     assert_eq!(c.turns, 1);
     assert_eq!(c.damage_received, 4);
     assert_eq!(c.started_at, 1_786_622_400);
@@ -116,6 +119,12 @@ fn parse_combat_doc_rejects_wrong_types_and_malformed_json() {
     assert!(parse_combat_doc(r#"{"combat_id":1"#).is_err()); // syntax error
 }
 
+#[test]
+fn parse_combat_doc_clamps_an_unknown_result() {
+    let c = parse_combat_doc(r#"{"combat_id":2,"result":"defeated"}"#).expect("clamped");
+    assert_eq!(c.result, CombatResult::Completed);
+}
+
 // The runs.jsonl entry layout is pinned byte-for-byte: identity, header
 // facts, outcome, timestamps, roster; no build tag, no combat roll-ups.
 #[test]
@@ -125,18 +134,19 @@ fn build_run_json_matches_the_documented_schema() {
 
 #[test]
 fn build_run_json_round_trips_through_the_parser() {
-    let run = run_context();
-    let json = build_run_json(&run, 7);
+    let ended = run_context();
+    let run = &ended.context;
+    let json = build_run_json(&ended, 7);
     let parsed: RunDocOwned = serde_json::from_str(&json).expect("parses back");
-    assert_eq!(parsed.run_id, run.seq);
+    assert_eq!(parsed.run_id, run.run.seq);
     assert_eq!(parsed.profile, 7);
-    assert_eq!(parsed.character, run.character);
-    assert_eq!(parsed.ascension, run.ascension);
-    assert_eq!(parsed.game_mode, run.game_mode);
+    assert_eq!(parsed.character, run.run.character);
+    assert_eq!(parsed.ascension, run.run.ascension);
+    assert_eq!(parsed.game_mode, run.run.game_mode);
     assert_eq!(parsed.outcome, RunOutcome::Victory);
-    assert_eq!(parsed.seed, run.seed);
+    assert_eq!(parsed.seed, run.run.seed);
     assert_eq!(parsed.started_at, run.started_at);
-    assert_eq!(parsed.ended_at, run.ended_at);
+    assert_eq!(parsed.ended_at, ended.ended_at);
     assert_eq!(parsed.players.len(), 2);
     assert_eq!(parsed.players[1].slot, 1);
     assert_eq!(parsed.players[1].character, "SILENT");
@@ -144,11 +154,9 @@ fn build_run_json_round_trips_through_the_parser() {
 
 #[test]
 fn build_run_json_omits_an_empty_roster() {
-    let run = RunContext {
-        players: Vec::new(),
-        ..run_context()
-    };
-    let json = build_run_json(&run, 7);
+    let mut ended = run_context();
+    ended.context.players = Vec::new();
+    let json = build_run_json(&ended, 7);
     assert!(!json.contains(r#""players""#));
     let parsed: RunDocOwned = serde_json::from_str(&json).expect("parses back");
     assert!(parsed.players.is_empty());

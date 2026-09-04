@@ -6,8 +6,8 @@ use crate::data::ledger;
 use crate::data::ledger::AsyncFallback;
 use crate::data::persistence::{event_log, now_seconds, write_combat_file};
 use crate::data::state::{
-    Combat, OstyEntry, PlayerSlotState, RunSnapshot, STATE, SourceKind, State, TEAM_SLOT, caps,
-    clamp_source_slot,
+    Combat, CombatPhase, CombatResult, OstyEntry, PlayerSlotState, STATE, SourceKind, State,
+    TEAM_SLOT, caps, clamp_source_slot,
 };
 use crate::{fail, marker};
 
@@ -189,7 +189,7 @@ pub fn combat_started(encounter_id: &str, encounter_type: &str) {
         if combat.plays == 0 && combat.cards.is_empty() {
             return None;
         }
-        combat.result = "interrupted".to_owned();
+        combat.phase = CombatPhase::Finished(CombatResult::Interrupted);
         Some(combat.clone())
     });
     if let Some(combat) = interrupted {
@@ -218,15 +218,13 @@ pub fn combat_started(encounter_id: &str, encounter_type: &str) {
             encounter_id: encounter_id.to_owned(),
             encounter_type: encounter_type.to_owned(),
             started_at: now_seconds(),
-            run: state.run_ctx.active.then(|| RunSnapshot {
-                seq: state.run_ctx.seq,
-                character: state.run_ctx.character.clone(),
-                ascension: state.run_ctx.ascension,
-                game_mode: state.run_ctx.game_mode.clone(),
-                seed: state.run_ctx.seed.clone(),
-            }),
+            run: state.run_ctx.as_ref().map(|run| run.run.clone()),
             // The roster is in-memory only.
-            players: state.run_ctx.players.clone(),
+            players: state
+                .run_ctx
+                .as_ref()
+                .map(|run| run.players.clone())
+                .unwrap_or_default(),
             ..Combat::default()
         });
         event_log!("combat {seq} started: {encounter_id} ({encounter_type})");
@@ -255,6 +253,18 @@ pub fn damage_dealt(args: DamageDealt) {
     // zero total is a normal no-op hit.
     if args.total < 0 {
         fail!("negative damage total {}", args.total);
+        return;
+    }
+    if args.unblocked < 0
+        || args.blocked < 0
+        || args.unblocked.checked_add(args.blocked) != Some(args.total)
+    {
+        fail!(
+            "damage split does not preserve total {}: unblocked {}, blocked {}",
+            args.total,
+            args.unblocked,
+            args.blocked
+        );
         return;
     }
     if args.total == 0 {
@@ -544,10 +554,11 @@ pub fn combat_ended() {
                 .take(caps::MAX_PLAYERS)
                 .all(|slot| slot.died);
         let combat = Combat::active_mut(&mut state.current)?;
-        if team_defeat {
-            combat.result = "defeat".to_owned();
-        }
-        combat.finished = true;
+        combat.phase = CombatPhase::Finished(if team_defeat {
+            CombatResult::Defeat
+        } else {
+            CombatResult::Completed
+        });
         Some(combat.clone())
     });
     if let Some(combat) = staged {

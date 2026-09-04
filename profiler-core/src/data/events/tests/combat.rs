@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::data::records::CombatRec;
-use crate::data::state::{RunOutcome, TEAM_SLOT};
+use crate::data::state::{CombatResult, RunOutcome, TEAM_SLOT};
 use crate::source_kind::SourceKind;
 use crate::test_util::wiped_dir;
 
@@ -379,11 +379,13 @@ fn team_defeat_requires_every_slot_dead() {
         .collect();
     assert_eq!(combats.len(), 2, "both combat records persisted");
     assert_eq!(
-        combats[0].result, "completed",
+        combats[0].result,
+        CombatResult::Completed,
         "a surviving teammate keeps the team alive"
     );
     assert_eq!(
-        combats[1].result, "defeat",
+        combats[1].result,
+        CombatResult::Defeat,
         "all players dead is a team defeat"
     );
 }
@@ -400,16 +402,14 @@ fn turn_started_clears_every_slots_fallbacks() {
     potion_context_begin("FIRE_POTION", 1);
     STATE.with(|cell| {
         let state = cell.borrow();
-        assert!(state.per_player[0].orb_fallback.is_some());
-        assert!(state.per_player[1].potion_fallback.is_some());
+        assert!(state.per_player[0].fallback.is_some());
+        assert!(state.per_player[1].fallback.is_some());
     });
     turn_started();
     STATE.with(|cell| {
         let state = cell.borrow();
-        assert!(state.per_player[0].orb_fallback.is_none());
-        assert!(state.per_player[0].potion_fallback.is_none());
-        assert!(state.per_player[1].orb_fallback.is_none());
-        assert!(state.per_player[1].potion_fallback.is_none());
+        assert!(state.per_player[0].fallback.is_none());
+        assert!(state.per_player[1].fallback.is_none());
     });
     combat_ended();
 }
@@ -430,6 +430,27 @@ fn negative_and_zero_wire_totals_are_dropped() {
     damage_dealt(DamageDealt {
         total: -3,
         unblocked: -3,
+        card_source_id: "STRIKE",
+        ..DamageDealt::default()
+    });
+    damage_dealt(DamageDealt {
+        total: 5,
+        unblocked: 7,
+        blocked: -2,
+        card_source_id: "STRIKE",
+        ..DamageDealt::default()
+    });
+    damage_dealt(DamageDealt {
+        total: 5,
+        unblocked: 2,
+        blocked: 2,
+        card_source_id: "STRIKE",
+        ..DamageDealt::default()
+    });
+    damage_dealt(DamageDealt {
+        total: 5,
+        unblocked: 0,
+        blocked: 6,
         card_source_id: "STRIKE",
         ..DamageDealt::default()
     });

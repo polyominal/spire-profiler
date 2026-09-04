@@ -78,7 +78,7 @@ use crate::data::persistence::{
     CardStatKey, card_stat_from_rec, load_combat_docs_from, parse_combat_docs, upsert_card_stat,
 };
 use crate::data::records::{CombatRec, PlayerRec};
-use crate::data::state::{CardStat, PlayerFilter, RunOutcome, STATE, TEAM_SLOT};
+use crate::data::state::{CardStat, CombatResult, PlayerFilter, RunOutcome, STATE, TEAM_SLOT};
 
 /// Generous for the run-start → first-combat gap, yet two same-seed
 /// replays played further apart never merge.
@@ -125,7 +125,7 @@ impl Default for RunEntry {
 pub struct CombatView {
     pub seq: u32,
     pub encounter: String,
-    pub result: String,
+    pub result: CombatResult,
     pub damage_dealt: i64,
     pub damage_taken: i64,
     pub turns: u32,
@@ -193,7 +193,7 @@ fn store_paths() -> (PathBuf, PathBuf) {
 
 /// One JSON object per line; one bad line never hides the rest.
 fn load_runs(path: &Path) -> Vec<RunEntry> {
-    let Some(content) = crate::data::persistence::read_file(path) else {
+    let Some(content) = crate::data::persistence::read_file(path).content() else {
         return Vec::new();
     };
     let mut runs = Vec::new();
@@ -309,7 +309,7 @@ fn build_view(entry: &RunEntry, combats: &[CombatRec]) -> RunSummaryView {
         view.combats.push(CombatView {
             seq: combat.combat_id,
             encounter: combat.encounter_id.clone(),
-            result: combat.result.clone(),
+            result: combat.result,
             damage_dealt: combat.cards.iter().map(|c| c.damage_dealt).sum(),
             damage_taken: combat.damage_received,
             turns: combat.turns,

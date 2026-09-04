@@ -18,7 +18,9 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-use profiler_core::data::state::{self, PendingContrib, RunOutcome, STATE, SourceKind};
+use profiler_core::data::state::{
+    self, CombatResult, PendingContrib, RunOutcome, STATE, SourceKind,
+};
 use profiler_core::data::{events, ledger, records};
 use profiler_core::test_util::{combat_ids, wiped_dir};
 
@@ -538,7 +540,11 @@ fn check_written_files(base: &Path, player_died: bool) {
     assert_eq!(rec.combat_id, 1, "the scenario's only combat is seq 1");
     assert_eq!(
         rec.result,
-        if player_died { "defeat" } else { "completed" },
+        if player_died {
+            CombatResult::Defeat
+        } else {
+            CombatResult::Completed
+        },
         "the combat result must mirror whether the walk killed the player"
     );
     // The generation-tree model carries no origin field on any card row, so

@@ -5,7 +5,7 @@
 use serde::Serialize;
 
 use crate::data::records;
-use crate::data::state::{CardStat, Combat, is_zero};
+use crate::data::state::{CardStat, Combat, CombatResult, is_zero};
 use crate::source_kind::SourceKind;
 /// One combat record's card entry. serde serializes fields in declaration
 /// order; the snapshot test pins that order byte for byte.
@@ -55,13 +55,13 @@ struct RunDoc<'a> {
     seed: &'a str,
 }
 
-/// One combat record's JSON shape; `run` is omitted when `run_seq == 0`.
+/// One combat record's JSON shape; `run` is absent outside a run.
 #[derive(Serialize)]
 struct CombatDoc<'a> {
     combat_id: u32,
     started_at: i64,
     encounter_id: &'a str,
-    result: &'a str,
+    result: CombatResult,
     #[serde(skip_serializing_if = "is_zero")]
     turns: u32,
     #[serde(skip_serializing_if = "is_zero")]
@@ -109,7 +109,9 @@ pub fn build_combat_json(c: &Combat) -> String {
         combat_id: c.seq,
         started_at: c.started_at,
         encounter_id: &c.encounter_id,
-        result: &c.result,
+        result: c
+            .result()
+            .expect("only a finished combat record reaches the serializer"),
         turns: c.turns,
         damage_received: c.damage_received,
         run,
@@ -222,7 +224,7 @@ mod tests {
         let c = &combats[0];
         assert_eq!(c.combat_id, 7);
         assert_eq!(c.encounter_id, "BYGONE_EFFIGY");
-        assert_eq!(c.result, "completed");
+        assert_eq!(c.result, CombatResult::Completed);
         assert_eq!(c.turns, 5);
         assert_eq!(c.damage_received, 33);
         let run = c.run.as_ref().expect("run present");

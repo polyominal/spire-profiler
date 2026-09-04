@@ -2,7 +2,7 @@
 //! snapshot rows/footers, the chart-row payload, and the filter toggle.
 
 use super::*;
-use crate::data::state::{PlayerFilter, RunOutcome};
+use crate::data::state::{CombatResult, PlayerFilter, RunOutcome};
 use crate::source_kind::SourceKind;
 use crate::test_util::wiped_dir;
 use crate::ui::ui_model::{Section, Segment, UiRow, UiTab};
@@ -20,7 +20,7 @@ fn assert_self_test_combat(combat: &CombatRec, combat_json: &serde_json::Value) 
             .potions_used),
         1
     );
-    assert_eq!(combat.result, "completed");
+    assert_eq!(combat.result, CombatResult::Completed);
     let run = combat.run.as_ref().expect("combat record carries its run");
     assert_eq!(run.seq, 1);
     assert_eq!(run.character, "SELF_TEST_CHAR");

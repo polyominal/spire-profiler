@@ -47,7 +47,7 @@ pub(crate) fn visible() -> bool {
 }
 
 pub(crate) fn run_active() -> bool {
-    STATE.with(|s| s.borrow().run_ctx.active)
+    STATE.with(|s| s.borrow().run_ctx.is_some())
 }
 
 /// Outside a run the press is ignored; the stored state carries forward.
@@ -783,8 +783,7 @@ fn cheap_state_signature(tab: UiTab) -> u64 {
                 c.seq.hash(&mut hasher);
                 c.encounter_id.hash(&mut hasher);
                 c.encounter_type.hash(&mut hasher);
-                c.finished.hash(&mut hasher);
-                c.result.hash(&mut hasher);
+                c.phase.hash(&mut hasher);
                 c.cards.len().hash(&mut hasher);
                 for card in &c.cards {
                     hash_card_stat(&mut hasher, card);
@@ -847,7 +846,7 @@ mod tests {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
             st.initialized = true;
-            st.run_ctx.active = true;
+            st.run_ctx = Some(Default::default());
         });
         VISIBLE.with(|v| v.set(false));
         assert!(!visible());
@@ -864,12 +863,12 @@ mod tests {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
             st.initialized = true;
-            st.run_ctx.active = false;
+            st.run_ctx = None;
         });
         VISIBLE.with(|v| v.set(false));
         toggle();
         assert!(!visible(), "F8 outside a run must not turn the panel on");
-        STATE.with(|s| s.borrow_mut().run_ctx.active = true);
+        STATE.with(|s| s.borrow_mut().run_ctx = Some(Default::default()));
         toggle();
         assert!(visible(), "F8 inside a run must turn the panel on");
     }
@@ -879,7 +878,7 @@ mod tests {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
             st.initialized = true;
-            st.run_ctx.active = true;
+            st.run_ctx = Some(Default::default());
         });
         VISIBLE.with(|v| v.set(true));
         dismiss();

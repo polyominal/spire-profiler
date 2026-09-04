@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::data::persistence::{bind_log_path, reset_log_sink};
-use crate::data::state::{ActivePlay, DebuffLayer, PowerSourceEntry, caps};
+use crate::data::state::{ActivePlay, DebuffLayer, Fallback, PotionSource, PowerSourceEntry, caps};
 use crate::test_util::unique_dir;
 
 fn reset_state() {
@@ -180,11 +180,6 @@ fn resolve_card_priority_chain() {
             id: "ZAP".to_owned(),
             kind: SourceKind::Card,
         });
-        state.orb_sources.push(OrbSource {
-            hash: 0,
-            id: "FIRE_POTION".to_owned(),
-            kind: SourceKind::Potion,
-        });
     });
     assert_card(
         resolve("STRIKE", 0, 0).expect("explicit").0,
@@ -197,6 +192,7 @@ fn resolve_card_priority_chain() {
             kind: SourceKind::Card,
             row_slot: 0,
             card_id: "DEFEND".to_owned(),
+            orb_first_trigger_used: false,
         })
     });
     assert_card(
@@ -213,7 +209,7 @@ fn resolve_card_priority_chain() {
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         state.context_stack.pop();
-        state.slot_state_mut(0).orb_fallback = Some(0);
+        state.slot_state_mut(0).fallback = Some(Fallback::Orb(0));
     });
     assert_card(
         resolve("", 0, 0).expect("orb fallback").0,
@@ -222,8 +218,10 @@ fn resolve_card_priority_chain() {
     );
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
-        state.slot_state_mut(0).orb_fallback = None;
-        state.slot_state_mut(0).potion_fallback = Some(1);
+        state.slot_state_mut(0).fallback = Some(Fallback::Potion(PotionSource {
+            id: "FIRE_POTION".to_owned(),
+            kind: SourceKind::Potion,
+        }));
     });
     assert_card(
         resolve("", 0, 0).expect("potion fallback").0,
@@ -269,6 +267,7 @@ fn resolve_card_play_source_override_is_kind_aware() {
             kind: SourceKind::Relic,
             row_slot: 0,
             card_id: "JOSS_PAPER".to_owned(),
+            orb_first_trigger_used: false,
         });
     });
     assert_card(

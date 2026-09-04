@@ -85,7 +85,7 @@ fn flex_potion_strength_attributes_to_the_potion_and_expires_fifo() {
 }
 
 #[test]
-fn potion_sources_are_bounded_at_the_orb_source_cap() {
+fn potion_fallbacks_do_not_consume_orb_capacity() {
     combat_fixture("POTION_CAP_TEST");
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
@@ -103,7 +103,7 @@ fn potion_sources_are_bounded_at_the_orb_source_cap() {
     STATE.with(|cell| {
         let state = cell.borrow();
         assert_eq!(state.orb_sources.len(), caps::ORB_SOURCES);
-        assert!(state.per_player[0].potion_fallback.is_none());
+        assert!(state.per_player[0].fallback.is_some());
         let combat = state.current.as_ref().expect("combat exists");
         assert_eq!(combat.potions_used, 1);
     });
@@ -160,8 +160,8 @@ fn potion_fallbacks_do_not_capture_across_slots() {
     card_play_started("STRIKE", 0, 1, 0, 1);
     STATE.with(|cell| {
         let state = cell.borrow();
-        assert!(state.per_player[0].potion_fallback.is_some());
-        assert!(state.per_player[1].potion_fallback.is_none());
+        assert!(state.per_player[0].fallback.is_some());
+        assert!(state.per_player[1].fallback.is_none());
     });
     damage_dealt(DamageDealt {
         total: 6,
@@ -188,4 +188,30 @@ fn potion_fallbacks_do_not_capture_across_slots() {
         (fire.kind, fire.plays, fire.damage_dealt),
         (SourceKind::Potion, 0, 20)
     );
+}
+
+#[test]
+fn a_zero_hash_orb_does_not_alias_a_potion_fallback() {
+    let base = combat_fixture("ZERO_HASH_ORB_TEST");
+
+    context_begin("ZERO_SOURCE", 1, 0);
+    orb_channeled(0, 0);
+    context_end();
+    potion_context_begin("FIRE_POTION", 0);
+    orb_context_begin(0, 0);
+    damage_dealt(DamageDealt {
+        total: 7,
+        unblocked: 7,
+        ..DamageDealt::default()
+    });
+    combat_ended();
+
+    let (combat, doc) = read_combat(&base);
+    let source = card_row(&combat, "ZERO_SOURCE");
+    assert_eq!(
+        (source.kind, source.plays, source.damage_dealt),
+        (SourceKind::Relic, 0, 7)
+    );
+    assert_eq!(card_json(&doc, "ZERO_SOURCE")["dmg_attributed"], 7);
+    assert_no_card(&combat, "FIRE_POTION");
 }

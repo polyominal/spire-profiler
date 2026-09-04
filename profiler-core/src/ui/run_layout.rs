@@ -23,9 +23,9 @@ use crate::ui::panel_common;
 use crate::ui::theme::{self, TextRole};
 use crate::ui::ui_model::{UiMeta, UiRow, UiTab};
 
-/// The result is omitted when empty; an unknown ascension (-1) is omitted
-/// rather than rendered as "A-1". The character is deliberately absent:
-/// the avatar row carries the identity, never a text name.
+/// An unknown ascension (-1) is omitted rather than rendered as "A-1". The
+/// character is deliberately absent: the avatar row carries the identity,
+/// never a text name.
 pub(crate) fn identity_line(view: &RunSummaryView) -> String {
     let mut line = String::new();
     if view.ascension >= 0 {
@@ -403,7 +403,7 @@ fn emit_chart(
 mod tests {
     use super::*;
     use crate::data::run_history::CombatView;
-    use crate::data::state::{CardStat, RunOutcome};
+    use crate::data::state::{CardStat, CombatResult, RunOutcome};
     use crate::source_kind::SourceKind;
     use crate::test_util::cmd_texts as texts;
     use crate::ui::ui_model;
@@ -416,7 +416,7 @@ mod tests {
                 .map(|i| CombatView {
                     seq: i + 1,
                     encounter: format!("ENC{i}"),
-                    result: "completed".to_owned(),
+                    result: CombatResult::Completed,
                     damage_dealt: 30,
                     damage_taken: 10,
                     turns: 3,
@@ -536,7 +536,7 @@ mod tests {
             .map(|i| CombatView {
                 seq: i + 1,
                 encounter: format!("ENC{i}"),
-                result: "completed".to_owned(),
+                result: CombatResult::Completed,
                 damage_dealt: 10,
                 damage_taken: 2,
                 turns: 1,

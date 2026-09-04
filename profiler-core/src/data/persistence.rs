@@ -88,9 +88,10 @@
 //! directions — the writer refuses a too-large record and [`read_file`]
 //! refuses one.
 //!
-//! [`read_file`] treats a missing file as "no data yet" (an empty file is
-//! a state, not an error) and validates UTF-8. Every store scan skips
-//! names that are not `<digits>.json`, and every parse failure is
+//! [`read_file`] keeps “missing” separate from “unreadable” (an empty file
+//! is a state, not an error) and validates UTF-8, so the runs.jsonl rewrite
+//! never mistakes corrupt history for an empty store. Every store scan
+//! skips names that are not `<digits>.json`, and every parse failure is
 //! fail-logged and skipped — one bad file never takes the rest of the
 //! store down. The store grows without bound by design.
 
@@ -106,7 +107,8 @@ pub use combat_doc::build_combat_json;
 pub(crate) use combat_doc::card_stat_from_rec;
 pub use combats::write_combat_file;
 pub(crate) use combats::{load_combat_docs_from, max_combat_id, parse_combat_docs};
-pub use io::{ensure_data_dir, read_file, write_file};
+pub(crate) use io::read_file;
+pub use io::{ensure_data_dir, write_file};
 pub(crate) use log::{append_log, bind_log_path, event_log, reset_log_sink};
 pub(crate) use runs::{CardStatKey, upsert_card_stat};
 pub use runs::{merge_into_run, rebuild_run_accumulator};
@@ -124,7 +126,9 @@ pub(crate) mod test_support {
     // re-pointing, the synthetic combat, and the store-file helper every
     // suite reuses, so each suite's `tests` module stays small.
     use super::bind_log_path;
-    use crate::data::state::{CardStat, Combat, RunPlayer, RunSnapshot, STATE};
+    use crate::data::state::{
+        CardStat, Combat, CombatPhase, CombatResult, RunPlayer, RunSnapshot, STATE,
+    };
     use crate::source_kind::SourceKind;
     pub(crate) use crate::test_util::unique_dir;
 
@@ -168,7 +172,7 @@ pub(crate) mod test_support {
             encounter_id: "BYGONE_EFFIGY".to_owned(),
             encounter_type: "Elite".to_owned(),
             started_at: 1_786_624_000,
-            result: "completed".to_owned(),
+            phase: CombatPhase::Finished(CombatResult::Completed),
             turns: 5,
             damage_received: 33,
             run: Some(synthetic_run(42)),

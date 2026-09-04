@@ -61,6 +61,9 @@ fn compare(rust_source: &str, source_name: &str, template: &str) -> Result<usize
     scan_bindings(template, &mut bindings).map_err(|e| vec![e])?;
 
     let mut errors = Vec::new();
+    if bindings.is_empty() {
+        errors.push("no GetExport bindings were parsed from the template".to_owned());
+    }
     for binding in &bindings {
         match exports.get(&binding.export_name) {
             Some(export) => match delegates.get(&binding.delegate) {
@@ -299,8 +302,13 @@ fn scan_delegates(
 /// All literal, no whitespace.
 fn scan_bindings(template: &str, bindings: &mut Vec<Binding>) -> Result<(), String> {
     const NEEDLE: &str = "GetExport<";
+    const GENERIC_HELPER: &str = "GetExport<T>(IntPtr lib, string name)";
     let mut pos = 0;
     while let Some(found) = template[pos..].find(NEEDLE).map(|i| pos + i) {
+        if template[found..].starts_with(GENERIC_HELPER) {
+            pos = found + GENERIC_HELPER.len();
+            continue;
+        }
         let mut i = found + NEEDLE.len();
         let delegate_start = i;
         while template[i..].chars().next().is_some_and(is_word_char) {
@@ -323,7 +331,10 @@ fn scan_bindings(template: &str, bindings: &mut Vec<Binding>) -> Result<(), Stri
                 continue;
             }
         }
-        pos = found + 1;
+        return Err(format!(
+            "unrecognized GetExport call at template offset {found}: expected \
+             GetExport<Delegate>(lib, \"spire_profiler_export\")"
+        ));
     }
     Ok(())
 }
@@ -354,6 +365,8 @@ internal static class ProfilerNative
     private delegate void NativeVoid();
 
     private static NativeFoo _foo;
+    private static T GetExport<T>(IntPtr lib, string name) where T : Delegate =>
+        Marshal.GetDelegateForFunctionPointer<T>(NativeLibrary.GetExport(lib, name));
 
     public static void Load(string libPath)
     {
@@ -397,7 +410,30 @@ internal static class ProfilerNative
         );
     }
 
-    /// Never a vacuous zero-binding pass.
+    #[test]
+    fn empty_template_fails_rather_than_passing_vacuously() {
+        let errors = compare(GOOD_RUST, "abi.rs", "").expect_err("zero bindings must fail");
+        assert_eq!(
+            errors,
+            ["no GetExport bindings were parsed from the template"]
+        );
+    }
+
+    #[test]
+    fn malformed_binding_fails_alongside_a_valid_binding() {
+        let template = GOOD_TMPL.replace(
+            "    private static NativeFoo _foo;",
+            "    private static NativeFoo _foo;\n    private static NativeVoid _bad;",
+        ) + "\n_bad = GetExport<NativeVoid>(IntPtr lib, \"spire_profiler_test_reset\");\n";
+        let errors = compare(GOOD_RUST, "abi.rs", &template).expect_err("malformed call must fail");
+        assert_eq!(errors.len(), 1);
+        assert!(
+            errors[0].contains("unrecognized GetExport call"),
+            "unexpected error: {}",
+            errors[0]
+        );
+    }
+
     #[test]
     fn unbalanced_params_are_a_scanner_error() {
         let template = "private delegate void NativeFoo(int amount;\n";

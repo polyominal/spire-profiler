@@ -3,7 +3,7 @@
 //! table stays global; which slot's fallback points at it is per-slot.
 
 use crate::data::persistence::event_log;
-use crate::data::state::{Combat, OrbSource, STATE, SourceKind, caps};
+use crate::data::state::{Combat, Fallback, OrbSource, STATE, SourceKind, caps};
 use crate::fail;
 
 /// Innermost context, then the active card, then `last_source`.
@@ -64,15 +64,14 @@ pub fn orb_context_begin(hash: i32, player_slot: i32) {
         }
         let slot = state.slot_index(player_slot);
         // The slot's potion fallback must not capture the orb's damage.
-        state.per_player[slot].potion_fallback = None;
+        state.per_player[slot].fallback = None;
         // Only the FIRST orb trigger credits the channeling source.
-        if state.per_player[slot].active_play.is_some() {
-            if state.per_player[slot].orb_first_trigger_used {
-                state.per_player[slot].orb_fallback = None;
+        if let Some(play) = state.per_player[slot].active_play.as_mut() {
+            if play.orb_first_trigger_used {
                 event_log!("  orb trigger (later during play) credited to the card");
                 return;
             }
-            state.per_player[slot].orb_first_trigger_used = true;
+            play.orb_first_trigger_used = true;
         }
         match state
             .orb_sources
@@ -80,7 +79,7 @@ pub fn orb_context_begin(hash: i32, player_slot: i32) {
             .position(|source| source.hash == hash)
         {
             Some(i) => {
-                state.per_player[slot].orb_fallback = Some(i);
+                state.per_player[slot].fallback = Some(Fallback::Orb(i));
                 let source = &state.orb_sources[i];
                 event_log!(
                     "  orb trigger, fallback: {} ({})",
@@ -89,7 +88,7 @@ pub fn orb_context_begin(hash: i32, player_slot: i32) {
                 );
             }
             None => {
-                state.per_player[slot].orb_fallback = None;
+                state.per_player[slot].fallback = None;
                 event_log!("  orb trigger with no recorded source");
             }
         }

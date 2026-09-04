@@ -5,8 +5,9 @@ use crate::data::ledger;
 use crate::data::ledger::AsyncFallback;
 use crate::data::persistence::event_log;
 use crate::data::state::{
-    Combat, DURATION_DEBUFFS, DebuffLayer, DoomLayer, DoomTarget, EnemyHit, PowerSourceEntry,
-    STATE, SourceKind, SourceSlot, State, StrReduction, TEAM_SLOT, caps, clamp_modifier_kind,
+    Combat, DURATION_DEBUFFS, DebuffLayer, DoomLayer, DoomTarget, EnemyHit, Fallback,
+    PowerSourceEntry, STATE, SourceKind, SourceSlot, State, StrReduction, TEAM_SLOT, caps,
+    clamp_modifier_kind,
 };
 use crate::fail;
 
@@ -45,14 +46,13 @@ pub fn power_applied(
             .and_then(|slot| slot.active_play.clone())
         {
             Some((play.id, play.kind))
-        } else if let Some(i) = state
+        } else if let Some(Fallback::Potion(source)) = state
             .per_player
             .get(ambient)
-            .and_then(|slot| slot.potion_fallback)
+            .and_then(|slot| slot.fallback.clone())
         {
             // Potions run outside plays and contexts.
-            let source = &state.orb_sources[i];
-            Some((source.id.clone(), source.kind))
+            Some((source.id, source.kind))
         } else {
             None
         };
@@ -185,11 +185,7 @@ pub fn power_decreased(
         if power_id == "STRENGTH_POWER" {
             if is_player != 0 {
                 consume_player_strength_in(&mut state, amount as i64);
-            } else if state
-                .current
-                .as_mut()
-                .is_some_and(|combat| !combat.finished)
-            {
+            } else if Combat::active_mut(&mut state.current).is_some() {
                 record_str_reduction_in(&mut state, creature_hash, amount as i64);
             }
             return;

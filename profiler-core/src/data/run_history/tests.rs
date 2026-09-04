@@ -5,7 +5,7 @@ use std::fs;
 use std::path::Path;
 
 use super::*;
-use crate::data::state::RunOutcome;
+use crate::data::state::{CombatResult, RunOutcome};
 use crate::source_kind::SourceKind;
 use crate::test_util::wiped_dir;
 
@@ -86,7 +86,7 @@ const COMBATS: &str = r#"[
              "dmg_direct":30,"dmg_attributed":10,"dmg_modifier":0},
             {"id":"DEFEND","kind":0,"plays":2,"damage_dealt":0,"block_gained":16,"block_effective":15,"heal":0}
          ]},
-        {"combat_id":3,"encounter_id":"C","result":"defeated","turns":3,"damage_received":25,
+        {"combat_id":3,"encounter_id":"C","result":"defeat","turns":3,"damage_received":25,
          "block_total":0,
          "run":{"seq":2,"character":"IRONCLAD","ascension":7,"game_mode":"Standard"},
          "cards":[
@@ -201,12 +201,12 @@ fn select_by_seed_assembles_the_full_view() {
     assert_eq!(view.combats.len(), 2);
     assert_eq!(view.combats[0].seq, 2);
     assert_eq!(view.combats[0].encounter, "B");
-    assert_eq!(view.combats[0].result, "completed");
+    assert_eq!(view.combats[0].result, CombatResult::Completed);
     assert_eq!(view.combats[0].damage_dealt, 40);
     assert_eq!(view.combats[0].damage_taken, 15);
     assert_eq!(view.combats[0].turns, 5);
     assert_eq!(view.combats[1].seq, 3);
-    assert_eq!(view.combats[1].result, "defeated");
+    assert_eq!(view.combats[1].result, CombatResult::Defeat);
     assert_eq!(view.combats[1].damage_dealt, 30);
     assert_eq!(view.combats[1].damage_taken, 25);
 
@@ -549,7 +549,7 @@ fn view_fingerprint_tracks_every_view_field() {
         combats: vec![CombatView {
             seq: 1,
             encounter: "ENC0".to_owned(),
-            result: "completed".to_owned(),
+            result: CombatResult::Completed,
             damage_dealt: 30,
             damage_taken: 10,
             turns: 3,

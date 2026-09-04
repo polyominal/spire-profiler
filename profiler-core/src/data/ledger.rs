@@ -62,8 +62,8 @@ use crate::data::persistence::event_log;
 #[cfg(test)]
 use crate::data::state::STATE;
 use crate::data::state::{
-    self, BlockEntry, BlockMod, CardStat, Combat, ContextEntry, OrbSource, PendingContrib,
-    PlayerSlotState, SourceKind, SourceSlot, clamp_source_slot,
+    self, BlockEntry, BlockMod, CardStat, Combat, ContextEntry, Fallback, OrbSource,
+    PendingContrib, PlayerSlotState, SourceKind, SourceSlot, clamp_source_slot,
 };
 use crate::fail;
 
@@ -251,7 +251,7 @@ pub fn resolve_card_in(
             get_or_create_card_kind(combat, row_slot, &id, kind)?,
             row_slot,
         )
-    } else if let Some(i) = slot_state.orb_fallback {
+    } else if let Some(Fallback::Orb(i)) = slot_state.fallback {
         let source = &state.orb_sources[i];
         let id = source.id.clone();
         let kind = source.kind;
@@ -259,9 +259,8 @@ pub fn resolve_card_in(
             get_or_create_card_kind(combat, slot as SourceSlot, &id, kind)?,
             slot as SourceSlot,
         )
-    } else if let Some(i) = slot_state.potion_fallback {
-        let source = &state.orb_sources[i];
-        let id = source.id.clone();
+    } else if let Some(Fallback::Potion(source)) = slot_state.fallback.clone() {
+        let id = source.id;
         let kind = source.kind;
         (
             get_or_create_card_kind(combat, slot as SourceSlot, &id, kind)?,
@@ -308,7 +307,7 @@ fn resolve_damage_route(
             explicit_slot,
             false,
         )
-    } else if let Some(i) = slot.orb_fallback {
+    } else if let Some(Fallback::Orb(i)) = slot.fallback {
         let source = &orb_sources[i];
         let id = source.id.clone();
         let kind = source.kind;
@@ -333,8 +332,9 @@ fn resolve_damage_route(
             kind == SourceKind::Power,
         )
     } else {
-        let i = slot.potion_fallback?;
-        let source = &orb_sources[i];
+        let Fallback::Potion(source) = slot.fallback.as_ref()? else {
+            return None;
+        };
         let id = source.id.clone();
         let kind = source.kind;
         (
@@ -401,15 +401,13 @@ pub fn resolve_damage_source_in(
 /// A new attribution source invalidates the capture window.
 pub fn clear_fallbacks_in(state: &mut state::State, slot: i32) {
     let slot = state.slot_index(slot);
-    state.per_player[slot].orb_fallback = None;
-    state.per_player[slot].potion_fallback = None;
+    state.per_player[slot].fallback = None;
 }
 
 /// Clears every slot's fallbacks for the turn/combat boundaries.
 pub fn clear_all_fallbacks_in(state: &mut state::State) {
     for slot in &mut state.per_player {
-        slot.orb_fallback = None;
-        slot.potion_fallback = None;
+        slot.fallback = None;
     }
 }
 
