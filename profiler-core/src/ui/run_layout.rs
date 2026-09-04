@@ -148,7 +148,6 @@ impl RunLayout {
                 }),
                 Cmd::Text(t) => Cmd::Text(chart_layout::TextCmd {
                     y: t.y + y_offset,
-                    text: t.text.clone(),
                     ..t.clone()
                 }),
                 Cmd::Texture(t) => Cmd::Texture(chart_layout::TextureCmd {
@@ -304,8 +303,28 @@ fn emit_header(
         drew = true;
     }
     if !drew {
-        let y = emit_identity(l, view, content.x, y_in);
-        return emit_seed(l, view, content.x, y);
+        let left = content.x + 8.0;
+        let width = (l.content.right() - left).max(0.0);
+        l.sink().text_left_clipped(
+            left,
+            width,
+            y_in + 25.0,
+            SIZE_BODY,
+            palette::COL_CREAM,
+            TextRole::Body,
+            identity_line(view),
+        );
+        let y = y_in + LINE_H;
+        l.sink().text_left_clipped(
+            left,
+            width,
+            y + 25.0,
+            SIZE_BODY,
+            palette::COL_DIM,
+            TextRole::Body,
+            format!("seed {}", truncate(&view.seed, 72)),
+        );
+        return y + LINE_H;
     }
     // The alignment box starts past the icon groups, so an overlong line
     // clips there instead of drawing over the icons.
@@ -328,36 +347,6 @@ fn emit_header(
         format!("seed {}", truncate(&view.seed, 72)),
     );
     y_in + ICON_ROW_H
-}
-
-fn emit_identity(l: &mut RunLayout, view: &RunSummaryView, x: f32, y_in: f32) -> f32 {
-    let left = x + 8.0;
-    let width = (l.content.right() - left).max(0.0);
-    l.sink().text_left_clipped(
-        left,
-        width,
-        y_in + 25.0,
-        SIZE_BODY,
-        palette::COL_CREAM,
-        TextRole::Body,
-        identity_line(view),
-    );
-    y_in + LINE_H
-}
-
-fn emit_seed(l: &mut RunLayout, view: &RunSummaryView, x: f32, y_in: f32) -> f32 {
-    let left = x + 8.0;
-    let width = (l.content.right() - left).max(0.0);
-    l.sink().text_left_clipped(
-        left,
-        width,
-        y_in + 25.0,
-        SIZE_BODY,
-        palette::COL_DIM,
-        TextRole::Body,
-        format!("seed {}", truncate(&view.seed, 72)),
-    );
-    y_in + LINE_H
 }
 
 fn emit_meta(l: &mut RunLayout, content: &theme::ContentBox, meta: &UiMeta, y_in: f32) -> f32 {
