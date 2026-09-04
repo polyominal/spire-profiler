@@ -19,16 +19,6 @@ const GDRE_VERSION: &str = "v2.5.0-beta.5";
 const GDRE_MACOS_SHA256: &str = "01211b4dd82f874bb21dfc11483d19affad9cff9c1912eacf561972b750011e6";
 const GDRE_LINUX_SHA256: &str = "6d2ae1ccf783a305b6b7891d946d723366a51da739fc755fa6d0d43b7f8eefc9";
 
-fn os_name(host: discover::Platform) -> &'static str {
-    match host {
-        discover::Platform::Macos => "macos",
-        discover::Platform::Linux => "linux",
-        discover::Platform::Windows => {
-            unreachable!("Platform::detect rejects native Windows hosts")
-        }
-    }
-}
-
 fn gdre_tools_dir(root: &Path) -> PathBuf {
     root.join("tmp/gdre-tools")
 }
@@ -151,31 +141,20 @@ fn release_info_for_pck(pck: &Path) -> PathBuf {
     pck.with_file_name("release_info.json")
 }
 
-fn gdre_exe(host: discover::Platform, tools_dir: &Path) -> PathBuf {
+/// (os name, exe path within the extracted tools dir, asset SHA-256) per
+/// host; the release zip's asset name is `GDRE_tools-{GDRE_VERSION}-{os}.zip`.
+fn gdre_host(host: discover::Platform) -> (&'static str, &'static str, &'static str) {
     match host {
-        discover::Platform::Macos => {
-            tools_dir.join("Godot RE Tools.app/Contents/MacOS/Godot RE Tools")
-        }
-        discover::Platform::Linux => tools_dir.join("gdre_tools.x86_64"),
+        discover::Platform::Macos => (
+            "macos",
+            "Godot RE Tools.app/Contents/MacOS/Godot RE Tools",
+            GDRE_MACOS_SHA256,
+        ),
+        discover::Platform::Linux => ("linux", "gdre_tools.x86_64", GDRE_LINUX_SHA256),
         discover::Platform::Windows => {
             unreachable!("Platform::detect rejects native Windows hosts")
         }
     }
-}
-
-/// The release zip's asset name and pinned SHA-256, per platform.
-fn gdre_asset(host: discover::Platform) -> (String, &'static str) {
-    let checksum = match host {
-        discover::Platform::Macos => GDRE_MACOS_SHA256,
-        discover::Platform::Linux => GDRE_LINUX_SHA256,
-        discover::Platform::Windows => {
-            unreachable!("Platform::detect rejects native Windows hosts")
-        }
-    };
-    (
-        format!("GDRE_tools-{GDRE_VERSION}-{}.zip", os_name(host)),
-        checksum,
-    )
 }
 
 #[cfg(unix)]
@@ -193,13 +172,14 @@ fn chmod_executable(_exe: &Path) -> Result<()> {
 
 /// Idempotent: a rerun with the binary present skips the download.
 fn ensure_gdre_tools(shell: &Shell, host: discover::Platform, root: &Path) -> Result<PathBuf> {
+    let (os_name, exe_rel, checksum) = gdre_host(host);
     let tools_dir = gdre_tools_dir(root);
-    let exe = gdre_exe(host, &tools_dir);
+    let exe = tools_dir.join(exe_rel);
     if exe.is_file() {
         println!("GDRE Tools: present at {}", tools_dir.display());
     } else {
         crate::ensure_cli(shell, "unzip", "-v", "extraction")?;
-        let (asset, checksum) = gdre_asset(host);
+        let asset = format!("GDRE_tools-{GDRE_VERSION}-{os_name}.zip");
         let url = format!(
             "https://github.com/GDRETools/gdsdecomp/releases/download/{GDRE_VERSION}/{asset}"
         );
@@ -335,7 +315,7 @@ fn write_provenance(output: &Path, pck: &Path, host: discover::Platform) -> Resu
     let json = serde_json::json!({
         // Unix epoch seconds.
         "utc_timestamp": utc,
-        "host_platform": os_name(host),
+        "host_platform": gdre_host(host).0,
         "pck_path": pck,
         "gdre_version": GDRE_VERSION,
         "gdre_export_log_present": output.join("gdre_export.log").is_file(),
