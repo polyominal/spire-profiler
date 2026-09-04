@@ -14,21 +14,16 @@ pub fn orb_channeled(hash: i32, player_slot: i32) {
             return;
         }
         let slot = state.slot_index(player_slot);
-        let mut source_id: Option<String> = None;
-        let mut kind = SourceKind::Card;
-        if let Some(top) = state.context_stack.last() {
-            source_id = Some(top.id.clone());
-            kind = top.kind;
+        let resolved: Option<(String, SourceKind)> = if let Some(top) = state.context_stack.last() {
+            Some((top.id.clone(), top.kind))
         } else if Combat::active(&state.current).is_some()
-            && let Some((id, play_kind)) = state.per_player[slot].active_play_source.clone()
+            && let Some(play) = state.per_player[slot].active_play_source.clone()
         {
-            source_id = Some(id);
-            kind = play_kind;
-        } else if let Some(last_source) = state.last_source.clone() {
-            source_id = Some(last_source.id);
-            kind = last_source.kind;
-        }
-        let Some(source_id) = source_id else {
+            Some(play)
+        } else {
+            state.last_source.clone().map(|last| (last.id, last.kind))
+        };
+        let Some((source_id, kind)) = resolved else {
             event_log!("  orb channeled with no attribution source");
             return;
         };

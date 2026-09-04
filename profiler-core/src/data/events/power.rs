@@ -37,18 +37,14 @@ pub fn power_applied(
         };
         // A slotless event can fire before any slot event grew it.
         let ambient = applier_slot;
-        let mut source_id: Option<String> = None;
-        let mut kind = SourceKind::Card;
-        if let Some(top) = state.context_stack.last() {
-            source_id = Some(top.id.clone());
-            kind = top.kind;
-        } else if let Some((id, play_kind)) = state
+        let resolved: Option<(String, SourceKind)> = if let Some(top) = state.context_stack.last() {
+            Some((top.id.clone(), top.kind))
+        } else if let Some(play) = state
             .per_player
             .get(ambient)
             .and_then(|slot| slot.active_play_source.clone())
         {
-            source_id = Some(id);
-            kind = play_kind;
+            Some(play)
         } else if let Some(i) = state
             .per_player
             .get(ambient)
@@ -56,10 +52,11 @@ pub fn power_applied(
         {
             // Potions run outside plays and contexts.
             let source = &state.orb_sources[i];
-            source_id = Some(source.id.clone());
-            kind = source.kind;
-        }
-        let Some(source_id) = source_id else {
+            Some((source.id.clone(), source.kind))
+        } else {
+            None
+        };
+        let Some((source_id, kind)) = resolved else {
             return;
         };
         // Self-doom targets the player and is skipped.

@@ -141,8 +141,7 @@ pub fn card_generated(card_hash: i32, source_id: &str, source_kind: i32, player_
         if !state.initialized || card_hash == 0 {
             return;
         }
-        let (resolved_source, kind) = resolve_cause_in(&state, source_id, source_kind);
-        let Some(resolved_source) = resolved_source else {
+        let Some((resolved_source, kind)) = resolve_cause_in(&state, source_id, source_kind) else {
             event_log!("  card generated with no attribution source");
             return;
         };
@@ -205,48 +204,41 @@ fn resolve_cause_in(
     state: &State,
     source_id: &str,
     source_kind: i32,
-) -> (Option<String>, SourceKind) {
+) -> Option<(String, SourceKind)> {
     let ambient = state.ambient_slot();
-    let mut resolved_source: Option<String> = None;
-    let mut kind = SourceKind::Card;
     if !source_id.is_empty() {
-        resolved_source = Some(source_id.to_owned());
-        kind = SourceKind::from_c(source_kind);
+        Some((source_id.to_owned(), SourceKind::from_c(source_kind)))
     } else if let Some(top) = state.context_stack.last().cloned() {
         if top.kind == SourceKind::Power {
             // The causing "source" is the power itself; resolve it to the
             // source that applied the power (with that source's kind).
             if let Some(applier) = state.power_sources.iter().find(|e| e.power_id == top.id) {
-                resolved_source = Some(applier.source_id.clone());
-                kind = applier.kind;
+                Some((applier.source_id.clone(), applier.kind))
             } else {
-                resolved_source = Some(top.id);
-                kind = top.kind;
+                Some((top.id, top.kind))
             }
         } else {
-            resolved_source = Some(top.id);
-            kind = top.kind;
+            Some((top.id, top.kind))
         }
-    } else if let Some((id, play_kind)) = state
+    } else if let Some(play) = state
         .per_player
         .get(ambient)
         .and_then(|slot| slot.active_play_source.clone())
     {
-        resolved_source = Some(id);
-        kind = play_kind;
+        Some(play)
     } else if let Some(i) = state
         .per_player
         .get(ambient)
         .and_then(|slot| slot.potion_fallback)
     {
         let source = &state.orb_sources[i];
-        resolved_source = Some(source.id.clone());
-        kind = source.kind;
-    } else if let Some(last) = &state.last_source {
+        Some((source.id.clone(), source.kind))
+    } else {
         // The async gap: the causing hook already returned (its context
         // popped at the first await), but `last_source` still names it.
-        resolved_source = Some(last.id.clone());
-        kind = last.kind;
+        state
+            .last_source
+            .as_ref()
+            .map(|last| (last.id.clone(), last.kind))
     }
-    (resolved_source, kind)
 }
