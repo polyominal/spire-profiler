@@ -260,9 +260,7 @@ pub fn doom_kills_completed() {
         let targets = std::mem::take(&mut state.doom_targets);
         let count = targets.len();
         for target in &targets {
-            if !attribute_doom_target_in(&mut state, target.creature_hash, target.hp) {
-                return;
-            }
+            attribute_doom_target_in(&mut state, target.creature_hash, target.hp);
         }
         event_log!("  doom kills completed, {count} targets attributed");
     });
@@ -270,7 +268,7 @@ pub fn doom_kills_completed() {
 
 /// First against the matching Doom layers FIFO, then to the active context
 /// or a DOOM catch-all entry.
-fn attribute_doom_target_in(state: &mut State, creature_hash: u64, hp: i64) -> bool {
+fn attribute_doom_target_in(state: &mut State, creature_hash: u64, hp: i64) {
     let mut remaining = hp;
     let mut i = 0;
     while i < state.doom_layers.len() && remaining > 0 {
@@ -283,7 +281,7 @@ fn attribute_doom_target_in(state: &mut State, creature_hash: u64, hp: i64) -> b
         let (source_id, kind, player) = (layer.source_id.clone(), layer.kind, layer.player);
         {
             let Some(combat) = Combat::active_mut(&mut state.current) else {
-                return false;
+                return;
             };
             if let Some(index) = ledger::get_or_create_card_kind(combat, player, &source_id, kind) {
                 let card = &mut combat.cards[index];
@@ -310,7 +308,7 @@ fn attribute_doom_target_in(state: &mut State, creature_hash: u64, hp: i64) -> b
         match index {
             Some(index) => {
                 let Some(combat) = Combat::active_mut(&mut state.current) else {
-                    return false;
+                    return;
                 };
                 let card = &mut combat.cards[index];
                 card.damage_dealt += remaining;
@@ -319,7 +317,7 @@ fn attribute_doom_target_in(state: &mut State, creature_hash: u64, hp: i64) -> b
             }
             None => {
                 let Some(combat) = Combat::active_mut(&mut state.current) else {
-                    return false;
+                    return;
                 };
                 if let Some(index) =
                     ledger::get_or_create_card_kind(combat, TEAM_SLOT, "DOOM", SourceKind::Card)
@@ -332,7 +330,6 @@ fn attribute_doom_target_in(state: &mut State, creature_hash: u64, hp: i64) -> b
             }
         }
     }
-    true
 }
 
 /// Queue it on the DEALER's slot for attribution when the hit lands.
