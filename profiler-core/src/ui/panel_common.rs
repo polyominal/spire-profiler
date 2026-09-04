@@ -5,7 +5,7 @@ use std::cell::Cell;
 use std::time::Instant;
 
 use crate::data::state::PlayerFilter;
-use crate::engine::gdext::Object;
+use crate::engine::gdext::{MOUSE_BUTTON_LEFT, Object, mouse_button_pressed};
 use crate::engine::math::{Rect2, Vector2};
 use crate::ui::chart_layout::{self, Cmd, RectCmd};
 use crate::ui::theme::Theme;
@@ -172,7 +172,7 @@ pub(crate) fn interaction_step(
     scrollbar: ScrollbarFrame,
     scroll: &mut f32,
 ) -> InteractionStep {
-    let pressed = crate::engine::gdext::mouse_button_left();
+    let pressed = mouse_button_pressed(MOUSE_BUTTON_LEFT);
     let on_track = scrollbar_step(
         children,
         rect.size,
