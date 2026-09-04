@@ -3,7 +3,7 @@
 //! table stays global; which slot's fallback points at it is per-slot.
 
 use crate::data::persistence::event_log;
-use crate::data::state::{OrbSource, STATE, SourceKind, caps};
+use crate::data::state::{Combat, OrbSource, STATE, SourceKind, caps};
 use crate::fail;
 
 /// Innermost context, then the active card, then `last_source`.
@@ -19,7 +19,7 @@ pub fn orb_channeled(hash: i32, player_slot: i32) {
         if let Some(top) = state.context_stack.last() {
             source_id = Some(top.id.clone());
             kind = top.kind;
-        } else if state.current.is_some()
+        } else if Combat::active(&state.current).is_some()
             && let Some((id, play_kind)) = state.per_player[slot].active_play_source.clone()
         {
             source_id = Some(id);

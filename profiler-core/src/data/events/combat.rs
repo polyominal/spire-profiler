@@ -15,7 +15,7 @@ pub fn turn_started() {
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         let turns = {
-            let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
+            let Some(combat) = Combat::active_mut(&mut state.current) else {
                 return;
             };
             combat.turns += 1;
@@ -43,12 +43,7 @@ pub fn osty_summoned(source_id: &str, source_kind: i32, hp_amount: i32, player_s
         if !state.initialized || hp_amount <= 0 {
             return;
         }
-        if state
-            .current
-            .as_mut()
-            .filter(|combat| !combat.finished)
-            .is_none()
-        {
+        if Combat::active_mut(&mut state.current).is_none() {
             return;
         }
         let slot = state.slot_index(player_slot);
@@ -67,7 +62,7 @@ pub fn osty_summoned(source_id: &str, source_kind: i32, hp_amount: i32, player_s
             player_slot,
             AsyncFallback::Allow,
         ) {
-            let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
+            let Some(combat) = Combat::active_mut(&mut state.current) else {
                 return;
             };
             Some((
@@ -102,12 +97,7 @@ fn absorb_osty_damage(damage: i32, player_slot: i32) {
         if !state.initialized || damage <= 0 {
             return;
         }
-        if state
-            .current
-            .as_mut()
-            .filter(|combat| !combat.finished)
-            .is_none()
-        {
+        if Combat::active_mut(&mut state.current).is_none() {
             return;
         }
         let slot = state.slot_index(player_slot);
@@ -130,7 +120,7 @@ fn absorb_osty_damage(damage: i32, player_slot: i32) {
                 state.per_player[slot].osty_stack[i].player,
             );
             {
-                let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
+                let Some(combat) = Combat::active_mut(&mut state.current) else {
                     return;
                 };
                 if let Some(index) = ledger::get_or_create_card_kind(combat, player, &id, kind) {
@@ -144,7 +134,7 @@ fn absorb_osty_damage(damage: i32, player_slot: i32) {
             }
         }
         if remaining > 0 {
-            let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
+            let Some(combat) = Combat::active_mut(&mut state.current) else {
                 return;
             };
             // The overflow has no player owner: key it at the TEAM slot.
@@ -177,7 +167,7 @@ pub fn osty_killed(player_slot: i32) {
             .map(|e| e.remaining)
             .sum();
         if remaining > 0
-            && let Some(combat) = state.current.as_mut()
+            && let Some(combat) = Combat::active_mut(&mut state.current)
             && let Some((id, kind)) = state.per_player[slot].active_play_source.clone()
         {
             // A generated instance's play credits its generator's slot.
@@ -203,7 +193,7 @@ pub fn combat_started(encounter_id: &str, encounter_type: &str) {
     let interrupted = STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         // Finished combats are kept for the UI summary.
-        let combat = state.current.as_mut().filter(|combat| !combat.finished)?;
+        let combat = Combat::active_mut(&mut state.current)?;
         if combat.plays == 0 && combat.cards.is_empty() {
             return None;
         }
@@ -291,12 +281,7 @@ pub fn damage_dealt(args: DamageDealt) {
 }
 
 fn damage_dealt_in(state: &mut State, args: DamageDealt) -> bool {
-    if state
-        .current
-        .as_mut()
-        .filter(|combat| !combat.finished)
-        .is_none()
-    {
+    if Combat::active_mut(&mut state.current).is_none() {
         return false;
     }
     if args.osty_flag == 1 && args.to_player == 0 {
@@ -369,7 +354,7 @@ fn record_enemy_damage_in(
     ) {
         let index = route.card_index;
         {
-            let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
+            let Some(combat) = Combat::active_mut(&mut state.current) else {
                 return;
             };
             let card = &mut combat.cards[index];
@@ -384,7 +369,7 @@ fn record_enemy_damage_in(
         }
         ledger::apply_pending_contribs_in(state, index, dealer_slot);
         let id = {
-            let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
+            let Some(combat) = Combat::active_mut(&mut state.current) else {
                 return;
             };
             combat.cards[index].id.clone()
@@ -409,7 +394,7 @@ fn record_osty_dealt_in(
     card_source_slot: i32,
 ) {
     if !source.is_empty() {
-        let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
+        let Some(combat) = Combat::active_mut(&mut state.current) else {
             return;
         };
         let row_slot = clamp_source_slot(card_source_slot);
@@ -441,7 +426,7 @@ fn record_damage_to_player_in(
     card_source_slot: i32,
 ) {
     {
-        let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
+        let Some(combat) = Combat::active_mut(&mut state.current) else {
             return;
         };
         combat.damage_received += total as i64;
@@ -460,7 +445,7 @@ fn record_damage_to_player_in(
             card_source_slot,
             AsyncFallback::Allow,
         ) {
-            let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
+            let Some(combat) = Combat::active_mut(&mut state.current) else {
                 return;
             };
             combat.cards[index].self_damage += unblocked as i64;
@@ -504,7 +489,7 @@ pub fn block_gained(amount: i32, card_id: &str, player_slot: i32, source_slot: i
         // fields.
         let state = &mut *state;
         {
-            let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
+            let Some(combat) = Combat::active_mut(&mut state.current) else {
                 return;
             };
             combat.block_total += amount as i64;
@@ -526,7 +511,7 @@ pub fn block_gained(amount: i32, card_id: &str, player_slot: i32, source_slot: i
         };
         let base = block_base_after_mods(&state.per_player[slot], amount as i64);
         let (id, kind) = {
-            let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
+            let Some(combat) = Combat::active_mut(&mut state.current) else {
                 return;
             };
             combat.cards[index].block_gained += amount as i64;
@@ -569,7 +554,7 @@ pub fn combat_ended() {
                 .iter()
                 .take(caps::MAX_PLAYERS)
                 .all(|slot| slot.died);
-        let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
+        let Some(combat) = Combat::active_mut(&mut state.current) else {
             return (None, None);
         };
         if team_defeat {

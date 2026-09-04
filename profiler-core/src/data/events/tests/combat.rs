@@ -515,3 +515,33 @@ fn a_corrupt_slot_clamps_on_every_event() {
     let ally = card_row(&combat, "ALLY_POWER");
     assert_eq!((ally.player, ally.damage_dealt), (0, 3));
 }
+#[test]
+fn osty_killed_after_combat_end_leaves_the_finished_record_untouched() {
+    let base = combat_fixture("OSTY_POST_FINISH");
+
+    card_play_started("BLOODLETTING", 0, 1, 0, 0);
+    osty_summoned("BLOODLETTING", 0, 10, 0);
+    combat_ended();
+
+    // The play is still open (the end landed mid-play), so a pre-fix kill
+    // would book -10 effective block on a record already written to disk.
+    osty_killed(0);
+    let rows = current_rows();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].block_effective, 0);
+    let (combat, _) = read_combat(&base);
+    assert_eq!(card_row(&combat, "BLOODLETTING").block_effective, 0);
+}
+
+#[test]
+fn orb_channeled_after_combat_end_ignores_the_stale_play() {
+    let _base = combat_fixture("ORB_POST_FINISH");
+
+    card_play_started("STRIKE", 0, 1, 0, 0);
+    combat_ended();
+
+    orb_channeled(42, 0);
+    STATE.with(|cell| {
+        assert!(cell.borrow().orb_sources.is_empty());
+    });
+}

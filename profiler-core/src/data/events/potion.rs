@@ -9,7 +9,7 @@
 
 use crate::data::ledger;
 use crate::data::persistence::event_log;
-use crate::data::state::{OrbSource, STATE, SourceKind, caps};
+use crate::data::state::{Combat, OrbSource, STATE, SourceKind, caps};
 use crate::fail;
 
 /// A postfix there records the fallback too late; each use is a fresh entry.
@@ -19,12 +19,7 @@ pub fn potion_context_begin(potion_id: &str, player_slot: i32) {
         if !state.initialized || potion_id.is_empty() {
             return;
         }
-        if state
-            .current
-            .as_ref()
-            .filter(|combat| !combat.finished)
-            .is_none()
-        {
+        if Combat::active(&state.current).is_none() {
             return;
         }
         let slot = state.slot_index(player_slot);
@@ -48,7 +43,7 @@ pub fn potion_context_begin(potion_id: &str, player_slot: i32) {
 pub fn potion_used(potion_id: &str, player_slot: i32) {
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
-        let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
+        let Some(combat) = Combat::active_mut(&mut state.current) else {
             return;
         };
         combat.potions_used += 1;

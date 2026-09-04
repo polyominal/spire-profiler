@@ -123,7 +123,7 @@ fn attribute_debuff_damage_in(
     power_id: &str,
     amount: i64,
 ) -> bool {
-    let combat = state.current.as_mut().filter(|combat| !combat.finished);
+    let combat = Combat::active_mut(&mut state.current);
     let Some(combat) = combat else { return false };
     let layers = &state.debuff_layers;
     let mut total_duration: i64 = 0;
@@ -225,10 +225,7 @@ pub fn resolve_card_in(
 ) -> Option<(usize, SourceSlot)> {
     let slot = state.slot_index(slot);
     let explicit_slot = clamp_source_slot(explicit_slot);
-    let combat: &mut Combat = match state.current.as_mut() {
-        Some(combat) if !combat.finished => combat,
-        _ => return None,
-    };
+    let combat = Combat::active_mut(&mut state.current)?;
     let slot_state = &state.per_player[slot];
     let (index, row_slot) = if !explicit_id.is_empty()
         && Some(explicit_id) != slot_state.active_play_card_id.as_deref()
@@ -364,7 +361,7 @@ pub fn resolve_damage_source_in(
 ) -> Option<DamageRoute> {
     {
         let slot_index = state.slot_index(slot);
-        let combat = state.current.as_mut().filter(|combat| !combat.finished)?;
+        let combat = Combat::active_mut(&mut state.current)?;
         if let Some(route) = resolve_damage_route(
             combat,
             &state.context_stack,
@@ -381,7 +378,7 @@ pub fn resolve_damage_source_in(
         return None;
     }
     let last_source = state.last_source.clone()?;
-    let combat = state.current.as_mut().filter(|combat| !combat.finished)?;
+    let combat = Combat::active_mut(&mut state.current)?;
     let index =
         get_or_create_card_kind(combat, last_source.slot, &last_source.id, last_source.kind)?;
     debug_assert!(
@@ -474,7 +471,7 @@ pub fn block_pool_push_in(
 /// Consumes FIFO, splitting each slice cumulatively-proportionally.
 pub fn block_pool_consume_in(state: &mut state::State, blocked: i64, slot: i32) -> i64 {
     let slot = state.slot_index(slot);
-    let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
+    let Some(combat) = Combat::active_mut(&mut state.current) else {
         return 0;
     };
     let pool = &mut state.per_player[slot].block_pool;
@@ -622,7 +619,7 @@ pub fn split_over_appliers_in(
 /// route is decided by the caller's resolution and is not visible here.
 pub fn apply_pending_contribs_in(state: &mut state::State, attacker_index: usize, slot: i32) {
     let slot = state.slot_index(slot);
-    let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
+    let Some(combat) = Combat::active_mut(&mut state.current) else {
         return;
     };
     debug_assert!(

@@ -24,12 +24,7 @@ pub fn card_play_started(
         let mut state = cell.borrow_mut();
         // Reborrow so disjoint fields borrow field-precisely.
         let state = &mut *state;
-        if state
-            .current
-            .as_mut()
-            .filter(|combat| !combat.finished)
-            .is_none()
-        {
+        if Combat::active_mut(&mut state.current).is_none() {
             fail!("card_play_started called before init or outside a combat");
             return;
         }
@@ -51,7 +46,7 @@ pub fn card_play_started(
             || (card_id.to_owned(), SourceKind::Card),
             |entry| (entry.source_id, entry.kind),
         );
-        let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
+        let Some(combat) = Combat::active_mut(&mut state.current) else {
             return;
         };
         // No row means the whole event is dropped: plays, play_depth, and
@@ -159,7 +154,7 @@ pub fn card_generated(card_hash: i32, source_id: &str, source_kind: i32, player_
         // count their own plays instead, so nothing is booked here for
         // them.
         if kind != SourceKind::Card
-            && let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished)
+            && let Some(combat) = Combat::active_mut(&mut state.current)
         {
             // Without the row the trigger cannot be counted (the plays
             // identity), so the whole event drops.

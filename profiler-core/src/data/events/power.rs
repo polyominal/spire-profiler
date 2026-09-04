@@ -5,8 +5,8 @@ use crate::data::ledger;
 use crate::data::ledger::AsyncFallback;
 use crate::data::persistence::event_log;
 use crate::data::state::{
-    DebuffLayer, DoomLayer, DoomTarget, EnemyHit, PowerSourceEntry, STATE, SourceKind, SourceSlot,
-    State, StrReduction, TEAM_SLOT, caps, clamp_modifier_kind,
+    Combat, DebuffLayer, DoomLayer, DoomTarget, EnemyHit, PowerSourceEntry, STATE, SourceKind,
+    SourceSlot, State, StrReduction, TEAM_SLOT, caps, clamp_modifier_kind,
 };
 use crate::fail;
 
@@ -255,12 +255,7 @@ pub fn doom_kills_completed() {
         if !state.initialized {
             return;
         }
-        if state
-            .current
-            .as_mut()
-            .filter(|combat| !combat.finished)
-            .is_none()
-        {
+        if Combat::active_mut(&mut state.current).is_none() {
             state.doom_targets.clear();
             return;
         }
@@ -290,7 +285,7 @@ fn attribute_doom_target_in(state: &mut State, creature_hash: u64, hp: i64) -> b
         let take = layer.amount.min(remaining);
         let (source_id, kind, player) = (layer.source_id.clone(), layer.kind, layer.player);
         {
-            let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
+            let Some(combat) = Combat::active_mut(&mut state.current) else {
                 return false;
             };
             if let Some(index) = ledger::get_or_create_card_kind(combat, player, &source_id, kind) {
@@ -317,7 +312,7 @@ fn attribute_doom_target_in(state: &mut State, creature_hash: u64, hp: i64) -> b
             .map(|(index, _)| index);
         match index {
             Some(index) => {
-                let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
+                let Some(combat) = Combat::active_mut(&mut state.current) else {
                     return false;
                 };
                 let card = &mut combat.cards[index];
@@ -326,7 +321,7 @@ fn attribute_doom_target_in(state: &mut State, creature_hash: u64, hp: i64) -> b
                 ledger::assert_card_damage_segments(card);
             }
             None => {
-                let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
+                let Some(combat) = Combat::active_mut(&mut state.current) else {
                     return false;
                 };
                 if let Some(index) =
@@ -421,12 +416,7 @@ pub fn weak_mitigation(prevented: i32, dealer_hash: u64) {
         if !state.initialized || prevented <= 0 {
             return;
         }
-        if state
-            .current
-            .as_mut()
-            .filter(|combat| !combat.finished)
-            .is_none()
-        {
+        if Combat::active_mut(&mut state.current).is_none() {
             return;
         }
         let layer = state
@@ -435,7 +425,7 @@ pub fn weak_mitigation(prevented: i32, dealer_hash: u64) {
             .find(|l| l.creature_hash == dealer_hash && l.power_id == "WEAK_POWER")
             .map(|l| (l.source_id.clone(), l.kind, l.player));
         if let Some((source_id, kind, player)) = layer {
-            let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
+            let Some(combat) = Combat::active_mut(&mut state.current) else {
                 return;
             };
             if let Some(index) = ledger::get_or_create_card_kind(combat, player, &source_id, kind) {
@@ -455,12 +445,7 @@ pub fn buff_mitigation(power_id: &str, prevented: i32) {
         if !state.initialized || prevented <= 0 {
             return;
         }
-        if state
-            .current
-            .as_mut()
-            .filter(|combat| !combat.finished)
-            .is_none()
-        {
+        if Combat::active_mut(&mut state.current).is_none() {
             return;
         }
         let ambient = state.ambient_slot() as i32;
@@ -472,7 +457,7 @@ pub fn buff_mitigation(power_id: &str, prevented: i32) {
             ambient,
         );
         let count = shares.len();
-        let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
+        let Some(combat) = Combat::active_mut(&mut state.current) else {
             return;
         };
         for share in shares {
@@ -493,12 +478,7 @@ pub fn forge(source_id: &str, source_kind: i32, amount: i32, player_slot: i32) {
         if !state.initialized || amount <= 0 {
             return;
         }
-        if state
-            .current
-            .as_mut()
-            .filter(|combat| !combat.finished)
-            .is_none()
-        {
+        if Combat::active_mut(&mut state.current).is_none() {
             return;
         }
         let kind = SourceKind::from_c(source_kind);
@@ -506,7 +486,7 @@ pub fn forge(source_id: &str, source_kind: i32, amount: i32, player_slot: i32) {
         // resolve_card would create a kind-0 entry). The row keys at the
         // forging player's slot.
         let index = if !source_id.is_empty() {
-            let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
+            let Some(combat) = Combat::active_mut(&mut state.current) else {
                 return;
             };
             let row_slot = crate::data::state::clamp_source_slot(player_slot);
@@ -523,7 +503,7 @@ pub fn forge(source_id: &str, source_kind: i32, amount: i32, player_slot: i32) {
         };
         match index {
             Some(index) => {
-                let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
+                let Some(combat) = Combat::active_mut(&mut state.current) else {
                     return;
                 };
                 combat.cards[index].forge += amount as i64;
@@ -577,7 +557,7 @@ pub(super) fn apply_str_mitigation_in(state: &mut State, dealer_hash: u64) {
     if effective <= 0 {
         return;
     }
-    let combat = state.current.as_mut().filter(|combat| !combat.finished);
+    let combat = Combat::active_mut(&mut state.current);
     let Some(combat) = combat else { return };
     let mut allocated: i64 = 0;
     let mut seen: usize = 0;

@@ -311,6 +311,19 @@ impl Default for Combat {
     }
 }
 
+impl Combat {
+    /// Liveness for gameplay events: present and not finished. The record
+    /// stays in `current` after combat end so the panel keeps showing it,
+    /// but its file is already on disk, so events must not mutate it.
+    pub fn active(current: &Option<Combat>) -> Option<&Combat> {
+        current.as_ref().filter(|combat| !combat.finished)
+    }
+
+    pub fn active_mut(current: &mut Option<Combat>) -> Option<&mut Combat> {
+        current.as_mut().filter(|combat| !combat.finished)
+    }
+}
+
 /// The run record carries slot + character; the net id stays in-memory.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunPlayer {
