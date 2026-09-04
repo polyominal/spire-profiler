@@ -8,8 +8,8 @@
 use crate::data::ledger;
 use crate::data::persistence::event_log;
 use crate::data::state::{
-    Combat, GeneratedInstance, PlayerSlotState, STATE, SourceKind, SourceSlot, State, caps,
-    clamp_source_slot,
+    ActivePlay, Combat, GeneratedInstance, PlayerSlotState, STATE, SourceKind, SourceSlot, State,
+    caps, clamp_source_slot,
 };
 use crate::fail;
 
@@ -58,10 +58,9 @@ pub fn card_play_started(
             return;
         };
         let slot_state = &mut state.per_player[slot];
-        slot_state.active_play_source_slot = play_slot;
         // The FIRST orb trigger credits the channeling source.
         slot_state.orb_first_trigger_used = false;
-        record_card_play_in(combat, slot_state, index, card_id, !generated);
+        record_card_play_in(combat, slot_state, index, play_slot, card_id, !generated);
         slot_state.play_depth += 1;
         combat.plays += 1;
         if generated {
@@ -87,6 +86,7 @@ fn record_card_play_in(
     combat: &mut Combat,
     slot_state: &mut PlayerSlotState,
     index: usize,
+    play_slot: SourceSlot,
     card_id: &str,
     count_play: bool,
 ) {
@@ -95,10 +95,12 @@ fn record_card_play_in(
         card.plays += 1;
     }
     // Everything during this play attributes to exactly this source.
-    let (source_id, source_kind) = (card.id.clone(), card.kind);
-    slot_state.active_play_source = Some((source_id, source_kind));
-    // The resolution chain must ignore the card's own id.
-    slot_state.active_play_card_id = Some(card_id.to_owned());
+    slot_state.active_play = Some(ActivePlay {
+        id: card.id.clone(),
+        kind: card.kind,
+        row_slot: play_slot,
+        card_id: card_id.to_owned(),
+    });
 }
 
 fn load_play_metadata_in(state: &State, card_hash: i32) -> Option<GeneratedInstance> {
@@ -126,9 +128,7 @@ pub fn card_play_finished(player_slot: i32) {
         let slot_state = state.slot_state_mut(player_slot);
         slot_state.play_depth = slot_state.play_depth.saturating_sub(1);
         if slot_state.play_depth == 0 {
-            slot_state.active_play_source = None;
-            slot_state.active_play_source_slot = 0;
-            slot_state.active_play_card_id = None;
+            slot_state.active_play = None;
         }
     });
 }
@@ -223,9 +223,9 @@ fn resolve_cause_in(
     } else if let Some(play) = state
         .per_player
         .get(ambient)
-        .and_then(|slot| slot.active_play_source.clone())
+        .and_then(|slot| slot.active_play.clone())
     {
-        Some(play)
+        Some((play.id, play.kind))
     } else if let Some(i) = state
         .per_player
         .get(ambient)

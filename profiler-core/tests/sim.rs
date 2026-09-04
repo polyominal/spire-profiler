@@ -99,18 +99,11 @@ fn check_invariants(step: u32) {
             check_combat_totals(combat, step);
             check_card_invariants(combat, step);
         }
-        // Play source and card id are set/cleared in lockstep per slot;
-        // otherwise the shim's explicit-self-id damage/block mis-resolves.
         for (slot, player) in st.per_player.iter().enumerate() {
-            assert_eq!(
-                player.active_play_source.is_some(),
-                player.active_play_card_id.is_some(),
-                "step {step}: slot {slot}: active_play_source and active_play_card_id must be set/cleared together"
-            );
-            if player.active_play_source.is_some() {
+            if let Some(play) = &player.active_play {
                 assert!(
-                    player.active_play_source_slot <= state::TEAM_SLOT,
-                    "step {step}: slot {slot}: active_play_source_slot must stay in the source-slot vocabulary"
+                    play.row_slot <= state::TEAM_SLOT,
+                    "step {step}: slot {slot}: active play row slot out of the source-slot vocabulary"
                 );
             }
         }

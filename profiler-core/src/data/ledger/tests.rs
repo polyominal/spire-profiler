@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::data::persistence::{bind_log_path, reset_log_sink};
-use crate::data::state::{DebuffLayer, PowerSourceEntry, caps};
+use crate::data::state::{ActivePlay, DebuffLayer, PowerSourceEntry, caps};
 use crate::test_util::unique_dir;
 
 fn reset_state() {
@@ -206,15 +206,19 @@ fn resolve_card_priority_chain() {
         SourceKind::Card,
     );
     STATE.with(|cell| {
-        cell.borrow_mut().slot_state_mut(0).active_play_source =
-            Some(("DEFEND".to_owned(), SourceKind::Card))
+        cell.borrow_mut().slot_state_mut(0).active_play = Some(ActivePlay {
+            id: "DEFEND".to_owned(),
+            kind: SourceKind::Card,
+            row_slot: 0,
+            card_id: "DEFEND".to_owned(),
+        })
     });
     assert_card(
         resolve("", 0, 0).expect("active card").0,
         "DEFEND",
         SourceKind::Card,
     );
-    STATE.with(|cell| cell.borrow_mut().slot_state_mut(0).active_play_source = None);
+    STATE.with(|cell| cell.borrow_mut().slot_state_mut(0).active_play = None);
     assert_card(
         resolve("", 0, 0).expect("context").0,
         "CRACKED_CORE",
@@ -274,8 +278,12 @@ fn resolve_card_play_source_override_is_kind_aware() {
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         state.current = Some(Combat::default());
-        state.slot_state_mut(0).active_play_source =
-            Some(("JOSS_PAPER".to_owned(), SourceKind::Relic));
+        state.slot_state_mut(0).active_play = Some(ActivePlay {
+            id: "JOSS_PAPER".to_owned(),
+            kind: SourceKind::Relic,
+            row_slot: 0,
+            card_id: "JOSS_PAPER".to_owned(),
+        });
     });
     assert_card(
         resolve("", 0, 0).expect("relic play source").0,

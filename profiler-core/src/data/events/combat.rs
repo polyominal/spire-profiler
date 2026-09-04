@@ -159,14 +159,15 @@ pub fn osty_killed(player_slot: i32) {
             .sum();
         if remaining > 0
             && let Some(combat) = Combat::active_mut(&mut state.current)
-            && let Some((id, kind)) = state.per_player[slot].active_play_source.clone()
+            && let Some(play) = state.per_player[slot].active_play.clone()
         {
             // A generated instance's play credits its generator's slot.
-            let row_slot = state.per_player[slot].active_play_source_slot;
-            if let Some(index) = ledger::get_or_create_card_kind(combat, row_slot, &id, kind) {
+            if let Some(index) =
+                ledger::get_or_create_card_kind(combat, play.row_slot, &play.id, play.kind)
+            {
                 combat.cards[index].block_effective -= remaining;
                 state.per_player[slot].osty_stack.clear();
-                event_log!("  osty died: -{remaining} effective block on '{id}'");
+                event_log!("  osty died: -{remaining} effective block on '{}'", play.id);
                 return;
             }
         }

@@ -42,9 +42,9 @@ pub fn power_applied(
         } else if let Some(play) = state
             .per_player
             .get(ambient)
-            .and_then(|slot| slot.active_play_source.clone())
+            .and_then(|slot| slot.active_play.clone())
         {
-            Some(play)
+            Some((play.id, play.kind))
         } else if let Some(i) = state
             .per_player
             .get(ambient)

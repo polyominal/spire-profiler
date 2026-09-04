@@ -494,16 +494,23 @@ pub struct PendingContrib {
     pub amount: i64,
 }
 
+/// The in-flight play's attribution target: everything during the play
+/// credits this source.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActivePlay {
+    pub id: String,
+    pub kind: SourceKind,
+    /// The generator's recorded slot, else the playing player's own.
+    pub row_slot: SourceSlot,
+    /// The played card's own id, which the chains treat as "the card
+    /// being played", not an override.
+    pub card_id: String,
+}
+
 /// Plays nest across slots, so each slot owns its transient combat state.
 #[derive(Clone, Debug, Default)]
 pub struct PlayerSlotState {
-    pub active_play_source: Option<(String, SourceKind)>,
-    /// The row slot of the play's source: the generator's recorded slot,
-    /// else the playing player's own.
-    pub active_play_source_slot: SourceSlot,
-    /// The playing card's own id, which the chains treat as "the card
-    /// being played", not an override.
-    pub active_play_card_id: Option<String>,
+    pub active_play: Option<ActivePlay>,
     /// True once an orb trigger fired during the current play; only the
     /// first trigger credits the channeling source.
     pub orb_first_trigger_used: bool,

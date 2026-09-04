@@ -17,9 +17,9 @@ pub fn orb_channeled(hash: i32, player_slot: i32) {
         let resolved: Option<(String, SourceKind)> = if let Some(top) = state.context_stack.last() {
             Some((top.id.clone(), top.kind))
         } else if Combat::active(&state.current).is_some()
-            && let Some(play) = state.per_player[slot].active_play_source.clone()
+            && let Some(play) = state.per_player[slot].active_play.clone()
         {
-            Some(play)
+            Some((play.id, play.kind))
         } else {
             state.last_source.clone().map(|last| (last.id, last.kind))
         };
@@ -66,7 +66,7 @@ pub fn orb_context_begin(hash: i32, player_slot: i32) {
         // The slot's potion fallback must not capture the orb's damage.
         state.per_player[slot].potion_fallback = None;
         // Only the FIRST orb trigger credits the channeling source.
-        if state.per_player[slot].active_play_source.is_some() {
+        if state.per_player[slot].active_play.is_some() {
             if state.per_player[slot].orb_first_trigger_used {
                 state.per_player[slot].orb_fallback = None;
                 event_log!("  orb trigger (later during play) credited to the card");
