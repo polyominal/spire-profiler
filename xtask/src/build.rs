@@ -23,7 +23,7 @@ pub fn build(shell: &Shell) -> Result<discover::GamePaths> {
     // Fail fast on a game version the mod was not verified against.
     game_version::check_pin(&game)?;
 
-    let build_commit = git::resolve_commit(root);
+    let build_commit = git::resolve_commit(shell);
     println!("build commit: {build_commit}");
     let gen_dir = build_host_project(shell, root, &game)?;
     let mod_dir = root.join("target/mods").join(bundle::MOD_ID);
