@@ -91,64 +91,55 @@ pub fn osty_summoned(source_id: &str, source_kind: i32, hp_amount: i32, player_s
 
 /// Consume the owner slot's defensive stack LIFO; overflow credits the
 /// "OSTY" entry itself.
-fn absorb_osty_damage(damage: i32, player_slot: i32) {
-    STATE.with(|cell| {
-        let mut state = cell.borrow_mut();
-        if !state.initialized || damage <= 0 {
-            return;
-        }
-        if Combat::active_mut(&mut state.current).is_none() {
-            return;
-        }
-        let slot = state.slot_index(player_slot);
-        let mut remaining: i64 = damage as i64;
-        let mut i = state.per_player[slot].osty_stack.len();
-        while i > 0 && remaining > 0 {
-            i -= 1;
-            // Entries are pushed with HP and removed on depletion, so
-            // every stack entry still has some to absorb.
-            debug_assert!(
-                state.per_player[slot].osty_stack[i].remaining > 0,
-                "depleted osty entries must have left the stack"
-            );
-            let take = state.per_player[slot].osty_stack[i]
-                .remaining
-                .min(remaining);
-            let (id, kind, player) = (
-                state.per_player[slot].osty_stack[i].id.clone(),
-                state.per_player[slot].osty_stack[i].kind,
-                state.per_player[slot].osty_stack[i].player,
-            );
-            {
-                let Some(combat) = Combat::active_mut(&mut state.current) else {
-                    return;
-                };
-                if let Some(index) = ledger::get_or_create_card_kind(combat, player, &id, kind) {
-                    combat.cards[index].block_effective += take;
-                }
-            }
-            state.per_player[slot].osty_stack[i].remaining -= take;
-            remaining -= take;
-            if state.per_player[slot].osty_stack[i].remaining <= 0 {
-                state.per_player[slot].osty_stack.remove(i);
-            }
-        }
-        if remaining > 0 {
+fn absorb_osty_damage_in(state: &mut State, damage: i32, player_slot: i32) {
+    let slot = state.slot_index(player_slot);
+    let mut remaining: i64 = damage as i64;
+    let mut i = state.per_player[slot].osty_stack.len();
+    while i > 0 && remaining > 0 {
+        i -= 1;
+        // Entries are pushed with HP and removed on depletion, so
+        // every stack entry still has some to absorb.
+        debug_assert!(
+            state.per_player[slot].osty_stack[i].remaining > 0,
+            "depleted osty entries must have left the stack"
+        );
+        let take = state.per_player[slot].osty_stack[i]
+            .remaining
+            .min(remaining);
+        let (id, kind, player) = (
+            state.per_player[slot].osty_stack[i].id.clone(),
+            state.per_player[slot].osty_stack[i].kind,
+            state.per_player[slot].osty_stack[i].player,
+        );
+        {
             let Some(combat) = Combat::active_mut(&mut state.current) else {
                 return;
             };
-            // The overflow has no player owner: key it at the TEAM slot.
-            if let Some(index) =
-                ledger::get_or_create_card_kind(combat, TEAM_SLOT, "OSTY", SourceKind::Osty)
-            {
-                combat.cards[index].block_effective += remaining;
+            if let Some(index) = ledger::get_or_create_card_kind(combat, player, &id, kind) {
+                combat.cards[index].block_effective += take;
             }
         }
-        event_log!(
-            "  osty absorbed {damage} damage ({} from summon sources)",
-            damage as i64 - remaining
-        );
-    });
+        state.per_player[slot].osty_stack[i].remaining -= take;
+        remaining -= take;
+        if state.per_player[slot].osty_stack[i].remaining <= 0 {
+            state.per_player[slot].osty_stack.remove(i);
+        }
+    }
+    if remaining > 0 {
+        let Some(combat) = Combat::active_mut(&mut state.current) else {
+            return;
+        };
+        // The overflow has no player owner: key it at the TEAM slot.
+        if let Some(index) =
+            ledger::get_or_create_card_kind(combat, TEAM_SLOT, "OSTY", SourceKind::Osty)
+        {
+            combat.cards[index].block_effective += remaining;
+        }
+    }
+    event_log!(
+        "  osty absorbed {damage} damage ({} from summon sources)",
+        damage as i64 - remaining
+    );
 }
 
 /// The remaining unabsorbed HP is removed from the killer card's credit.
@@ -271,20 +262,15 @@ pub fn damage_dealt(args: DamageDealt) {
     // Intent-display recalcs can queue contributions with no hit
     // following; every branch of damage_dealt_in drops or consumes them,
     // so a no-total event leaves the queue for the next real hit.
-    let total = args.total;
-    let receiver_slot = args.receiver_slot;
-    let needs_osty_absorb = STATE.with(|cell| {
+    STATE.with(|cell| {
         let mut state = cell.borrow_mut();
-        damage_dealt_in(&mut state, args)
+        damage_dealt_in(&mut state, args);
     });
-    if needs_osty_absorb {
-        absorb_osty_damage(total, receiver_slot);
-    }
 }
 
-fn damage_dealt_in(state: &mut State, args: DamageDealt) -> bool {
+fn damage_dealt_in(state: &mut State, args: DamageDealt) {
     if Combat::active_mut(&mut state.current).is_none() {
-        return false;
+        return;
     }
     if args.osty_flag == 1 && args.to_player == 0 {
         record_osty_dealt_in(
@@ -295,7 +281,7 @@ fn damage_dealt_in(state: &mut State, args: DamageDealt) -> bool {
             args.dealer_slot,
             args.card_source_slot,
         );
-        return false;
+        return;
     }
     // Osty absorbed: consume the owner slot's summon HP stack.
     if args.osty_flag == 2 {
@@ -303,7 +289,8 @@ fn damage_dealt_in(state: &mut State, args: DamageDealt) -> bool {
             .slot_state_mut(args.dealer_slot)
             .pending_contribs
             .clear();
-        return true;
+        absorb_osty_damage_in(state, args.total, args.receiver_slot);
+        return;
     }
     if args.to_player != 0 {
         record_damage_to_player_in(
@@ -318,7 +305,7 @@ fn damage_dealt_in(state: &mut State, args: DamageDealt) -> bool {
             args.receiver_slot,
             args.card_source_slot,
         );
-        return false;
+        return;
     }
     record_enemy_damage_in(
         state,
@@ -330,7 +317,6 @@ fn damage_dealt_in(state: &mut State, args: DamageDealt) -> bool {
         args.dealer_slot,
         args.card_source_slot,
     );
-    false
 }
 
 /// Resolve against the DEALER's slot state, credit, apply the queued
