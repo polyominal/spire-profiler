@@ -151,10 +151,10 @@ pub fn assert_layout_bounds(
     strip_h: f32,
     chrome: &[Cmd],
 ) {
+    // The floating strip starts at the Control's top edge; without a
+    // strip the header band begins at the plate's inner top.
+    let header_lo = if strip_h > 0.0 { 0.0 } else { content.top };
     for cmd in header {
-        // The floating strip starts at the Control's top edge; without a
-        // strip the header band begins at the plate's inner top.
-        let header_lo = if strip_h > 0.0 { 0.0 } else { content.top };
         check_cmd(cmd, content, header_lo, header_bottom, chrome);
     }
     for cmd in body {
