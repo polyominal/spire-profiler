@@ -117,18 +117,17 @@ pub fn context_end() {
 /// between fights, so the row stays live then too; a no-op only with no
 /// combat on record.
 pub fn panel_filter_toggle(slot: u8) {
-    let filter = STATE.with(|cell| {
+    STATE.with(|cell| {
         let mut state = cell.borrow_mut();
-        state.current.as_ref()?;
-        let next = state.player_filter.toggle(slot);
-        state.player_filter = next;
-        Some(next)
+        if state.current.is_none() {
+            return;
+        }
+        state.player_filter = state.player_filter.toggle(slot);
+        match state.player_filter {
+            PlayerFilter::Player(_) => marker!("panel filter: P{}", slot + 1),
+            PlayerFilter::All => marker!("panel filter: all"),
+        }
     });
-    if let Some(PlayerFilter::Player(_)) = filter {
-        marker!("panel filter: P{}", slot + 1);
-    } else if filter.is_some() {
-        marker!("panel filter: all");
-    }
 }
 
 /// Clears module state so a test can start from a fresh core (the process
