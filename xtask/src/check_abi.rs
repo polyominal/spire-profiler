@@ -27,11 +27,6 @@ struct Binding {
     export_name: String,
 }
 
-#[derive(Debug)]
-pub struct Report {
-    pub bindings: usize,
-}
-
 pub fn run() -> Result<()> {
     let root = workspace_root();
     let rust_text = std::fs::read_to_string(root.join("profiler-core/src/abi.rs"))
@@ -39,11 +34,8 @@ pub fn run() -> Result<()> {
     let template = std::fs::read_to_string(root.join("shim/shim.cs.template"))
         .map_err(|e| anyhow::anyhow!("reading shim/shim.cs.template: {e}"))?;
     match compare(&rust_text, "abi.rs", &template) {
-        Ok(report) => {
-            println!(
-                "check-abi: {} shim bindings verified against Rust exports",
-                report.bindings
-            );
+        Ok(bindings) => {
+            println!("check-abi: {bindings} shim bindings verified against Rust exports");
             Ok(())
         }
         Err(errors) => {
@@ -59,7 +51,7 @@ pub fn run() -> Result<()> {
 }
 
 /// One Err entry per mismatch, in binding order.
-fn compare(rust_source: &str, source_name: &str, template: &str) -> Result<Report, Vec<String>> {
+fn compare(rust_source: &str, source_name: &str, template: &str) -> Result<usize, Vec<String>> {
     let mut exports = HashMap::new();
     scan_rust_exports(rust_source, source_name, &mut exports).map_err(|e| vec![e])?;
 
@@ -101,9 +93,7 @@ fn compare(rust_source: &str, source_name: &str, template: &str) -> Result<Repor
     if !errors.is_empty() {
         return Err(errors);
     }
-    Ok(Report {
-        bindings: bindings.len(),
-    })
+    Ok(bindings.len())
 }
 
 /// Anything unlisted surfaces as `?<type>` and mismatches any export.
@@ -375,8 +365,8 @@ internal static class ProfilerNative
 
     #[test]
     fn known_good_binding_passes() {
-        let report = compare(GOOD_RUST, "abi.rs", GOOD_TMPL).expect("good fixture must pass");
-        assert_eq!(report.bindings, 1);
+        let bindings = compare(GOOD_RUST, "abi.rs", GOOD_TMPL).expect("good fixture must pass");
+        assert_eq!(bindings, 1);
     }
 
     /// Drifted delegate parameter order must fail with a side-by-side diff.
