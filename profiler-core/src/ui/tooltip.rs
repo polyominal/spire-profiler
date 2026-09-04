@@ -1,9 +1,8 @@
 //! The floating hover tooltip — the game's `NHoverTipSet` idiom, drawn by
-//! the panels in `_draw` (instant on hover, no fade). The tip and the
-//! legend float OUTSIDE the plate box, but `clip_contents` scissors the
-//! Control's own drawing, so the Control widens sideways to contain both
-//! ([`frame`]) and the tip never extends it vertically — its line count is
-//! capped and its y clamps into the plate's band ([`place`]).
+//! each panel's overlay child (instant on hover, no fade). The tip and the
+//! legend float OUTSIDE the plate box, so the parent Control widens sideways
+//! to contain both ([`frame`]); the tip never extends it vertically — its
+//! line count is capped and its y clamps into the plate's band ([`place`]).
 //!
 //! The payload is structured ([`RowDetail`]): a gold 22px title, then one
 //! two-column stat line per group — label left, value right-aligned in the
@@ -293,8 +292,9 @@ pub(crate) fn place_legend(viewport: Vector2, plate: Rect2, size: Vector2) -> Re
     )
 }
 
-/// The union is horizontal-only for the tip by contract: a vertical
-/// extension would open clip corners scrolled content could spill into.
+/// The union never moves the y origin off the plate's top (the strip
+/// shift and the tooltip's row anchor rely on it); only a tall legend
+/// extends the bottom — the tip never does.
 pub(crate) fn frame(plate: Rect2, legend: Option<Rect2>, tip: Option<Rect2>) -> (Rect2, f32) {
     if legend.is_none() && tip.is_none() {
         return (plate, 0.0);
@@ -303,8 +303,8 @@ pub(crate) fn frame(plate: Rect2, legend: Option<Rect2>, tip: Option<Rect2>) -> 
         debug_assert!(
             tip.position.y >= plate.position.y
                 && tip.position.y + tip.size.y <= plate.position.y + plate.size.y,
-            "the tip stays in the plate's y-band (`place` clamps it there); \
-             a vertical union would leak scrolled content into the clip corners"
+            "the tip stays in the plate's y-band (`place` clamps it there), \
+             so the frame's bottom is the plate's own unless the legend is taller"
         );
     }
     if let Some(legend) = legend {

@@ -18,8 +18,8 @@ layout and discovery live in `game.md`.
   or above the floor pinned in `xtask/src/headless.rs` (`MIN_PATCHES`, set just
   under the shim's static patch catalog; the breakdown is documented next to the
   constant), no unexpected `[SpireProfiler]` ERROR lines, and the combat panel's
-  `draw` virtual fires under the headless dummy renderer (draw dispatch is
-  covered, visual output is not).
+  parent, rows-child, and overlay-child `draw` virtuals fire under the headless
+  dummy renderer (draw dispatch is covered, visual output is not).
 - Real-play validation is manual: the pipeline cannot play the game.
 
 ## StS2 headless testing

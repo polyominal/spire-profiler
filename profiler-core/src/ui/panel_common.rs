@@ -73,10 +73,28 @@ pub(crate) fn take_queued_scroll(queue: &Cell<f32>) -> f32 {
     queue.replace(0.0)
 }
 
+#[derive(Clone, Copy, Default)]
+pub(crate) struct ChildObjects {
+    pub(crate) body: Option<Object>,
+    pub(crate) overlay: Option<Object>,
+}
+
+impl ChildObjects {
+    pub(crate) fn queue_redraw(self) {
+        if let Some(body) = self.body {
+            body.queue_redraw();
+        }
+        if let Some(overlay) = self.overlay {
+            overlay.queue_redraw();
+        }
+    }
+}
+
 /// The pending amount is read AND cleared every frame; the header rides
 /// in both content and box heights, so it cancels out of the overflow.
+/// Rows and scrollbar are separate items: a moved offset redraws both children.
 pub(crate) fn wheel_scroll(
-    object: &Object,
+    children: ChildObjects,
     scroll: &mut f32,
     pending: &mut f32,
     rect: Rect2,
@@ -89,8 +107,23 @@ pub(crate) fn wheel_scroll(
         *scroll = crate::ui::scroll::apply_scroll(*scroll, delta, rect.size.y, content_height);
     }
     if *scroll != old_scroll {
-        object.queue_redraw();
+        children.queue_redraw();
     }
+}
+
+/// The body child's rect in Control-local space — the scroll viewport the
+/// engine clips the child's drawing to.
+pub(crate) fn body_frame(
+    origin_x: f32,
+    box_size: Vector2,
+    plate: bool,
+    header_bottom: f32,
+) -> Rect2 {
+    let band = crate::ui::panel_replay::body_band(box_size.y, plate, header_bottom);
+    Rect2::new(
+        Vector2::new(origin_x, band.0),
+        Vector2::new(box_size.x, band.1 - band.0),
+    )
 }
 
 /// Fixed row heights mean the gutter can never change the overflow
@@ -132,7 +165,7 @@ pub(crate) enum PressZone {
 
 /// A track press must never switch a tab.
 pub(crate) fn interaction_step(
-    object: &Object,
+    children: ChildObjects,
     rect: Rect2,
     mouse: Vector2,
     state: &mut InteractionState,
@@ -141,7 +174,7 @@ pub(crate) fn interaction_step(
 ) -> InteractionStep {
     let pressed = crate::engine::gdext::mouse_button_left();
     let on_track = scrollbar_step(
-        object,
+        children,
         rect.size,
         mouse - rect.position,
         pressed,
@@ -347,8 +380,9 @@ pub(crate) fn fill_dim_mask(
 
 /// While active, maps the cursor's y to the scroll offset (the game's
 /// click-jumps mapping).
+#[allow(clippy::too_many_arguments)] // one frame's input context; bundling it further is artificial
 fn scrollbar_step(
-    object: &Object,
+    children: ChildObjects,
     box_size: Vector2,
     local: Vector2,
     pressed: bool,
@@ -373,7 +407,7 @@ fn scrollbar_step(
         let next_scroll = crate::ui::scroll::track_scroll(geom.track, local.y, max_scroll);
         if next_scroll != *scroll {
             *scroll = next_scroll;
-            object.queue_redraw();
+            children.queue_redraw();
         }
     }
     state.scrollbar = next;
@@ -423,13 +457,18 @@ pub(crate) fn modal_box(
 
 /// `set_position`/`set_size` only on change: every engine call is a
 /// `variant_call` round-trip, so a steady frame must not re-issue them.
-pub(crate) fn apply_control_frame(object: &Object, frame: Rect2, applied: &mut Option<Rect2>) {
+pub(crate) fn apply_control_frame(
+    object: &Object,
+    frame: Rect2,
+    applied: &mut Option<Rect2>,
+) -> bool {
     if *applied == Some(frame) {
-        return;
+        return false;
     }
     object.set_position(frame.position);
     object.set_size(frame.size);
     *applied = Some(frame);
+    true
 }
 
 /// The viewport's visible size, or None when the panel is not in the tree
@@ -637,6 +676,19 @@ mod tests {
         assert_eq!(
             hover_row(&hits(), rect(), Vector2::new(200.0, 210.0), 0.0, band()),
             Some(0)
+        );
+    }
+
+    #[test]
+    fn body_frame_is_the_band_translated_to_origin_x() {
+        let plate = body_frame(40.0, Vector2::new(660.0, 300.0), true, 100.0);
+        assert_eq!(
+            plate,
+            Rect2::new(Vector2::new(40.0, 100.0), Vector2::new(660.0, 172.0))
+        );
+        assert_eq!(
+            body_frame(40.0, Vector2::new(660.0, 300.0), false, 100.0),
+            Rect2::new(Vector2::new(40.0, 100.0), Vector2::new(660.0, 188.0))
         );
     }
 

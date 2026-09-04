@@ -1,9 +1,9 @@
-//! The UI layer — the two GDExtension panels and their shared plumbing.
+//! The UI layer — the GDExtension panels and their shared plumbing.
 //!
-//! Pure/impure split: [`panel`], [`run_panel`], [`panel_common`],
-//! [`panel_replay`], [`tooltip`], and [`theme`] touch the FFI (through the
-//! safe `Object` newtype and the engine layer's loaders);
-//! [`chart_layout`], [`palette`], [`run_layout`], [`scroll`],
+//! Pure/impure split: [`panel`], [`run_panel`], [`panel_body`],
+//! [`panel_common`], [`panel_replay`], [`tooltip`], and [`theme`] touch
+//! the FFI (through the safe `Object` newtype and the engine layer's
+//! loaders); [`chart_layout`], [`palette`], [`run_layout`], [`scroll`],
 //! [`snapshot`], and [`ui_model`] never do and stay unit-testable without
 //! an engine (the tooltip's shaping/placement is pure too — only its
 //! `draw` rides the FFI).
@@ -11,6 +11,7 @@
 pub mod chart_layout;
 pub mod palette;
 pub mod panel;
+pub(crate) mod panel_body;
 pub mod panel_common;
 pub mod panel_replay;
 pub mod run_layout;

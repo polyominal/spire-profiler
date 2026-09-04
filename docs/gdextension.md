@@ -5,9 +5,10 @@ Lessons from the hand-rolled GDExtension interop — read before touching
 `vendor/gdextension_interface.h` (provenance banner included) is the
 authoritative signature source for the pinned engine version.
 
-The panel runs on a hand-rolled minimal GDExtension binding: the surface is two
-Control subclasses, one `_draw` virtual, one `refresh` method, and a handful of
-engine calls — far below the cost of a full binding crate.
+The panel runs on a hand-rolled minimal GDExtension binding: Control subclasses
+for the shim-created parents and their native children, `_draw`, the parents'
+`refresh` method, and a handful of engine calls — far below the cost of a full
+binding crate.
 
 - **Engine API is resolved by name at runtime.** `gdextension_entry` gets the
   engine's `get_proc_address` and resolves each interface function by its C name
@@ -28,7 +29,8 @@ engine calls — far below the cost of a full binding crate.
   interned data pointer (StringName is a single interned pointer in 4.5, so that
   is exact equality). Methods registered via
   `classdb_register_extension_class_method` never participate in virtual
-  dispatch — `refresh` is a plain method, `_draw` is the only virtual.
+  dispatch — each parent's `refresh` is a plain method; `_draw` is the only
+  virtual.
 - **macOS trackpad scrolling never sets wheel-button state.** Godot 4 delivers
   two-finger trackpad scrolls as `InputEventPanGesture` events; only a physical
   wheel produces `MOUSE_BUTTON_WHEEL_UP/DOWN`, and even then the button state
@@ -77,12 +79,10 @@ engine calls — far below the cost of a full binding crate.
   in `NOTIFICATION_DRAW`, which runs AFTER virtual `_draw` and would cover
   custom drawing — the panel is a plain `Control` and draws its own
   background/border.
-- **Headless + registration**: both panel classes register at Scene init
+- **Headless + registration**: the panel classes register at Scene init
   (`minimum_initialization_level = Scene`); the `panel class registered` line is
-  a headless gate marker. The `_draw` virtual fires under the headless dummy
-  renderer too (the boot logs `chart _draw active: N cmds`), so headless covers
-  draw dispatch but not visual output — fonts/colors still need a real-play
-  check.
+  a headless gate marker. The gate's draw coverage is documented with the other
+  headless checks in `verify.md`.
 - **Keep `#![deny(unsafe_code)]` intact**: the raw FFI (engine function
   pointers, raw `*mut c_void` reads, `extern "C"` callbacks) is quarantined in
   `engine/gdext.rs`; engine.rs scopes that module with `#[allow(unsafe_code)]`

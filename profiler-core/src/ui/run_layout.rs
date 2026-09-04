@@ -223,7 +223,8 @@ pub(crate) fn build_run_layout(
         flat_chrome,
         y,
     );
-    l.height = y + content.bottom_pad;
+    // The chart's own height already ends with the bottom pad.
+    l.height = y;
     l.header_cmds = l.cmds.drain(..header_len).collect();
     if flat_chrome {
         chart_layout::insert_borders(&mut l.header_cmds, "run panel", l.width, l.height);
@@ -253,8 +254,9 @@ fn build_empty_state(mut l: RunLayout, flat_chrome: bool) -> RunLayout {
         palette::COL_DIM,
         "runs recorded by Spire Profiler appear here",
     );
-    y += 28.0;
-    l.height = y + l.content.bottom_pad;
+    // The final line's baseline clears the band by its ~7px descent.
+    y += 32.0;
+    l.height = y + l.content.outer_bottom_pad;
     l.header_cmds = l.cmds.drain(..header_len).collect();
     if flat_chrome {
         chart_layout::insert_borders(&mut l.header_cmds, "run panel", l.width, l.height);
@@ -574,6 +576,44 @@ mod tests {
     }
 
     #[test]
+    fn layout_height_carries_the_bottom_pad_exactly_once() {
+        let v = view();
+        let mut rows = [UiRow::default(); ui_model::MAX_UI_ROWS];
+        let run = build_run_layout(
+            Some(&v),
+            &HeaderFacts::default(),
+            None,
+            &mut rows,
+            WIDTH,
+            false,
+            0.0,
+        );
+        let cards = crate::data::run_history::filtered_rollup(&v);
+        let turns: u32 = v.combats.iter().map(|combat| combat.turns).sum();
+        let taken: i64 = v.combats.iter().map(|combat| combat.damage_taken).sum();
+        let meta = crate::ui::snapshot::ui_snapshot_meta_from_run(
+            cards,
+            turns,
+            v.combats.len() as u32,
+            taken,
+        );
+        let chart = chart_layout::build(chart_layout::BuildInput {
+            tab: UiTab::Run,
+            rows: &rows[..run.chart_rows],
+            meta,
+            footer: "",
+            hover_row: None,
+            skip_chrome: true,
+            avatars: &[],
+            flat_chrome: false,
+            tab_sprites: false,
+            width: WIDTH,
+            right_gutter: 0.0,
+        });
+        assert_eq!(run.height, run.header_bottom + chart.height);
+    }
+
+    #[test]
     fn spliced_row_hits_resolve_hover_and_detail() {
         let v = view();
         let mut rows = [UiRow::default(); ui_model::MAX_UI_ROWS];
@@ -667,7 +707,7 @@ mod tests {
             "the meta line pins under the identity/seed block: {header:?}"
         );
         // The pinned meta line is hard-clipped at the content's right
-        // edge, like the chart's own (the band scissor bounds y only).
+        // edge, like the chart's own.
         let meta_cmd = l
             .header_cmds
             .iter()
@@ -872,7 +912,7 @@ mod tests {
             })
             .expect("the identity line renders");
         // A multiplayer roster identity can exceed the width; the clip
-        // keeps it from bleeding (the band scissor bounds y only).
+        // keeps it from bleeding.
         assert_eq!(
             identity.align,
             TextAlign::LeftClipped(l.content.right() - identity.x),

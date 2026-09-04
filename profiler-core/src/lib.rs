@@ -23,12 +23,12 @@
 //!
 //!   * [`abi`] — the `spire_profiler_*` C export surface; one of the three unsafe relaxations of
 //!     the crate-root deny
-//!   * [`registration`] — the composition root: the two panel classes and their per-panel casts;
-//!     the second relaxation
+//!   * [`registration`] — the composition root for panel classes and instance casts; the second
+//!     relaxation
 //!   * [`data`] — combat facts and the persisted JSON model, engine-free
 //!   * [`engine`] — the hand-rolled GDExtension FFI (the third relaxation) and the local
 //!     Vector2/Rect2/Color stand-ins
-//!   * [`ui`] — the two panels and their shared plumbing
+//!   * [`ui`] — the panels and their shared plumbing
 //!
 //! # Standing contracts
 //!

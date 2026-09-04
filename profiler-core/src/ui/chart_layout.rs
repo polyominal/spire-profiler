@@ -64,7 +64,7 @@ pub(crate) const META_Y: f32 = 26.0;
 
 // The slug is untruncated: the longest real id measures 572px against
 // the 713px content width (a budget test pins the derivation). The width
-// clip stays as insurance — the scissor bounds y only.
+// clip stays as insurance.
 
 const SECTION_HEADER_H: f32 = 38.0;
 /// 24px caps clear the band top by ~3px.
@@ -81,8 +81,9 @@ const ROW_TEXT_Y: f32 = 25.0;
 pub(crate) const BAR_H: f32 = 20.0;
 const NONE_H: f32 = 30.0;
 const SECTION_GAP: f32 = 12.0;
-/// 24px lines at ~1.25 leading.
-const FOOTER_LINE_H: f32 = 30.0;
+/// 24px lines; the baseline slack matches `ROW_H - ROW_TEXT_Y` so the last
+/// footer's descenders clear the band's bottom edge.
+const FOOTER_LINE_H: f32 = 32.0;
 /// The "+ " marker is ASCII on purpose: Kreon ships no box-drawing glyphs,
 /// and an uncovered glyph falls the whole panel back to the default font.
 const SELF_INDENT: f32 = 18.0;
@@ -224,10 +225,11 @@ const MAX_LINES: usize = 64;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Layout {
-    /// The scrolling body; the replay translates and scissors it.
+    /// The scrolling body: the clipped body child replays it, translated
+    /// by the scroll offset.
     pub cmds: Vec<Cmd>,
-    /// The pinned header, drawn after the body untranslated so it can
-    /// never straddle the panel's edge. Empty when chrome is skipped.
+    /// The pinned header, drawn untranslated on the panel itself. Empty
+    /// when chrome is skipped.
     pub header_cmds: Vec<Cmd>,
     pub row_hits: Vec<RowHit>,
     pub tab_hits: Vec<TabHit>,
@@ -339,7 +341,7 @@ impl<'a> CmdSink<'a> {
     }
 
     /// The meta block: the engine's width clip keeps content from bleeding
-    /// past the right edge (the band scissor bounds y only).
+    /// past the right edge.
     #[allow(clippy::too_many_arguments)] // a draw command's full parameter list
     pub(crate) fn text_left_clipped(
         &mut self,
@@ -563,7 +565,7 @@ pub(crate) fn build(input: BuildInput<'_>) -> Layout {
     let mut y = emit_sections(&mut l, &input, &g, y);
     y += 4.0;
     y = emit_lines(&mut l, input.footer, content.x, y, FOOTER_LINE_H, COL_DIM);
-    l.height = y + content.bottom_pad;
+    l.height = y + content.outer_bottom_pad;
     l.header_cmds = l.cmds.drain(..header_len).collect();
     if !input.skip_chrome && input.flat_chrome {
         insert_borders(&mut l.header_cmds, "chart", l.width, l.height);
