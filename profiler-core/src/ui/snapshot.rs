@@ -1,7 +1,7 @@
 //! The ui-snapshot family: the structured UiRow/UiMeta payloads and the
 //! hover-detail/footer texts consumed by `chart_layout` and the panels.
 
-use crate::data::state::{CardStat, Combat, PlayerFilter, STATE};
+use crate::data::state::{CardStat, Combat, PlayerFilter, STATE, State};
 use crate::marker;
 use crate::ui::tooltip::{RowDetail, StatLine, StatTone};
 use crate::ui::ui_model::{self, SEG_COUNT, Section, Segment, UiMeta, UiRow, UiTab};
@@ -139,18 +139,21 @@ fn player_filter_keeps(filter: PlayerFilter, card: &CardStat) -> bool {
     }
 }
 
+fn cards_for_tab(st: &State, tab: UiTab) -> &[CardStat] {
+    if tab == UiTab::Run {
+        &st.run_cards
+    } else {
+        st.current.as_ref().map_or(&[], |c| &c.cards)
+    }
+}
+
 /// The avatar row filters both tabs: the combat's cards and the run
 /// accumulator carry per-player rows, and headline totals stay team-wide.
 fn chart_dataset(tab: UiTab) -> Vec<CardStat> {
     STATE.with(|s| {
         let st = s.borrow();
-        let cards: &[CardStat] = if tab == UiTab::Run {
-            &st.run_cards
-        } else {
-            st.current.as_ref().map_or(&[], |c| &c.cards)
-        };
         let filter = st.player_filter;
-        cards
+        cards_for_tab(&st, tab)
             .iter()
             .filter(|card| player_filter_keeps(filter, card))
             .cloned()
@@ -161,10 +164,10 @@ fn chart_dataset(tab: UiTab) -> Vec<CardStat> {
 /// Defense sorts standalone self-damage below every positive contributor:
 /// what protected the player first, then what it cost.
 pub fn ui_snapshot_rows(tab: UiTab, out: &mut [UiRow]) -> usize {
-    let cards = chart_dataset(tab);
     if !STATE.with(|s| s.borrow().initialized) {
         return 0;
     }
+    let cards = chart_dataset(tab);
     ui_snapshot_rows_from(&cards, out)
 }
 
@@ -421,12 +424,7 @@ pub fn ui_row_detail_from_cards(
 pub fn ui_row_detail_from_rows(tab: UiTab, rows: &[UiRow], flat_index: usize) -> RowDetail {
     STATE.with(|s| {
         let st = s.borrow();
-        let cards: &[CardStat] = if tab == UiTab::Run {
-            &st.run_cards
-        } else {
-            st.current.as_ref().map_or(&[], |c| &c.cards)
-        };
-        ui_row_detail_from_cards(rows, flat_index, cards)
+        ui_row_detail_from_cards(rows, flat_index, cards_for_tab(&st, tab))
     })
 }
 
