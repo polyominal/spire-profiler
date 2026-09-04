@@ -11,25 +11,10 @@ fn reset_state() {
     reset_log_sink();
 }
 
-fn temp_log_dir(label: &str) {
-    let dir = unique_dir(&format!("ledger-{label}"));
-    bind_log_path(&dir.join("profiler.log"));
-}
-
 fn start_combat() {
     STATE.with(|cell| {
         cell.borrow_mut().current = Some(Combat::default());
     });
-}
-
-fn hit_card(id: &str, amount: i64) -> CardStat {
-    CardStat {
-        id: id.to_owned(),
-        kind: SourceKind::Card,
-        damage_dealt: amount,
-        dmg_direct: amount,
-        ..CardStat::default()
-    }
 }
 
 fn assert_card(index: usize, id: &str, kind: SourceKind) {
@@ -145,7 +130,8 @@ fn consume_debuff_layers_consumes_fifo_and_removes_exhausted() {
 #[test]
 fn attribute_debuff_damage_splits_proportionally() {
     reset_state();
-    temp_log_dir("debuff-attr");
+    let dir = unique_dir("ledger-debuff-attr");
+    bind_log_path(&dir.join("profiler.log"));
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         state.current = Some(Combat::default());
@@ -471,7 +457,13 @@ fn apply_pending_contribs_shifts_modifier_share() {
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         state.current = Some(Combat {
-            cards: vec![hit_card("STRIKE", 10)],
+            cards: vec![CardStat {
+                id: "STRIKE".to_owned(),
+                kind: SourceKind::Card,
+                damage_dealt: 10,
+                dmg_direct: 10,
+                ..CardStat::default()
+            }],
             ..Combat::default()
         });
         state
