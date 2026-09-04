@@ -172,26 +172,20 @@ pub fn run_suspended() {
 }
 
 pub fn run_ended(outcome: RunOutcome) {
-    let active = STATE.with(|cell| {
+    let seq = STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         if !state.initialized || !state.run_ctx.active {
-            return false;
+            return None;
         }
         state.run_ctx.outcome = outcome;
         // Abandonment carries no separate timestamp: `ended_at` IS the
         // abandon moment.
         state.run_ctx.ended_at = now_seconds();
-        true
+        Some(state.run_ctx.seq)
     });
-    if !active {
-        return;
-    }
+    let Some(seq) = seq else { return };
     write_run_record();
     STATE.with(|cell| cell.borrow_mut().run_ctx.active = false);
-    let (seq, outcome) = STATE.with(|cell| {
-        let state = cell.borrow();
-        (state.run_ctx.seq, state.run_ctx.outcome)
-    });
     marker!("run {seq} recorded ({})", outcome.name());
 }
 
