@@ -57,7 +57,7 @@ fn read_combat(base: &Path) -> (CombatRec, serde_json::Value) {
     let mut all = read_all_combats(base);
     assert_eq!(all.len(), 1, "exactly one combat record");
     let (combat, doc) = all.remove(0);
-    (combat, serde_json::json!([doc]))
+    (combat, doc)
 }
 
 fn assert_no_card(combat: &CombatRec, id: &str) {
@@ -95,7 +95,7 @@ fn current_play_counters() -> (u32, u32, u32) {
 }
 
 fn card_json<'a>(combat: &'a serde_json::Value, id: &str) -> &'a serde_json::Value {
-    combat[0]["cards"]
+    combat["cards"]
         .as_array()
         .expect("combat cards array")
         .iter()

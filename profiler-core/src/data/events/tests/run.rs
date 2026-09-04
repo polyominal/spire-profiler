@@ -10,7 +10,7 @@ use crate::test_util::wiped_dir;
 fn read_run(base: &Path) -> serde_json::Value {
     let runs = read_all_runs(base);
     assert_eq!(runs.len(), 1, "exactly one run record");
-    serde_json::json!([runs.into_iter().next().expect("one run")])
+    runs.into_iter().next().expect("one run")
 }
 
 #[test]
@@ -47,8 +47,8 @@ fn resumed_run_records_the_seed() {
     combat_ended();
     run_ended(RunOutcome::Defeat);
 
-    let runs = read_run(&base);
-    assert_eq!(runs[0]["seed"], "SEED_123");
+    let run = read_run(&base);
+    assert_eq!(run["seed"], "SEED_123");
 }
 
 /// Clears `active` WITHOUT writing any record: the run is not over.
@@ -108,8 +108,8 @@ fn suspend_without_an_active_run_is_a_no_op() {
     run_ended(RunOutcome::Defeat);
     run_suspended();
     assert!(!STATE.with(|s| s.borrow().run_ctx.active));
-    let runs = read_run(&base);
-    assert_eq!(runs[0]["outcome"], "defeat");
+    let run = read_run(&base);
+    assert_eq!(run["outcome"], "defeat");
 }
 
 /// The resumed `run_started(continued=1)` finds no stale active run, so
@@ -146,9 +146,9 @@ fn suspend_then_continue_rejoins_without_a_spurious_defeat() {
     card_play_finished(0);
     combat_ended();
     run_ended(RunOutcome::Abandoned); // the run really ends now
-    let runs = read_run(&base);
-    assert_eq!(runs[0]["outcome"], "abandoned");
-    assert!(runs[0]["ended_at"].is_i64());
+    let run = read_run(&base);
+    assert_eq!(run["outcome"], "abandoned");
+    assert!(run["ended_at"].is_i64());
     assert_eq!(read_all_combats(&base).len(), 2, "both fragments persist");
 }
 
@@ -190,8 +190,8 @@ fn resumed_run_rejoins_its_fragment_and_rebuilds_the_summary() {
     card_play_finished(0);
     combat_ended();
     run_ended(RunOutcome::Abandoned); // abandoned after the resumed fragment
-    let runs = read_run(&base);
-    assert_eq!(runs[0]["outcome"], "abandoned");
+    let run = read_run(&base);
+    assert_eq!(run["outcome"], "abandoned");
     assert_eq!(read_all_combats(&base).len(), 2, "both fragments persist");
 }
 
@@ -313,8 +313,8 @@ fn player_death_marks_the_combat_and_run_as_defeat() {
     let (combat, _) = read_combat(&base);
     assert_eq!(combat.result, "defeat");
     assert_eq!(combat.damage_received, 12);
-    let runs = read_run(&base);
-    assert_eq!(runs[0]["outcome"], "defeat");
+    let run = read_run(&base);
+    assert_eq!(run["outcome"], "defeat");
 }
 
 /// `net_ids` pairs positionally with `character_ids`; mismatches truncate.

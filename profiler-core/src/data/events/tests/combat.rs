@@ -255,7 +255,7 @@ fn self_damage_credits_the_sources_red_segment() {
     assert_eq!(card_json(&doc, "BLOODLETTING")["self_damage"], 3);
     assert_eq!(card_json(&doc, "OFFERING")["self_damage"], 6);
     assert_eq!(combat.damage_received, 19);
-    let cards = doc[0]["cards"].as_array().expect("combat cards array");
+    let cards = doc["cards"].as_array().expect("combat cards array");
     assert!(
         cards.iter().all(|c| c["self_damage"] != 8),
         "the enemy hit must not be credited as self damage"
