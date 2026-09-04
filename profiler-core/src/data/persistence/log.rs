@@ -115,11 +115,7 @@ pub(crate) fn append_log(args: fmt::Arguments<'_>) {
 
     LOG_SINK.with(|cell| {
         let mut sink = cell.borrow_mut();
-        let Some(path) = sink.path.as_ref() else {
-            return;
-        };
-        if sink.file.is_some() {
-            let file = sink.file.as_mut().expect("file existence was just checked");
+        if let Some(file) = sink.file.as_mut() {
             if let Err(err) = file.write_all(line) {
                 fail!(
                     "cannot write log line: {} (os error {})",
@@ -130,7 +126,10 @@ pub(crate) fn append_log(args: fmt::Arguments<'_>) {
             }
             return;
         }
-
+        // An open file implies a bound path, so the fast path runs first.
+        let Some(path) = sink.path.as_deref() else {
+            return;
+        };
         let opened = fs::OpenOptions::new().append(true).create(true).open(path);
         match opened {
             Ok(mut file) => {
