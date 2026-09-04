@@ -161,9 +161,9 @@ fn main() -> Result<()> {
     match args.subcommand {
         flags::XtaskCmd::Smoke(_) => smoke(&shell),
         flags::XtaskCmd::InstallTool(_) => install_tool(&shell),
-        flags::XtaskCmd::Build(_) => build::build(&shell),
+        flags::XtaskCmd::Build(_) => build::build(&shell).map(|_| ()),
         flags::XtaskCmd::Release(_) => release::release(&shell),
-        flags::XtaskCmd::InstallMod(_) => install::install_mod(&shell),
+        flags::XtaskCmd::InstallMod(_) => install::install_mod(&shell).map(|_| ()),
         flags::XtaskCmd::HeadlessTest(_) => headless::headless_test(&shell),
         flags::XtaskCmd::CheckAbi(_) => check_abi::run(),
         flags::XtaskCmd::CheckDocs(flags) => check_docs::check_docs(&shell, flags.top),

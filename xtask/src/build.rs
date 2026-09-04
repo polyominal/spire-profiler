@@ -9,7 +9,7 @@ use xshell::{Shell, cmd};
 
 use crate::{bundle, check_abi, cross, discover, game_version, git, shim, workspace_root};
 
-pub fn build(shell: &Shell) -> Result<()> {
+pub fn build(shell: &Shell) -> Result<discover::GamePaths> {
     let root = workspace_root();
     // Cheap host rejection before the expensive cross matrix runs.
     discover::Platform::detect()?;
@@ -49,7 +49,7 @@ pub fn build(shell: &Shell) -> Result<()> {
         mod_dir.display(),
         lib_names.join(", ")
     );
-    Ok(())
+    Ok(game)
 }
 
 fn build_host_project(shell: &Shell, root: &Path, game: &discover::GamePaths) -> Result<PathBuf> {

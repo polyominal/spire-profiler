@@ -13,7 +13,7 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::{Result, bail};
 use xshell::Shell;
 
-use crate::{discover, game_version, install, workspace_root};
+use crate::{discover, install, workspace_root};
 
 const BOOT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
@@ -34,10 +34,7 @@ const GAME_ARGS: [&str; 6] = [
 const MIN_PATCHES: u64 = 199;
 
 pub fn headless_test(shell: &Shell) -> Result<()> {
-    install::install_mod(shell)?;
-    let game = discover::locate_game()?;
-    // Refuse to boot a game the mod was not verified against.
-    game_version::check_pin(&game)?;
+    let game = install::install_mod(shell)?;
 
     let log_dir = game_log_dir(game.platform)?;
     let root = workspace_root();
