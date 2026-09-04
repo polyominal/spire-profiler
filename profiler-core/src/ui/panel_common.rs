@@ -21,8 +21,8 @@ pub(crate) fn over_panel(rect: Rect2, mouse: Vector2) -> bool {
 
 /// A held button drifting outside is not a dismissal (a scrollbar drag
 /// must survive leaving the box).
-pub(crate) fn dismiss_on_outside_press(shown: bool, press_edge: bool, over: bool) -> bool {
-    shown && press_edge && !over
+pub(crate) fn dismiss_on_outside_press(press_edge: bool, over: bool) -> bool {
+    press_edge && !over
 }
 
 /// Guarded to the visible box: input is polled globally, and the zones are
@@ -595,16 +595,10 @@ mod tests {
     }
 
     #[test]
-    fn outside_press_dismisses_only_on_the_edge_while_shown() {
-        assert!(dismiss_on_outside_press(true, true, false));
-        for (shown, edge, over) in [
-            (false, true, false),
-            (true, false, false),
-            (true, true, true),
-            (false, false, true),
-        ] {
-            assert!(!dismiss_on_outside_press(shown, edge, over));
-        }
+    fn outside_press_dismisses_only_on_the_edge() {
+        assert!(dismiss_on_outside_press(true, false));
+        assert!(!dismiss_on_outside_press(false, false));
+        assert!(!dismiss_on_outside_press(true, true));
     }
 
     fn hits() -> Vec<RowHit> {

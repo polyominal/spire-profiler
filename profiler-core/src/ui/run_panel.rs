@@ -538,7 +538,6 @@ impl SpireProfilerRunPanel {
             &mut self.scroll,
         );
         if panel_common::dismiss_on_outside_press(
-            true,
             step.pressed && !was_down,
             panel_common::over_panel(rect, mouse),
         ) {
