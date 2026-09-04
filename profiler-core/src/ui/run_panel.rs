@@ -125,7 +125,7 @@ pub struct SpireProfilerRunPanel {
     /// Nothing signals a resize, so the panel polls.
     viewport_seen: Option<Vector2>,
     mouse: Vector2,
-    font: panel_replay::FontState,
+    font: crate::ui::theme::AssetState,
     font_plan: panel_replay::FontPlan,
     theme: crate::ui::theme::Theme,
     gutter: f32,
@@ -166,7 +166,7 @@ impl SpireProfilerRunPanel {
             tip_lines: Vec::new(),
             viewport_seen: None,
             mouse: Vector2::ZERO,
-            font: panel_replay::FontState::Unfetched,
+            font: crate::ui::theme::AssetState::Unfetched,
             font_plan: panel_replay::FontPlan::default(),
             theme: crate::ui::theme::Theme::new(),
             gutter: 0.0,
