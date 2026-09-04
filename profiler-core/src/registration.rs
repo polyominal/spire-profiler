@@ -87,10 +87,10 @@ unsafe fn run_panel_refresh(state: *mut c_void) {
 /// ClassDB surface) stays valid but draws nothing — degrade, never a
 /// failed engine create.
 unsafe fn body_create(object: Object) -> *mut c_void {
-    let target = panel_body::take_pending_child().or_else(|| {
+    let target = panel_body::take_pending_child();
+    if target.is_none() {
         crate::warn!("panel body instantiated outside its panel; drawing disabled");
-        None
-    });
+    }
     Box::into_raw(Box::new(PanelBody::new(object, target))).cast()
 }
 
