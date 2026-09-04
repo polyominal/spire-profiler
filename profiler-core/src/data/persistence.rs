@@ -94,8 +94,6 @@
 //! fail-logged and skipped — one bad file never takes the rest of the
 //! store down. The store grows without bound by design.
 
-use crate::data::state::DURATION_DEBUFFS;
-
 mod combat_doc;
 mod combats;
 mod io;
@@ -119,10 +117,6 @@ pub use writes::write_run_record;
 const MAX_JSON_SIZE: usize = 64 * 1024 * 1024;
 
 const RUNS_DIR_NAME: &str = "runs";
-
-pub fn is_duration_debuff(power_id: &str) -> bool {
-    DURATION_DEBUFFS.contains(&power_id)
-}
 
 #[cfg(test)]
 pub(crate) mod test_support {
@@ -215,19 +209,5 @@ pub(crate) mod test_support {
         let dir = data.join("runs").join(run_id.to_string());
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(format!("{combat_id}.json")), doc).unwrap();
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn is_duration_debuff_membership() {
-        assert!(is_duration_debuff("VULNERABLE_POWER"));
-        assert!(is_duration_debuff("WEAK_POWER"));
-        assert!(is_duration_debuff("POISON_POWER"));
-        assert!(!is_duration_debuff("STRENGTH_POWER"));
-        assert!(!is_duration_debuff(""));
     }
 }

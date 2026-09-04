@@ -5,8 +5,8 @@ use crate::data::ledger;
 use crate::data::ledger::AsyncFallback;
 use crate::data::persistence::event_log;
 use crate::data::state::{
-    Combat, DebuffLayer, DoomLayer, DoomTarget, EnemyHit, PowerSourceEntry, STATE, SourceKind,
-    SourceSlot, State, StrReduction, TEAM_SLOT, caps, clamp_modifier_kind,
+    Combat, DURATION_DEBUFFS, DebuffLayer, DoomLayer, DoomTarget, EnemyHit, PowerSourceEntry,
+    STATE, SourceKind, SourceSlot, State, StrReduction, TEAM_SLOT, caps, clamp_modifier_kind,
 };
 use crate::fail;
 
@@ -147,7 +147,7 @@ fn record_power_source_in(
     event_log!("  power {power_id} +{amount} attributed to '{source_id}'");
 
     // Debuff layer for duration debuffs applied to enemies.
-    if is_player == 0 && crate::data::persistence::is_duration_debuff(power_id) {
+    if is_player == 0 && DURATION_DEBUFFS.contains(&power_id) {
         if state.debuff_layers.len() >= caps::DEBUFF_LAYERS {
             fail!("debuff layer table overflow");
             return;
@@ -194,7 +194,7 @@ pub fn power_decreased(
             }
             return;
         }
-        if !crate::data::persistence::is_duration_debuff(power_id) {
+        if !DURATION_DEBUFFS.contains(&power_id) {
             return;
         }
         ledger::consume_debuff_layers_in(&mut state, creature_hash, power_id, amount as i64);
