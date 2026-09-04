@@ -246,16 +246,10 @@ fn check_queue_bounds(st: &state::State, step: u32) {
 
 /// A queued modifier contribution forces the next event to be an enemy
 /// hit covering the share.
+// A single linear dispatch; splitting it would bury the roll mapping.
+#[allow(clippy::too_many_lines)]
 fn drive_one_event(rng: &mut Rng, follow_up: &mut bool) {
     let roll = rng.below(99);
-    if roll <= 47 {
-        drive_common_event(rng, follow_up, roll);
-    } else {
-        drive_rare_event(rng, roll);
-    }
-}
-
-fn drive_common_event(rng: &mut Rng, follow_up: &mut bool, roll: u64) {
     match roll {
         0..=15 => drive_card_play(rng, follow_up),
         16..=27 => drive_damage(rng, follow_up),
@@ -276,14 +270,6 @@ fn drive_common_event(rng: &mut Rng, follow_up: &mut bool, roll: u64) {
             0,
         ),
         42..=47 => drive_power_applied(rng),
-        _ => unreachable!("rolls 48+ are dispatched elsewhere"),
-    }
-}
-
-// A single linear dispatch; splitting it would bury the roll mapping.
-#[allow(clippy::too_many_lines)]
-fn drive_rare_event(rng: &mut Rng, roll: u64) {
-    match roll {
         48..=50 => {
             let power = if rng.below(2) == 0 {
                 "STRENGTH_POWER"
