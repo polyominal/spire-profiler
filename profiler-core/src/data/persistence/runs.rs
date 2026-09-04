@@ -13,8 +13,9 @@ pub fn rebuild_run_accumulator(seq: u32) -> (u32, u32) {
     let mut turns = 0u32;
     let mut count = 0u32;
     for combat in combats {
-        let Some(run) = &combat.run else { continue };
-        if run.seq != seq {
+        // The path IS the run: a mismatch means we misfiled the record.
+        if combat.run.as_ref().is_none_or(|run| run.seq != seq) {
+            fail!("combat {} misfiled outside run {seq}", combat.combat_id);
             continue;
         }
         count += 1;
