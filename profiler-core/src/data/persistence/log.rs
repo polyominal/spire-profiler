@@ -265,7 +265,7 @@ mod tests {
         bind_log_path(&path);
         STATE.with(|cell| {
             let state = &mut *cell.borrow_mut();
-            event_log!("while borrowed: {}", state.run_seq_accumulated);
+            event_log!("while borrowed: {}", state.run_turns);
         });
         assert_eq!(fs::read_to_string(path).unwrap(), "while borrowed: 0\n");
     }

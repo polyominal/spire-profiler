@@ -43,9 +43,6 @@ pub fn merge_into_run(c: &Combat) {
         if !state.run_ctx.active || run.seq != state.run_ctx.seq {
             return;
         }
-        if state.run_seq_accumulated != state.run_ctx.seq {
-            return;
-        }
         state.run_turns += c.turns;
         state.run_combats += 1;
         for card in &c.cards {
@@ -158,7 +155,6 @@ mod tests {
             let mut st = s.borrow_mut();
             st.run_ctx.active = true;
             st.run_ctx.seq = 42;
-            st.run_seq_accumulated = 42;
             st.run_cards.clear();
         });
         merge_into_run(&c);
@@ -210,7 +206,6 @@ mod tests {
             let mut st = s.borrow_mut();
             st.run_ctx.active = true;
             st.run_ctx.seq = 42;
-            st.run_seq_accumulated = 42;
             st.run_turns = 1;
             st.run_combats = 1;
         });
@@ -243,7 +238,6 @@ mod tests {
             let mut st = s.borrow_mut();
             st.run_ctx.active = true;
             st.run_ctx.seq = 42;
-            st.run_seq_accumulated = 42;
         });
         let mut c = synthetic_combat();
         c.run = None; // outside any run
@@ -251,13 +245,6 @@ mod tests {
         let mut foreign = synthetic_combat();
         foreign.run = Some(synthetic_run(99)); // another run
         merge_into_run(&foreign);
-        STATE.with(|s| {
-            let st = s.borrow();
-            assert_eq!(st.run_combats, 0);
-            assert!(st.run_cards.is_empty());
-        });
-        STATE.with(|s| s.borrow_mut().run_seq_accumulated = 7);
-        merge_into_run(&synthetic_combat());
         STATE.with(|s| {
             let st = s.borrow();
             assert_eq!(st.run_combats, 0);
@@ -418,7 +405,6 @@ mod tests {
             let mut st = s.borrow_mut();
             st.run_ctx.active = true;
             st.run_ctx.seq = 42;
-            st.run_seq_accumulated = 42;
             st.run_turns = 0;
             st.run_combats = 0;
             st.run_cards.clear();

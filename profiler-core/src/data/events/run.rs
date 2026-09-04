@@ -59,7 +59,6 @@ pub fn run_started(
         state.run_cards.clear();
         state.run_turns = 0;
         state.run_combats = 0;
-        state.run_seq_accumulated = seq;
         state.player_filter = state::PlayerFilter::All;
         let roster = parse_roster(character_ids, net_ids);
         state.run_ctx = state::RunContext {

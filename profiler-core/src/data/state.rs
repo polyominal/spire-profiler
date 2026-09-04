@@ -632,7 +632,6 @@ pub struct State {
     pub run_cards: Vec<CardStat>,
     pub run_turns: u32,
     pub run_combats: u32,
-    pub run_seq_accumulated: u32,
     /// The session's profile id (-1 until known); run-history matching
     /// filters on it so profiles never mix.
     pub run_profile: i32,
