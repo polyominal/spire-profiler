@@ -352,7 +352,7 @@ pub(crate) fn ui_snapshot_meta_from_run(
         dps_x10: if turns > 0 {
             (damage * 10 / turns as i64) as i32
         } else {
-            -1
+            0
         },
         ..UiMeta::default()
     }
@@ -377,7 +377,7 @@ pub(crate) fn ui_snapshot_meta(tab: UiTab) -> UiMeta {
         m.dps_x10 = if c.turns > 0 {
             (m.total_damage * 10 / c.turns as i64) as i32
         } else {
-            -1
+            0
         };
         let len = c.encounter_id.len().min(64);
         m.encounter_len = len as u8;
@@ -834,7 +834,7 @@ mod tests {
         assert_eq!(m.damage_taken, 15);
         assert_eq!(m.dps_x10, 116); // 70 * 10 / 6, truncating
         let no_dps = ui_snapshot_meta_from_run(&cards, 0, 0, 0);
-        assert_eq!(no_dps.dps_x10, -1);
+        assert_eq!(no_dps.dps_x10, 0);
         assert_eq!(no_dps.plays, 6);
     }
 

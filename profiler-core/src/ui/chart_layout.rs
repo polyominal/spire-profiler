@@ -890,7 +890,7 @@ pub(crate) fn meta_line(tab: UiTab, meta: &UiMeta) -> String {
     let dps_whole = meta.dps_x10 / 10;
     let dps_frac = meta.dps_x10 % 10;
     if tab == UiTab::Run {
-        if meta.dps_x10 < 0 {
+        if meta.turns == 0 {
             return format!("DPS — · {} combats", meta.combats);
         }
         return format!(
@@ -898,7 +898,7 @@ pub(crate) fn meta_line(tab: UiTab, meta: &UiMeta) -> String {
             dps_whole, dps_frac, meta.turns, meta.combats
         );
     }
-    if meta.dps_x10 < 0 {
+    if meta.turns == 0 {
         return format!("DPS — · {} plays", meta.plays);
     }
     format!(
@@ -1247,7 +1247,6 @@ mod tests {
         )];
         let meta = UiMeta {
             combats: 3,
-            dps_x10: -1,
             ..UiMeta::default()
         };
         let l = build(build_input(UiTab::Run, &rows, meta));
@@ -1278,10 +1277,7 @@ mod tests {
             meta_line(UiTab::Run, &meta),
             "DPS 40.5 · 4 turns · 2 combats"
         );
-        let no_dps = UiMeta {
-            dps_x10: -1,
-            ..meta
-        };
+        let no_dps = UiMeta { turns: 0, ..meta };
         assert_eq!(meta_line(UiTab::Combat, &no_dps), "DPS — · 14 plays");
         assert_eq!(meta_line(UiTab::Run, &no_dps), "DPS — · 2 combats");
     }
