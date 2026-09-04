@@ -93,7 +93,7 @@ fn write_if_changed(path: &Path, content: &str) -> Result<()> {
 }
 
 fn run_dotnet_build(shell: &Shell, gen_dir: &Path) -> Result<()> {
-    let resolution = crate::dotnet::resolve_dotnet(shell)?;
+    let binary = crate::dotnet::resolve_dotnet(shell)?;
     let _dir = shell.push_dir(gen_dir);
     let _telemetry_optout = shell.push_env("DOTNET_CLI_TELEMETRY_OPTOUT", "1");
     let _nologo = shell.push_env("DOTNET_NOLOGO", "1");
@@ -101,12 +101,10 @@ fn run_dotnet_build(shell: &Shell, gen_dir: &Path) -> Result<()> {
     // Pin the relocated SDK's root so a stray DOTNET_ROOT cannot hijack it.
     let _root = shell.push_env(
         "DOTNET_ROOT",
-        resolution
-            .binary
+        binary
             .parent()
             .expect("the bootstrapped binary always has a parent dir"),
     );
-    let binary = &resolution.binary;
     cmd!(shell, "{binary} build -c Release --nologo -v q").run()?;
     Ok(())
 }
