@@ -184,7 +184,6 @@ fn select_by_seed_assembles_the_full_view() {
     assert_eq!(view.ascension, 7);
     assert_eq!(view.game_mode, "Standard");
     assert_eq!(view.outcome, Some(RunOutcome::Defeat));
-    assert_eq!(view.result, "Defeat");
     assert_eq!(view.seed, "BETA");
     assert_eq!(view.started_at, BETA_START);
     assert_eq!(view.players.len(), 2);
@@ -235,9 +234,8 @@ fn combat_only_runs_fall_back_to_a_synthesized_view() {
         view.profile, 4,
         "the select's profile carries onto the view"
     );
-    assert!(view.outcome.is_none());
-    assert_eq!(
-        view.result, "Unfinished",
+    assert!(
+        view.outcome.is_none(),
         "the run never closed, so its terminal state is unknown"
     );
     assert_eq!(view.started_at, 0);
@@ -294,10 +292,9 @@ fn closed_runs_never_take_the_fallback() {
     seed_data(data, RUNS, COMBATS);
 
     let defeat = selected("BETA", BETA_START, 2);
-    assert_eq!(defeat.result, "Defeat");
+    assert_eq!(defeat.outcome, Some(RunOutcome::Defeat));
     let won = selected("ALPHA", 1_786_579_200, 2);
     assert_eq!(won.outcome, Some(RunOutcome::Victory));
-    assert_eq!(won.result, "Victory");
 }
 
 #[test]
@@ -314,7 +311,6 @@ fn abandoned_runs_render_the_abandoned_label() {
 
     let view = selected("GAMMA", 1_786_579_200, 2);
     assert_eq!(view.outcome, Some(RunOutcome::Abandoned));
-    assert_eq!(view.result, "Abandoned");
     assert_eq!(
         view.ended_at, 1_786_579_800,
         "ended_at is the abandon moment"
@@ -332,7 +328,7 @@ fn fallback_views_flow_through_the_selection_plumbing() {
     let expected = selected("GAMMA", 0, 4);
     let stored = selected_view().expect("fallback selection stored");
     assert_eq!(&*expected, &stored);
-    assert_eq!(stored.result, "Unfinished");
+    assert_eq!(stored.outcome, None);
     let fp = selected_view_fingerprint().expect("fingerprint present");
     assert!(select("GAMMA", 0, 4));
     assert_eq!(selected_view_fingerprint(), Some(fp));
@@ -554,7 +550,6 @@ fn view_fingerprint_tracks_every_view_field() {
         ascension: 7,
         game_mode: "Standard".to_owned(),
         outcome: Some(RunOutcome::Defeat),
-        result: "Defeat".to_owned(),
         seed: "BETA".to_owned(),
         combats: vec![CombatView {
             seq: 1,
@@ -591,7 +586,7 @@ fn view_fingerprint_tracks_every_view_field() {
     changed.character = "DEFECT".to_owned();
     assert_ne!(view_fingerprint(&changed), base);
     let mut changed = synthetic();
-    changed.result = "Unfinished".to_owned();
+    changed.outcome = None;
     assert_ne!(view_fingerprint(&changed), base);
     let mut changed = synthetic();
     changed.seed = "OTHER".to_owned();

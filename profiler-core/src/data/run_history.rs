@@ -145,10 +145,8 @@ pub struct RunSummaryView {
     pub character: String,
     pub ascension: i32,
     pub game_mode: String,
-    /// None on the combats-only fallback.
+    /// None on the combats-only fallback: the truth is unknown.
     pub outcome: Option<RunOutcome>,
-    /// "Unfinished" for the fallback: the truth is unknown.
-    pub result: String,
     pub seed: String,
     pub started_at: i64,
     pub ended_at: i64,
@@ -297,12 +295,6 @@ fn build_view(entry: &RunEntry, combats: &[CombatRec]) -> RunSummaryView {
         ascension: entry.ascension,
         game_mode: entry.game_mode.clone(),
         outcome: Some(entry.outcome),
-        result: match entry.outcome {
-            RunOutcome::Victory => "Victory",
-            RunOutcome::Abandoned => "Abandoned",
-            RunOutcome::Defeat => "Defeat",
-        }
-        .to_owned(),
         seed: entry.seed.clone(),
         started_at: entry.started_at,
         ended_at: entry.ended_at,
@@ -439,7 +431,6 @@ fn fallback_from_combats(cache: &Cache, seed: &str, profile: i32, start_time: i6
     // The combats-only fallback has no run record: the terminal state is
     // unknown, never a false "Defeat".
     view.outcome = None;
-    view.result = "Unfinished".to_owned();
     RunSelection::Selected(Box::new(view))
 }
 
@@ -490,7 +481,6 @@ fn view_fingerprint(view: &RunSummaryView) -> u64 {
     view.ascension.hash(&mut h);
     view.game_mode.hash(&mut h);
     view.outcome.hash(&mut h);
-    view.result.hash(&mut h);
     view.seed.hash(&mut h);
     view.started_at.hash(&mut h);
     view.ended_at.hash(&mut h);

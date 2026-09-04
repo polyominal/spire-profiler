@@ -13,7 +13,7 @@
 //! identity/seed lines.
 
 use crate::data::run_history::RunSummaryView;
-use crate::data::state::CardStat;
+use crate::data::state::{CardStat, RunOutcome};
 #[cfg(test)]
 use crate::engine::object::TextAlign;
 use crate::ui::chart_layout::{self, Cmd, truncate};
@@ -37,12 +37,16 @@ pub(crate) fn identity_line(view: &RunSummaryView) -> String {
         }
         line.push_str(&view.game_mode);
     }
-    if !view.result.is_empty() {
-        if !line.is_empty() {
-            line.push_str(" · ");
-        }
-        line.push_str(&view.result);
+    let result = match view.outcome {
+        Some(RunOutcome::Victory) => "Victory",
+        Some(RunOutcome::Defeat) => "Defeat",
+        Some(RunOutcome::Abandoned) => "Abandoned",
+        None => "Unfinished",
+    };
+    if !line.is_empty() {
+        line.push_str(" · ");
     }
+    line.push_str(result);
     line
 }
 
@@ -435,7 +439,6 @@ mod tests {
             ascension: 7,
             game_mode: "Standard".to_owned(),
             outcome: Some(RunOutcome::Defeat),
-            result: "Defeat".to_owned(),
             seed: "BETA".to_owned(),
             combats: combats(2),
             rollup: vec![
@@ -454,29 +457,19 @@ mod tests {
         assert_eq!(identity_line(&v), "A7 · Standard · Defeat");
         let mut won = view();
         won.outcome = Some(RunOutcome::Victory);
-        won.result = "Victory".to_owned();
         assert_eq!(identity_line(&won), "A7 · Standard · Victory");
         // An abandoned run reads "Abandoned", never a false "Defeat".
         let mut abandoned = view();
         abandoned.outcome = Some(RunOutcome::Abandoned);
-        abandoned.result = "Abandoned".to_owned();
         assert_eq!(identity_line(&abandoned), "A7 · Standard · Abandoned");
         // An unknown ascension is omitted; the fallback's "Unfinished"
         // still renders.
         let unfinished = RunSummaryView {
             ascension: -1,
             character: "SHROUD".to_owned(),
-            result: "Unfinished".to_owned(),
             ..RunSummaryView::default()
         };
         assert_eq!(identity_line(&unfinished), "Unfinished");
-        // No stray leading separator.
-        let bare = RunSummaryView {
-            ascension: -1,
-            character: "SHROUD".to_owned(),
-            ..RunSummaryView::default()
-        };
-        assert_eq!(identity_line(&bare), "");
     }
 
     fn layout_of(view: Option<&RunSummaryView>) -> RunLayout {
@@ -525,7 +518,7 @@ mod tests {
 
         let mut unfinished = view();
         unfinished.character = "SHROUD".to_owned();
-        unfinished.result = "Unfinished".to_owned();
+        unfinished.outcome = None;
         let l = layout_of(Some(&unfinished));
         let header: Vec<&str> = texts(&l.header_cmds).collect();
         assert!(header.contains(&"A7 · Standard · Unfinished"));
