@@ -332,6 +332,15 @@ fn attribute_doom_target_in(state: &mut State, creature_hash: u64, hp: i64) {
     }
 }
 
+/// Which pending queue one modifier event feeds: the dealer's for damage
+/// attribution when the hit lands, the gainer's to attach to the next
+/// block chunk.
+#[derive(Clone, Copy)]
+enum ContribQueue {
+    Damage,
+    Block,
+}
+
 /// Queue it on the DEALER's slot for attribution when the hit lands.
 pub fn damage_modifier_contribution(
     modifier_id: &str,
@@ -341,30 +350,14 @@ pub fn damage_modifier_contribution(
 ) {
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
-        if !state.initialized || contribution <= 0 {
-            return;
-        }
-        let mod_kind = clamp_modifier_kind(kind);
-        // Each share carries its applier's slot; the no-applier fallback
-        // rides the DEALER's slot.
-        let shares = ledger::split_over_appliers_in(
-            &state,
+        modifier_contribution_in(
+            &mut state,
             modifier_id,
-            mod_kind,
-            contribution as i64,
+            kind,
+            contribution,
             player_slot,
+            ContribQueue::Damage,
         );
-        let slot = state.slot_index(player_slot);
-        let mut count = 0usize;
-        for share in shares {
-            if state.per_player[slot].pending_contribs.len() >= caps::PENDING_CONTRIBS {
-                fail!("pending modifier contribution overflow");
-                break;
-            }
-            state.per_player[slot].pending_contribs.push(share);
-            count += 1;
-        }
-        event_log!("  modifier {modifier_id} +{contribution} split across {count} appliers");
     });
 }
 
@@ -377,30 +370,61 @@ pub fn block_modifier_contribution(
 ) {
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
-        if !state.initialized || contribution <= 0 {
-            return;
-        }
-        let mod_kind = clamp_modifier_kind(kind);
-        // Same applier-slot stamping as the damage path.
-        let shares = ledger::split_over_appliers_in(
-            &state,
+        modifier_contribution_in(
+            &mut state,
             modifier_id,
-            mod_kind,
-            contribution as i64,
+            kind,
+            contribution,
             player_slot,
+            ContribQueue::Block,
         );
-        let slot = state.slot_index(player_slot);
-        let mut count = 0usize;
-        for share in shares {
-            if state.per_player[slot].pending_block_contribs.len() >= caps::PENDING_BLOCK_CONTRIBS {
-                fail!("pending block modifier contribution overflow");
-                break;
-            }
-            state.per_player[slot].pending_block_contribs.push(share);
-            count += 1;
-        }
-        event_log!("  block modifier {modifier_id} +{contribution} split across {count} appliers");
     });
+}
+
+fn modifier_contribution_in(
+    state: &mut State,
+    modifier_id: &str,
+    kind: i32,
+    contribution: i32,
+    player_slot: i32,
+    queue_kind: ContribQueue,
+) {
+    if !state.initialized || contribution <= 0 {
+        return;
+    }
+    let mod_kind = clamp_modifier_kind(kind);
+    // Each share carries its applier's slot; the no-applier fallback rides
+    // the DEALER's slot.
+    let shares = ledger::split_over_appliers_in(
+        state,
+        modifier_id,
+        mod_kind,
+        contribution as i64,
+        player_slot,
+    );
+    let slot = state.slot_index(player_slot);
+    let (queue, cap, label) = match queue_kind {
+        ContribQueue::Damage => (
+            &mut state.per_player[slot].pending_contribs,
+            caps::PENDING_CONTRIBS,
+            "modifier",
+        ),
+        ContribQueue::Block => (
+            &mut state.per_player[slot].pending_block_contribs,
+            caps::PENDING_BLOCK_CONTRIBS,
+            "block modifier",
+        ),
+    };
+    let mut count = 0usize;
+    for share in shares {
+        if queue.len() >= cap {
+            fail!("pending {label} contribution overflow");
+            break;
+        }
+        queue.push(share);
+        count += 1;
+    }
+    event_log!("  {label} {modifier_id} +{contribution} split across {count} appliers");
 }
 
 /// Credited to the FIFO head source of the enemy's WEAK_POWER layers.
