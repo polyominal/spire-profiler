@@ -643,7 +643,7 @@ fn emit_tabs(l: &mut Layout, input: &BuildInput<'_>, g: &Geom, y_in: f32) {
                 shadow: true,
                 outline: false,
                 align: TextAlign::Center(TAB_W),
-                text: (*label).to_owned(),
+                text: tab.label().to_owned(),
             }),
             "chart",
         );
@@ -722,9 +722,6 @@ fn emit_section_header(sink: &mut CmdSink, g: &Geom, y: f32, name: &str) {
         SECTION_UNDERLINE_H,
         COL_GOLD,
     );
-    if name.is_empty() {
-        return;
-    }
     sink.text_ex(
         g.content.x + 8.0,
         y + SECTION_TITLE_Y,
@@ -912,25 +909,9 @@ pub(crate) fn meta_line(tab: UiTab, meta: &UiMeta) -> String {
 
 fn emit_lines(l: &mut Layout, text: &str, x: f32, y_in: f32, line_h: f32, color: Color) -> f32 {
     let mut y = y_in;
-    let mut rest = text;
-    let mut count: usize = 0;
-    while !rest.is_empty() && count < MAX_LINES {
-        count += 1;
-        let line = match rest.find('\n') {
-            Some(i) => {
-                let line = &rest[..i];
-                rest = &rest[i + 1..];
-                line
-            }
-            None => {
-                let line = rest;
-                rest = "";
-                line
-            }
-        };
-        if line.is_empty() {
-            continue;
-        }
+    // take() before filter(): empty lines count against the cap but emit
+    // nothing and do not advance y.
+    for line in text.lines().take(MAX_LINES).filter(|line| !line.is_empty()) {
         l.sink().text(x, y + ROW_TEXT_Y, SIZE_BODY, color, line);
         y += line_h;
     }
