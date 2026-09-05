@@ -1,7 +1,7 @@
 //! Hand-rolled minimal GDExtension FFI — the crate's engine-facing surface:
 //! a direct binding to the engine's `GDExtensionInterface` (vendored header
 //! `vendor/gdextension_interface.h`, Godot 4.5.1). Exports
-//! `gdextension_entry` and registers the parent panel classes as `Control`
+//! [`gdextension_entry`] and registers the parent panel classes as `Control`
 //! subclasses with one virtual (`_draw`) and the zero-argument `refresh`
 //! method the shim calls every frame. Each parent natively instantiates the
 //! shared child class through [`instantiate_class`]; that class exposes only
@@ -15,16 +15,17 @@
 //! while the fork's own managed→native calls are fine. Scroll instead
 //! reaches the panels from the shim: it connects to each panel's `GuiInput`
 //! signal and forwards the raw fields through the flat C export
-//! `spire_profiler_scroll_input`; the per-frame `refresh` consumes the
+//! [`crate::abi::spire_profiler_scroll_input`]; the per-frame `refresh` consumes the
 //! queued pixels and all scroll math stays native ([`crate::ui::scroll`]).
 //!
 //! Every engine call targets objects the extension itself created (the
-//! panel Controls) or global singletons — the shapes proven safe by daily
-//! use.
+//! panel Controls) or engine-owned singletons. Raw engine pointers are
+//! trusted only for the callback or wrapper call and only under the pinned
+//! 4.5.1 header/runtime contract.
 //!
 //! # Binding mechanics
 //!
-//! The engine API resolves by C name at runtime: `gdextension_entry` takes
+//! The engine API resolves by C name at runtime: [`gdextension_entry`] takes
 //! the engine's `get_proc_address` and looks up every interface function; a
 //! missing symbol fails loudly by name. `_draw` dispatch is `get_virtual2`,
 //! and the virtual-name slot compares interned StringName pointers
@@ -37,32 +38,65 @@
 //!
 //! # Engine-call technique (variant_call everywhere)
 //!
-//! Every engine method call goes through `variant_call`, not
+//! Every engine method call goes through [`variant_call`], not
 //! `object_method_bind_ptrcall`: the ptrcall route requires exact signature
-//! hashes only published in `extension_api.json`, while `variant_call`
-//! needs none. Values are built with `get_variant_from_type_constructor`,
-//! read back with `variant_get_ptr_internal_getter` (after a
-//! `variant_get_type` tag check — the internal getter is undefined behavior
-//! on a type mismatch), and every temporary Variant is `variant_destroy`ed
-//! on drop.
+//! hashes only published in `extension_api.json`, while [`variant_call`]
+//! needs none. Values are built with [`get_variant_from_type_constructor`],
+//! read back with [`variant_get_ptr_internal_getter`] (after a
+//! [`variant_get_type`] tag check — the internal getter is undefined behavior
+//! on a type mismatch), and every temporary Variant is [`variant_destroy`]ed
+//! on drop. Return slots are constructed as NIL first, so a call that
+//! fails before assigning its return value still drops a valid Variant.
 //!
 //! # Where this module's unsafe lives
 //!
 //! `lib.rs` declares `#![deny(unsafe_code)]`, relaxed in exactly three
-//! modules: `abi`, `registration`, and this one (whose
+//! modules: [`crate::abi`], [`crate::registration`], and this one (whose
 //! `#[allow(unsafe_code)]` sits in `engine.rs`). The unsafe concentrates in:
 //!
 //! 1. **Raw engine pointers** — `*mut c_void` the engine supplies, each valid for its call's
-//!    duration: the interned StringName pointer read in `string_name_eq`, the variant payload bytes
-//!    copied out via `variant_get_ptr_internal_getter`, the class/instance user-data reborrowed in
-//!    `create_instance`/`refresh_call`/`free_instance`/`draw_virtual`, and the
-//!    `Initialization`/`CallError` out-params written in `gdextension_entry`/`refresh_call`.
+//!    duration: the interned StringName pointer read in [`string_name_eq`], the variant payload
+//!    bytes copied out via [`variant_get_ptr_internal_getter`], the class/instance user-data
+//!    reborrowed in [`create_instance`]/[`refresh_call`]/[`free_instance`]/[`draw_virtual`], and
+//!    the [`Initialization`]/[`CallError`] out-params written in
+//!    [`gdextension_entry`]/[`refresh_call`].
 //! 2. **The export and C callbacks** — `extern "C"` functions whose pointers the engine stores and
-//!    calls back into; every one routes through `contain` so a panic never unwinds into the engine.
-//! 3. **Function-pointer resolution** — `get_proc_address` returns an opaque pointer that `lookup`
-//!    transmutes to the concrete signature; all targets share the C ABI, so the transmute is sound.
+//!    calls back into; every one routes through [`crate::abi::contain`] so a panic never unwinds
+//!    into the engine. Each callback's panic label is computed just ahead of the boundary — a deref
+//!    of the same engine-supplied pointer the body trusts, plus a UTF-8 `expect` on the class's
+//!    `c"…"` name literal — and cannot panic by construction.
+//! 3. **Function-pointer resolution** — `get_proc_address` returns an opaque pointer that
+//!    [`lookup`] reinterprets only as the pinned header's signature for that symbol.
 //!
-//! The panel modules hold engine pointers only through the safe `Object`
+//! # Trusted engine-layout facts
+//!
+//! The header exposes Variant, String, and StringName only as opaque
+//! pointers. The facts below are properties of the pinned Godot 4.5.1
+//! binary; if a pin bump breaks one, [`Opaque`] storage or [`string_name_eq`]
+//! becomes unsound, so they belong on the manual re-verification list:
+//!
+//! * Variant, String, and StringName fit in [`OPAQUE_SIZE`] bytes with alignment ≤ 16.
+//! * StringName is one pointer to interned storage, so comparing the first 8 bytes of two live
+//!   names is name equality.
+//! * Internal-getter payloads match the [`read_payload`] reads: bool is one 0/1 byte, Vector2
+//!   `[f32; 2]`, Rect2/Color `[f32; 4]`, object a pointer.
+//! * The internal getter never writes through its Variant argument despite the mutable pointer
+//!   type, which is what [`read_payload`] hands out from `&Opaque`.
+//! * `get_proc_address` returns null for an unknown name and a function matching the
+//!   header-documented signature otherwise ([`lookup`]'s decode and transmute).
+//! * [`object_set_instance`] binds the instance for the object's life: the engine passes it back to
+//!   [`free_instance`] (exactly once), [`draw_virtual`], and [`refresh_call`] only while the object
+//!   lives.
+//! * Variant from-type constructors copy out of the source pointer, so the source may be a stack
+//!   temporary or, for String, destroyed right after ([`string_variant`]); constructing an OBJECT
+//!   Variant takes the engine Ref that [`variant_destroy`] later releases ([`retained_object`]).
+//! * `variant_call` never writes through `p_self`: the receiver is read-only despite the mutable
+//!   pointer type, which is what [`RetainedVariant::ptr`] hands out from `&self`.
+//! * The enum values transcribed from the pinned header match it: the `VT_*` Variant type tags,
+//!   `CALL_OK`, `INIT_LEVEL_SCENE`, `METHOD_FLAG_NORMAL`, and `MOUSE_BUTTON_LEFT`. Struct layouts
+//!   carry compile-time size pins; scalar values cannot, so a pin bump re-checks them by hand.
+//!
+//! The panel modules hold engine pointers only through the safe [`Object`]
 //! newtype (defined in [`crate::engine::object`]) and call its methods, so
 //! they never need their own unsafe.
 
@@ -159,7 +193,7 @@ struct Api {
     object_get_instance_from_id: unsafe extern "C" fn(ObjectId) -> ObjectPtr,
     object_get_instance_id: unsafe extern "C" fn(ObjectPtr) -> ObjectId,
     global_get_singleton: unsafe extern "C" fn(ConstStringNamePtr) -> ObjectPtr,
-    get_variant_from_type_constructor: unsafe extern "C" fn(c_int) -> FromTypeConstructorFn,
+    get_variant_from_type_constructor: unsafe extern "C" fn(c_int) -> Option<FromTypeConstructorFn>,
     variant_get_ptr_internal_getter: unsafe extern "C" fn(c_int) -> Option<InternalGetterFn>,
     variant_call: unsafe extern "C" fn(
         VariantPtr,
@@ -170,6 +204,7 @@ struct Api {
         *mut CallError,
     ),
     variant_destroy: unsafe extern "C" fn(VariantPtr),
+    variant_new_nil: unsafe extern "C" fn(VariantPtr),
     variant_get_type: unsafe extern "C" fn(ConstVariantPtr) -> c_int,
     variant_get_ptr_destructor: unsafe extern "C" fn(c_int) -> Option<PtrDestructorFn>,
     string_new_with_utf8_chars: unsafe extern "C" fn(StringPtr, *const c_char),
@@ -178,6 +213,10 @@ struct Api {
 
 impl Api {
     /// A missing symbol fails the entry point; [`lookup`] names it first.
+    ///
+    /// # Safety
+    /// `get` is the engine's live resolver and every name is a pinned
+    /// header symbol.
     unsafe fn resolve(get: GetProcAddressFn) -> Option<Api> {
         // Safety: lookup is unsafe because it reinterprets the engine's
         // function pointer; resolving each symbol by name is the whole point
@@ -208,6 +247,7 @@ impl Api {
                 variant_get_ptr_internal_getter: lookup(get, c"variant_get_ptr_internal_getter")?,
                 variant_call: lookup(get, c"variant_call")?,
                 variant_destroy: lookup(get, c"variant_destroy")?,
+                variant_new_nil: lookup(get, c"variant_new_nil")?,
                 variant_get_type: lookup(get, c"variant_get_type")?,
                 variant_get_ptr_destructor: lookup(get, c"variant_get_ptr_destructor")?,
                 string_new_with_utf8_chars: lookup(get, c"string_new_with_utf8_chars")?,
@@ -219,22 +259,23 @@ impl Api {
 
 static API: OnceLock<Api> = OnceLock::new();
 
-/// By value (`Api` is `Copy`) so call sites skip the `&Api` parens.
+/// By value ([`Api`] is `Copy`) so call sites skip the `&Api` parens.
 fn api() -> Api {
     *API.get()
         .expect("the GDExtension interface resolves before any callback runs")
 }
 
-/// Resolved once; a static, not a `Global` field, so destruction works on
+/// Resolved once; a static, not a [`Global`] field, so destruction works on
 /// any thread.
 static STRING_DTOR: OnceLock<Option<PtrDestructorFn>> = OnceLock::new();
 
-// Thin safe wrappers over the raw function pointers: each wrapper contains
-// the only `unsafe` block its call needs, so call sites stay safe Rust.
+// Thin wrappers over the raw function pointers. Their raw arguments must be
+// engine-produced and lifetime-valid for the call; each block only forwards.
 
 /// Deprecated `classdb_construct_object`, not `2` — the latter would send
 /// NOTIFICATION_POSTINITIALIZE.
 pub(crate) fn classdb_construct_object(name: ConstStringNamePtr) -> ObjectPtr {
+    // SAFETY: the API is resolved; every pointer argument is valid for this call.
     unsafe { (api().classdb_construct_object)(name) }
 }
 
@@ -244,10 +285,12 @@ fn classdb_register_extension_class5(
     parent: ConstStringNamePtr,
     info: *const ClassCreationInfo4,
 ) {
+    // SAFETY: the API is resolved; every pointer argument is valid for this call.
     unsafe { (api().classdb_register_extension_class5)(library, class, parent, info) };
 }
 
 fn classdb_unregister_extension_class(library: ClassLibraryPtr, class: ConstStringNamePtr) {
+    // SAFETY: the API is resolved; every pointer argument is valid for this call.
     unsafe { (api().classdb_unregister_extension_class)(library, class) };
 }
 
@@ -256,30 +299,38 @@ fn classdb_register_extension_class_method(
     class: ConstStringNamePtr,
     method: *const ClassMethodInfo,
 ) {
+    // SAFETY: the API is resolved; every pointer argument is valid for this call.
     unsafe { (api().classdb_register_extension_class_method)(library, class, method) };
 }
 
 fn object_set_instance(obj: ObjectPtr, class: ConstStringNamePtr, instance: ClassInstancePtr) {
+    // SAFETY: the API is resolved; every pointer argument is valid for this call.
     unsafe { (api().object_set_instance)(obj, class, instance) };
 }
 
 fn object_get_instance_from_id(id: ObjectId) -> ObjectPtr {
+    // SAFETY: the API is resolved; the id argument is a by-value copy.
     unsafe { (api().object_get_instance_from_id)(id) }
 }
 
 fn object_get_instance_id(obj: ObjectPtr) -> ObjectId {
+    // SAFETY: the API is resolved; every pointer argument is valid for this call.
     unsafe { (api().object_get_instance_id)(obj) }
 }
 
 fn global_get_singleton(name: ConstStringNamePtr) -> ObjectPtr {
+    // SAFETY: the API is resolved; every pointer argument is valid for this call.
     unsafe { (api().global_get_singleton)(name) }
 }
 
 fn get_variant_from_type_constructor(vtype: c_int) -> FromTypeConstructorFn {
+    // SAFETY: the API is resolved; callers pass only valid VT_* ordinals.
     unsafe { (api().get_variant_from_type_constructor)(vtype) }
+        .expect("Godot 4.5 defines a from-type constructor for every VT_* ordinal used")
 }
 
 fn variant_get_ptr_internal_getter(vtype: c_int) -> Option<InternalGetterFn> {
+    // SAFETY: the API is resolved; callers pass only valid VT_* ordinals.
     unsafe { (api().variant_get_ptr_internal_getter)(vtype) }
 }
 
@@ -291,36 +342,55 @@ pub(crate) fn variant_call(
     ret: VariantPtr,
     err: *mut CallError,
 ) {
+    // SAFETY: the API is resolved; every pointer argument is valid for this call.
     unsafe { (api().variant_call)(p_self, method, args, arg_count, ret, err) };
 }
 
 pub(crate) fn variant_destroy(p: VariantPtr) {
+    // SAFETY: the API is resolved; every pointer argument is valid for this call.
     unsafe { (api().variant_destroy)(p) };
 }
 
 pub(crate) fn variant_get_type(p: ConstVariantPtr) -> c_int {
+    // SAFETY: the API is resolved; every pointer argument is valid for this call.
     unsafe { (api().variant_get_type)(p) }
 }
 
 fn variant_get_ptr_destructor(vtype: c_int) -> Option<PtrDestructorFn> {
+    // SAFETY: the API is resolved; callers pass only valid VT_* ordinals.
     unsafe { (api().variant_get_ptr_destructor)(vtype) }
 }
 
 fn string_new_with_utf8_chars(dest: StringPtr, contents: *const c_char) {
+    // SAFETY: dest is owned opaque storage and contents is a valid C string.
     unsafe { (api().string_new_with_utf8_chars)(dest, contents) };
 }
 
 fn string_name_new_with_utf8_chars(dest: StringNamePtr, contents: *const c_char) {
+    // SAFETY: dest is owned opaque storage and contents is a valid C string.
     unsafe { (api().string_name_new_with_utf8_chars)(dest, contents) };
 }
 
-/// Transmuting fn-pointer to fn-pointer is the documented route; every
-/// concrete signature is `extern "C"`, so ABI-safe.
+/// Reinterprets one `extern "C"` fn pointer as the pinned header's
+/// concrete signature behind the same symbol.
+///
+/// # Safety
+/// `get` is the engine's live resolver, `name` identifies that symbol, and
+/// `T` is exactly the header signature for it.
 unsafe fn lookup<T>(get: GetProcAddressFn, name: &'static CStr) -> Option<T> {
-    // Safety: get_proc_address is the engine's own resolver; transmute_copy
-    // (not transmute) because `T` is generic — source and every concrete `T`
-    // are same-size `extern "C"` function pointers.
-    let generic: InterfaceFunction = unsafe { get(name.as_ptr())? };
+    // A size mismatch would make transmute_copy read past `generic`; the
+    // branch folds away because both sizes are compile-time constants.
+    if std::mem::size_of::<T>() != std::mem::size_of::<InterfaceFunction>() {
+        fail!("GDExtension symbol {name:?} does not have a pointer-sized signature");
+        return None;
+    }
+    // SAFETY: `get` is the live engine resolver and `name` is a valid C symbol.
+    let Some(generic) = (unsafe { get(name.as_ptr()) }) else {
+        fail!("cannot resolve GDExtension interface symbol {name:?}");
+        return None;
+    };
+    // Safety: `T` is the header signature for `name`, and the size check
+    // above bounds the copy.
     Some(unsafe { std::mem::transmute_copy::<InterfaceFunction, T>(&generic) })
 }
 
@@ -413,7 +483,7 @@ const _: () = assert!(
 
 // ── process-wide state (single-threaded: the game's logic loop) ─────────────
 
-/// One engine singleton's resolve cache: unresolved until the first `get`,
+/// One engine singleton's resolve cache: unresolved until the first [`get`](Self::get),
 /// then resolved or failed (warned once, never retried).
 #[derive(Default)]
 struct SingletonCache {
@@ -538,7 +608,7 @@ static CLASSES: OnceLock<[EngineClass; 3]> = OnceLock::new();
 /// The engine layer never sees the concrete panel type.
 pub(crate) struct EngineClass {
     name: &'static CStr,
-    /// The interned StringName, filled by `init_string_names`.
+    /// The interned StringName, filled by [`init_string_names`].
     name_ptr: AtomicUsize,
     create: unsafe fn(Object) -> *mut c_void,
     free: unsafe fn(*mut c_void),
@@ -665,20 +735,60 @@ fn init_string_names() {
     });
 }
 
-/// Complete variant whose `Drop` runs `variant_destroy`.
+/// Complete variant whose `Drop` runs [`variant_destroy`].
 pub(crate) struct Variant(Box<Opaque>);
 
 impl Variant {
-    /// Zeroing reads NIL until written, so a dropped unbuilt slot is safe.
-    pub(crate) fn uninit() -> Variant {
-        Variant(Box::new(Opaque([0; OPAQUE_SIZE])))
+    /// A constructed NIL, so Drop stays valid even when [`variant_call`]
+    /// fails before assigning the return slot.
+    pub(crate) fn nil() -> Variant {
+        // Resolve before the wrapper exists: a failed resolve must unwind
+        // through contain, not abort while Drop resolves a second time.
+        let new_nil = api().variant_new_nil;
+        let mut v = Variant(Box::new(Opaque([0; OPAQUE_SIZE])));
+        // SAFETY: new_nil initializes the owned opaque storage as a valid NIL.
+        unsafe { new_nil(v.ptr()) };
+        v
     }
 
-    pub(crate) fn from_value(vtype: c_int, value: *const c_void) -> Variant {
-        let mut v = Variant::uninit();
+    /// Takes a reference, not a raw pointer, so a safe caller cannot smuggle
+    /// a dangling or wrongly typed value across the FFI; the engine
+    /// constructor resolves before the wrapper exists so a failed resolve
+    /// cannot drop never-constructed storage.
+    fn from_typed<T>(vtype: c_int, value: &T) -> Variant {
         let ctor = get_variant_from_type_constructor(vtype);
-        unsafe { ctor(v.ptr(), value.cast_mut()) };
+        let mut v = Variant(Box::new(Opaque([0; OPAQUE_SIZE])));
+        // SAFETY: ctor matches vtype and value has that constructor's layout.
+        unsafe { ctor(v.ptr(), (value as *const T).cast::<c_void>().cast_mut()) };
         v
+    }
+
+    pub(crate) fn from_object(object: ObjectPtr) -> Variant {
+        Self::from_typed(VT_OBJECT, &object)
+    }
+
+    pub(crate) fn from_bool(value: bool) -> Variant {
+        Self::from_typed(VT_BOOL, &value)
+    }
+
+    pub(crate) fn from_int(value: i64) -> Variant {
+        Self::from_typed(VT_INT, &value)
+    }
+
+    pub(crate) fn from_float(value: f64) -> Variant {
+        Self::from_typed(VT_FLOAT, &value)
+    }
+
+    pub(crate) fn from_vector2(value: &[f32; 2]) -> Variant {
+        Self::from_typed(VT_VECTOR2, value)
+    }
+
+    pub(crate) fn from_rect2(value: &[f32; 4]) -> Variant {
+        Self::from_typed(VT_RECT2, value)
+    }
+
+    pub(crate) fn from_color(value: &[f32; 4]) -> Variant {
+        Self::from_typed(VT_COLOR, value)
     }
 
     pub(crate) fn ptr(&mut self) -> VariantPtr {
@@ -692,6 +802,15 @@ impl Variant {
     pub(crate) fn storage(&self) -> &Opaque {
         &self.0
     }
+
+    /// Moves the storage to a retained slot; dropping the result never
+    /// destroys the engine Variant, which is exactly the object Ref.
+    pub(crate) fn into_retained(self) -> RetainedVariant {
+        let held = std::mem::ManuallyDrop::new(self);
+        // Safety: `held` is never dropped, so the Box leaves with exactly
+        // one owner.
+        RetainedVariant(unsafe { std::ptr::read(&held.0) })
+    }
 }
 
 impl Drop for Variant {
@@ -700,7 +819,7 @@ impl Drop for Variant {
     }
 }
 
-/// Drop skips `variant_destroy`: the engine's Ref keeps the Font alive.
+/// Drop skips [`variant_destroy`]: the engine's Ref keeps the Font alive.
 pub(crate) struct RetainedVariant(pub(crate) Box<Opaque>);
 
 impl RetainedVariant {
@@ -708,7 +827,7 @@ impl RetainedVariant {
         self.0.0.as_ptr().cast::<c_void>()
     }
 
-    /// The mutable pointer `variant_call` wants; it never mutates `self`.
+    /// The mutable pointer [`variant_call`] wants; it never mutates `self`.
     pub(crate) fn ptr(&self) -> VariantPtr {
         self.0.0.as_ptr().cast_mut().cast::<c_void>()
     }
@@ -717,38 +836,92 @@ impl RetainedVariant {
 /// Constructing the OBJECT Variant IS the reference; a nil Variant means
 /// "could not retain", never a dangling ref.
 pub(crate) fn retained_object(object: ObjectPtr) -> Option<RetainedVariant> {
-    let variant = Variant::from_value(VT_OBJECT, (&object as *const ObjectPtr).cast::<c_void>());
+    let variant = Variant::from_object(object);
     if variant_type(variant.storage()) != VT_OBJECT {
         return None;
     }
-    // Skipping `variant_destroy` is exactly the retention (destroying is
-    // the unref).
-    let held = std::mem::ManuallyDrop::new(variant);
-    // Safety: `held` is forgotten right after, so the moved Box has a unique
-    // owner and the engine-side Variant is never destroyed.
-    Some(RetainedVariant(unsafe { std::ptr::read(&held.0) }))
+    Some(variant.into_retained())
 }
 
 pub(crate) fn variant_type(variant: &Opaque) -> c_int {
     variant_get_type(variant.0.as_ptr().cast::<c_void>())
 }
 
+/// A payload type and its Variant tag, paired so safe callers cannot read
+/// one Variant type as another Rust type. Only this module defines pairs.
+trait Payload: Copy {
+    const VARIANT_TYPE: c_int;
+
+    fn read(raw: *mut c_void) -> Option<Self>;
+}
+
+impl Payload for bool {
+    const VARIANT_TYPE: c_int = VT_BOOL;
+
+    fn read(raw: *mut c_void) -> Option<Self> {
+        // The engine byte must be 0 or 1 for the result to be a valid bool.
+        // SAFETY: the tag/type pairing gives a non-null payload of this layout.
+        let byte = unsafe { raw.cast::<u8>().read_unaligned() };
+        (byte <= 1).then_some(byte != 0)
+    }
+}
+
+impl Payload for ObjectPtr {
+    const VARIANT_TYPE: c_int = VT_OBJECT;
+
+    fn read(raw: *mut c_void) -> Option<Self> {
+        // SAFETY: the tag/type pairing gives a non-null payload of this layout.
+        Some(unsafe { raw.cast::<ObjectPtr>().read_unaligned() })
+    }
+}
+
+impl Payload for [f32; 2] {
+    const VARIANT_TYPE: c_int = VT_VECTOR2;
+
+    fn read(raw: *mut c_void) -> Option<Self> {
+        // SAFETY: the tag/type pairing gives a non-null payload of this layout.
+        Some(unsafe { raw.cast::<Self>().read_unaligned() })
+    }
+}
+
+impl Payload for [f32; 4] {
+    const VARIANT_TYPE: c_int = VT_RECT2;
+
+    fn read(raw: *mut c_void) -> Option<Self> {
+        // SAFETY: the tag/type pairing gives a non-null payload of this layout.
+        Some(unsafe { raw.cast::<Self>().read_unaligned() })
+    }
+}
+
 /// The payload pointer is only naturally aligned: `read_unaligned`, and
-/// the tag is validated first (the getter is UB on a type mismatch).
-pub(crate) fn read_payload<T: Copy>(vtype: c_int, variant: &Opaque) -> Option<T> {
-    if variant_type(variant) != vtype {
+/// the tag/type pairing is checked first (the getter is UB on a mismatch).
+fn read_payload<T: Payload>(variant: &Opaque) -> Option<T> {
+    if variant_type(variant) != T::VARIANT_TYPE {
         return None;
     }
-    let getter = variant_get_ptr_internal_getter(vtype)?;
+    let getter = variant_get_ptr_internal_getter(T::VARIANT_TYPE)?;
+    // SAFETY: the Variant tag/type pairing is valid for this getter.
     let raw = unsafe { getter(variant.0.as_ptr().cast_mut().cast::<c_void>()) };
     if raw.is_null() {
         return None;
     }
-    Some(unsafe { raw.cast::<T>().read_unaligned() })
+    T::read(raw)
+}
+
+pub(crate) fn read_bool(variant: &Opaque) -> Option<bool> {
+    read_payload(variant)
+}
+
+pub(crate) fn read_object(variant: &Opaque) -> Option<ObjectPtr> {
+    read_payload(variant)
+}
+
+pub(crate) fn read_rect2(variant: &Opaque) -> Option<[f32; 4]> {
+    read_payload(variant)
 }
 
 pub(crate) fn read_vector2(variant: &Opaque) -> Option<Vector2> {
-    let value = read_payload::<[f32; 2]>(VT_VECTOR2, variant)?;
+    let value = read_payload::<[f32; 2]>(variant)?;
     Some(Vector2::new(value[0], value[1]))
 }
 
@@ -773,22 +946,25 @@ pub(crate) fn string_variant(text: &str) -> Variant {
     let c = std::ffi::CString::new(text).expect("NUL-free after truncation");
     let mut storage = Opaque([0; OPAQUE_SIZE]);
     string_new_with_utf8_chars(storage.0.as_mut_ptr().cast::<c_void>(), c.as_ptr());
-    let variant = Variant::from_value(VT_STRING, storage.0.as_ptr().cast::<c_void>());
+    let variant = Variant::from_typed(VT_STRING, &storage);
     let dtor = (*STRING_DTOR.get_or_init(|| variant_get_ptr_destructor(VT_STRING)))
         .expect("Godot 4.5 defines a ptr-destructor for the String variant type");
-    // Safety: `storage` holds a live String, and the destructor destroys it
-    // in place; the inert bytes afterwards need no cleanup.
+    // SAFETY: `storage` holds a live String from `string_new_with_utf8_chars`
+    // and `dtor` is the VT_STRING ptr-destructor; destroyed in place once, the
+    // inert stack bytes need no cleanup.
     unsafe { dtor(storage.0.as_mut_ptr().cast::<c_void>()) };
     variant
 }
 
 /// StringName is one pointer to interned `_Data`: compare the first 8 bytes.
+///
+/// # Safety
+/// Non-null arguments point at live engine StringName storage.
 unsafe fn string_name_eq(a: ConstStringNamePtr, b: ConstStringNamePtr) -> bool {
     if a.is_null() || b.is_null() {
         return false;
     }
-    // Safety: both point at a valid StringName storage (the interned
-    // pointer at offset 0); the engine keeps both alive.
+    // Safety: the non-null arguments satisfy the function contract.
     unsafe { *(a as *const usize) == *(b as *const usize) }
 }
 
@@ -832,9 +1008,9 @@ pub(crate) fn mouse_button_pressed(button: i64) -> bool {
     let Some(input) = input_singleton() else {
         return false;
     };
-    let mut obj_v = Variant::from_value(VT_OBJECT, (&input as *const ObjectPtr).cast::<c_void>());
-    let button_v = Variant::from_value(VT_INT, (&button as *const i64).cast::<c_void>());
-    let mut ret = Variant::uninit();
+    let mut obj_v = Variant::from_object(input);
+    let button_v = Variant::from_int(button);
+    let mut ret = Variant::nil();
     let mut err = CallError {
         error: CALL_OK,
         argument: 0,
@@ -845,7 +1021,7 @@ pub(crate) fn mouse_button_pressed(button: i64) -> bool {
     if err.error != CALL_OK {
         return mouse_query_failed();
     }
-    read_payload::<bool>(VT_BOOL, ret.storage()).unwrap_or(false)
+    read_bool(ret.storage()).unwrap_or(false)
 }
 
 fn mouse_query_failed() -> bool {
@@ -878,7 +1054,8 @@ pub(crate) use crate::engine::object::Object;
 /// The symbol named in `spire_profiler.gdextension`.
 ///
 /// # Safety
-/// The engine calls exactly once per load with its own valid values.
+/// The engine calls exactly once per load with a live procedure resolver,
+/// library handle, and writable initialization.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gdextension_entry(
     get_proc_address: GetProcAddressFn,
@@ -886,6 +1063,7 @@ pub unsafe extern "C" fn gdextension_entry(
     initialization: *mut Initialization,
 ) -> GDExtensionBool {
     contain("gdextension_entry", 0, || {
+        // SAFETY: the engine supplies a live resolver and this entry has valid arguments.
         let Some(resolved) = (unsafe { Api::resolve(get_proc_address) }) else {
             fail!("cannot resolve GDExtension interface");
             return 0;
@@ -908,6 +1086,8 @@ pub unsafe extern "C" fn gdextension_entry(
     })
 }
 
+/// # Safety
+/// The engine invokes its stored callback with valid userdata.
 unsafe extern "C" fn on_initialize(_userdata: *mut c_void, level: c_int) {
     contain("on_initialize", (), || {
         if level != INIT_LEVEL_SCENE {
@@ -926,6 +1106,8 @@ unsafe extern "C" fn on_initialize(_userdata: *mut c_void, level: c_int) {
     });
 }
 
+/// # Safety
+/// The engine invokes its stored callback with valid userdata.
 unsafe extern "C" fn on_deinitialize(_userdata: *mut c_void, level: c_int) {
     contain("on_deinitialize", (), || {
         if level != INIT_LEVEL_SCENE {
@@ -1004,10 +1186,15 @@ fn register_class(
 // Every callback is class-agnostic: the concrete panel type lives in the
 // EngineClass callback table.
 
+/// # Safety
+/// `class_userdata` points to a live `EngineClass` installed in `CLASSES`.
 unsafe extern "C" fn create_instance(
     class_userdata: *mut c_void,
     _notify_postinitialize: GDExtensionBool,
 ) -> ObjectPtr {
+    // SAFETY: every caller passes a `&'static EngineClass` from the class
+    // table: the engine returns the registered class_userdata, and
+    // `instantiate_class` reads the same table.
     let class = unsafe { &*class_userdata.cast::<EngineClass>() };
     let label = class
         .name
@@ -1015,6 +1202,10 @@ unsafe extern "C" fn create_instance(
         .expect("registered class names are UTF-8");
     contain(&format!("{label} create_instance"), ptr::null_mut(), || {
         let control = GLOBAL.with(|g| g.borrow().sn_control);
+        if control.is_null() {
+            fail!("{label} instantiated before Scene init on this thread");
+            return ptr::null_mut();
+        }
         let obj = classdb_construct_object(control);
         if obj.is_null() {
             return ptr::null_mut();
@@ -1023,6 +1214,7 @@ unsafe extern "C" fn create_instance(
         // Control: the engine only learns of the instance through
         // `object_set_instance`, which the panic skips. Accepted — a
         // cleanup path would risk a double free.
+        // SAFETY: the class create callback accepts this live engine object.
         let state = unsafe { (class.create)(Object(obj)) };
         let instance = Box::into_raw(Box::new(Instance { class, state })).cast::<c_void>();
         let class_name = class
@@ -1033,7 +1225,13 @@ unsafe extern "C" fn create_instance(
     })
 }
 
+/// # Safety
+/// `class_userdata` is the create-class pointer; non-null `instance` is its
+/// live `object_set_instance` pointer.
 unsafe extern "C" fn free_instance(class_userdata: *mut c_void, instance: ClassInstancePtr) {
+    // SAFETY: every caller passes a `&'static EngineClass` from the class
+    // table: the engine returns the registered class_userdata, and
+    // `instantiate_class` reads the same table.
     let class = unsafe { &*class_userdata.cast::<EngineClass>() };
     let label = class
         .name
@@ -1049,10 +1247,15 @@ unsafe extern "C" fn free_instance(class_userdata: *mut c_void, instance: ClassI
         // A panic inside `free` is swallowed: the state pointer is never
         // freed. Accepted — the state drops only once, so a catch path would
         // risk a double free.
+        // SAFETY: the Instance pairs each class with the state its own
+        // create boxed; free runs once per object, so this frees a live
+        // pointer exactly once.
         unsafe { (header.class.free)(header.state) };
     });
 }
 
+/// # Safety
+/// `name` is live engine StringName storage, or null.
 unsafe extern "C" fn get_virtual(
     _class_userdata: *mut c_void,
     name: ConstStringNamePtr,
@@ -1060,6 +1263,7 @@ unsafe extern "C" fn get_virtual(
 ) -> Option<ClassCallVirtualFn> {
     contain("get_virtual", None, || {
         let draw = GLOBAL.with(|g| g.borrow().sn_draw);
+        // SAFETY: both names are live engine storage or null.
         if unsafe { string_name_eq(name, draw) } {
             Some(draw_virtual)
         } else {
@@ -1068,6 +1272,9 @@ unsafe extern "C" fn get_virtual(
     })
 }
 
+/// # Safety
+/// Non-null `instance` is the live `object_set_instance` pointer for an
+/// `Instance`.
 unsafe extern "C" fn draw_virtual(
     instance: ClassInstancePtr,
     _args: *const ConstTypePtr,
@@ -1090,11 +1297,18 @@ unsafe extern "C" fn draw_virtual(
         if instance.is_null() {
             return;
         }
+        // SAFETY: `instance` is non-null (checked above) and the live
+        // `object_set_instance` pointer for an `Instance`.
         let header = unsafe { &*instance.cast::<Instance>() };
+        // SAFETY: the Instance pairs each class with the state its own
+        // create boxed; the object lives, so the state is not yet freed.
         unsafe { (header.class.draw)(header.state) };
     });
 }
 
+/// # Safety
+/// `method_userdata` points to a live `EngineClass`; non-null `instance` is
+/// its live instance pointer; `error_out`, if non-null, is writable.
 unsafe extern "C" fn refresh_call(
     method_userdata: *mut c_void,
     instance: ClassInstancePtr,
@@ -1103,6 +1317,8 @@ unsafe extern "C" fn refresh_call(
     _ret: VariantPtr,
     error_out: *mut CallError,
 ) {
+    // SAFETY: method_userdata is the `&'static EngineClass` registered as
+    // the refresh method's userdata.
     let class = unsafe { &*method_userdata.cast::<EngineClass>() };
     let Some(refresh) = class.refresh else {
         return;
@@ -1112,6 +1328,8 @@ unsafe extern "C" fn refresh_call(
         .to_str()
         .expect("registered class names are UTF-8");
     if !error_out.is_null() {
+        // SAFETY: `error_out` is non-null and a writable engine out-param
+        // for the duration of this call.
         unsafe {
             (*error_out).error = CALL_OK;
             (*error_out).argument = 0;
@@ -1124,6 +1342,8 @@ unsafe extern "C" fn refresh_call(
         }
         // Safety: instance is the object_set_instance pointer for a live panel.
         let header = unsafe { &*instance.cast::<Instance>() };
+        // SAFETY: the Instance pairs each class with the state its own
+        // create boxed; the object lives, so the state is not yet freed.
         unsafe { refresh(header.state) };
     });
 }

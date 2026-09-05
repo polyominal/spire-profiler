@@ -42,6 +42,9 @@ pub(crate) fn engine_classes() -> [EngineClass; 3] {
     ]
 }
 
+/// # Safety
+/// The engine passes a live `object`; the returned boxed state stays paired
+/// with this class's callbacks until free.
 unsafe fn panel_create(object: Object) -> *mut c_void {
     let panel = Box::into_raw(Box::new(SpireProfilerPanel::new(object)));
     // Safety: the boxed state address is stable until `panel_free`; the
@@ -51,18 +54,33 @@ unsafe fn panel_create(object: Object) -> *mut c_void {
 }
 
 /// The retained font storage is freed without destroying the engine Ref.
+///
+/// # Safety
+/// `state` is the matching create pointer and has not been freed.
 unsafe fn panel_free(state: *mut c_void) {
+    // SAFETY: state is the create-owned pointer reconstructed exactly once.
     drop(unsafe { Box::from_raw(state.cast::<SpireProfilerPanel>()) });
 }
 
+/// # Safety
+/// `state` is the live matching create pointer.
 unsafe fn panel_draw(state: *mut c_void) {
+    // SAFETY: the engine runs this callback only while the object lives, so
+    // the create-owned box is not yet freed.
     unsafe { (*state.cast::<SpireProfilerPanel>()).draw() };
 }
 
+/// # Safety
+/// `state` is the live matching create pointer.
 unsafe fn panel_refresh(state: *mut c_void) {
+    // SAFETY: the engine runs this callback only while the object lives, so
+    // the create-owned box is not yet freed.
     unsafe { (*state.cast::<SpireProfilerPanel>()).refresh() };
 }
 
+/// # Safety
+/// The engine passes a live `object`; the returned boxed state stays paired
+/// with this class's callbacks until free.
 unsafe fn run_panel_create(object: Object) -> *mut c_void {
     let panel = Box::into_raw(Box::new(SpireProfilerRunPanel::new(object)));
     // Safety: the pointer names boxed run-panel state valid until
@@ -71,21 +89,36 @@ unsafe fn run_panel_create(object: Object) -> *mut c_void {
     panel.cast()
 }
 
+/// # Safety
+/// `state` is the matching create pointer and has not been freed.
 unsafe fn run_panel_free(state: *mut c_void) {
+    // SAFETY: state is the create-owned pointer reconstructed exactly once.
     drop(unsafe { Box::from_raw(state.cast::<SpireProfilerRunPanel>()) });
 }
 
+/// # Safety
+/// `state` is the live matching create pointer.
 unsafe fn run_panel_draw(state: *mut c_void) {
+    // SAFETY: the engine runs this callback only while the object lives, so
+    // the create-owned box is not yet freed.
     unsafe { (*state.cast::<SpireProfilerRunPanel>()).draw() };
 }
 
+/// # Safety
+/// `state` is the live matching create pointer.
 unsafe fn run_panel_refresh(state: *mut c_void) {
+    // SAFETY: the engine runs this callback only while the object lives, so
+    // the create-owned box is not yet freed.
     unsafe { (*state.cast::<SpireProfilerRunPanel>()).refresh() };
 }
 
 /// A child instantiated outside its panel (the class name is public
 /// ClassDB surface) stays valid but draws nothing — degrade, never a
 /// failed engine create.
+///
+/// # Safety
+/// The engine passes a live `object`; the returned boxed state stays paired
+/// with this class's callbacks until free.
 unsafe fn body_create(object: Object) -> *mut c_void {
     let target = panel_body::take_pending_child();
     if target.is_none() {
@@ -94,26 +127,37 @@ unsafe fn body_create(object: Object) -> *mut c_void {
     Box::into_raw(Box::new(PanelBody::new(object, target))).cast()
 }
 
+/// # Safety
+/// `state` is the matching create pointer and has not been freed.
 unsafe fn body_free(state: *mut c_void) {
+    // SAFETY: state is the create-owned pointer reconstructed exactly once.
     drop(unsafe { Box::from_raw(state.cast::<PanelBody>()) });
 }
 
+/// # Safety
+/// `state` is the live body-create pointer; the owner is generation-checked
+/// before it is dereferenced.
 unsafe fn body_draw(state: *mut c_void) {
+    // SAFETY: state is the live body-create pointer.
     let body = unsafe { &*state.cast::<PanelBody>() };
     let Some(target) = body.live_target() else {
         return;
     };
     let object = body.object();
     match (target.owner_ref(), target.role()) {
+        // SAFETY: the owner generation was checked before this dispatch.
         (panel_body::OwnerRef::Combat(panel), ChildRole::Rows) => unsafe {
             (*panel).draw_body(object)
         },
+        // SAFETY: the owner generation was checked before this dispatch.
         (panel_body::OwnerRef::Combat(panel), ChildRole::Overlay) => unsafe {
             (*panel).draw_overlay(object)
         },
+        // SAFETY: the owner generation was checked before this dispatch.
         (panel_body::OwnerRef::Run(panel), ChildRole::Rows) => unsafe {
             (*panel).draw_body(object)
         },
+        // SAFETY: the owner generation was checked before this dispatch.
         (panel_body::OwnerRef::Run(panel), ChildRole::Overlay) => unsafe {
             (*panel).draw_overlay(object)
         },

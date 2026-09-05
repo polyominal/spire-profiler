@@ -8,13 +8,16 @@ static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
 
 struct CountingAllocator;
 
+// SAFETY: all unsafe allocator operations forward to `System`.
 unsafe impl GlobalAlloc for CountingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        // Safety: `layout` is allocator-valid by `GlobalAlloc`'s contract.
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // Safety: `ptr` was allocated by `alloc` with this `layout`.
         unsafe { System.dealloc(ptr, layout) }
     }
 }

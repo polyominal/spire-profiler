@@ -1,19 +1,18 @@
 //! Safe method dispatch on engine [`Object`] pointers — the layer the panel
 //! modules call. Every method goes through the Variant machinery in
-//! [`crate::engine::gdext`], which checks each `CallError`; the raw pointer
+//! [`crate::engine::gdext`], which checks each [`CallError`]; the raw pointer
 //! is never dereferenced here (all raw reads live in
 //! [`crate::engine::gdext`]'s helpers), so this is the engine layer's
 //! only unsafe-free module.
 
-use std::ffi::{c_int, c_void};
+use std::ffi::c_int;
 use std::ptr;
 
 use crate::engine::gdext::{
     CALL_ERROR_INVALID_METHOD, CALL_OK, CallError, ConstStringNamePtr, ConstVariantPtr,
-    GDExtensionInt, GLOBAL, OPAQUE_SIZE, ObjectPtr, Opaque, RetainedVariant, VT_BOOL, VT_COLOR,
-    VT_FLOAT, VT_INT, VT_OBJECT, VT_RECT2, VT_VECTOR2, Variant, fail_call_failed, read_payload,
-    read_vector2, resource_loader_singleton, retained_object, string_variant, variant_call,
-    variant_destroy, variant_type,
+    GDExtensionInt, GLOBAL, ObjectPtr, RetainedVariant, VT_OBJECT, Variant, fail_call_failed,
+    read_object, read_rect2, read_vector2, resource_loader_singleton, retained_object,
+    string_variant, variant_call, variant_type,
 };
 use crate::engine::math::{Color, Rect2, Vector2};
 
@@ -22,8 +21,8 @@ use crate::engine::math::{Color, Rect2, Vector2};
 #[derive(Clone, Copy)]
 pub(crate) struct Object(pub(crate) ObjectPtr);
 
-/// The engine clips to `width` regardless of alignment; `LeftClipped`
-/// clips glyphs at `pos.x + w` (the pinned-header backstop), `Right` ends
+/// The engine clips to `width` regardless of alignment; [`LeftClipped`](Self::LeftClipped)
+/// clips glyphs at `pos.x + w` (the pinned-header backstop), [`Right`](Self::Right) ends
 /// them there (a longer string clips left).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TextAlign {
@@ -63,8 +62,7 @@ impl Object {
             fail_call_failed(name, method);
             return CALL_ERROR_INVALID_METHOD;
         }
-        let mut obj_v =
-            Variant::from_value(VT_OBJECT, (&self.0 as *const ObjectPtr).cast::<c_void>());
+        let mut obj_v = Variant::from_object(self.0);
         let mut err = CallError {
             error: CALL_OK,
             argument: 0,
@@ -91,55 +89,52 @@ impl Object {
 
     pub(crate) fn set_position(self, pos: Vector2) {
         let value = [pos.x, pos.y];
-        let arg = Variant::from_value(VT_VECTOR2, (&value as *const [f32; 2]).cast::<c_void>());
-        let mut ret = Variant::uninit();
+        let arg = Variant::from_vector2(&value);
+        let mut ret = Variant::nil();
         let method = GLOBAL.with(|g| g.borrow().sn_set_position);
         self.call("set_position", method, &[arg.const_ptr()], &mut ret);
     }
 
     pub(crate) fn set_size(self, size: Vector2) {
         let value = [size.x, size.y];
-        let arg = Variant::from_value(VT_VECTOR2, (&value as *const [f32; 2]).cast::<c_void>());
-        let mut ret = Variant::uninit();
+        let arg = Variant::from_vector2(&value);
+        let mut ret = Variant::nil();
         let method = GLOBAL.with(|g| g.borrow().sn_set_size);
         self.call("set_size", method, &[arg.const_ptr()], &mut ret);
     }
 
     pub(crate) fn set_visible(self, visible: bool) {
-        let value = visible;
-        let arg = Variant::from_value(VT_BOOL, (&value as *const bool).cast::<c_void>());
-        let mut ret = Variant::uninit();
+        let arg = Variant::from_bool(visible);
+        let mut ret = Variant::nil();
         let method = GLOBAL.with(|g| g.borrow().sn_set_visible);
         self.call("set_visible", method, &[arg.const_ptr()], &mut ret);
     }
 
     /// Clips this Control's canvas item to its own rect.
     pub(crate) fn set_clip_contents(self, clip: bool) {
-        let value = clip;
-        let arg = Variant::from_value(VT_BOOL, (&value as *const bool).cast::<c_void>());
-        let mut ret = Variant::uninit();
+        let arg = Variant::from_bool(clip);
+        let mut ret = Variant::nil();
         let method = GLOBAL.with(|g| g.borrow().sn_set_clip_contents);
         self.call("set_clip_contents", method, &[arg.const_ptr()], &mut ret);
     }
 
     /// The child must never swallow the parent's gui input.
     pub(crate) fn set_mouse_filter_ignore(self) {
-        let value = MOUSE_FILTER_IGNORE;
-        let arg = Variant::from_value(VT_INT, (&value as *const i64).cast::<c_void>());
-        let mut ret = Variant::uninit();
+        let arg = Variant::from_int(MOUSE_FILTER_IGNORE);
+        let mut ret = Variant::nil();
         let method = GLOBAL.with(|g| g.borrow().sn_set_mouse_filter);
         self.call("set_mouse_filter", method, &[arg.const_ptr()], &mut ret);
     }
 
     pub(crate) fn add_child(self, child: Object) {
-        let arg = Variant::from_value(VT_OBJECT, (&child.0 as *const ObjectPtr).cast::<c_void>());
-        let mut ret = Variant::uninit();
+        let arg = Variant::from_object(child.0);
+        let mut ret = Variant::nil();
         let method = GLOBAL.with(|g| g.borrow().sn_add_child);
         self.call("add_child", method, &[arg.const_ptr()], &mut ret);
     }
 
     pub(crate) fn queue_redraw(self) {
-        let mut ret = Variant::uninit();
+        let mut ret = Variant::nil();
         let method = GLOBAL.with(|g| g.borrow().sn_queue_redraw);
         self.call("queue_redraw", method, &[], &mut ret);
     }
@@ -147,11 +142,10 @@ impl Object {
     pub(crate) fn draw_rect(self, rect: Rect2, color: Color) -> bool {
         let r = [rect.position.x, rect.position.y, rect.size.x, rect.size.y];
         let c = color.as_array();
-        let filled = true;
-        let rect_v = Variant::from_value(VT_RECT2, (&r as *const [f32; 4]).cast::<c_void>());
-        let color_v = Variant::from_value(VT_COLOR, (&c as *const [f32; 4]).cast::<c_void>());
-        let filled_v = Variant::from_value(VT_BOOL, (&filled as *const bool).cast::<c_void>());
-        let mut ret = Variant::uninit();
+        let rect_v = Variant::from_rect2(&r);
+        let color_v = Variant::from_color(&c);
+        let filled_v = Variant::from_bool(true);
+        let mut ret = Variant::nil();
         let method = GLOBAL.with(|g| g.borrow().sn_draw_rect);
         self.call(
             "draw_rect",
@@ -176,17 +170,14 @@ impl Object {
     ) -> bool {
         let text_v = string_variant(text);
         let pos_value = [pos.x, pos.y];
-        let pos_v =
-            Variant::from_value(VT_VECTOR2, (&pos_value as *const [f32; 2]).cast::<c_void>());
+        let pos_v = Variant::from_vector2(&pos_value);
         let (alignment, width) = align.engine_args();
-        let font_size: i64 = i64::from(size);
         let color_arr = color.as_array();
-        let align_v = Variant::from_value(VT_INT, (&alignment as *const i64).cast::<c_void>());
-        let width_v = Variant::from_value(VT_FLOAT, (&width as *const f64).cast::<c_void>());
-        let size_v = Variant::from_value(VT_INT, (&font_size as *const i64).cast::<c_void>());
-        let color_v =
-            Variant::from_value(VT_COLOR, (&color_arr as *const [f32; 4]).cast::<c_void>());
-        let mut ret = Variant::uninit();
+        let align_v = Variant::from_int(alignment);
+        let width_v = Variant::from_float(width);
+        let size_v = Variant::from_int(i64::from(size));
+        let color_v = Variant::from_color(&color_arr);
+        let mut ret = Variant::nil();
         let method = GLOBAL.with(|g| g.borrow().sn_draw_string);
         self.call(
             "draw_string",
@@ -207,8 +198,8 @@ impl Object {
     /// The engine slices the self-constructed StyleBoxTexture.
     pub(crate) fn draw_style_box(self, style_box: &RetainedVariant, rect: Rect2) -> bool {
         let r = [rect.position.x, rect.position.y, rect.size.x, rect.size.y];
-        let rect_v = Variant::from_value(VT_RECT2, (&r as *const [f32; 4]).cast::<c_void>());
-        let mut ret = Variant::uninit();
+        let rect_v = Variant::from_rect2(&r);
+        let mut ret = Variant::nil();
         let method = GLOBAL.with(|g| g.borrow().sn_draw_style_box);
         self.call(
             "draw_style_box",
@@ -227,10 +218,10 @@ impl Object {
     ) -> bool {
         let r = [rect.position.x, rect.position.y, rect.size.x, rect.size.y];
         let m = modulate.as_array();
-        let rect_v = Variant::from_value(VT_RECT2, (&r as *const [f32; 4]).cast::<c_void>());
-        let tile_v = Variant::from_value(VT_BOOL, (&tile as *const bool).cast::<c_void>());
-        let modulate_v = Variant::from_value(VT_COLOR, (&m as *const [f32; 4]).cast::<c_void>());
-        let mut ret = Variant::uninit();
+        let rect_v = Variant::from_rect2(&r);
+        let tile_v = Variant::from_bool(tile);
+        let modulate_v = Variant::from_color(&m);
+        let mut ret = Variant::nil();
         let method = GLOBAL.with(|g| g.borrow().sn_draw_texture_rect);
         self.call(
             "draw_texture_rect",
@@ -246,12 +237,12 @@ impl Object {
     }
 
     pub(crate) fn get_viewport(self) -> Option<Object> {
-        let mut ret = Variant::uninit();
+        let mut ret = Variant::nil();
         let method = GLOBAL.with(|g| g.borrow().sn_get_viewport);
         if self.call("get_viewport", method, &[], &mut ret) != CALL_OK {
             return None;
         }
-        let ptr = read_payload::<ObjectPtr>(VT_OBJECT, ret.storage())?;
+        let ptr = read_object(ret.storage())?;
         if ptr.is_null() {
             return None;
         }
@@ -266,36 +257,27 @@ impl Object {
             // into the caller's once-only "font unavailable" warning.
             return None;
         }
-        let mut obj_v =
-            Variant::from_value(VT_OBJECT, (&self.0 as *const ObjectPtr).cast::<c_void>());
+        let mut obj_v = Variant::from_object(self.0);
         let mut err = CallError {
             error: CALL_OK,
             argument: 0,
             expected: 0,
         };
-        let mut ret = Box::new(Opaque([0; OPAQUE_SIZE]));
-        variant_call(
-            obj_v.ptr(),
-            method,
-            ptr::null(),
-            0,
-            ret.0.as_mut_ptr().cast::<c_void>(),
-            &mut err,
-        );
-        if err.error != CALL_OK || variant_type(&ret) != VT_OBJECT {
-            variant_destroy(ret.0.as_mut_ptr().cast::<c_void>());
+        let mut ret = Variant::nil();
+        variant_call(obj_v.ptr(), method, ptr::null(), 0, ret.ptr(), &mut err);
+        if err.error != CALL_OK || variant_type(ret.storage()) != VT_OBJECT {
             return None;
         }
-        Some(RetainedVariant(ret))
+        Some(ret.into_retained())
     }
 
     pub(crate) fn get_visible_rect(self) -> Option<Rect2> {
-        let mut ret = Variant::uninit();
+        let mut ret = Variant::nil();
         let method = GLOBAL.with(|g| g.borrow().sn_get_visible_rect);
         if self.call("get_visible_rect", method, &[], &mut ret) != CALL_OK {
             return None;
         }
-        let value = read_payload::<[f32; 4]>(VT_RECT2, ret.storage())?;
+        let value = read_rect2(ret.storage())?;
         Some(Rect2::new(
             Vector2::new(value[0], value[1]),
             Vector2::new(value[2], value[3]),
@@ -303,7 +285,7 @@ impl Object {
     }
 
     pub(crate) fn get_mouse_position(self) -> Option<Vector2> {
-        let mut ret = Variant::uninit();
+        let mut ret = Variant::nil();
         let method = GLOBAL.with(|g| g.borrow().sn_get_mouse_position);
         if self.call("get_mouse_position", method, &[], &mut ret) != CALL_OK {
             return None;
@@ -317,39 +299,32 @@ impl Object {
 /// A missing resource returns None and the caller's tri-state falls back;
 /// a CallError is reported once (a wrong method name is a bug).
 pub(crate) fn resource_load(path: &str) -> Option<RetainedVariant> {
-    let loader = resource_loader_singleton()?;
     let method = GLOBAL.with(|g| g.borrow().sn_load);
     if method.is_null() {
-        // Same off-init-thread guard as `Object::call`.
+        // Off the init thread every cached name is null (the names are
+        // interned in one batch at Scene init), so this check also covers the
+        // singleton resolve below: a null name would null-deref the engine.
         return None;
     }
-    let mut obj_v = Variant::from_value(VT_OBJECT, (&loader as *const ObjectPtr).cast::<c_void>());
+    let loader = resource_loader_singleton()?;
+    let mut obj_v = Variant::from_object(loader);
     let path_v = string_variant(path);
     let mut err = CallError {
         error: CALL_OK,
         argument: 0,
         expected: 0,
     };
-    let mut ret = Box::new(Opaque([0; OPAQUE_SIZE]));
+    let mut ret = Variant::nil();
     let args = [path_v.const_ptr()];
-    variant_call(
-        obj_v.ptr(),
-        method,
-        args.as_ptr(),
-        1,
-        ret.0.as_mut_ptr().cast::<c_void>(),
-        &mut err,
-    );
+    variant_call(obj_v.ptr(), method, args.as_ptr(), 1, ret.ptr(), &mut err);
     if err.error != CALL_OK {
         fail_call_failed("ResourceLoader.load", method);
-        variant_destroy(ret.0.as_mut_ptr().cast::<c_void>());
         return None;
     }
-    if variant_type(&ret) != VT_OBJECT {
-        variant_destroy(ret.0.as_mut_ptr().cast::<c_void>());
+    if variant_type(ret.storage()) != VT_OBJECT {
         return None;
     }
-    Some(RetainedVariant(ret))
+    Some(ret.into_retained())
 }
 
 const SIDES: [i64; 4] = [0, 1, 2, 3];
@@ -375,14 +350,10 @@ pub(crate) fn construct_style_box(spec: &StyleBoxSpec) -> Option<RetainedVariant
     }
     let style_box = retained_object(raw)?;
 
-    let region_v =
-        Variant::from_value(VT_RECT2, (&spec.region as *const [f32; 4]).cast::<c_void>());
-    let modulate_v = Variant::from_value(
-        VT_COLOR,
-        (&spec.modulate as *const [f32; 4]).cast::<c_void>(),
-    );
-    let stretch: i64 = i64::from(spec.tiled); // AxisStretchMode: 0=STRETCH, 1=TILE
-    let stretch_v = Variant::from_value(VT_INT, (&stretch as *const i64).cast::<c_void>());
+    let region_v = Variant::from_rect2(&spec.region);
+    let modulate_v = Variant::from_color(&spec.modulate);
+    // AxisStretchMode: 0=STRETCH, 1=TILE
+    let stretch_v = Variant::from_int(i64::from(spec.tiled));
     let mut ok = call_retained(
         &style_box,
         "set_texture",
@@ -396,9 +367,8 @@ pub(crate) fn construct_style_box(spec: &StyleBoxSpec) -> Option<RetainedVariant
         &[region_v.const_ptr()],
     );
     for (side, margin) in SIDES.into_iter().zip(spec.margins) {
-        let side_v = Variant::from_value(VT_INT, (&side as *const i64).cast::<c_void>());
-        let size = f64::from(margin);
-        let size_v = Variant::from_value(VT_FLOAT, (&size as *const f64).cast::<c_void>());
+        let side_v = Variant::from_int(side);
+        let size_v = Variant::from_float(f64::from(margin));
         ok &= call_retained(
             &style_box,
             "set_texture_margin",
@@ -441,7 +411,7 @@ fn call_retained(
         fail_call_failed(name, method);
         return false;
     }
-    let mut ret = Variant::uninit();
+    let mut ret = Variant::nil();
     let mut err = CallError {
         error: CALL_OK,
         argument: 0,

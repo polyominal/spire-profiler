@@ -26,12 +26,13 @@
 //! `lib.rs`). This module's share of the crate's unsafe Rust is:
 //!
 //! 1. **C pointer reads** — [`with_c_str`] dereferences a NUL-terminated string pointer supplied by
-//!    the host. The shim never passes null, but null (and any pointer that does not point at valid
-//!    NUL-terminated UTF-8) is treated as "" so a malformed argument can never crash the core.
+//!    the host. Null maps to "", and so does a valid C string whose bytes are not UTF-8; any other
+//!    pointer violates the unsafe export contract (the matched-pair shim never forms one).
 //! 2. **`no_mangle` exports** — the 39 `spire_profiler_*` functions (38 bound by the shim and one
 //!    test-only reset export) carry `#[unsafe(no_mangle)] pub unsafe extern "C"` so their symbols
 //!    exist for the host. Their bodies contain no other unsafe operations; each one decodes its
-//!    arguments and delegates to the safe [`events`] counterpart.
+//!    arguments and delegates to a safe counterpart — [`events`] for the recorded facts,
+//!    [`crate::ui`] for the panel interactions (toggle, scroll).
 //! 3. **Panic containment** — a Rust panic must never unwind across the C ABI into the game. Every
 //!    export runs through [`contain`], which catches a panicking core function, reports it through
 //!    [`crate::fail`] (stderr, touches no state), and swallows it. A panic escaping into the host
@@ -44,9 +45,7 @@
 //! pointers and interface-function resolution. Any future unsafe
 //! requirement belongs behind a safe helper in one of these three.
 
-// The unsafe-op blocks below are exactly the three sources listed above;
-// the allow keeps a stricter lint set from demanding safety docs per export.
-#![allow(clippy::missing_safety_doc)]
+// The unsafe-op blocks below are exactly the three sources listed above.
 
 use std::ffi::{CStr, c_char};
 use std::path::Path;
@@ -55,8 +54,8 @@ use crate::data::events;
 use crate::data::state::RunOutcome;
 use crate::fail;
 
-/// A null pointer (or one that is not valid NUL-terminated UTF-8) yields
-/// "" — a defensive "" beats a segfault in the game's process.
+/// Null yields "", and so does a valid C string whose bytes are not
+/// UTF-8. Any other pointer violates the safety contract below.
 ///
 /// # Safety
 /// `ptr` must be null or a NUL-terminated C string valid for the call.
@@ -89,8 +88,11 @@ pub(crate) fn contain<T>(name: &str, on_panic: T, f: impl FnOnce() -> T) -> T {
     }
 }
 
+/// # Safety
+/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_init(data_dir: *const c_char) {
+    // SAFETY: pointer arguments satisfy this export's C contract.
     unsafe {
         with_c_str(data_dir, |data_dir| {
             let data_dir = Path::new(data_dir);
@@ -99,11 +101,15 @@ pub unsafe extern "C" fn spire_profiler_init(data_dir: *const c_char) {
     };
 }
 
+/// # Safety
+/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_self_test() {
     contain("spire_profiler_self_test", (), events::self_test);
 }
 
+/// # Safety
+/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_set_run_meta(profile_id: i32) {
     contain("spire_profiler_set_run_meta", (), || {
@@ -115,6 +121,9 @@ pub unsafe extern "C" fn spire_profiler_set_run_meta(profile_id: i32) {
 /// `character_ids`; the two pair positionally to build the run's roster.
 /// `start_time` is the game's `StartTime` run id (0 when the shim's read
 /// failed; the core then stamps its own clock).
+///
+/// # Safety
+/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_run_started(
     character_ids: *const c_char,
@@ -125,6 +134,7 @@ pub unsafe extern "C" fn spire_profiler_run_started(
     net_ids: *const c_char,
     start_time: i64,
 ) {
+    // SAFETY: pointer arguments satisfy this export's C contract.
     unsafe {
         with_c_str(character_ids, |character_ids| {
             with_c_str(game_mode, |game_mode| {
@@ -149,6 +159,9 @@ pub unsafe extern "C" fn spire_profiler_run_started(
 }
 
 /// `outcome`: 0 = victory, 1 = defeat, 2 = abandoned.
+///
+/// # Safety
+/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_run_ended(outcome: i32) {
     contain("spire_profiler_run_ended", (), || {
@@ -156,18 +169,24 @@ pub unsafe extern "C" fn spire_profiler_run_ended(outcome: i32) {
     });
 }
 
+/// # Safety
+/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_run_suspended() {
     contain("spire_profiler_run_suspended", (), events::run_suspended);
 }
 
 /// `player_slot` is the owner slot — TEAM (4) for enemy-owned powers.
+///
+/// # Safety
+/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_context_begin(
     source_id: *const c_char,
     kind: i32,
     player_slot: i32,
 ) {
+    // SAFETY: pointer arguments satisfy this export's C contract.
     unsafe {
         with_c_str(source_id, |source_id| {
             contain("spire_profiler_context_begin", (), || {
@@ -177,17 +196,24 @@ pub unsafe extern "C" fn spire_profiler_context_begin(
     };
 }
 
+/// # Safety
+/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_context_end() {
     contain("spire_profiler_context_end", (), events::context_end);
 }
 
 /// Re-hooked at the side-level boundary, so the counter counts rounds.
+///
+/// # Safety
+/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_turn_started() {
     contain("spire_profiler_turn_started", (), events::turn_started);
 }
 
+/// # Safety
+/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_orb_channeled(hash: i32, player_slot: i32) {
     contain("spire_profiler_orb_channeled", (), || {
@@ -195,6 +221,8 @@ pub unsafe extern "C" fn spire_profiler_orb_channeled(hash: i32, player_slot: i3
     });
 }
 
+/// # Safety
+/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_orb_context_begin(hash: i32, player_slot: i32) {
     contain("spire_profiler_orb_context_begin", (), || {
@@ -202,8 +230,11 @@ pub unsafe extern "C" fn spire_profiler_orb_context_begin(hash: i32, player_slot
     });
 }
 
+/// # Safety
+/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_potion_used(potion_id: *const c_char, player_slot: i32) {
+    // SAFETY: pointer arguments satisfy this export's C contract.
     unsafe {
         with_c_str(potion_id, |potion_id| {
             contain("spire_profiler_potion_used", (), || {
@@ -213,11 +244,14 @@ pub unsafe extern "C" fn spire_profiler_potion_used(potion_id: *const c_char, pl
     };
 }
 
+/// # Safety
+/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_potion_context_begin(
     potion_id: *const c_char,
     player_slot: i32,
 ) {
+    // SAFETY: pointer arguments satisfy this export's C contract.
     unsafe {
         with_c_str(potion_id, |potion_id| {
             contain("spire_profiler_potion_context_begin", (), || {
@@ -227,6 +261,8 @@ pub unsafe extern "C" fn spire_profiler_potion_context_begin(
     };
 }
 
+/// # Safety
+/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_block_pool_clear(player_slot: i32) {
     contain("spire_profiler_block_pool_clear", (), || {
@@ -236,6 +272,9 @@ pub unsafe extern "C" fn spire_profiler_block_pool_clear(player_slot: i32) {
 
 /// `player_slot` is the owner's slot when the power sits on a player,
 /// else 0.
+///
+/// # Safety
+/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_power_applied(
     power_id: *const c_char,
@@ -244,6 +283,7 @@ pub unsafe extern "C" fn spire_profiler_power_applied(
     is_player: i32,
     player_slot: i32,
 ) {
+    // SAFETY: pointer arguments satisfy this export's C contract.
     unsafe {
         with_c_str(power_id, |power_id| {
             contain("spire_profiler_power_applied", (), || {
@@ -253,6 +293,8 @@ pub unsafe extern "C" fn spire_profiler_power_applied(
     };
 }
 
+/// # Safety
+/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_power_decreased(
     power_id: *const c_char,
@@ -261,6 +303,7 @@ pub unsafe extern "C" fn spire_profiler_power_decreased(
     is_player: i32,
     player_slot: i32,
 ) {
+    // SAFETY: pointer arguments satisfy this export's C contract.
     unsafe {
         with_c_str(power_id, |power_id| {
             contain("spire_profiler_power_decreased", (), || {
@@ -270,6 +313,8 @@ pub unsafe extern "C" fn spire_profiler_power_decreased(
     };
 }
 
+/// # Safety
+/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_doom_target_capture(creature_hash: i32, current_hp: i32) {
     contain("spire_profiler_doom_target_capture", (), || {
@@ -277,6 +322,8 @@ pub unsafe extern "C" fn spire_profiler_doom_target_capture(creature_hash: i32, 
     });
 }
 
+/// # Safety
+/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_doom_kills_completed() {
     contain(
@@ -286,6 +333,8 @@ pub unsafe extern "C" fn spire_profiler_doom_kills_completed() {
     );
 }
 
+/// # Safety
+/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_osty_summoned(
     source_id: *const c_char,
@@ -293,6 +342,7 @@ pub unsafe extern "C" fn spire_profiler_osty_summoned(
     hp_amount: i32,
     player_slot: i32,
 ) {
+    // SAFETY: pointer arguments satisfy this export's C contract.
     unsafe {
         with_c_str(source_id, |source_id| {
             contain("spire_profiler_osty_summoned", (), || {
@@ -302,6 +352,8 @@ pub unsafe extern "C" fn spire_profiler_osty_summoned(
     };
 }
 
+/// # Safety
+/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_osty_killed(player_slot: i32) {
     contain("spire_profiler_osty_killed", (), || {
@@ -311,6 +363,9 @@ pub unsafe extern "C" fn spire_profiler_osty_killed(player_slot: i32) {
 
 /// The Kill patch fires this on every player death path; damage-kills
 /// double-fire idempotently.
+///
+/// # Safety
+/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_player_died(player_slot: i32) {
     contain("spire_profiler_player_died", (), || {
@@ -320,6 +375,9 @@ pub unsafe extern "C" fn spire_profiler_player_died(player_slot: i32) {
 
 /// `kind` is a modifier wire code; decoded by
 /// [`clamp_modifier_kind`](crate::data::state::clamp_modifier_kind).
+///
+/// # Safety
+/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_damage_modifier_contribution(
     modifier_id: *const c_char,
@@ -327,6 +385,7 @@ pub unsafe extern "C" fn spire_profiler_damage_modifier_contribution(
     contribution: i32,
     player_slot: i32,
 ) {
+    // SAFETY: pointer arguments satisfy this export's C contract.
     unsafe {
         with_c_str(modifier_id, |modifier_id| {
             contain("spire_profiler_damage_modifier_contribution", (), || {
@@ -338,6 +397,9 @@ pub unsafe extern "C" fn spire_profiler_damage_modifier_contribution(
 
 /// `kind` is a modifier wire code; decoded by
 /// [`clamp_modifier_kind`](crate::data::state::clamp_modifier_kind).
+///
+/// # Safety
+/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_block_modifier_contribution(
     modifier_id: *const c_char,
@@ -345,6 +407,7 @@ pub unsafe extern "C" fn spire_profiler_block_modifier_contribution(
     contribution: i32,
     player_slot: i32,
 ) {
+    // SAFETY: pointer arguments satisfy this export's C contract.
     unsafe {
         with_c_str(modifier_id, |modifier_id| {
             contain("spire_profiler_block_modifier_contribution", (), || {
@@ -354,6 +417,8 @@ pub unsafe extern "C" fn spire_profiler_block_modifier_contribution(
     };
 }
 
+/// # Safety
+/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_weak_mitigation(prevented: i32, dealer_hash: u64) {
     contain("spire_profiler_weak_mitigation", (), || {
@@ -361,8 +426,11 @@ pub unsafe extern "C" fn spire_profiler_weak_mitigation(prevented: i32, dealer_h
     });
 }
 
+/// # Safety
+/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_buff_mitigation(power_id: *const c_char, prevented: i32) {
+    // SAFETY: pointer arguments satisfy this export's C contract.
     unsafe {
         with_c_str(power_id, |power_id| {
             contain("spire_profiler_buff_mitigation", (), || {
@@ -372,6 +440,8 @@ pub unsafe extern "C" fn spire_profiler_buff_mitigation(power_id: *const c_char,
     };
 }
 
+/// # Safety
+/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_enemy_hit_context(base_damage: i32, dealer_str: i32) {
     contain("spire_profiler_enemy_hit_context", (), || {
@@ -379,11 +449,14 @@ pub unsafe extern "C" fn spire_profiler_enemy_hit_context(base_damage: i32, deal
     });
 }
 
+/// # Safety
+/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_combat_started(
     encounter_id: *const c_char,
     encounter_type: *const c_char,
 ) {
+    // SAFETY: pointer arguments satisfy this export's C contract.
     unsafe {
         with_c_str(encounter_id, |encounter_id| {
             with_c_str(encounter_type, |encounter_type| {
@@ -395,6 +468,8 @@ pub unsafe extern "C" fn spire_profiler_combat_started(
     };
 }
 
+/// # Safety
+/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_card_play_started(
     card_id: *const c_char,
@@ -403,6 +478,7 @@ pub unsafe extern "C" fn spire_profiler_card_play_started(
     card_hash: i32,
     player_slot: i32,
 ) {
+    // SAFETY: pointer arguments satisfy this export's C contract.
     unsafe {
         with_c_str(card_id, |card_id| {
             contain("spire_profiler_card_play_started", (), || {
@@ -412,6 +488,8 @@ pub unsafe extern "C" fn spire_profiler_card_play_started(
     };
 }
 
+/// # Safety
+/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_card_play_finished(player_slot: i32) {
     contain("spire_profiler_card_play_finished", (), || {
@@ -420,6 +498,9 @@ pub unsafe extern "C" fn spire_profiler_card_play_finished(player_slot: i32) {
 }
 
 /// `player_slot` is the creator's slot; the later play keys its row there.
+///
+/// # Safety
+/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_card_generated(
     card_hash: i32,
@@ -427,6 +508,7 @@ pub unsafe extern "C" fn spire_profiler_card_generated(
     source_kind: i32,
     player_slot: i32,
 ) {
+    // SAFETY: pointer arguments satisfy this export's C contract.
     unsafe {
         with_c_str(source_id, |source_id| {
             contain("spire_profiler_card_generated", (), || {
@@ -437,6 +519,9 @@ pub unsafe extern "C" fn spire_profiler_card_generated(
 }
 
 /// `player_slot` is `ForgeCmd.Forge`'s player; the forge row keys at it.
+///
+/// # Safety
+/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_forge(
     source_id: *const c_char,
@@ -444,6 +529,7 @@ pub unsafe extern "C" fn spire_profiler_forge(
     amount: i32,
     player_slot: i32,
 ) {
+    // SAFETY: pointer arguments satisfy this export's C contract.
     unsafe {
         with_c_str(source_id, |source_id| {
             contain("spire_profiler_forge", (), || {
@@ -455,6 +541,9 @@ pub unsafe extern "C" fn spire_profiler_forge(
 
 /// `receiver_slot` is the receiving player, or the Osty owner when
 /// `osty_flag == 2`; `card_source_slot` is the explicit-card row key.
+///
+/// # Safety
+/// Pointer arguments, if any, are null or valid C strings.
 #[allow(clippy::too_many_arguments)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_damage_dealt(
@@ -470,6 +559,7 @@ pub unsafe extern "C" fn spire_profiler_damage_dealt(
     receiver_slot: i32,
     card_source_slot: i32,
 ) {
+    // SAFETY: pointer arguments satisfy this export's C contract.
     unsafe {
         with_c_str(card_source_id, |card_source_id| {
             contain("spire_profiler_damage_dealt", (), || {
@@ -493,6 +583,9 @@ pub unsafe extern "C" fn spire_profiler_damage_dealt(
 
 /// `source_slot` is the owner's slot for a card-play block, else the
 /// receiver's.
+///
+/// # Safety
+/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_block_gained(
     amount: i32,
@@ -500,6 +593,7 @@ pub unsafe extern "C" fn spire_profiler_block_gained(
     player_slot: i32,
     source_slot: i32,
 ) {
+    // SAFETY: pointer arguments satisfy this export's C contract.
     unsafe {
         with_c_str(card_id, |card_id| {
             contain("spire_profiler_block_gained", (), || {
@@ -509,22 +603,29 @@ pub unsafe extern "C" fn spire_profiler_block_gained(
     };
 }
 
+/// # Safety
+/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_combat_ended() {
     contain("spire_profiler_combat_ended", (), events::combat_ended);
 }
 
+/// # Safety
+/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_test_reset() {
     contain("spire_profiler_test_reset", (), events::test_reset);
 }
 
+/// # Safety
+/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_run_history_select(
     seed: *const c_char,
     start_time: i64,
     profile: i32,
 ) {
+    // SAFETY: pointer arguments satisfy this export's C contract.
     unsafe {
         with_c_str(seed, |seed| {
             contain("spire_profiler_run_history_select", (), || {
@@ -534,6 +635,8 @@ pub unsafe extern "C" fn spire_profiler_run_history_select(
     };
 }
 
+/// # Safety
+/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_run_history_clear() {
     contain("spire_profiler_run_history_clear", (), || {
@@ -546,6 +649,9 @@ pub unsafe extern "C" fn spire_profiler_run_history_clear() {
 
 /// Context-routed in the core: run-history open flips the run panel's
 /// flag, otherwise it flips the combat panel's.
+///
+/// # Safety
+/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_panel_toggle() {
     contain("spire_profiler_panel_toggle", (), || {
@@ -559,6 +665,9 @@ pub unsafe extern "C" fn spire_profiler_panel_toggle() {
 
 /// The core never inspects engine input objects — such calls hang the
 /// engine fork — so the event reading stays on the C# side.
+///
+/// # Safety
+/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_scroll_input(
     panel: i32,
@@ -598,6 +707,7 @@ mod tests {
     #[test]
     fn exported_surface_runs_the_self_test_pipeline() {
         let (base, c_base) = wiped_dir("spire-profiler-abi-test");
+        // SAFETY: the test forms valid C-string arguments for these exports.
         unsafe {
             spire_profiler_test_reset();
             spire_profiler_init(c_base.as_ptr());
@@ -636,6 +746,7 @@ mod tests {
     #[test]
     fn null_string_arguments_are_treated_as_empty() {
         let (_base, c_base) = wiped_dir("spire-profiler-abi-null");
+        // SAFETY: the test forms valid C-string arguments for these exports.
         unsafe {
             spire_profiler_test_reset();
             spire_profiler_init(c_base.as_ptr());
@@ -663,6 +774,7 @@ mod tests {
         // Drain leftovers from any prior test on this thread.
         let _ = crate::ui::panel::take_queued_scroll();
         let _ = crate::ui::run_panel::take_queued_scroll();
+        // SAFETY: the test forms valid C-string arguments for these exports.
         unsafe {
             spire_profiler_scroll_input(0, 5, 1, 0.0); // combat: wheel down (+60)
             spire_profiler_scroll_input(1, 0, 0, -10.0); // run: pan (−10 px)
@@ -682,15 +794,18 @@ mod tests {
         let mode = CString::new("Standard").expect("no NUL");
         let seed = CString::new("TOGGLE_SEED").expect("no NUL");
         let net_ids = CString::new("1").expect("no NUL");
+        // SAFETY: the test forms valid C-string arguments for these exports.
         unsafe {
             spire_profiler_test_reset();
             spire_profiler_init(c_base.as_ptr());
         }
         // Outside a run the combat-panel toggle is the documented no-op.
         let before = crate::ui::panel::visible();
+        // SAFETY: the test forms valid C-string arguments for these exports.
         unsafe { spire_profiler_panel_toggle() };
         assert_eq!(crate::ui::panel::visible(), before);
         // Inside a run the same export flips the panel.
+        // SAFETY: the test forms valid C-string arguments for these exports.
         unsafe {
             spire_profiler_run_started(
                 char_ids.as_ptr(),
@@ -704,21 +819,26 @@ mod tests {
             spire_profiler_panel_toggle();
         }
         assert!(crate::ui::panel::visible());
+        // SAFETY: the test forms valid C-string arguments for these exports.
         unsafe { spire_profiler_panel_toggle() };
         assert!(!crate::ui::panel::visible());
         // With the run-history screen open, the toggle routes to the run
         // panel's manual flag instead: every press flips it.
+        // SAFETY: the test forms valid C-string arguments for these exports.
         unsafe {
             spire_profiler_run_history_select(seed.as_ptr(), 0, 1);
             spire_profiler_panel_toggle();
         }
         assert!(crate::ui::run_panel::run_manual_visible());
+        // SAFETY: the test forms valid C-string arguments for these exports.
         unsafe { spire_profiler_panel_toggle() };
         assert!(!crate::ui::run_panel::run_manual_visible());
+        // SAFETY: the test forms valid C-string arguments for these exports.
         unsafe { spire_profiler_panel_toggle() };
         assert!(crate::ui::run_panel::run_manual_visible());
         // The clear that precedes every screen entry resets the flag: the
         // panel starts closed on each visit.
+        // SAFETY: the test forms valid C-string arguments for these exports.
         unsafe { spire_profiler_run_history_clear() };
         assert!(!crate::ui::run_panel::run_manual_visible());
     }
@@ -728,6 +848,7 @@ mod tests {
     fn run_history_select_and_clear_exports_drive_the_selection() {
         let (base, c_base) = wiped_dir("spire-profiler-abi-run-history");
         let seed = CString::new("SELF_TEST_SEED").expect("no NUL in seed");
+        // SAFETY: the test forms valid C-string arguments for these exports.
         unsafe {
             spire_profiler_test_reset();
             spire_profiler_init(c_base.as_ptr());
@@ -741,6 +862,7 @@ mod tests {
             serde_json::from_str(text.lines().next().expect("a run line"))
                 .expect("run line parses");
         let start = record["started_at"].as_i64().expect("started_at is i64");
+        // SAFETY: the test forms valid C-string arguments for these exports.
         unsafe { spire_profiler_run_history_select(seed.as_ptr(), start, 1) };
         let view = crate::data::run_history::selected_view().expect("selection stored");
         assert_eq!(view.seed, "SELF_TEST_SEED");
@@ -749,6 +871,7 @@ mod tests {
         assert_eq!(view.combats.len(), 1);
         assert_eq!(view.combats[0].encounter, "SELF_TEST");
 
+        // SAFETY: the test forms valid C-string arguments for these exports.
         unsafe { spire_profiler_run_history_clear() };
         assert!(crate::data::run_history::selected_view().is_none());
     }
