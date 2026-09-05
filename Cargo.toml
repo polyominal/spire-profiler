@@ -10,3 +10,5 @@ serde_json = "1.0.151"
 
 [workspace.lints.clippy]
 too_many_lines = "deny"
+undocumented_unsafe_blocks = "deny"
+missing_safety_doc = "deny"
