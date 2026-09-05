@@ -2,7 +2,7 @@
 //! panels: the font set with the panel-wide glyph-coverage
 //! fallback, the text-effect passes, the chrome paints, and the draw-
 //! command replay itself. Everything rides the FFI through the safe
-//! `Object` newtype.
+//! [`Object`] newtype.
 
 use crate::engine::gdext::{Object, RetainedVariant};
 use crate::engine::math::{Color, Rect2, Vector2};
@@ -101,7 +101,7 @@ pub(crate) fn kreon_covers(text: &str) -> bool {
 /// The fallback is panel-wide: per-string selection would mix typefaces
 /// across rows of one column.
 ///
-/// The coverage scan runs once per layout rebuild (`FontPlan::scan`), so
+/// The coverage scan runs once per layout rebuild ([`FontPlan::scan`]), so
 /// the chrome and body draws each resolve fonts without re-scanning.
 #[derive(Clone, Copy, Default)]
 pub(crate) enum FontPlan {

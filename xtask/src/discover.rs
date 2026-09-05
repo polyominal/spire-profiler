@@ -3,7 +3,7 @@
 //! one supported exception: the Windows install a WSL2 host sees over
 //! `/mnt/<drive>`, detected from its data dir — the managed assemblies and the
 //! version stamp the build consumes are platform-neutral. Native Windows
-//! hosts are rejected at `Platform::detect`. Every derived path is
+//! hosts are rejected at [`Platform::detect`]. Every derived path is
 //! existence-checked, so a mis-set override or a renamed layout is
 //! diagnosed instead of guessed.
 
@@ -109,7 +109,7 @@ fn steam_library_roots(host: Platform) -> Result<Vec<PathBuf>> {
 }
 
 /// No default root is appended: only what a readable manifest enumerates
-/// is trusted. This is `steam_library_roots` minus the fallback, for
+/// is trusted. This is [`steam_library_roots`] minus the fallback, for
 /// consumers that must not accept an unmanifested install.
 pub(crate) fn vdf_library_roots(host: Platform) -> Result<(Vec<PathBuf>, Vec<PathBuf>)> {
     let mut vdf_paths = steam_vdf_candidates(host)?;

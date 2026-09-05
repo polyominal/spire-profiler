@@ -175,11 +175,11 @@ struct Cache {
 thread_local! {
     static CACHE: RefCell<Option<Cache>> = const { RefCell::new(None) };
     static SELECTION: RefCell<Option<RunSummaryView>> = const { RefCell::new(None) };
-    /// Distinct from `SELECTION`: an open screen with no record must still
+    /// Distinct from [`SELECTION`]: an open screen with no record must still
     /// render its empty-state notice.
     static SCREEN_OPEN: Cell<bool> = const { Cell::new(false) };
-    /// Deliberately separate from the live `State::player_filter`: persists
-    /// across selections so one player can be compared across runs, heals
+    /// Deliberately separate from the live [`State::player_filter`]:
+    /// persists across selections so one player can be compared across runs, heals
     /// against the selected view's roster, and never touches live state.
     static RUN_FILTER: Cell<PlayerFilter> = const { Cell::new(PlayerFilter::All) };
 }

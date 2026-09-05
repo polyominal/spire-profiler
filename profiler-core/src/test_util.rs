@@ -36,7 +36,7 @@ pub fn wiped_dir(label: &str) -> PathBuf {
 }
 
 /// A dir under tmp/unique/, unique per process and call, so parallel runs
-/// never collide. Prefer `wiped_dir`; use this only when a test needs a
+/// never collide. Prefer [`wiped_dir`]; use this only when a test needs a
 /// path that has never existed or calls repeatedly with one label.
 pub fn unique_dir(label: &str) -> PathBuf {
     static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);

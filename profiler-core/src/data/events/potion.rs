@@ -1,9 +1,9 @@
 //! Potion use: the prefix/postfix pair that drives the potion fallback.
 //! `CombatHistory.PotionUsed` fires only after `PotionModel.OnUse`
 //! completes (inside `OnUseWrapper`) — too late for powers applied during
-//! OnUse — so the shim prefixes `OnUseWrapper`: `potion_context_begin` sets
-//! the fallback BEFORE the effects run. The `PotionUsed` postfix
-//! (`potion_used`) books the use: counter bump plus a fresh per-slot
+//! OnUse — so the shim prefixes `OnUseWrapper`: [`potion_context_begin`]
+//! sets the fallback BEFORE the effects run. The `PotionUsed` postfix
+//! ([`potion_used`]) books the use: counter bump plus a fresh per-slot
 //! fallback source.
 
 use crate::data::ledger;

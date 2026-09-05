@@ -1,8 +1,9 @@
-//! Safe method dispatch on engine `Object` pointers — the layer the panel
+//! Safe method dispatch on engine [`Object`] pointers — the layer the panel
 //! modules call. Every method goes through the Variant machinery in
 //! [`crate::engine::gdext`], which checks each `CallError`; the raw pointer
-//! is never dereferenced here (all raw reads live in `gdext`'s helpers), so
-//! this is the engine layer's only unsafe-free module.
+//! is never dereferenced here (all raw reads live in
+//! [`crate::engine::gdext`]'s helpers), so this is the engine layer's
+//! only unsafe-free module.
 
 use std::ffi::{c_int, c_void};
 use std::ptr;

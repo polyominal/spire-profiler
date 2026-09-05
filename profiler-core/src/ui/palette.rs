@@ -288,7 +288,7 @@ mod tests {
         );
     }
 
-    /// Chips share the bars' `slot_color` call, so the key cannot lie.
+    /// Chips share the bars' [`slot_color`] call, so the key cannot lie.
     #[test]
     fn legend_chips_match_the_bars_and_cover_every_slot() {
         for slot in Segment::ALL {

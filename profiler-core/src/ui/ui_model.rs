@@ -1,6 +1,7 @@
-//! Structured chart payload: the constants plus `UiTab`/`UiRow`/`UiMeta`
-//! that `snapshot` fills and `chart_layout` renders. The fixed field widths
-//! are the layout contract: the segment slots, the name buffers, and the
+//! Structured chart payload: the constants plus [`UiTab`]/[`UiRow`]/
+//! [`UiMeta`] that [`crate::ui::snapshot`] fills and
+//! [`crate::ui::chart_layout`] renders. The fixed field widths are the
+//! layout contract: the segment slots, the name buffers, and the
 //! per-mille bar widths are indexed by position.
 
 use crate::source_kind::SourceKind;

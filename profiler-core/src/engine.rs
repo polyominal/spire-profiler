@@ -4,7 +4,7 @@
 //!     (`vendor/gdextension_interface.h`); home of the third unsafe relaxation
 //!   * [`math`] — local Vector2/Rect2/Color stand-ins for the Godot value types the panel plumbing
 //!     needs
-//!   * [`object`] — safe method dispatch on engine `Object` pointers (unsafe-free)
+//!   * [`object`] — safe method dispatch on engine [`object::Object`] pointers (unsafe-free)
 
 // The third relaxation of the crate-root deny (after abi.rs and
 // registration.rs): the hand-rolled GDExtension FFI resolves engine function

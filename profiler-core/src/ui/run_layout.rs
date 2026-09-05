@@ -77,7 +77,8 @@ pub(crate) struct PortraitFact {
 /// engine-free.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct HeaderFacts {
-    /// One entry per roster character, capped at `caps::MAX_PLAYERS`.
+    /// One entry per roster character, capped at
+    /// [`crate::data::state::caps::MAX_PLAYERS`].
     pub portraits: Vec<PortraitFact>,
 }
 

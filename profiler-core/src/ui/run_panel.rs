@@ -1,27 +1,28 @@
-//! Run-history panel — the second GDExtension class (`SpireProfilerRunPanel`),
+//! Run-history panel — the second GDExtension class
+//! ([`SpireProfilerRunPanel`]),
 //! rendering the selected run's contribution summary on the game's
 //! run-history screen. The combat chart panel ([`crate::ui::panel`]) stays
 //! untouched; this module owns its own state and tests. The pure layout
 //! engine (the geometry, the emitters, the header icon row) is
 //! [`crate::ui::run_layout`] — the same engine/class split as the combat
-//! side's `chart_layout`/`panel`.
+//! side's [`chart_layout`]/[`crate::ui::panel`].
 //!
 //! ## Visibility + toggle semantics (decision)
 //!
 //! * A manual flag, off on entry: the panel shows only while the run-history screen is open AND the
 //!   flag is set. The ABI's clear export (the screen's close and its open, before the first select)
 //!   resets the flag, so every entry to the screen starts closed. The core tracks the open screen
-//!   from the shim's select/clear events (`run_history::screen_open`), so no per-frame scene-tree
-//!   probing is needed; the panel is a child of the `NRunHistory` node and inherits its hidden
-//!   state anyway.
+//!   from the shim's select/clear events ([`crate::data::run_history::screen_open`]), so no
+//!   scene-tree probing is needed; the panel is a child of the `NRunHistory` node and inherits its
+//!   hidden state anyway.
 //! * Toggle: **core-side context routing on the existing export** — the shim's F8 handler and the
 //!   run-history button both call `spire_profiler_panel_toggle` (no new export, keeping check-abi
 //!   at 38 bindings); abi.rs routes it to this panel's flag while the screen is open and to the
 //!   combat panel's otherwise. The panels keep separate flags, so hiding the combat panel mid-fight
 //!   never hides the run panel.
 //! * Empty state: the screen is open but the displayed run has no profiler record — the selection
-//!   is empty while `screen_open` stays true, and the panel renders the empty-state notice instead
-//!   of hiding.
+//!   is empty while [`crate::data::run_history::screen_open`] stays true, and the panel renders the
+//!   empty-state notice instead of hiding.
 //! * Click-away dismissal: a press outside the plate box clears the flag. The shim disables the
 //!   toggle button while the panel is up, so a click on it cannot re-open on the same press: it
 //!   dismisses like any other background press.
@@ -94,7 +95,7 @@ pub(crate) fn dismiss_run_manual() {
 const INITIAL_BOX_H: f32 = 300.0;
 
 /// Instantiated lazily by the C# shim; the class name must stay exactly
-/// `SpireProfilerRunPanel`.
+/// [`SpireProfilerRunPanel`].
 pub struct SpireProfilerRunPanel {
     object: Object,
     children: panel_body::PanelChildren,

@@ -163,7 +163,8 @@ const _: () = assert!(
 
 pub type SourceSlot = u8;
 
-/// The shim sends this value only for `context_begin` (enemy-owned powers);
+/// The shim sends this value only for
+/// [`crate::data::events::context_begin`] (enemy-owned powers);
 /// the core keys the OSTY overflow row at it directly.
 pub const TEAM_SLOT: SourceSlot = 4;
 
@@ -202,7 +203,7 @@ pub fn clamp_modifier_kind(kind: i32) -> SourceKind {
     }
 }
 
-/// Lives here because it is state owned by [`State`]; `ui_model` stays the
+/// Lives here because it is state owned by [`State`]; [`ui_model`] stays the
 /// dependency-free leaf.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum PlayerFilter {

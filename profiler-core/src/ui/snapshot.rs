@@ -1,5 +1,5 @@
 //! The ui-snapshot family: the structured UiRow/UiMeta payloads and the
-//! hover-detail/footer texts consumed by `chart_layout` and the panels.
+//! hover-detail/footer texts consumed by [`chart_layout`] and the panels.
 
 use crate::data::state::{CardStat, Combat, PlayerFilter, STATE, State};
 use crate::marker;

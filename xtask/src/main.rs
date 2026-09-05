@@ -11,6 +11,7 @@ mod build;
 mod bundle;
 mod catalog;
 mod check_abi;
+mod check_catalog;
 mod check_citations;
 mod check_docs;
 mod cross;
@@ -68,6 +69,8 @@ mod flags {
                 /// Skip the overwrite confirmation prompt.
                 optional -y, --yes
             }
+            /// Check the attribution catalog against the decompiled game source.
+            cmd check-catalog {}
         }
     }
 
@@ -92,6 +95,7 @@ mod flags {
         CheckCitations(CheckCitations),
         FmtMd(FmtMd),
         Decompile(Decompile),
+        CheckCatalog(CheckCatalog),
     }
 
     #[derive(Debug)]
@@ -135,6 +139,9 @@ mod flags {
         pub yes: bool,
     }
 
+    #[derive(Debug)]
+    pub struct CheckCatalog;
+
     impl Xtask {
         #[allow(dead_code)]
         pub fn from_env_or_exit() -> Self {
@@ -166,6 +173,7 @@ fn main() -> Result<()> {
         flags::XtaskCmd::InstallMod(_) => install::install_mod(&shell).map(|_| ()),
         flags::XtaskCmd::HeadlessTest(_) => headless::headless_test(&shell),
         flags::XtaskCmd::CheckAbi(_) => check_abi::run(),
+        flags::XtaskCmd::CheckCatalog(_) => check_catalog::run(),
         flags::XtaskCmd::CheckDocs(flags) => check_docs::check_docs(&shell, flags.top),
         flags::XtaskCmd::CheckCitations(_) => check_citations::run(),
         flags::XtaskCmd::FmtMd(flags) => md::fmt_md(flags.check),

@@ -287,7 +287,7 @@ public static class SpireProfilerMod
             foreach (var name in new[] { "SetUpNewSingleplayer", "SetUpNewMultiplayer", "SetUpSavedSingleplayer", "SetUpSavedMultiplayer", "CleanUp" })
             {
                 if (!Harmony.GetAllPatchedMethods().Any(m => m.Name == name))
-                    Log.Warn($"[SpireProfiler] expected patch missing: RunManager.{name}");
+                    Log.Error($"[SpireProfiler] expected patch missing: RunManager.{name}");
             }
 
             // The self-test only runs on request (see the headless-test build
@@ -1155,13 +1155,13 @@ internal static class AttributionPatcher
             var type = typeof(SpireProfilerMod).Assembly.GetType(fullName) ?? typeof(ModManager).Assembly.GetType(fullName);
             if (type == null)
             {
-                Log.Warn($"[SpireProfiler] catalog: type not found: {fullName}");
+                Log.Error($"[SpireProfiler] catalog: type not found: {fullName}");
                 return;
             }
             var method = AccessTools.Method(type, methodName);
             if (method == null)
             {
-                Log.Warn($"[SpireProfiler] catalog: {type.Name}.{methodName} not found, skipping");
+                Log.Error($"[SpireProfiler] catalog: {type.Name}.{methodName} not found, skipping");
                 return;
             }
             var prefix = new HarmonyMethod(typeof(AttributionPatcher).GetMethod(prefixName, System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static));
@@ -1170,7 +1170,7 @@ internal static class AttributionPatcher
         }
         catch (Exception ex)
         {
-            Log.Warn($"[SpireProfiler] catalog: failed to patch {entry}: {ex.Message}");
+            Log.Error($"[SpireProfiler] catalog: failed to patch {entry}: {ex.Message}");
         }
     }
 }
@@ -1941,14 +1941,14 @@ internal static class OrbPatcher
             var method = AccessTools.Method(type, methodName);
             if (method == null)
             {
-                Log.Warn($"[SpireProfiler] orb: {type.Name}.{methodName} not found, skipping");
+                Log.Error($"[SpireProfiler] orb: {type.Name}.{methodName} not found, skipping");
                 return;
             }
             harmony.Patch(method, prefix, null);
         }
         catch (Exception ex)
         {
-            Log.Warn($"[SpireProfiler] orb: failed {type.Name}.{methodName}: {ex.Message}");
+            Log.Error($"[SpireProfiler] orb: failed {type.Name}.{methodName}: {ex.Message}");
         }
     }
 }

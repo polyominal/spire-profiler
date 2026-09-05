@@ -1,7 +1,9 @@
-//! Attribution catalog: every relic and power hook that can produce combat
-//! effects, with the hook method to wrap. Verified against the v0.110.1
-//! decompiled source, one snapshot behind the game_version PIN (v0.111.0):
-//! re-decompile the pinned version before trusting a citation.
+//! Attribution catalog: relic and power hooks selected for a source-context
+//! wrap. Hand-curated, never generated: inclusion is a per-body judgment
+//! call that weighs the tracked effect against the game's more explicit
+//! attribution sources. Re-verify after every game update:
+//! `cargo xtask decompile`, then `cargo xtask check-catalog`. Both a stale
+//! catalog entry and an unreviewed candidate hook fail the check.
 //!
 //! Hooks whose ONLY effect is an untracked metric (card draw, energy,
 //! stars, healing) are absent. Entries whose hook ALSO produces damage,
@@ -15,10 +17,17 @@
 //! absent too: an inert context outranks the orb/potion fallbacks while
 //! live, so a bookkeeping-only wrap can steal an unrelated async effect's
 //! attribution. Their real effects live in unwrapped modifiers (PenNib's
-//! ModifyDamageMultiplicative, ...).
+//! ModifyDamageMultiplicative, BurstPower's ModifyCardPlayCount, ...).
+//!
+//! One entry wraps a non-hook method because the tracked effect lives in it
+//! (RollingBoulderPower's Godot-signal damage helper); [`NON_HOOK_ENTRIES`]
+//! keeps such exceptions deliberate. [`REVIEWED_CANDIDATES`] is the reviewed
+//! half of check-catalog's report: an uncatalogued effect hook absent from
+//! it is new and needs a catalog decision, while an entry absent from the
+//! report is stale and must be deleted.
 
 /// Relic hooks wrapped in a source-context begin/end pair.
-pub const RELICS: [(&str, &str); 87] = [
+pub const RELICS: [(&str, &str); 85] = [
     ("ScreamingFlagon", "BeforeSideTurnEnd"),
     ("StoneCalendar", "BeforeSideTurnEnd"),
     ("ParryingShield", "AfterSideTurnEnd"),
@@ -50,6 +59,7 @@ pub const RELICS: [(&str, &str); 87] = [
     ("Kunai", "AfterCardPlayed"),
     ("Shuriken", "AfterCardPlayed"),
     ("RainbowRing", "AfterCardPlayed"),
+    ("RedSkull", "AfterRoomEntered"),
     ("RedSkull", "AfterCurrentHpChanged"),
     ("Akabeko", "AfterSideTurnStart"),
     ("BagOfMarbles", "BeforeSideTurnStart"),
@@ -61,16 +71,13 @@ pub const RELICS: [(&str, &str); 87] = [
     ("Girya", "AfterRoomEntered"),
     ("DataDisk", "AfterRoomEntered"),
     ("Anchor", "BeforeCombatStart"),
+    ("FakeAnchor", "BeforeCombatStart"),
     ("BronzeScales", "AfterRoomEntered"),
     ("EmberTea", "AfterRoomEntered"),
-    ("Bellows", "AfterPlayerTurnStart"),
-    ("BoneTea", "AfterPlayerTurnStart"),
     ("TeaOfDiscourtesy", "BeforeCombatStart"),
     ("FencingManual", "AfterSideTurnStart"),
-    ("PaelsTooth", "AfterCombatEnd"),
     ("PhilosophersStone", "AfterCreatureAddedToCombat"),
     ("PhilosophersStone", "AfterRoomEntered"),
-    ("PaelsWing", "OnSacrifice"),
     ("BoundPhylactery", "BeforeCombatStart"),
     ("BoundPhylactery", "AfterEnergyResetLate"),
     ("PhylacteryUnbound", "BeforeCombatStart"),
@@ -79,7 +86,6 @@ pub const RELICS: [(&str, &str); 87] = [
     ("InfusedCore", "AfterSideTurnStart"),
     ("Gorget", "AfterRoomEntered"),
     ("OddlySmoothStone", "AfterRoomEntered"),
-    ("StoneCracker", "AfterRoomEntered"),
     ("SwordOfJade", "AfterRoomEntered"),
     ("BoneFlute", "AfterAttack"),
     ("ReptileTrinket", "AfterPotionUsed"),
@@ -93,11 +99,12 @@ pub const RELICS: [(&str, &str); 87] = [
     ("SymbioticVirus", "AfterSideTurnStart"),
     ("OrangeDough", "AfterSideTurnStart"),
     ("BigHat", "AfterSideTurnStart"),
+    ("DiamondDiadem", "AfterSideTurnStart"),
     ("Sai", "AfterSideTurnStart"),
     ("Crossbow", "AfterSideTurnStart"),
     ("VexingPuzzlebox", "AfterPlayerTurnStart"),
     ("ChoicesParadox", "AfterPlayerTurnStart"),
-    ("RazorTooth", "AfterCardPlayed"),
+    ("Regalite", "AfterCardGeneratedForCombat"),
     ("HelicalDart", "AfterCardPlayed"),
     ("TheAbacus", "AfterShuffle"),
     ("Toolbox", "BeforeHandDraw"),
@@ -109,7 +116,7 @@ pub const RELICS: [(&str, &str); 87] = [
 ];
 
 /// Power hooks wrapped in a source-context begin/end pair.
-pub const POWERS: [(&str, &str); 71] = [
+pub const POWERS: [(&str, &str); 64] = [
     ("RagePower", "AfterCardPlayed"),
     ("FlameBarrierPower", "AfterDamageReceived"),
     ("FeelNoPainPower", "AfterCardExhausted"),
@@ -119,6 +126,7 @@ pub const POWERS: [(&str, &str); 71] = [
     ("JuggernautPower", "AfterBlockGained"),
     ("CrimsonMantlePower", "AfterPlayerTurnStart"),
     ("DemonFormPower", "AfterSideTurnStart"),
+    ("EntropyPower", "AfterPlayerTurnStart"),
     ("RupturePower", "AfterDamageReceived"),
     ("RupturePower", "AfterCardPlayed"),
     ("PoisonPower", "AfterSideTurnStart"),
@@ -128,11 +136,9 @@ pub const POWERS: [(&str, &str); 71] = [
     ("EnvenomPower", "AfterDamageGiven"),
     ("NoxiousFumesPower", "AfterSideTurnStart"),
     ("InfiniteBladesPower", "BeforeHandDraw"),
-    ("StranglePower", "BeforeCardPlayed"),
     ("StranglePower", "AfterCardPlayed"),
     ("StormPower", "AfterCardPlayed"),
     ("HailstormPower", "BeforeSideTurnEnd"),
-    ("SubroutinePower", "BeforeCardPlayed"),
     ("ConsumingShadowPower", "AfterSideTurnEnd"),
     ("LoopPower", "AfterPlayerTurnStart"),
     ("LightningRodPower", "AfterEnergyReset"),
@@ -168,17 +174,102 @@ pub const POWERS: [(&str, &str); 71] = [
     ("GalvanicPower", "AfterCardPlayed"),
     ("JugglingPower", "BeforeCardPlayed"),
     ("PrepTimePower", "AfterSideTurnStart"),
-    ("MayhemPower", "AfterAutoPrePlayPhaseEntered"),
-    ("BurstPower", "AfterModifyingCardPlayCount"),
-    ("BurstPower", "AfterSideTurnEnd"),
-    ("EchoFormPower", "AfterModifyingCardPlayCount"),
-    ("MasterPlannerPower", "AfterCardPlayed"),
     ("ThornsPower", "BeforeDamageReceived"),
-    ("RegenPower", "BeforeSideTurnEndEarly"),
     ("SmokestackPower", "AfterCardGeneratedForCombat"),
     ("RollingBoulderPower", "AfterPlayerTurnStart"),
     ("RollingBoulderPower", "DoDamage"),
     ("SpeedsterPower", "AfterCardDrawn"),
     ("SerpentFormPower", "AfterCardPlayed"),
     ("TrashToTreasurePower", "AfterCardGeneratedForCombat"),
+];
+
+/// Catalogued methods that intentionally are not hook overrides.
+pub const NON_HOOK_ENTRIES: [(&str, &str, &str); 1] =
+    [("Powers", "RollingBoulderPower", "DoDamage")];
+
+/// Uncatalogued hooks reviewed and deliberately left out of the catalog.
+pub const REVIEWED_CANDIDATES: [(&str, &str, &str); 75] = [
+    ("Powers", "BeaconOfHopePower", "AfterBlockGained"),
+    ("Powers", "BiasedCognitionPower", "AfterSideTurnStart"),
+    ("Powers", "CacophonyPower", "AfterCardDrawn"),
+    ("Powers", "CalamityPower", "AfterCardPlayed"),
+    ("Powers", "ConcoctPower", "AfterDamageGiven"),
+    ("Powers", "ConstrictPower", "AfterSideTurnEnd"),
+    ("Powers", "CoolantPower", "AfterSideTurnStart"),
+    ("Powers", "CorrosiveWavePower", "AfterCardDrawn"),
+    ("Powers", "CoveredPower", "AfterApplied"),
+    ("Powers", "CrabRagePower", "AfterDeath"),
+    ("Powers", "CurlUpPower", "AfterCardPlayed"),
+    ("Powers", "DemisePower", "AfterSideTurnEnd"),
+    ("Powers", "DisintegrationPower", "AfterSideTurnEndLate"),
+    ("Powers", "GravityPower", "AfterCardPlayed"),
+    ("Powers", "HammerTimePower", "AfterForge"),
+    ("Powers", "HighVoltagePower", "AfterSideTurnEnd"),
+    ("Powers", "IllusionPower", "AfterApplied"),
+    ("Powers", "MagicBombPower", "AfterSideTurnEnd"),
+    ("Powers", "MonologuePower", "AfterSideTurnEnd"),
+    ("Powers", "NemesisPower", "AfterSideTurnEnd"),
+    ("Powers", "NeurosurgePower", "AfterSideTurnStart"),
+    ("Powers", "NightmarePower", "BeforeHandDraw"),
+    ("Powers", "PainfulStabsPower", "AfterAttack"),
+    ("Powers", "PaleBlueDotPower", "AfterCardPlayed"),
+    ("Powers", "PersonalHivePower", "AfterDamageReceived"),
+    ("Powers", "PlatingPower", "BeforeSideTurnStart"),
+    ("Powers", "PossessSpeedPower", "AfterDeath"),
+    ("Powers", "PossessStrengthPower", "AfterDeath"),
+    ("Powers", "RampartPower", "AfterSideTurnStart"),
+    ("Powers", "RavenousPower", "AfterDeath"),
+    ("Powers", "RitualPower", "AfterSideTurnEnd"),
+    ("Powers", "SelfFormingClayPower", "AfterBlockCleared"),
+    ("Powers", "ShadowStepPower", "AfterSideTurnStart"),
+    ("Powers", "SkittishPower", "AfterAttack"),
+    ("Powers", "SoulboundPower", "AfterCardGeneratedForCombat"),
+    ("Powers", "SuckPower", "AfterAttack"),
+    ("Powers", "SummonNextTurnPower", "AfterPlayerTurnStart"),
+    ("Powers", "SurprisePower", "AfterDeath"),
+    ("Powers", "TankPower", "AfterApplied"),
+    (
+        "Powers",
+        "TemporaryDexterityPower",
+        "AfterPowerAmountChanged",
+    ),
+    ("Powers", "TemporaryDexterityPower", "AfterSideTurnEnd"),
+    ("Powers", "TemporaryDexterityPower", "BeforeApplied"),
+    ("Powers", "TemporaryFocusPower", "AfterPowerAmountChanged"),
+    ("Powers", "TemporaryFocusPower", "AfterSideTurnEnd"),
+    ("Powers", "TemporaryFocusPower", "BeforeApplied"),
+    (
+        "Powers",
+        "TemporaryStrengthPower",
+        "AfterPowerAmountChanged",
+    ),
+    ("Powers", "TemporaryStrengthPower", "AfterSideTurnEnd"),
+    ("Powers", "TemporaryStrengthPower", "BeforeApplied"),
+    ("Powers", "TenderPower", "AfterCardPlayed"),
+    ("Powers", "TenderPower", "AfterSideTurnEnd"),
+    ("Powers", "TerritorialPower", "AfterSideTurnEnd"),
+    ("Powers", "TheBombPower", "BeforeSideTurnEnd"),
+    ("Powers", "ToricToughnessPower", "AfterBlockCleared"),
+    ("Powers", "UnderworldPower", "AfterDamageGiven"),
+    ("Powers", "VitalSparkPower", "AfterCardPlayed"),
+    ("Powers", "WitheringPresencePower", "AfterCardPlayed"),
+    ("Powers", "WraithFormPower", "AfterSideTurnStart"),
+    ("Relics", "ArchaicTooth", "AfterObtained"),
+    ("Relics", "Astrolabe", "AfterObtained"),
+    ("Relics", "BeltBuckle", "AfterPotionDiscarded"),
+    ("Relics", "BeltBuckle", "BeforeCombatStart"),
+    ("Relics", "BiiigHug", "AfterShuffle"),
+    ("Relics", "Byrdpip", "AfterObtained"),
+    ("Relics", "Claws", "AfterObtained"),
+    ("Relics", "FakeSneckoEye", "AfterObtained"),
+    ("Relics", "FakeSneckoEye", "BeforeCombatStart"),
+    ("Relics", "FragrantMushroom", "AfterObtained"),
+    ("Relics", "LeafyPoultice", "AfterObtained"),
+    ("Relics", "MusicBox", "AfterCardPlayed"),
+    ("Relics", "NewLeaf", "AfterObtained"),
+    ("Relics", "PandorasBox", "AfterObtained"),
+    ("Relics", "PrecariousShears", "AfterObtained"),
+    ("Relics", "RoyalPoison", "AfterPlayerTurnStart"),
+    ("Relics", "SneckoEye", "AfterObtained"),
+    ("Relics", "SneckoEye", "BeforeCombatStart"),
 ];

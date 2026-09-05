@@ -409,8 +409,8 @@ fn record_osty_dealt_in(
     event_log!("  osty dealt {total} damage via '{source}'");
 }
 
-/// The death flag is NOT set here: the shim's Kill patch fires `player_died`
-/// on every death path.
+/// The death flag is NOT set here: the shim's Kill patch fires
+/// [`player_died`] on every death path.
 #[allow(clippy::too_many_arguments)] // one param per ABI scalar the branch needs
 fn record_damage_to_player_in(
     state: &mut State,

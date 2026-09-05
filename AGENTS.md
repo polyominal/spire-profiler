@@ -193,6 +193,26 @@ for (k, &milli) in seg_milli.iter().enumerate() {
 - Writes are atomic (temp file + rename): the game can kill the process at any
   point, and a torn record should never appear.
 
+## Game updates
+
+The verified game version is pinned in `xtask/src/game_version.rs`; a Steam
+update fails every game-touching command until `PIN` is bumped deliberately.
+Bumping `PIN` is the start of a manual re-verification:
+
+1. Re-run `cargo xtask decompile` (replaces `tmp/sts2-decompiled`).
+2. Run `cargo xtask check-catalog`: it fails on entries that no longer resolve
+   or show a tracked effect, on new candidate hooks, and on stale reviewed
+   exclusions. Decide by reading the decompiled hook bodies; update the catalog
+   or reviewed-candidate baseline accordingly. The catalog in
+   `xtask/src/catalog.rs` is curated by hand, never generated. The shim picks
+   catalog changes up automatically at build (`xtask/src/shim.rs`).
+3. Re-check the drift findings in `docs/game.md` against the new snapshot and
+   re-date them to the pin; they record traps check-catalog cannot see (dead
+   hook bodies, renamed parameter types).
+4. Run the gate set in `docs/verify.md`. `headless-test` is the only check of
+   the fixed shim patches (class-level, orb, RunManager): its patch count is
+   exact and a skipped patch logs an ERROR.
+
 ## Testing
 
 - Test behavior and invariants, not language semantics. If a test cannot fail
