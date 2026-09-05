@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::data::persistence::{bind_log_path, reset_log_sink};
-use crate::data::state::{DebuffLayer, PowerSourceEntry, caps};
+use crate::data::state::{ActivePlay, DebuffLayer, Fallback, PotionSource, PowerSourceEntry, caps};
 use crate::test_util::unique_dir;
 
 fn reset_state() {
@@ -11,25 +11,10 @@ fn reset_state() {
     reset_log_sink();
 }
 
-fn temp_log_dir(label: &str) {
-    let dir = unique_dir(&format!("ledger-{label}"));
-    bind_log_path(&dir.join("profiler.log"));
-}
-
 fn start_combat() {
     STATE.with(|cell| {
         cell.borrow_mut().current = Some(Combat::default());
     });
-}
-
-fn hit_card(id: &str, amount: i64) -> CardStat {
-    CardStat {
-        id: id.to_owned(),
-        kind: SourceKind::Card,
-        damage_dealt: amount,
-        dmg_direct: amount,
-        ..CardStat::default()
-    }
 }
 
 fn assert_card(index: usize, id: &str, kind: SourceKind) {
@@ -145,7 +130,8 @@ fn consume_debuff_layers_consumes_fifo_and_removes_exhausted() {
 #[test]
 fn attribute_debuff_damage_splits_proportionally() {
     reset_state();
-    temp_log_dir("debuff-attr");
+    let dir = unique_dir("ledger-debuff-attr");
+    bind_log_path(&dir.join("profiler.log"));
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         state.current = Some(Combat::default());
@@ -194,11 +180,6 @@ fn resolve_card_priority_chain() {
             id: "ZAP".to_owned(),
             kind: SourceKind::Card,
         });
-        state.orb_sources.push(OrbSource {
-            hash: 0,
-            id: "FIRE_POTION".to_owned(),
-            kind: SourceKind::Potion,
-        });
     });
     assert_card(
         resolve("STRIKE", 0, 0).expect("explicit").0,
@@ -206,15 +187,20 @@ fn resolve_card_priority_chain() {
         SourceKind::Card,
     );
     STATE.with(|cell| {
-        cell.borrow_mut().slot_state_mut(0).active_play_source =
-            Some(("DEFEND".to_owned(), SourceKind::Card))
+        cell.borrow_mut().slot_state_mut(0).active_play = Some(ActivePlay {
+            id: "DEFEND".to_owned(),
+            kind: SourceKind::Card,
+            row_slot: 0,
+            card_id: "DEFEND".to_owned(),
+            orb_first_trigger_used: false,
+        })
     });
     assert_card(
         resolve("", 0, 0).expect("active card").0,
         "DEFEND",
         SourceKind::Card,
     );
-    STATE.with(|cell| cell.borrow_mut().slot_state_mut(0).active_play_source = None);
+    STATE.with(|cell| cell.borrow_mut().slot_state_mut(0).active_play = None);
     assert_card(
         resolve("", 0, 0).expect("context").0,
         "CRACKED_CORE",
@@ -223,7 +209,7 @@ fn resolve_card_priority_chain() {
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         state.context_stack.pop();
-        state.slot_state_mut(0).orb_fallback = Some(0);
+        state.slot_state_mut(0).fallback = Some(Fallback::Orb(0));
     });
     assert_card(
         resolve("", 0, 0).expect("orb fallback").0,
@@ -232,8 +218,10 @@ fn resolve_card_priority_chain() {
     );
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
-        state.slot_state_mut(0).orb_fallback = None;
-        state.slot_state_mut(0).potion_fallback = Some(1);
+        state.slot_state_mut(0).fallback = Some(Fallback::Potion(PotionSource {
+            id: "FIRE_POTION".to_owned(),
+            kind: SourceKind::Potion,
+        }));
     });
     assert_card(
         resolve("", 0, 0).expect("potion fallback").0,
@@ -274,8 +262,13 @@ fn resolve_card_play_source_override_is_kind_aware() {
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         state.current = Some(Combat::default());
-        state.slot_state_mut(0).active_play_source =
-            Some(("JOSS_PAPER".to_owned(), SourceKind::Relic));
+        state.slot_state_mut(0).active_play = Some(ActivePlay {
+            id: "JOSS_PAPER".to_owned(),
+            kind: SourceKind::Relic,
+            row_slot: 0,
+            card_id: "JOSS_PAPER".to_owned(),
+            orb_first_trigger_used: false,
+        });
     });
     assert_card(
         resolve("", 0, 0).expect("relic play source").0,
@@ -463,7 +456,13 @@ fn apply_pending_contribs_shifts_modifier_share() {
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         state.current = Some(Combat {
-            cards: vec![hit_card("STRIKE", 10)],
+            cards: vec![CardStat {
+                id: "STRIKE".to_owned(),
+                kind: SourceKind::Card,
+                damage_dealt: 10,
+                dmg_direct: 10,
+                ..CardStat::default()
+            }],
             ..Combat::default()
         });
         state

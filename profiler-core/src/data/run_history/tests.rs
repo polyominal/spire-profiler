@@ -5,7 +5,7 @@ use std::fs;
 use std::path::Path;
 
 use super::*;
-use crate::data::state::RunOutcome;
+use crate::data::state::{CombatResult, RunOutcome};
 use crate::source_kind::SourceKind;
 use crate::test_util::wiped_dir;
 
@@ -52,6 +52,13 @@ fn write_combats_fixture(data: &Path, combats_text: &str) {
     }
 }
 
+const DAILY_RUNS: &str = r#"[
+        {"run_id":1,"profile":2,"character":"A","ascension":0,"game_mode":"Daily","outcome":"victory",
+         "seed":"DAILY","started_at":1786579200,"ended_at":1786579800,"combats":0},
+        {"run_id":2,"profile":2,"character":"B","ascension":0,"game_mode":"Daily","outcome":"defeat",
+         "seed":"DAILY","started_at":1786752000,"ended_at":1786752600,"combats":0}
+    ]"#;
+
 const RUNS: &str = r#"[
         {"run_id":1,"profile":2,"build":"b","character":"SHROUD","ascension":3,"game_mode":"Standard",
          "outcome":"victory","seed":"ALPHA","started_at":1786579200,
@@ -79,7 +86,7 @@ const COMBATS: &str = r#"[
              "dmg_direct":30,"dmg_attributed":10,"dmg_modifier":0},
             {"id":"DEFEND","kind":0,"plays":2,"damage_dealt":0,"block_gained":16,"block_effective":15,"heal":0}
          ]},
-        {"combat_id":3,"encounter_id":"C","result":"defeated","turns":3,"damage_received":25,
+        {"combat_id":3,"encounter_id":"C","result":"defeat","turns":3,"damage_received":25,
          "block_total":0,
          "run":{"seq":2,"character":"IRONCLAD","ascension":7,"game_mode":"Standard"},
          "cards":[
@@ -175,7 +182,7 @@ fn continued_run_id_rejoins_the_latest_matching_fragment() {
 #[test]
 fn select_by_seed_assembles_the_full_view() {
     let base = wiped_dir("run-history-seed");
-    let data = std::path::Path::new(&base);
+    let data = &base;
     seed_data(data, RUNS, COMBATS);
 
     let view = selected("BETA", BETA_START, 2);
@@ -184,7 +191,6 @@ fn select_by_seed_assembles_the_full_view() {
     assert_eq!(view.ascension, 7);
     assert_eq!(view.game_mode, "Standard");
     assert_eq!(view.outcome, Some(RunOutcome::Defeat));
-    assert_eq!(view.result, "Defeat");
     assert_eq!(view.seed, "BETA");
     assert_eq!(view.started_at, BETA_START);
     assert_eq!(view.players.len(), 2);
@@ -195,12 +201,12 @@ fn select_by_seed_assembles_the_full_view() {
     assert_eq!(view.combats.len(), 2);
     assert_eq!(view.combats[0].seq, 2);
     assert_eq!(view.combats[0].encounter, "B");
-    assert_eq!(view.combats[0].result, "completed");
+    assert_eq!(view.combats[0].result, CombatResult::Completed);
     assert_eq!(view.combats[0].damage_dealt, 40);
     assert_eq!(view.combats[0].damage_taken, 15);
     assert_eq!(view.combats[0].turns, 5);
     assert_eq!(view.combats[1].seq, 3);
-    assert_eq!(view.combats[1].result, "defeated");
+    assert_eq!(view.combats[1].result, CombatResult::Defeat);
     assert_eq!(view.combats[1].damage_dealt, 30);
     assert_eq!(view.combats[1].damage_taken, 25);
 
@@ -222,7 +228,7 @@ fn select_by_seed_assembles_the_full_view() {
 #[test]
 fn combat_only_runs_fall_back_to_a_synthesized_view() {
     let base = wiped_dir("run-history-combats-only");
-    let data = std::path::Path::new(&base);
+    let data = &base;
     seed_data(data, "[]", COMBATS_ONLY);
 
     let view = selected("GAMMA", 0, 4);
@@ -235,9 +241,8 @@ fn combat_only_runs_fall_back_to_a_synthesized_view() {
         view.profile, 4,
         "the select's profile carries onto the view"
     );
-    assert!(view.outcome.is_none());
-    assert_eq!(
-        view.result, "Unfinished",
+    assert!(
+        view.outcome.is_none(),
         "the run never closed, so its terminal state is unknown"
     );
     assert_eq!(view.started_at, 0);
@@ -259,7 +264,7 @@ fn combat_only_runs_fall_back_to_a_synthesized_view() {
 #[test]
 fn seeds_without_combats_or_entries_stay_empty() {
     let base = wiped_dir("run-history-fallback-empty");
-    let data = std::path::Path::new(&base);
+    let data = &base;
     seed_data(
         data,
         "[]",
@@ -290,20 +295,19 @@ fn seeds_without_combats_or_entries_stay_empty() {
 #[test]
 fn closed_runs_never_take_the_fallback() {
     let base = wiped_dir("run-history-no-fallback");
-    let data = std::path::Path::new(&base);
+    let data = &base;
     seed_data(data, RUNS, COMBATS);
 
     let defeat = selected("BETA", BETA_START, 2);
-    assert_eq!(defeat.result, "Defeat");
+    assert_eq!(defeat.outcome, Some(RunOutcome::Defeat));
     let won = selected("ALPHA", 1_786_579_200, 2);
     assert_eq!(won.outcome, Some(RunOutcome::Victory));
-    assert_eq!(won.result, "Victory");
 }
 
 #[test]
 fn abandoned_runs_render_the_abandoned_label() {
     let base = wiped_dir("run-history-abandoned");
-    let data = std::path::Path::new(&base);
+    let data = &base;
     let runs = r#"[
             {"run_id":5,"profile":2,"character":"DEFECT","ascension":2,"game_mode":"Standard",
              "outcome":"abandoned","seed":"GAMMA",
@@ -314,7 +318,6 @@ fn abandoned_runs_render_the_abandoned_label() {
 
     let view = selected("GAMMA", 1_786_579_200, 2);
     assert_eq!(view.outcome, Some(RunOutcome::Abandoned));
-    assert_eq!(view.result, "Abandoned");
     assert_eq!(
         view.ended_at, 1_786_579_800,
         "ended_at is the abandon moment"
@@ -324,7 +327,7 @@ fn abandoned_runs_render_the_abandoned_label() {
 #[test]
 fn fallback_views_flow_through_the_selection_plumbing() {
     let base = wiped_dir("run-history-fallback-plumbing");
-    let data = std::path::Path::new(&base);
+    let data = &base;
     seed_data(data, "[]", COMBATS_ONLY);
 
     assert!(select("GAMMA", 0, 4));
@@ -332,7 +335,7 @@ fn fallback_views_flow_through_the_selection_plumbing() {
     let expected = selected("GAMMA", 0, 4);
     let stored = selected_view().expect("fallback selection stored");
     assert_eq!(&*expected, &stored);
-    assert_eq!(stored.result, "Unfinished");
+    assert_eq!(stored.outcome, None);
     let fp = selected_view_fingerprint().expect("fingerprint present");
     assert!(select("GAMMA", 0, 4));
     assert_eq!(selected_view_fingerprint(), Some(fp));
@@ -344,7 +347,7 @@ fn fallback_views_flow_through_the_selection_plumbing() {
 #[test]
 fn fallback_disambiguates_same_seed_replays_by_start_time() {
     let base = wiped_dir("run-history-fallback-seq");
-    let data = std::path::Path::new(&base);
+    let data = &base;
     seed_data(
         data,
         "[]",
@@ -373,14 +376,8 @@ fn fallback_disambiguates_same_seed_replays_by_start_time() {
 #[test]
 fn same_seed_without_the_exact_time_selects_empty() {
     let base = wiped_dir("run-history-tiebreak");
-    let data = std::path::Path::new(&base);
-    let runs = r#"[
-            {"run_id":1,"profile":2,"character":"A","ascension":0,"game_mode":"Daily","outcome":"victory",
-             "seed":"DAILY","started_at":1786579200,"ended_at":1786579800,"combats":0},
-            {"run_id":2,"profile":2,"character":"B","ascension":0,"game_mode":"Daily","outcome":"defeat",
-             "seed":"DAILY","started_at":1786752000,"ended_at":1786752600,"combats":0}
-        ]"#;
-    seed_data(data, runs, "[]");
+    let data = &base;
+    seed_data(data, DAILY_RUNS, "[]");
 
     assert!(matches!(
         select_run("DAILY", 1_786_708_800, 2),
@@ -391,14 +388,8 @@ fn same_seed_without_the_exact_time_selects_empty() {
 #[test]
 fn seed_match_with_exact_start_time_wins() {
     let base = wiped_dir("run-history-exact-seed-time");
-    let data = std::path::Path::new(&base);
-    let runs = r#"[
-            {"run_id":1,"profile":2,"character":"A","ascension":0,"game_mode":"Daily","outcome":"victory",
-             "seed":"DAILY","started_at":1786579200,"ended_at":1786579800,"combats":0},
-            {"run_id":2,"profile":2,"character":"B","ascension":0,"game_mode":"Daily","outcome":"defeat",
-             "seed":"DAILY","started_at":1786752000,"ended_at":1786752600,"combats":0}
-        ]"#;
-    seed_data(data, runs, "[]");
+    let data = &base;
+    seed_data(data, DAILY_RUNS, "[]");
 
     let view = selected("DAILY", 1_786_579_200, 2);
     assert_eq!(view.run_id, 1);
@@ -408,7 +399,7 @@ fn seed_match_with_exact_start_time_wins() {
 #[test]
 fn a_wrong_seed_never_matches_even_at_the_exact_time() {
     let base = wiped_dir("run-history-exact-no-seed");
-    let data = std::path::Path::new(&base);
+    let data = &base;
     let runs = r#"[
             {"run_id":1,"profile":2,"character":"A","ascension":0,"game_mode":"Standard","outcome":"defeat",
              "seed":"REAL_SEED","started_at":1786579200,"ended_at":1786579800,"combats":0}
@@ -424,7 +415,7 @@ fn a_wrong_seed_never_matches_even_at_the_exact_time() {
 #[test]
 fn unknown_runs_select_empty() {
     let base = wiped_dir("run-history-empty");
-    let data = std::path::Path::new(&base);
+    let data = &base;
     seed_data(data, RUNS, COMBATS);
 
     let far = BETA_START + 1_000_000;
@@ -472,7 +463,7 @@ fn unknown_runs_select_empty() {
 #[test]
 fn cache_reuses_until_invalidated() {
     let base = wiped_dir("run-history-cache");
-    let data = std::path::Path::new(&base);
+    let data = &base;
     seed_data(data, RUNS, COMBATS);
 
     let first = selected("BETA", BETA_START, 2);
@@ -491,7 +482,7 @@ fn cache_reuses_until_invalidated() {
 #[test]
 fn rollup_keys_on_id_and_kind_and_teams_merge() {
     let base = wiped_dir("run-history-kinds");
-    let data = std::path::Path::new(&base);
+    let data = &base;
     let runs = r#"[{"run_id":1,"profile":2,"character":"A","ascension":0,"game_mode":"Standard",
                         "outcome":"victory","seed":"K","started_at":1786579200,
                         "ended_at":1786579800,"combats":1}]"#;
@@ -528,7 +519,7 @@ fn rollup_keys_on_id_and_kind_and_teams_merge() {
 #[test]
 fn select_stores_and_clear_drops_the_panel_view() {
     let base = wiped_dir("run-history-selection");
-    let data = std::path::Path::new(&base);
+    let data = &base;
     seed_data(data, RUNS, COMBATS);
 
     assert!(select("BETA", BETA_START, 2));
@@ -554,12 +545,11 @@ fn view_fingerprint_tracks_every_view_field() {
         ascension: 7,
         game_mode: "Standard".to_owned(),
         outcome: Some(RunOutcome::Defeat),
-        result: "Defeat".to_owned(),
         seed: "BETA".to_owned(),
         combats: vec![CombatView {
             seq: 1,
             encounter: "ENC0".to_owned(),
-            result: "completed".to_owned(),
+            result: CombatResult::Completed,
             damage_dealt: 30,
             damage_taken: 10,
             turns: 3,
@@ -591,7 +581,7 @@ fn view_fingerprint_tracks_every_view_field() {
     changed.character = "DEFECT".to_owned();
     assert_ne!(view_fingerprint(&changed), base);
     let mut changed = synthetic();
-    changed.result = "Unfinished".to_owned();
+    changed.outcome = None;
     assert_ne!(view_fingerprint(&changed), base);
     let mut changed = synthetic();
     changed.seed = "OTHER".to_owned();
@@ -616,7 +606,7 @@ fn view_fingerprint_tracks_every_view_field() {
 #[test]
 fn per_player_rollups_split_the_run() {
     let base = wiped_dir("run-history-phase3-rollups");
-    let data = std::path::Path::new(&base);
+    let data = &base;
     let runs = r#"[{"run_id":7,"profile":2,"character":"IRONCLAD,SILENT","ascension":0,"game_mode":"Standard",
                         "outcome":"victory","seed":"P3","started_at":1786579200,
                         "ended_at":1786587000,"combats":1,
@@ -651,7 +641,7 @@ fn per_player_rollups_split_the_run() {
 #[test]
 fn run_filter_toggle_selects_and_deselects_players() {
     let base = wiped_dir("run-history-phase3-filter");
-    let data = std::path::Path::new(&base);
+    let data = &base;
     let runs = r#"[{"run_id":8,"profile":2,"character":"A,B","ascension":0,"game_mode":"Standard",
                         "outcome":"victory","seed":"F","started_at":1786579200,
                         "ended_at":1786587000,"combats":0,
@@ -678,7 +668,7 @@ fn run_filter_toggle_selects_and_deselects_players() {
 #[test]
 fn run_filter_heals_when_the_roster_lacks_the_selected_slot() {
     let base = wiped_dir("run-history-phase3-heal");
-    let data = std::path::Path::new(&base);
+    let data = &base;
     let runs = r#"[{"run_id":9,"profile":2,"character":"A","ascension":0,"game_mode":"Standard",
                         "outcome":"victory","seed":"H","started_at":1786579200,
                         "ended_at":1786587000,"combats":0,

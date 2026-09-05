@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::data::state::{RunContext, RunOutcome, RunPlayer};
+use crate::data::state::{CombatResult, EndedRun, RunOutcome, RunPlayer};
 use crate::source_kind::SourceKind;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
@@ -68,7 +68,7 @@ pub struct CombatRec {
     pub combat_id: u32,
     pub started_at: i64,
     pub encounter_id: String,
-    pub result: String,
+    pub result: CombatResult,
     pub turns: u32,
     pub damage_received: i64,
     pub run: Option<RunRec>,
@@ -140,17 +140,18 @@ struct RunDocOwned {
 
 /// `profile` is the shim-forwarded SaveManager.ProfileId (-1 when never
 /// reported).
-pub fn build_run_json(run: &RunContext, profile: i32) -> String {
+pub fn build_run_json(ended: &EndedRun, profile: i32) -> String {
+    let run = &ended.context;
     let doc = RunDoc {
-        run_id: run.seq,
+        run_id: run.run.seq,
         profile,
-        character: &run.character,
-        ascension: run.ascension,
-        game_mode: &run.game_mode,
-        outcome: run.outcome,
-        seed: &run.seed,
+        character: &run.run.character,
+        ascension: run.run.ascension,
+        game_mode: &run.run.game_mode,
+        outcome: ended.outcome,
+        seed: &run.run.seed,
         started_at: run.started_at,
-        ended_at: run.ended_at,
+        ended_at: ended.ended_at,
         players: run.players.iter().map(PlayerDoc::from).collect(),
     };
     let json = serde_json::to_string(&doc).expect("run document cannot fail to serialize");
@@ -158,28 +159,28 @@ pub fn build_run_json(run: &RunContext, profile: i32) -> String {
     #[cfg(debug_assertions)]
     {
         let parsed: RunDocOwned = serde_json::from_str(&json).expect("run JSON must parse back");
-        debug_assert_eq!(parsed.run_id, run.seq, "run run_id must round-trip");
+        debug_assert_eq!(parsed.run_id, run.run.seq, "run run_id must round-trip");
         debug_assert_eq!(parsed.profile, profile, "run profile must round-trip");
         debug_assert_eq!(
-            parsed.character, run.character,
+            parsed.character, run.run.character,
             "run character must round-trip"
         );
         debug_assert_eq!(
-            parsed.ascension, run.ascension,
+            parsed.ascension, run.run.ascension,
             "run ascension must round-trip"
         );
         debug_assert_eq!(
-            parsed.game_mode, run.game_mode,
+            parsed.game_mode, run.run.game_mode,
             "run game_mode must round-trip"
         );
-        debug_assert_eq!(parsed.outcome, run.outcome, "run outcome must round-trip");
-        debug_assert_eq!(parsed.seed, run.seed, "run seed must round-trip");
+        debug_assert_eq!(parsed.outcome, ended.outcome, "run outcome must round-trip");
+        debug_assert_eq!(parsed.seed, run.run.seed, "run seed must round-trip");
         debug_assert_eq!(
             parsed.started_at, run.started_at,
             "run started_at must round-trip"
         );
         debug_assert_eq!(
-            parsed.ended_at, run.ended_at,
+            parsed.ended_at, ended.ended_at,
             "run ended_at must round-trip"
         );
         debug_assert_eq!(

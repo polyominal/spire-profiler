@@ -77,7 +77,7 @@ pub(crate) fn build_matrix(shell: &Shell, root: &Path) -> Result<Vec<(String, Pa
     ensure_zigbuild(shell)?;
     let zig = crate::zig::resolve_zig(shell)?;
     // Pin the resolved zig (never PATH) for the whole native build.
-    let _zigbuild_zig_path = shell.push_env("CARGO_ZIGBUILD_ZIG_PATH", zig.binary.as_path());
+    let _zigbuild_zig_path = shell.push_env("CARGO_ZIGBUILD_ZIG_PATH", zig.as_path());
     ensure_targets(shell)?;
 
     let mut libs = Vec::new();

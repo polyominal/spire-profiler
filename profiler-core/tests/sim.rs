@@ -18,7 +18,9 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-use profiler_core::data::state::{self, PendingContrib, RunOutcome, STATE, SourceKind};
+use profiler_core::data::state::{
+    self, CombatResult, PendingContrib, RunOutcome, STATE, SourceKind,
+};
 use profiler_core::data::{events, ledger, records};
 use profiler_core::test_util::{combat_ids, wiped_dir};
 
@@ -99,18 +101,11 @@ fn check_invariants(step: u32) {
             check_combat_totals(combat, step);
             check_card_invariants(combat, step);
         }
-        // Play source and card id are set/cleared in lockstep per slot;
-        // otherwise the shim's explicit-self-id damage/block mis-resolves.
         for (slot, player) in st.per_player.iter().enumerate() {
-            assert_eq!(
-                player.active_play_source.is_some(),
-                player.active_play_card_id.is_some(),
-                "step {step}: slot {slot}: active_play_source and active_play_card_id must be set/cleared together"
-            );
-            if player.active_play_source.is_some() {
+            if let Some(play) = &player.active_play {
                 assert!(
-                    player.active_play_source_slot <= state::TEAM_SLOT,
-                    "step {step}: slot {slot}: active_play_source_slot must stay in the source-slot vocabulary"
+                    play.row_slot <= state::TEAM_SLOT,
+                    "step {step}: slot {slot}: active play row slot out of the source-slot vocabulary"
                 );
             }
         }
@@ -253,16 +248,10 @@ fn check_queue_bounds(st: &state::State, step: u32) {
 
 /// A queued modifier contribution forces the next event to be an enemy
 /// hit covering the share.
+// A single linear dispatch; splitting it would bury the roll mapping.
+#[allow(clippy::too_many_lines)]
 fn drive_one_event(rng: &mut Rng, follow_up: &mut bool) {
     let roll = rng.below(99);
-    if roll <= 47 {
-        drive_common_event(rng, follow_up, roll);
-    } else {
-        drive_rare_event(rng, roll);
-    }
-}
-
-fn drive_common_event(rng: &mut Rng, follow_up: &mut bool, roll: u64) {
     match roll {
         0..=15 => drive_card_play(rng, follow_up),
         16..=27 => drive_damage(rng, follow_up),
@@ -283,14 +272,6 @@ fn drive_common_event(rng: &mut Rng, follow_up: &mut bool, roll: u64) {
             0,
         ),
         42..=47 => drive_power_applied(rng),
-        _ => unreachable!("rolls 48+ are dispatched elsewhere"),
-    }
-}
-
-// A single linear dispatch; splitting it would bury the roll mapping.
-#[allow(clippy::too_many_lines)]
-fn drive_rare_event(rng: &mut Rng, roll: u64) {
-    match roll {
         48..=50 => {
             let power = if rng.below(2) == 0 {
                 "STRENGTH_POWER"
@@ -559,7 +540,11 @@ fn check_written_files(base: &Path, player_died: bool) {
     assert_eq!(rec.combat_id, 1, "the scenario's only combat is seq 1");
     assert_eq!(
         rec.result,
-        if player_died { "defeat" } else { "completed" },
+        if player_died {
+            CombatResult::Defeat
+        } else {
+            CombatResult::Completed
+        },
         "the combat result must mirror whether the walk killed the player"
     );
     // The generation-tree model carries no origin field on any card row, so

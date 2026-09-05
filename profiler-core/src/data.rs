@@ -64,8 +64,8 @@
 //! fallback. During a play only the FIRST orb trigger credits the
 //! channeling source — later triggers credit the evoking card. Potions
 //! prefix `OnUseWrapper` so the fallback exists before the effects run (a
-//! postfix would be too late for FlexPotion's Strength); potion entries
-//! live in `orb_sources` under `hash == 0`.
+//! postfix would be too late for FlexPotion's Strength); each slot owns
+//! its potion source directly, outside the orb table.
 //!
 //! ## Generated cards
 //!

@@ -20,12 +20,6 @@ pub fn binary_in(dir: &Path) -> PathBuf {
     dir.join("zig")
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Zig {
-    pub binary: PathBuf,
-    pub version: String,
-}
-
 pub fn pick(bootstrap_dir: &Path) -> Result<PathBuf> {
     let bootstrapped = binary_in(bootstrap_dir);
     if bootstrapped.is_file() {
@@ -41,7 +35,7 @@ pub fn pick(bootstrap_dir: &Path) -> Result<PathBuf> {
 
 /// ALWAYS the bootstrap dir, never PATH; a wrong zig can never silently
 /// feed the build.
-pub fn resolve_zig(shell: &Shell) -> Result<Zig> {
+pub fn resolve_zig(shell: &Shell) -> Result<PathBuf> {
     let dir = bootstrap_dir();
     let binary = match pick(&dir) {
         Ok(binary) => binary,
@@ -57,9 +51,10 @@ pub fn resolve_zig(shell: &Shell) -> Result<Zig> {
         ensure_bootstrap_in(shell, &dir)?;
     }
     let binary = pick(&dir)?;
-    let version = zig_version_of(shell, &binary)?;
-    println!("zig: {} ({version}, bootstrapped)", binary.display());
-    Ok(Zig { binary, version })
+    // The check above (and the refresh's post-install verify) pins the
+    // version, so the println needs no second query.
+    println!("zig: {} ({ZIG_VERSION}, bootstrapped)", binary.display());
+    Ok(binary)
 }
 
 /// Anything else fails outright (the build only runs on the four

@@ -4,7 +4,9 @@
 use std::fmt;
 
 use crate::data::persistence::{event_log, now_seconds, write_run_record};
-use crate::data::state::{self, RunOutcome, RunPlayer, STATE, caps};
+use crate::data::state::{
+    self, EndedRun, RunContext, RunOutcome, RunPlayer, RunSnapshot, STATE, caps,
+};
 use crate::{fail, marker};
 
 pub fn set_run_meta(profile_id: i32) {
@@ -33,14 +35,9 @@ pub fn run_started(
         fail!("run_started called before init");
         return;
     }
-    // A previous unclosed run is closed out as a loss.
-    let close_previous = STATE.with(|cell| {
-        let state = cell.borrow();
-        state.run_ctx.active
-    });
-    if close_previous {
+    if let Some(ended) = take_ended_run(RunOutcome::Defeat) {
         // Closing with 0 would fabricate a win.
-        run_ended(RunOutcome::Defeat);
+        record_ended_run(&ended);
     }
     let (seq, resumed_seq) = STATE.with(|cell| {
         let mut state = cell.borrow_mut();
@@ -59,16 +56,16 @@ pub fn run_started(
         state.run_cards.clear();
         state.run_turns = 0;
         state.run_combats = 0;
-        state.run_seq_accumulated = seq;
         state.player_filter = state::PlayerFilter::All;
         let roster = parse_roster(character_ids, net_ids);
-        state.run_ctx = state::RunContext {
-            active: true,
-            seq,
-            character: character_ids.to_owned(),
-            ascension,
-            game_mode: game_mode.to_owned(),
-            seed: seed.to_owned(),
+        state.run_ctx = Some(RunContext {
+            run: RunSnapshot {
+                seq,
+                character: character_ids.to_owned(),
+                ascension,
+                game_mode: game_mode.to_owned(),
+                seed: seed.to_owned(),
+            },
             started_at: if start_time > 0 {
                 start_time
             } else {
@@ -76,8 +73,7 @@ pub fn run_started(
                 now_seconds()
             },
             players: roster,
-            ..state::RunContext::default()
-        };
+        });
         (seq, resumed)
     });
     // The accumulator rebuild re-borrows STATE, so the start line waits.
@@ -94,11 +90,37 @@ pub fn run_started(
     );
     STATE.with(|cell| {
         let state = cell.borrow();
-        let roster = &state.run_ctx.players;
-        if roster.len() > 1 {
-            event_log!("{}", RosterLog(roster));
+        if let Some(run) = state.run_ctx.as_ref()
+            && run.players.len() > 1
+        {
+            event_log!("{}", RosterLog(&run.players));
         }
     });
+}
+
+fn take_ended_run(outcome: RunOutcome) -> Option<EndedRun> {
+    STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        if !state.initialized {
+            return None;
+        }
+        state.run_ctx.take().map(|context| EndedRun {
+            context,
+            outcome,
+            // Abandonment carries no separate timestamp: `ended_at` IS
+            // the abandon moment.
+            ended_at: now_seconds(),
+        })
+    })
+}
+
+fn record_ended_run(ended: &EndedRun) {
+    write_run_record(ended);
+    marker!(
+        "run {} recorded ({})",
+        ended.context.run.seq,
+        ended.outcome.name()
+    );
 }
 
 struct RosterLog<'a>(&'a [RunPlayer]);
@@ -145,12 +167,12 @@ fn parse_roster(character_ids: &str, net_ids: &str) -> Vec<RunPlayer> {
         .collect()
 }
 
-/// No record is written; clearing `active` makes the next close_previous a
-/// no-op instead of a spurious defeat.
+/// No record is written; taking the active run makes the next close_previous
+/// a no-op instead of a spurious defeat.
 pub fn run_suspended() {
     let suspended_seq = STATE.with(|cell| {
         let mut state = cell.borrow_mut();
-        if !state.initialized || !state.run_ctx.active {
+        if !state.initialized {
             return None;
         }
         // A save+quit mid-combat discards that combat.
@@ -160,9 +182,7 @@ pub fn run_suspended() {
         // Without a combat there is no avatar row, so a selected filter
         // would strand the run tab with no way back to All.
         state.player_filter = state::PlayerFilter::All;
-        let seq = state.run_ctx.seq;
-        state.run_ctx.active = false;
-        Some(seq)
+        state.run_ctx.take().map(|run| run.run.seq)
     });
     if let Some(seq) = suspended_seq {
         // A stale screen-open flag would keep F8 routed to the run panel on
@@ -173,27 +193,9 @@ pub fn run_suspended() {
 }
 
 pub fn run_ended(outcome: RunOutcome) {
-    let active = STATE.with(|cell| {
-        let mut state = cell.borrow_mut();
-        if !state.initialized || !state.run_ctx.active {
-            return false;
-        }
-        state.run_ctx.outcome = outcome;
-        // Abandonment carries no separate timestamp: `ended_at` IS the
-        // abandon moment.
-        state.run_ctx.ended_at = now_seconds();
-        true
-    });
-    if !active {
-        return;
+    if let Some(ended) = take_ended_run(outcome) {
+        record_ended_run(&ended);
     }
-    write_run_record();
-    STATE.with(|cell| cell.borrow_mut().run_ctx.active = false);
-    let (seq, outcome) = STATE.with(|cell| {
-        let state = cell.borrow();
-        (state.run_ctx.seq, state.run_ctx.outcome)
-    });
-    marker!("run {seq} recorded ({})", outcome.name());
 }
 
 /// The shim forwards the displayed run's seed, `StartTime`, and profile.

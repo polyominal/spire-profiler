@@ -13,6 +13,19 @@ pub enum UiTab {
     Run = 1,
 }
 
+impl UiTab {
+    pub const ALL: [UiTab; 2] = [UiTab::Combat, UiTab::Run];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            UiTab::Combat => "This Combat",
+            UiTab::Run => "Run Summary",
+        }
+    }
+}
+
+const _: () = assert!(UiTab::ALL.len() == 2);
+
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Section {
@@ -122,7 +135,7 @@ pub(crate) struct UiMeta {
     pub combats: u32,
     pub total_damage: i64,
     pub damage_taken: i64,
-    /// -1 when turns == 0 (the panel renders "—").
+    /// Meaningless at turns == 0 (the panel renders "—" then).
     pub dps_x10: i32,
     pub encounter_len: u8,
     pub encounter: [u8; 64],
@@ -136,7 +149,7 @@ impl Default for UiMeta {
             combats: 0,
             total_damage: 0,
             damage_taken: 0,
-            dps_x10: -1,
+            dps_x10: 0,
             encounter_len: 0,
             encounter: [0; 64],
         }

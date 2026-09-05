@@ -47,7 +47,7 @@ pub(crate) fn visible() -> bool {
 }
 
 pub(crate) fn run_active() -> bool {
-    STATE.with(|s| s.borrow().run_ctx.active)
+    STATE.with(|s| s.borrow().run_ctx.is_some())
 }
 
 /// Outside a run the press is ignored; the stored state carries forward.
@@ -103,7 +103,7 @@ pub struct SpireProfilerPanel {
     tip_lines: Vec<crate::ui::tooltip::TipLine>,
     viewport_seen: Option<Vector2>,
     mouse: Vector2,
-    font: panel_replay::FontState,
+    font: crate::ui::theme::AssetState,
     font_plan: panel_replay::FontPlan,
     theme: crate::ui::theme::Theme,
     gutter: f32,
@@ -152,7 +152,7 @@ impl SpireProfilerPanel {
             tip_lines: Vec::new(),
             viewport_seen: None,
             mouse: Vector2::ZERO,
-            font: panel_replay::FontState::Unfetched,
+            font: crate::ui::theme::AssetState::Unfetched,
             font_plan: panel_replay::FontPlan::default(),
             theme: crate::ui::theme::Theme::new(),
             gutter: 0.0,
@@ -614,17 +614,14 @@ impl SpireProfilerPanel {
         );
         self.children.update_frames(frame, body_frame);
         let legend = legend.map(|rect| Rect2::new(rect.position - frame.position, rect.size));
-        if legend != self.legend {
-            self.legend = legend;
-            self.object.queue_redraw();
-            self.children.queue_overlay_redraw();
-        }
+        panel_common::apply_overlay_rect(
+            &mut self.legend,
+            legend,
+            &self.object,
+            &mut self.children,
+        );
         let tip = tip.map(|tip| Rect2::new(tip.position - frame.position, tip.size));
-        if tip != self.tip {
-            self.tip = tip;
-            self.object.queue_redraw();
-            self.children.queue_overlay_redraw();
-        }
+        panel_common::apply_overlay_rect(&mut self.tip, tip, &self.object, &mut self.children);
     }
 
     /// Tab clicks switch tabs; a press outside the panel (plate + strip)
@@ -649,7 +646,6 @@ impl SpireProfilerPanel {
             &mut self.scroll,
         );
         if panel_common::dismiss_on_outside_press(
-            true,
             step.pressed && !was_down,
             panel_common::over_panel(rect, mouse),
         ) {
@@ -787,8 +783,7 @@ fn cheap_state_signature(tab: UiTab) -> u64 {
                 c.seq.hash(&mut hasher);
                 c.encounter_id.hash(&mut hasher);
                 c.encounter_type.hash(&mut hasher);
-                c.finished.hash(&mut hasher);
-                c.result.hash(&mut hasher);
+                c.phase.hash(&mut hasher);
                 c.cards.len().hash(&mut hasher);
                 for card in &c.cards {
                     hash_card_stat(&mut hasher, card);
@@ -851,7 +846,7 @@ mod tests {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
             st.initialized = true;
-            st.run_ctx.active = true;
+            st.run_ctx = Some(Default::default());
         });
         VISIBLE.with(|v| v.set(false));
         assert!(!visible());
@@ -868,12 +863,12 @@ mod tests {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
             st.initialized = true;
-            st.run_ctx.active = false;
+            st.run_ctx = None;
         });
         VISIBLE.with(|v| v.set(false));
         toggle();
         assert!(!visible(), "F8 outside a run must not turn the panel on");
-        STATE.with(|s| s.borrow_mut().run_ctx.active = true);
+        STATE.with(|s| s.borrow_mut().run_ctx = Some(Default::default()));
         toggle();
         assert!(visible(), "F8 inside a run must turn the panel on");
     }
@@ -883,7 +878,7 @@ mod tests {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
             st.initialized = true;
-            st.run_ctx.active = true;
+            st.run_ctx = Some(Default::default());
         });
         VISIBLE.with(|v| v.set(true));
         dismiss();

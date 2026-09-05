@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::data::records::CombatRec;
-use crate::data::state::{RunOutcome, TEAM_SLOT};
+use crate::data::state::{CombatResult, RunOutcome, TEAM_SLOT};
 use crate::source_kind::SourceKind;
 use crate::test_util::wiped_dir;
 
@@ -255,7 +255,7 @@ fn self_damage_credits_the_sources_red_segment() {
     assert_eq!(card_json(&doc, "BLOODLETTING")["self_damage"], 3);
     assert_eq!(card_json(&doc, "OFFERING")["self_damage"], 6);
     assert_eq!(combat.damage_received, 19);
-    let cards = doc[0]["cards"].as_array().expect("combat cards array");
+    let cards = doc["cards"].as_array().expect("combat cards array");
     assert!(
         cards.iter().all(|c| c["self_damage"] != 8),
         "the enemy hit must not be credited as self damage"
@@ -379,11 +379,13 @@ fn team_defeat_requires_every_slot_dead() {
         .collect();
     assert_eq!(combats.len(), 2, "both combat records persisted");
     assert_eq!(
-        combats[0].result, "completed",
+        combats[0].result,
+        CombatResult::Completed,
         "a surviving teammate keeps the team alive"
     );
     assert_eq!(
-        combats[1].result, "defeat",
+        combats[1].result,
+        CombatResult::Defeat,
         "all players dead is a team defeat"
     );
 }
@@ -400,16 +402,14 @@ fn turn_started_clears_every_slots_fallbacks() {
     potion_context_begin("FIRE_POTION", 1);
     STATE.with(|cell| {
         let state = cell.borrow();
-        assert!(state.per_player[0].orb_fallback.is_some());
-        assert!(state.per_player[1].potion_fallback.is_some());
+        assert!(state.per_player[0].fallback.is_some());
+        assert!(state.per_player[1].fallback.is_some());
     });
     turn_started();
     STATE.with(|cell| {
         let state = cell.borrow();
-        assert!(state.per_player[0].orb_fallback.is_none());
-        assert!(state.per_player[0].potion_fallback.is_none());
-        assert!(state.per_player[1].orb_fallback.is_none());
-        assert!(state.per_player[1].potion_fallback.is_none());
+        assert!(state.per_player[0].fallback.is_none());
+        assert!(state.per_player[1].fallback.is_none());
     });
     combat_ended();
 }
@@ -430,6 +430,27 @@ fn negative_and_zero_wire_totals_are_dropped() {
     damage_dealt(DamageDealt {
         total: -3,
         unblocked: -3,
+        card_source_id: "STRIKE",
+        ..DamageDealt::default()
+    });
+    damage_dealt(DamageDealt {
+        total: 5,
+        unblocked: 7,
+        blocked: -2,
+        card_source_id: "STRIKE",
+        ..DamageDealt::default()
+    });
+    damage_dealt(DamageDealt {
+        total: 5,
+        unblocked: 2,
+        blocked: 2,
+        card_source_id: "STRIKE",
+        ..DamageDealt::default()
+    });
+    damage_dealt(DamageDealt {
+        total: 5,
+        unblocked: 0,
+        blocked: 6,
         card_source_id: "STRIKE",
         ..DamageDealt::default()
     });
@@ -514,4 +535,34 @@ fn a_corrupt_slot_clamps_on_every_event() {
     assert_eq!((enemy.player, enemy.damage_dealt), (TEAM_SLOT, 2));
     let ally = card_row(&combat, "ALLY_POWER");
     assert_eq!((ally.player, ally.damage_dealt), (0, 3));
+}
+#[test]
+fn osty_killed_after_combat_end_leaves_the_finished_record_untouched() {
+    let base = combat_fixture("OSTY_POST_FINISH");
+
+    card_play_started("BLOODLETTING", 0, 1, 0, 0);
+    osty_summoned("BLOODLETTING", 0, 10, 0);
+    combat_ended();
+
+    // The play is still open (the end landed mid-play), so a pre-fix kill
+    // would book -10 effective block on a record already written to disk.
+    osty_killed(0);
+    let rows = current_rows();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].block_effective, 0);
+    let (combat, _) = read_combat(&base);
+    assert_eq!(card_row(&combat, "BLOODLETTING").block_effective, 0);
+}
+
+#[test]
+fn orb_channeled_after_combat_end_ignores_the_stale_play() {
+    let _base = combat_fixture("ORB_POST_FINISH");
+
+    card_play_started("STRIKE", 0, 1, 0, 0);
+    combat_ended();
+
+    orb_channeled(42, 0);
+    STATE.with(|cell| {
+        assert!(cell.borrow().orb_sources.is_empty());
+    });
 }

@@ -6,8 +6,8 @@ use crate::data::ledger;
 use crate::data::ledger::AsyncFallback;
 use crate::data::persistence::{event_log, now_seconds, write_combat_file};
 use crate::data::state::{
-    Combat, OstyEntry, PlayerSlotState, STATE, SourceKind, State, TEAM_SLOT, caps,
-    clamp_source_slot,
+    Combat, CombatPhase, CombatResult, OstyEntry, PlayerSlotState, STATE, SourceKind, State,
+    TEAM_SLOT, caps, clamp_source_slot,
 };
 use crate::{fail, marker};
 
@@ -15,7 +15,7 @@ pub fn turn_started() {
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         let turns = {
-            let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
+            let Some(combat) = Combat::active_mut(&mut state.current) else {
                 return;
             };
             combat.turns += 1;
@@ -43,12 +43,7 @@ pub fn osty_summoned(source_id: &str, source_kind: i32, hp_amount: i32, player_s
         if !state.initialized || hp_amount <= 0 {
             return;
         }
-        if state
-            .current
-            .as_mut()
-            .filter(|combat| !combat.finished)
-            .is_none()
-        {
+        if Combat::active_mut(&mut state.current).is_none() {
             return;
         }
         let slot = state.slot_index(player_slot);
@@ -67,7 +62,7 @@ pub fn osty_summoned(source_id: &str, source_kind: i32, hp_amount: i32, player_s
             player_slot,
             AsyncFallback::Allow,
         ) {
-            let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
+            let Some(combat) = Combat::active_mut(&mut state.current) else {
                 return;
             };
             Some((
@@ -96,69 +91,55 @@ pub fn osty_summoned(source_id: &str, source_kind: i32, hp_amount: i32, player_s
 
 /// Consume the owner slot's defensive stack LIFO; overflow credits the
 /// "OSTY" entry itself.
-fn absorb_osty_damage(damage: i32, player_slot: i32) {
-    STATE.with(|cell| {
-        let mut state = cell.borrow_mut();
-        if !state.initialized || damage <= 0 {
-            return;
-        }
-        if state
-            .current
-            .as_mut()
-            .filter(|combat| !combat.finished)
-            .is_none()
+fn absorb_osty_damage_in(state: &mut State, damage: i32, player_slot: i32) {
+    let slot = state.slot_index(player_slot);
+    let mut remaining: i64 = damage as i64;
+    let mut i = state.per_player[slot].osty_stack.len();
+    while i > 0 && remaining > 0 {
+        i -= 1;
+        // Entries are pushed with HP and removed on depletion, so
+        // every stack entry still has some to absorb.
+        debug_assert!(
+            state.per_player[slot].osty_stack[i].remaining > 0,
+            "depleted osty entries must have left the stack"
+        );
+        let take = state.per_player[slot].osty_stack[i]
+            .remaining
+            .min(remaining);
+        let (id, kind, player) = (
+            state.per_player[slot].osty_stack[i].id.clone(),
+            state.per_player[slot].osty_stack[i].kind,
+            state.per_player[slot].osty_stack[i].player,
+        );
         {
-            return;
-        }
-        let slot = state.slot_index(player_slot);
-        let mut remaining: i64 = damage as i64;
-        let mut i = state.per_player[slot].osty_stack.len();
-        while i > 0 && remaining > 0 {
-            i -= 1;
-            // Entries are pushed with HP and removed on depletion, so
-            // every stack entry still has some to absorb.
-            debug_assert!(
-                state.per_player[slot].osty_stack[i].remaining > 0,
-                "depleted osty entries must have left the stack"
-            );
-            let take = state.per_player[slot].osty_stack[i]
-                .remaining
-                .min(remaining);
-            let (id, kind, player) = (
-                state.per_player[slot].osty_stack[i].id.clone(),
-                state.per_player[slot].osty_stack[i].kind,
-                state.per_player[slot].osty_stack[i].player,
-            );
-            {
-                let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
-                    return;
-                };
-                if let Some(index) = ledger::get_or_create_card_kind(combat, player, &id, kind) {
-                    combat.cards[index].block_effective += take;
-                }
-            }
-            state.per_player[slot].osty_stack[i].remaining -= take;
-            remaining -= take;
-            if state.per_player[slot].osty_stack[i].remaining <= 0 {
-                state.per_player[slot].osty_stack.remove(i);
-            }
-        }
-        if remaining > 0 {
-            let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
+            let Some(combat) = Combat::active_mut(&mut state.current) else {
                 return;
             };
-            // The overflow has no player owner: key it at the TEAM slot.
-            if let Some(index) =
-                ledger::get_or_create_card_kind(combat, TEAM_SLOT, "OSTY", SourceKind::Osty)
-            {
-                combat.cards[index].block_effective += remaining;
+            if let Some(index) = ledger::get_or_create_card_kind(combat, player, &id, kind) {
+                combat.cards[index].block_effective += take;
             }
         }
-        event_log!(
-            "  osty absorbed {damage} damage ({} from summon sources)",
-            damage as i64 - remaining
-        );
-    });
+        state.per_player[slot].osty_stack[i].remaining -= take;
+        remaining -= take;
+        if state.per_player[slot].osty_stack[i].remaining <= 0 {
+            state.per_player[slot].osty_stack.remove(i);
+        }
+    }
+    if remaining > 0 {
+        let Some(combat) = Combat::active_mut(&mut state.current) else {
+            return;
+        };
+        // The overflow has no player owner: key it at the TEAM slot.
+        if let Some(index) =
+            ledger::get_or_create_card_kind(combat, TEAM_SLOT, "OSTY", SourceKind::Osty)
+        {
+            combat.cards[index].block_effective += remaining;
+        }
+    }
+    event_log!(
+        "  osty absorbed {damage} damage ({} from summon sources)",
+        damage as i64 - remaining
+    );
 }
 
 /// The remaining unabsorbed HP is removed from the killer card's credit.
@@ -177,15 +158,16 @@ pub fn osty_killed(player_slot: i32) {
             .map(|e| e.remaining)
             .sum();
         if remaining > 0
-            && let Some(combat) = state.current.as_mut()
-            && let Some((id, kind)) = state.per_player[slot].active_play_source.clone()
+            && let Some(combat) = Combat::active_mut(&mut state.current)
+            && let Some(play) = state.per_player[slot].active_play.clone()
         {
             // A generated instance's play credits its generator's slot.
-            let row_slot = state.per_player[slot].active_play_source_slot;
-            if let Some(index) = ledger::get_or_create_card_kind(combat, row_slot, &id, kind) {
+            if let Some(index) =
+                ledger::get_or_create_card_kind(combat, play.row_slot, &play.id, play.kind)
+            {
                 combat.cards[index].block_effective -= remaining;
                 state.per_player[slot].osty_stack.clear();
-                event_log!("  osty died: -{remaining} effective block on '{id}'");
+                event_log!("  osty died: -{remaining} effective block on '{}'", play.id);
                 return;
             }
         }
@@ -203,11 +185,11 @@ pub fn combat_started(encounter_id: &str, encounter_type: &str) {
     let interrupted = STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         // Finished combats are kept for the UI summary.
-        let combat = state.current.as_mut().filter(|combat| !combat.finished)?;
+        let combat = Combat::active_mut(&mut state.current)?;
         if combat.plays == 0 && combat.cards.is_empty() {
             return None;
         }
-        combat.result = "interrupted".to_owned();
+        combat.phase = CombatPhase::Finished(CombatResult::Interrupted);
         Some(combat.clone())
     });
     if let Some(combat) = interrupted {
@@ -236,13 +218,13 @@ pub fn combat_started(encounter_id: &str, encounter_type: &str) {
             encounter_id: encounter_id.to_owned(),
             encounter_type: encounter_type.to_owned(),
             started_at: now_seconds(),
-            run_seq: state.run_ctx.seq,
-            run_character: state.run_ctx.character.clone(),
-            run_ascension: state.run_ctx.ascension,
-            run_game_mode: state.run_ctx.game_mode.clone(),
-            run_seed: state.run_ctx.seed.clone(),
+            run: state.run_ctx.as_ref().map(|run| run.run.clone()),
             // The roster is in-memory only.
-            players: state.run_ctx.players.clone(),
+            players: state
+                .run_ctx
+                .as_ref()
+                .map(|run| run.players.clone())
+                .unwrap_or_default(),
             ..Combat::default()
         });
         event_log!("combat {seq} started: {encounter_id} ({encounter_type})");
@@ -273,31 +255,33 @@ pub fn damage_dealt(args: DamageDealt) {
         fail!("negative damage total {}", args.total);
         return;
     }
+    if args.unblocked < 0
+        || args.blocked < 0
+        || args.unblocked.checked_add(args.blocked) != Some(args.total)
+    {
+        fail!(
+            "damage split does not preserve total {}: unblocked {}, blocked {}",
+            args.total,
+            args.unblocked,
+            args.blocked
+        );
+        return;
+    }
     if args.total == 0 {
         return;
     }
     // Intent-display recalcs can queue contributions with no hit
     // following; every branch of damage_dealt_in drops or consumes them,
     // so a no-total event leaves the queue for the next real hit.
-    let total = args.total;
-    let receiver_slot = args.receiver_slot;
-    let needs_osty_absorb = STATE.with(|cell| {
+    STATE.with(|cell| {
         let mut state = cell.borrow_mut();
-        damage_dealt_in(&mut state, args)
+        damage_dealt_in(&mut state, args);
     });
-    if needs_osty_absorb {
-        absorb_osty_damage(total, receiver_slot);
-    }
 }
 
-fn damage_dealt_in(state: &mut State, args: DamageDealt) -> bool {
-    if state
-        .current
-        .as_mut()
-        .filter(|combat| !combat.finished)
-        .is_none()
-    {
-        return false;
+fn damage_dealt_in(state: &mut State, args: DamageDealt) {
+    if Combat::active_mut(&mut state.current).is_none() {
+        return;
     }
     if args.osty_flag == 1 && args.to_player == 0 {
         record_osty_dealt_in(
@@ -308,7 +292,7 @@ fn damage_dealt_in(state: &mut State, args: DamageDealt) -> bool {
             args.dealer_slot,
             args.card_source_slot,
         );
-        return false;
+        return;
     }
     // Osty absorbed: consume the owner slot's summon HP stack.
     if args.osty_flag == 2 {
@@ -316,7 +300,8 @@ fn damage_dealt_in(state: &mut State, args: DamageDealt) -> bool {
             .slot_state_mut(args.dealer_slot)
             .pending_contribs
             .clear();
-        return true;
+        absorb_osty_damage_in(state, args.total, args.receiver_slot);
+        return;
     }
     if args.to_player != 0 {
         record_damage_to_player_in(
@@ -331,7 +316,7 @@ fn damage_dealt_in(state: &mut State, args: DamageDealt) -> bool {
             args.receiver_slot,
             args.card_source_slot,
         );
-        return false;
+        return;
     }
     record_enemy_damage_in(
         state,
@@ -343,7 +328,6 @@ fn damage_dealt_in(state: &mut State, args: DamageDealt) -> bool {
         args.dealer_slot,
         args.card_source_slot,
     );
-    false
 }
 
 /// Resolve against the DEALER's slot state, credit, apply the queued
@@ -369,7 +353,7 @@ fn record_enemy_damage_in(
     ) {
         let index = route.card_index;
         {
-            let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
+            let Some(combat) = Combat::active_mut(&mut state.current) else {
                 return;
             };
             let card = &mut combat.cards[index];
@@ -384,7 +368,7 @@ fn record_enemy_damage_in(
         }
         ledger::apply_pending_contribs_in(state, index, dealer_slot);
         let id = {
-            let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
+            let Some(combat) = Combat::active_mut(&mut state.current) else {
                 return;
             };
             combat.cards[index].id.clone()
@@ -409,7 +393,7 @@ fn record_osty_dealt_in(
     card_source_slot: i32,
 ) {
     if !source.is_empty() {
-        let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
+        let Some(combat) = Combat::active_mut(&mut state.current) else {
             return;
         };
         let row_slot = clamp_source_slot(card_source_slot);
@@ -441,7 +425,7 @@ fn record_damage_to_player_in(
     card_source_slot: i32,
 ) {
     {
-        let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
+        let Some(combat) = Combat::active_mut(&mut state.current) else {
             return;
         };
         combat.damage_received += total as i64;
@@ -460,7 +444,7 @@ fn record_damage_to_player_in(
             card_source_slot,
             AsyncFallback::Allow,
         ) {
-            let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
+            let Some(combat) = Combat::active_mut(&mut state.current) else {
                 return;
             };
             combat.cards[index].self_damage += unblocked as i64;
@@ -504,7 +488,7 @@ pub fn block_gained(amount: i32, card_id: &str, player_slot: i32, source_slot: i
         // fields.
         let state = &mut *state;
         {
-            let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
+            let Some(combat) = Combat::active_mut(&mut state.current) else {
                 return;
             };
             combat.block_total += amount as i64;
@@ -526,7 +510,7 @@ pub fn block_gained(amount: i32, card_id: &str, player_slot: i32, source_slot: i
         };
         let base = block_base_after_mods(&state.per_player[slot], amount as i64);
         let (id, kind) = {
-            let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
+            let Some(combat) = Combat::active_mut(&mut state.current) else {
                 return;
             };
             combat.cards[index].block_gained += amount as i64;
@@ -557,7 +541,7 @@ pub fn player_died(player_slot: i32) {
 pub fn combat_ended() {
     // write_combat_file re-borrows STATE, so the finished record is staged
     // and written after the borrow releases.
-    let (seq, record) = STATE.with(|cell| {
+    let staged: Option<Combat> = STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         // The game only loses when EVERY player is dead, so the record is a
         // defeat iff every slot that appeared has its death flag set. Only
@@ -569,21 +553,17 @@ pub fn combat_ended() {
                 .iter()
                 .take(caps::MAX_PLAYERS)
                 .all(|slot| slot.died);
-        let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
-            return (None, None);
-        };
-        if team_defeat {
-            combat.result = "defeat".to_owned();
-        }
-        combat.finished = true;
-        let seq = combat.seq;
-        let record = combat.clone();
-        (Some(seq), Some(record))
+        let combat = Combat::active_mut(&mut state.current)?;
+        combat.phase = CombatPhase::Finished(if team_defeat {
+            CombatResult::Defeat
+        } else {
+            CombatResult::Completed
+        });
+        Some(combat.clone())
     });
-    if let Some(combat) = record {
+    if let Some(combat) = staged {
+        let seq = combat.seq;
         write_combat_file(&combat);
-    }
-    if let Some(seq) = seq {
         marker!("combat {seq} summary written");
     }
 }

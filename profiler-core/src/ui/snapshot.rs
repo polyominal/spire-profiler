@@ -1,7 +1,7 @@
 //! The ui-snapshot family: the structured UiRow/UiMeta payloads and the
 //! hover-detail/footer texts consumed by `chart_layout` and the panels.
 
-use crate::data::state::{CardStat, Combat, PlayerFilter, STATE};
+use crate::data::state::{CardStat, Combat, PlayerFilter, STATE, State};
 use crate::marker;
 use crate::ui::tooltip::{RowDetail, StatLine, StatTone};
 use crate::ui::ui_model::{self, SEG_COUNT, Section, Segment, UiMeta, UiRow, UiTab};
@@ -139,18 +139,21 @@ fn player_filter_keeps(filter: PlayerFilter, card: &CardStat) -> bool {
     }
 }
 
+fn cards_for_tab(st: &State, tab: UiTab) -> &[CardStat] {
+    if tab == UiTab::Run {
+        &st.run_cards
+    } else {
+        st.current.as_ref().map_or(&[], |c| &c.cards)
+    }
+}
+
 /// The avatar row filters both tabs: the combat's cards and the run
 /// accumulator carry per-player rows, and headline totals stay team-wide.
 fn chart_dataset(tab: UiTab) -> Vec<CardStat> {
     STATE.with(|s| {
         let st = s.borrow();
-        let cards: &[CardStat] = if tab == UiTab::Run {
-            &st.run_cards
-        } else {
-            st.current.as_ref().map_or(&[], |c| &c.cards)
-        };
         let filter = st.player_filter;
-        cards
+        cards_for_tab(&st, tab)
             .iter()
             .filter(|card| player_filter_keeps(filter, card))
             .cloned()
@@ -161,10 +164,10 @@ fn chart_dataset(tab: UiTab) -> Vec<CardStat> {
 /// Defense sorts standalone self-damage below every positive contributor:
 /// what protected the player first, then what it cost.
 pub fn ui_snapshot_rows(tab: UiTab, out: &mut [UiRow]) -> usize {
-    let cards = chart_dataset(tab);
     if !STATE.with(|s| s.borrow().initialized) {
         return 0;
     }
+    let cards = chart_dataset(tab);
     ui_snapshot_rows_from(&cards, out)
 }
 
@@ -349,7 +352,7 @@ pub(crate) fn ui_snapshot_meta_from_run(
         dps_x10: if turns > 0 {
             (damage * 10 / turns as i64) as i32
         } else {
-            -1
+            0
         },
         ..UiMeta::default()
     }
@@ -374,7 +377,7 @@ pub(crate) fn ui_snapshot_meta(tab: UiTab) -> UiMeta {
         m.dps_x10 = if c.turns > 0 {
             (m.total_damage * 10 / c.turns as i64) as i32
         } else {
-            -1
+            0
         };
         let len = c.encounter_id.len().min(64);
         m.encounter_len = len as u8;
@@ -421,12 +424,7 @@ pub fn ui_row_detail_from_cards(
 pub fn ui_row_detail_from_rows(tab: UiTab, rows: &[UiRow], flat_index: usize) -> RowDetail {
     STATE.with(|s| {
         let st = s.borrow();
-        let cards: &[CardStat] = if tab == UiTab::Run {
-            &st.run_cards
-        } else {
-            st.current.as_ref().map_or(&[], |c| &c.cards)
-        };
-        ui_row_detail_from_cards(rows, flat_index, cards)
+        ui_row_detail_from_cards(rows, flat_index, cards_for_tab(&st, tab))
     })
 }
 
@@ -836,7 +834,7 @@ mod tests {
         assert_eq!(m.damage_taken, 15);
         assert_eq!(m.dps_x10, 116); // 70 * 10 / 6, truncating
         let no_dps = ui_snapshot_meta_from_run(&cards, 0, 0, 0);
-        assert_eq!(no_dps.dps_x10, -1);
+        assert_eq!(no_dps.dps_x10, 0);
         assert_eq!(no_dps.plays, 6);
     }
 

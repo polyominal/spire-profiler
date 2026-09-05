@@ -518,8 +518,6 @@ pub(crate) fn tab_at(l: &Layout, x: f32, y: f32) -> Option<UiTab> {
         .map(|hit| hit.tab)
 }
 
-const TAB_LABELS: [&str; 2] = ["This Combat", "Run Summary"];
-
 pub(crate) fn build(input: BuildInput<'_>) -> Layout {
     let mut content = theme::content_box(input.width, !input.flat_chrome, input.right_gutter);
     // Chrome-less starts at y 0 so the caller's splice translation is
@@ -617,13 +615,13 @@ fn emit_avatars(l: &mut Layout, input: &BuildInput<'_>, g: &Geom, y_in: f32) -> 
     if drew { y_in + AVATAR_H } else { y_in }
 }
 
-fn emit_tabs(l: &mut Layout, input: &BuildInput<'_>, g: &Geom, y_in: f32) -> f32 {
+fn emit_tabs(l: &mut Layout, input: &BuildInput<'_>, g: &Geom, y_in: f32) {
     let y = y_in;
-    let strip_w = TAB_W * TAB_LABELS.len() as f32 + TAB_GAP;
+    let strip_w = TAB_W * UiTab::ALL.len() as f32 + TAB_GAP;
     let x0 = g.content.x + ((g.content.w - strip_w) / 2.0).max(0.0);
-    for (i, label) in TAB_LABELS.iter().enumerate() {
+    for (i, tab) in UiTab::ALL.into_iter().enumerate() {
         let x = x0 + i as f32 * (TAB_W + TAB_GAP);
-        let active = input.tab == tab_from_index(i);
+        let active = input.tab == tab;
         if input.tab_sprites {
             // The plate and stroke share one 515×181 draw frame, so both
             // draw into the tab box.
@@ -645,7 +643,7 @@ fn emit_tabs(l: &mut Layout, input: &BuildInput<'_>, g: &Geom, y_in: f32) -> f32
                 shadow: true,
                 outline: false,
                 align: TextAlign::Center(TAB_W),
-                text: (*label).to_owned(),
+                text: tab.label().to_owned(),
             }),
             "chart",
         );
@@ -658,10 +656,9 @@ fn emit_tabs(l: &mut Layout, input: &BuildInput<'_>, g: &Geom, y_in: f32) -> f32
             y0: y,
             x1: x + TAB_W,
             y1: y + TABS_H,
-            tab: tab_from_index(i),
+            tab,
         });
     }
-    y + TABS_H + 8.0
 }
 
 fn emit_meta(l: &mut Layout, input: &BuildInput<'_>, g: &Geom, y_in: f32) -> f32 {
@@ -713,13 +710,6 @@ pub(crate) fn insert_borders(header_cmds: &mut Vec<Cmd>, owner: &str, width: f32
     }
 }
 
-fn tab_from_index(i: usize) -> UiTab {
-    match i {
-        0 => UiTab::Combat,
-        _ => UiTab::Run,
-    }
-}
-
 /// One shape for every section, so two headers can't drift into
 /// underline-crosses-glyphs.
 fn emit_section_header(sink: &mut CmdSink, g: &Geom, y: f32, name: &str) {
@@ -732,9 +722,6 @@ fn emit_section_header(sink: &mut CmdSink, g: &Geom, y: f32, name: &str) {
         SECTION_UNDERLINE_H,
         COL_GOLD,
     );
-    if name.is_empty() {
-        return;
-    }
     sink.text_ex(
         g.content.x + 8.0,
         y + SECTION_TITLE_Y,
@@ -903,7 +890,7 @@ pub(crate) fn meta_line(tab: UiTab, meta: &UiMeta) -> String {
     let dps_whole = meta.dps_x10 / 10;
     let dps_frac = meta.dps_x10 % 10;
     if tab == UiTab::Run {
-        if meta.dps_x10 < 0 {
+        if meta.turns == 0 {
             return format!("DPS — · {} combats", meta.combats);
         }
         return format!(
@@ -911,7 +898,7 @@ pub(crate) fn meta_line(tab: UiTab, meta: &UiMeta) -> String {
             dps_whole, dps_frac, meta.turns, meta.combats
         );
     }
-    if meta.dps_x10 < 0 {
+    if meta.turns == 0 {
         return format!("DPS — · {} plays", meta.plays);
     }
     format!(
@@ -922,25 +909,9 @@ pub(crate) fn meta_line(tab: UiTab, meta: &UiMeta) -> String {
 
 fn emit_lines(l: &mut Layout, text: &str, x: f32, y_in: f32, line_h: f32, color: Color) -> f32 {
     let mut y = y_in;
-    let mut rest = text;
-    let mut count: usize = 0;
-    while !rest.is_empty() && count < MAX_LINES {
-        count += 1;
-        let line = match rest.find('\n') {
-            Some(i) => {
-                let line = &rest[..i];
-                rest = &rest[i + 1..];
-                line
-            }
-            None => {
-                let line = rest;
-                rest = "";
-                line
-            }
-        };
-        if line.is_empty() {
-            continue;
-        }
+    // take() before filter(): empty lines count against the cap but emit
+    // nothing and do not advance y.
+    for line in text.lines().take(MAX_LINES).filter(|line| !line.is_empty()) {
         l.sink().text(x, y + ROW_TEXT_Y, SIZE_BODY, color, line);
         y += line_h;
     }
@@ -1276,7 +1247,6 @@ mod tests {
         )];
         let meta = UiMeta {
             combats: 3,
-            dps_x10: -1,
             ..UiMeta::default()
         };
         let l = build(build_input(UiTab::Run, &rows, meta));
@@ -1307,10 +1277,7 @@ mod tests {
             meta_line(UiTab::Run, &meta),
             "DPS 40.5 · 4 turns · 2 combats"
         );
-        let no_dps = UiMeta {
-            dps_x10: -1,
-            ..meta
-        };
+        let no_dps = UiMeta { turns: 0, ..meta };
         assert_eq!(meta_line(UiTab::Combat, &no_dps), "DPS — · 14 plays");
         assert_eq!(meta_line(UiTab::Run, &no_dps), "DPS — · 2 combats");
     }

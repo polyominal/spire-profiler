@@ -99,7 +99,7 @@ pub(crate) const CALL_OK: c_int = 0;
 pub(crate) const CALL_ERROR_INVALID_METHOD: c_int = 1;
 const INIT_LEVEL_SCENE: c_int = 2;
 const METHOD_FLAG_NORMAL: u32 = 1;
-const MOUSE_BUTTON_LEFT: i64 = 1;
+pub(crate) const MOUSE_BUTTON_LEFT: i64 = 1;
 
 // GDExtensionVariantType values (the header enum's ordinal positions).
 pub(crate) const VT_BOOL: c_int = 1;
@@ -413,6 +413,31 @@ const _: () = assert!(
 
 // ── process-wide state (single-threaded: the game's logic loop) ─────────────
 
+/// One engine singleton's resolve cache: unresolved until the first `get`,
+/// then resolved or failed (warned once, never retried).
+#[derive(Default)]
+struct SingletonCache {
+    ptr: ObjectPtr,
+    failed: bool,
+}
+
+impl SingletonCache {
+    fn get(&mut self, name: ConstStringNamePtr, failure_warning: &str) -> Option<ObjectPtr> {
+        if self.ptr.is_null() && !self.failed {
+            self.ptr = global_get_singleton(name);
+            if self.ptr.is_null() {
+                self.failed = true;
+                warn!("{failure_warning}");
+            }
+        }
+        if self.ptr.is_null() {
+            None
+        } else {
+            Some(self.ptr)
+        }
+    }
+}
+
 /// Mutable extension state, accessed only from the game thread. Interned
 /// StringNames and the Input singleton/mouse cache are process-lifetime.
 #[derive(Default)]
@@ -447,10 +472,8 @@ pub(crate) struct Global {
     pub(crate) sn_set_modulate: StringNamePtr,
     pub(crate) sn_draw_style_box: StringNamePtr,
     pub(crate) sn_draw_texture_rect: StringNamePtr,
-    input: ObjectPtr,
-    input_failed: bool,
-    resource_loader: ObjectPtr,
-    resource_loader_failed: bool,
+    input: SingletonCache,
+    resource_loader: SingletonCache,
     mouse_query_warned: bool,
     /// StringNames of methods whose call already failed (warn once each).
     warned: [usize; 32],
@@ -491,10 +514,14 @@ impl Global {
             sn_set_modulate: ptr::null_mut(),
             sn_draw_style_box: ptr::null_mut(),
             sn_draw_texture_rect: ptr::null_mut(),
-            input: ptr::null_mut(),
-            input_failed: false,
-            resource_loader: ptr::null_mut(),
-            resource_loader_failed: false,
+            input: SingletonCache {
+                ptr: ptr::null_mut(),
+                failed: false,
+            },
+            resource_loader: SingletonCache {
+                ptr: ptr::null_mut(),
+                failed: false,
+            },
             mouse_query_warned: false,
             warned: [0; 32],
             warned_count: 0,
@@ -787,18 +814,9 @@ pub(crate) fn fail_call_failed(name: &'static str, method: ConstStringNamePtr) {
 fn input_singleton() -> Option<ObjectPtr> {
     GLOBAL.with(|cell| {
         let mut g = cell.borrow_mut();
-        if g.input.is_null() && !g.input_failed {
-            g.input = global_get_singleton(g.sn_input);
-            if g.input.is_null() {
-                g.input_failed = true;
-                warn!("Input singleton not found; drag/tab clicks disabled");
-            }
-        }
-        if g.input.is_null() {
-            None
-        } else {
-            Some(g.input)
-        }
+        let name = g.sn_input;
+        g.input
+            .get(name, "Input singleton not found; drag/tab clicks disabled")
     })
 }
 
@@ -847,23 +865,12 @@ fn mouse_query_failed() -> bool {
 pub(crate) fn resource_loader_singleton() -> Option<ObjectPtr> {
     GLOBAL.with(|cell| {
         let mut g = cell.borrow_mut();
-        if g.resource_loader.is_null() && !g.resource_loader_failed {
-            g.resource_loader = global_get_singleton(g.sn_resource_loader);
-            if g.resource_loader.is_null() {
-                g.resource_loader_failed = true;
-                warn!("ResourceLoader singleton not found; game theme assets disabled");
-            }
-        }
-        if g.resource_loader.is_null() {
-            None
-        } else {
-            Some(g.resource_loader)
-        }
+        let name = g.sn_resource_loader;
+        g.resource_loader.get(
+            name,
+            "ResourceLoader singleton not found; game theme assets disabled",
+        )
     })
-}
-
-pub(crate) fn mouse_button_left() -> bool {
-    mouse_button_pressed(MOUSE_BUTTON_LEFT)
 }
 
 pub(crate) use crate::engine::object::Object;

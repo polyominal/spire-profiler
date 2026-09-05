@@ -11,7 +11,7 @@
 //! the created row at the resolved source's own slot: the event's explicit
 //! slot, the generator's recorded slot, the context entry's slot, or the
 //! caller's slot for the fallbacks. An explicit id equal to the slot's
-//! `active_play_card_id` is the shim reporting the playing card's own id,
+//! active-play `card_id` is the shim reporting the playing card's own id,
 //! so it falls through to the play source instead of opening a card-kind
 //! row.
 //!
@@ -62,8 +62,8 @@ use crate::data::persistence::event_log;
 #[cfg(test)]
 use crate::data::state::STATE;
 use crate::data::state::{
-    self, BlockEntry, BlockMod, CardStat, Combat, ContextEntry, OrbSource, PendingContrib,
-    PlayerSlotState, SourceKind, SourceSlot, clamp_source_slot,
+    self, BlockEntry, BlockMod, CardStat, Combat, ContextEntry, Fallback, OrbSource,
+    PendingContrib, PlayerSlotState, SourceKind, SourceSlot, clamp_source_slot,
 };
 use crate::fail;
 
@@ -123,7 +123,7 @@ fn attribute_debuff_damage_in(
     power_id: &str,
     amount: i64,
 ) -> bool {
-    let combat = state.current.as_mut().filter(|combat| !combat.finished);
+    let combat = Combat::active_mut(&mut state.current);
     let Some(combat) = combat else { return false };
     let layers = &state.debuff_layers;
     let mut total_duration: i64 = 0;
@@ -225,23 +225,22 @@ pub fn resolve_card_in(
 ) -> Option<(usize, SourceSlot)> {
     let slot = state.slot_index(slot);
     let explicit_slot = clamp_source_slot(explicit_slot);
-    let combat: &mut Combat = match state.current.as_mut() {
-        Some(combat) if !combat.finished => combat,
-        _ => return None,
-    };
+    let combat = Combat::active_mut(&mut state.current)?;
     let slot_state = &state.per_player[slot];
     let (index, row_slot) = if !explicit_id.is_empty()
-        && Some(explicit_id) != slot_state.active_play_card_id.as_deref()
+        && slot_state
+            .active_play
+            .as_ref()
+            .is_none_or(|play| play.card_id != explicit_id)
     {
         (
             get_or_create_card(combat, explicit_slot, explicit_id)?,
             explicit_slot,
         )
-    } else if let Some((id, kind)) = slot_state.active_play_source.clone() {
-        let row_slot = slot_state.active_play_source_slot;
+    } else if let Some(play) = slot_state.active_play.clone() {
         (
-            get_or_create_card_kind(combat, row_slot, &id, kind)?,
-            row_slot,
+            get_or_create_card_kind(combat, play.row_slot, &play.id, play.kind)?,
+            play.row_slot,
         )
     } else if let Some(top) = state.context_stack.last() {
         // Clone before the card append: the id must outlive the stack read.
@@ -252,7 +251,7 @@ pub fn resolve_card_in(
             get_or_create_card_kind(combat, row_slot, &id, kind)?,
             row_slot,
         )
-    } else if let Some(i) = slot_state.orb_fallback {
+    } else if let Some(Fallback::Orb(i)) = slot_state.fallback {
         let source = &state.orb_sources[i];
         let id = source.id.clone();
         let kind = source.kind;
@@ -260,9 +259,8 @@ pub fn resolve_card_in(
             get_or_create_card_kind(combat, slot as SourceSlot, &id, kind)?,
             slot as SourceSlot,
         )
-    } else if let Some(i) = slot_state.potion_fallback {
-        let source = &state.orb_sources[i];
-        let id = source.id.clone();
+    } else if let Some(Fallback::Potion(source)) = slot_state.fallback.clone() {
+        let id = source.id;
         let kind = source.kind;
         (
             get_or_create_card_kind(combat, slot as SourceSlot, &id, kind)?,
@@ -298,49 +296,53 @@ fn resolve_damage_route(
     explicit_id: &str,
     explicit_slot: SourceSlot,
 ) -> Option<DamageRoute> {
-    let (index, row_slot, indirect) =
-        if !explicit_id.is_empty() && Some(explicit_id) != slot.active_play_card_id.as_deref() {
-            (
-                get_or_create_card(combat, explicit_slot, explicit_id)?,
-                explicit_slot,
-                false,
-            )
-        } else if let Some(i) = slot.orb_fallback {
-            let source = &orb_sources[i];
-            let id = source.id.clone();
-            let kind = source.kind;
-            (
-                get_or_create_card_kind(combat, caller_slot, &id, kind)?,
-                caller_slot,
-                true,
-            )
-        } else if let Some((id, kind)) = slot.active_play_source.clone() {
-            let row_slot = slot.active_play_source_slot;
-            (
-                get_or_create_card_kind(combat, row_slot, &id, kind)?,
-                row_slot,
-                false,
-            )
-        } else if let Some(top) = context_stack.last() {
-            let id = top.id.clone();
-            let kind = top.kind;
-            let row_slot = top.slot;
-            (
-                get_or_create_card_kind(combat, row_slot, &id, kind)?,
-                row_slot,
-                kind == SourceKind::Power,
-            )
-        } else {
-            let i = slot.potion_fallback?;
-            let source = &orb_sources[i];
-            let id = source.id.clone();
-            let kind = source.kind;
-            (
-                get_or_create_card_kind(combat, caller_slot, &id, kind)?,
-                caller_slot,
-                false,
-            )
+    let (index, row_slot, indirect) = if !explicit_id.is_empty()
+        && slot
+            .active_play
+            .as_ref()
+            .is_none_or(|play| play.card_id != explicit_id)
+    {
+        (
+            get_or_create_card(combat, explicit_slot, explicit_id)?,
+            explicit_slot,
+            false,
+        )
+    } else if let Some(Fallback::Orb(i)) = slot.fallback {
+        let source = &orb_sources[i];
+        let id = source.id.clone();
+        let kind = source.kind;
+        (
+            get_or_create_card_kind(combat, caller_slot, &id, kind)?,
+            caller_slot,
+            true,
+        )
+    } else if let Some(play) = slot.active_play.clone() {
+        (
+            get_or_create_card_kind(combat, play.row_slot, &play.id, play.kind)?,
+            play.row_slot,
+            false,
+        )
+    } else if let Some(top) = context_stack.last() {
+        let id = top.id.clone();
+        let kind = top.kind;
+        let row_slot = top.slot;
+        (
+            get_or_create_card_kind(combat, row_slot, &id, kind)?,
+            row_slot,
+            kind == SourceKind::Power,
+        )
+    } else {
+        let Fallback::Potion(source) = slot.fallback.as_ref()? else {
+            return None;
         };
+        let id = source.id.clone();
+        let kind = source.kind;
+        (
+            get_or_create_card_kind(combat, caller_slot, &id, kind)?,
+            caller_slot,
+            false,
+        )
+    };
     debug_assert!(
         index < combat.cards.len(),
         "resolved damage route index {index} out of {} cards",
@@ -364,7 +366,7 @@ pub fn resolve_damage_source_in(
 ) -> Option<DamageRoute> {
     {
         let slot_index = state.slot_index(slot);
-        let combat = state.current.as_mut().filter(|combat| !combat.finished)?;
+        let combat = Combat::active_mut(&mut state.current)?;
         if let Some(route) = resolve_damage_route(
             combat,
             &state.context_stack,
@@ -381,7 +383,7 @@ pub fn resolve_damage_source_in(
         return None;
     }
     let last_source = state.last_source.clone()?;
-    let combat = state.current.as_mut().filter(|combat| !combat.finished)?;
+    let combat = Combat::active_mut(&mut state.current)?;
     let index =
         get_or_create_card_kind(combat, last_source.slot, &last_source.id, last_source.kind)?;
     debug_assert!(
@@ -399,15 +401,13 @@ pub fn resolve_damage_source_in(
 /// A new attribution source invalidates the capture window.
 pub fn clear_fallbacks_in(state: &mut state::State, slot: i32) {
     let slot = state.slot_index(slot);
-    state.per_player[slot].orb_fallback = None;
-    state.per_player[slot].potion_fallback = None;
+    state.per_player[slot].fallback = None;
 }
 
 /// Clears every slot's fallbacks for the turn/combat boundaries.
 pub fn clear_all_fallbacks_in(state: &mut state::State) {
     for slot in &mut state.per_player {
-        slot.orb_fallback = None;
-        slot.potion_fallback = None;
+        slot.fallback = None;
     }
 }
 
@@ -474,7 +474,7 @@ pub fn block_pool_push_in(
 /// Consumes FIFO, splitting each slice cumulatively-proportionally.
 pub fn block_pool_consume_in(state: &mut state::State, blocked: i64, slot: i32) -> i64 {
     let slot = state.slot_index(slot);
-    let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
+    let Some(combat) = Combat::active_mut(&mut state.current) else {
         return 0;
     };
     let pool = &mut state.per_player[slot].block_pool;
@@ -622,7 +622,7 @@ pub fn split_over_appliers_in(
 /// route is decided by the caller's resolution and is not visible here.
 pub fn apply_pending_contribs_in(state: &mut state::State, attacker_index: usize, slot: i32) {
     let slot = state.slot_index(slot);
-    let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
+    let Some(combat) = Combat::active_mut(&mut state.current) else {
         return;
     };
     debug_assert!(

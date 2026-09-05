@@ -9,7 +9,7 @@ use xshell::{Shell, cmd};
 
 use crate::{bundle, check_abi, cross, discover, game_version, git, shim, workspace_root};
 
-pub fn build(shell: &Shell) -> Result<()> {
+pub fn build(shell: &Shell) -> Result<discover::GamePaths> {
     let root = workspace_root();
     // Cheap host rejection before the expensive cross matrix runs.
     discover::Platform::detect()?;
@@ -23,7 +23,7 @@ pub fn build(shell: &Shell) -> Result<()> {
     // Fail fast on a game version the mod was not verified against.
     game_version::check_pin(&game)?;
 
-    let build_commit = git::resolve_commit(root);
+    let build_commit = git::resolve_commit(shell);
     println!("build commit: {build_commit}");
     let gen_dir = build_host_project(shell, root, &game)?;
     let mod_dir = root.join("target/mods").join(bundle::MOD_ID);
@@ -49,7 +49,7 @@ pub fn build(shell: &Shell) -> Result<()> {
         mod_dir.display(),
         lib_names.join(", ")
     );
-    Ok(())
+    Ok(game)
 }
 
 fn build_host_project(shell: &Shell, root: &Path, game: &discover::GamePaths) -> Result<PathBuf> {
@@ -93,7 +93,7 @@ fn write_if_changed(path: &Path, content: &str) -> Result<()> {
 }
 
 fn run_dotnet_build(shell: &Shell, gen_dir: &Path) -> Result<()> {
-    let resolution = crate::dotnet::resolve_dotnet(shell)?;
+    let binary = crate::dotnet::resolve_dotnet(shell)?;
     let _dir = shell.push_dir(gen_dir);
     let _telemetry_optout = shell.push_env("DOTNET_CLI_TELEMETRY_OPTOUT", "1");
     let _nologo = shell.push_env("DOTNET_NOLOGO", "1");
@@ -101,12 +101,10 @@ fn run_dotnet_build(shell: &Shell, gen_dir: &Path) -> Result<()> {
     // Pin the relocated SDK's root so a stray DOTNET_ROOT cannot hijack it.
     let _root = shell.push_env(
         "DOTNET_ROOT",
-        resolution
-            .binary
+        binary
             .parent()
             .expect("the bootstrapped binary always has a parent dir"),
     );
-    let binary = &resolution.binary;
     cmd!(shell, "{binary} build -c Release --nologo -v q").run()?;
     Ok(())
 }

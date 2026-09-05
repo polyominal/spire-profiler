@@ -10,7 +10,7 @@ use crate::test_util::wiped_dir;
 fn read_run(base: &Path) -> serde_json::Value {
     let runs = read_all_runs(base);
     assert_eq!(runs.len(), 1, "exactly one run record");
-    serde_json::json!([runs.into_iter().next().expect("one run")])
+    runs.into_iter().next().expect("one run")
 }
 
 #[test]
@@ -47,8 +47,8 @@ fn resumed_run_records_the_seed() {
     combat_ended();
     run_ended(RunOutcome::Defeat);
 
-    let runs = read_run(&base);
-    assert_eq!(runs[0]["seed"], "SEED_123");
+    let run = read_run(&base);
+    assert_eq!(run["seed"], "SEED_123");
 }
 
 /// Clears `active` WITHOUT writing any record: the run is not over.
@@ -62,7 +62,7 @@ fn suspend_clears_active_without_writing_a_run_record() {
     combat_ended();
     run_suspended();
 
-    assert!(!STATE.with(|s| s.borrow().run_ctx.active));
+    assert!(STATE.with(|s| s.borrow().run_ctx.is_none()));
     assert!(
         !base.join("runs.jsonl").exists(),
         "a suspended run writes no record"
@@ -107,9 +107,9 @@ fn suspend_without_an_active_run_is_a_no_op() {
     combat_ended();
     run_ended(RunOutcome::Defeat);
     run_suspended();
-    assert!(!STATE.with(|s| s.borrow().run_ctx.active));
-    let runs = read_run(&base);
-    assert_eq!(runs[0]["outcome"], "defeat");
+    assert!(STATE.with(|s| s.borrow().run_ctx.is_none()));
+    let run = read_run(&base);
+    assert_eq!(run["outcome"], "defeat");
 }
 
 /// The resumed `run_started(continued=1)` finds no stale active run, so
@@ -130,10 +130,13 @@ fn suspend_then_continue_rejoins_without_a_spurious_defeat() {
     card_play_finished(0);
     combat_ended();
     run_suspended();
-    assert!(!STATE.with(|s| s.borrow().run_ctx.active));
+    assert!(STATE.with(|s| s.borrow().run_ctx.is_none()));
 
     run_started("DEFECT", 1, "Standard", "SEED_SUSPEND_RESUME", 1, "", 0);
-    assert_eq!(STATE.with(|s| s.borrow().run_ctx.seq), 1);
+    assert_eq!(
+        STATE.with(|s| s.borrow().run_ctx.as_ref().map(|run| run.run.seq)),
+        Some(1)
+    );
     assert_eq!(STATE.with(|s| s.borrow().run_combats), 1);
     assert!(
         !base.join("runs.jsonl").exists(),
@@ -146,9 +149,9 @@ fn suspend_then_continue_rejoins_without_a_spurious_defeat() {
     card_play_finished(0);
     combat_ended();
     run_ended(RunOutcome::Abandoned); // the run really ends now
-    let runs = read_run(&base);
-    assert_eq!(runs[0]["outcome"], "abandoned");
-    assert!(runs[0]["ended_at"].is_i64());
+    let run = read_run(&base);
+    assert_eq!(run["outcome"], "abandoned");
+    assert!(run["ended_at"].is_i64());
     assert_eq!(read_all_combats(&base).len(), 2, "both fragments persist");
 }
 
@@ -170,11 +173,14 @@ fn resumed_run_rejoins_its_fragment_and_rebuilds_the_summary() {
     combat_ended();
     STATE.with(|s| {
         let mut st = s.borrow_mut();
-        st.run_ctx = state::RunContext::default();
+        st.run_ctx = None;
         st.current = None;
     });
     run_started("DEFECT", 1, "Standard", "SEED_FRAG", 1, "", 0);
-    assert_eq!(STATE.with(|s| s.borrow().run_ctx.seq), 1);
+    assert_eq!(
+        STATE.with(|s| s.borrow().run_ctx.as_ref().map(|run| run.run.seq)),
+        Some(1)
+    );
     STATE.with(|s| {
         let st = s.borrow();
         assert_eq!(st.run_combats, 1);
@@ -190,8 +196,8 @@ fn resumed_run_rejoins_its_fragment_and_rebuilds_the_summary() {
     card_play_finished(0);
     combat_ended();
     run_ended(RunOutcome::Abandoned); // abandoned after the resumed fragment
-    let runs = read_run(&base);
-    assert_eq!(runs[0]["outcome"], "abandoned");
+    let run = read_run(&base);
+    assert_eq!(run["outcome"], "abandoned");
     assert_eq!(read_all_combats(&base).len(), 2, "both fragments persist");
 }
 
@@ -251,7 +257,7 @@ fn resumed_run_discards_the_unfinished_combat() {
     card_play_finished(0);
     STATE.with(|s| {
         let mut st = s.borrow_mut();
-        st.run_ctx = state::RunContext::default();
+        st.run_ctx = None;
         st.current = None;
     });
     run_started("DEFECT", 1, "Standard", "SEED_MID", 1, "", 0);
@@ -311,10 +317,10 @@ fn player_death_marks_the_combat_and_run_as_defeat() {
     run_ended(RunOutcome::Defeat);
 
     let (combat, _) = read_combat(&base);
-    assert_eq!(combat.result, "defeat");
+    assert_eq!(combat.result, state::CombatResult::Defeat);
     assert_eq!(combat.damage_received, 12);
-    let runs = read_run(&base);
-    assert_eq!(runs[0]["outcome"], "defeat");
+    let run = read_run(&base);
+    assert_eq!(run["outcome"], "defeat");
 }
 
 /// `net_ids` pairs positionally with `character_ids`; mismatches truncate.
@@ -332,7 +338,9 @@ fn roster_parses_from_net_ids_and_truncates() {
         "111,222",
         0,
     );
-    let players = STATE.with(|s| s.borrow().run_ctx.players.clone());
+    let players = STATE
+        .with(|s| s.borrow().run_ctx.as_ref().map(|run| run.players.clone()))
+        .expect("active run roster");
     assert_eq!(
         players,
         vec![
@@ -362,12 +370,16 @@ fn roster_parses_from_net_ids_and_truncates() {
     combat_ended();
     run_ended(RunOutcome::Victory);
     run_started("A,B,C", 0, "Standard", "SEED_TRUNC", 0, "1,2", 0);
-    let players = STATE.with(|s| s.borrow().run_ctx.players.clone());
+    let players = STATE
+        .with(|s| s.borrow().run_ctx.as_ref().map(|run| run.players.clone()))
+        .expect("active run roster");
     assert_eq!(players.len(), 2);
     assert_eq!(players[0].character, "A");
     assert_eq!(players[1].character, "B");
     run_started("IRONCLAD", 0, "Standard", "SEED_SOLO", 0, "", 0);
-    let players = STATE.with(|s| s.borrow().run_ctx.players.clone());
+    let players = STATE
+        .with(|s| s.borrow().run_ctx.as_ref().map(|run| run.players.clone()))
+        .expect("active run roster");
     assert_eq!(
         players,
         vec![RunPlayer {
@@ -395,8 +407,8 @@ fn run_started_stamps_the_forwarded_start_time() {
         1_786_579_200,
     );
     assert_eq!(
-        STATE.with(|s| s.borrow().run_ctx.started_at),
-        1_786_579_200,
+        STATE.with(|s| s.borrow().run_ctx.as_ref().map(|run| run.started_at)),
+        Some(1_786_579_200),
         "the forwarded StartTime is stamped verbatim"
     );
     run_started(
@@ -408,11 +420,37 @@ fn run_started_stamps_the_forwarded_start_time() {
         "",
         1_786_579_200,
     );
-    assert_eq!(STATE.with(|s| s.borrow().run_ctx.started_at), 1_786_579_200);
+    assert_eq!(
+        STATE.with(|s| s.borrow().run_ctx.as_ref().map(|run| run.started_at)),
+        Some(1_786_579_200)
+    );
     run_started("IRONCLAD", 0, "Standard", "SEED_START_TIME", 0, "", 0);
-    let fallback = STATE.with(|s| s.borrow().run_ctx.started_at);
+    let fallback = STATE
+        .with(|s| s.borrow().run_ctx.as_ref().map(|run| run.started_at))
+        .expect("active run start");
     assert!(
         fallback > 1_700_000_000,
         "the 0 fallback stamps the session clock ({fallback})"
     );
+}
+#[test]
+fn combat_after_run_end_joins_no_run() {
+    let base = wiped_dir("spire-profiler-test-post-run-combat");
+    test_reset();
+    init(&base);
+    run_started("IRONCLAD", 0, "Standard", "SEED_POST", 0, "", 0);
+    combat_started("FIRST", "test");
+    combat_ended();
+    run_ended(RunOutcome::Victory);
+
+    // No active run remains, so the next combat cannot reuse its stamp.
+    combat_started("SECOND", "test");
+    combat_ended();
+
+    let mut ids = crate::test_util::combat_ids(&base.join("runs"));
+    ids.sort();
+    assert_eq!(ids, [(0, 2), (1, 1)]);
+    let text = read_test_file(&base, "runs/0/2.json");
+    let doc: serde_json::Value = serde_json::from_str(&text).expect("combat doc parses");
+    assert!(doc.get("run").is_none());
 }

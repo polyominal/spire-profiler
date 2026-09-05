@@ -9,28 +9,21 @@ use crate::engine::math::{Color, Rect2, Vector2};
 use crate::engine::object::TextAlign;
 use crate::ui::chart_layout::{Cmd, TextCmd};
 use crate::ui::palette;
-use crate::ui::theme::{IconId, Plate, ScrollbarSprites, TextRole, Theme};
+use crate::ui::theme::{AssetState, IconId, Plate, ScrollbarSprites, TextRole, Theme};
 use crate::warn;
 
-/// The retained Variant's object Ref keeps the Font alive between draws.
-pub(crate) enum FontState {
-    Unfetched,
-    Failed,
-    Loaded(RetainedVariant),
-}
-
 /// A failed fetch disables text permanently.
-pub(crate) fn ensure_font(object: &Object, state: &mut FontState, warning: &str) -> bool {
+pub(crate) fn ensure_font(object: &Object, state: &mut AssetState, warning: &str) -> bool {
     match state {
-        FontState::Loaded(_) => true,
-        FontState::Failed => false,
-        FontState::Unfetched => match object.get_theme_default_font() {
+        AssetState::Loaded(_) => true,
+        AssetState::Failed => false,
+        AssetState::Unfetched => match object.get_theme_default_font() {
             Some(resolved) => {
-                *state = FontState::Loaded(resolved);
+                *state = AssetState::Loaded(resolved);
                 true
             }
             None => {
-                *state = FontState::Failed;
+                *state = AssetState::Failed;
                 warn!("{warning}");
                 false
             }
@@ -158,7 +151,7 @@ pub(crate) struct Fonts<'a> {
 impl<'a> Fonts<'a> {
     pub(crate) fn new(
         object: &Object,
-        default_state: &'a mut FontState,
+        default_state: &'a mut AssetState,
         theme: &'a Theme,
         plan: FontPlan,
         warn: &str,
@@ -167,7 +160,7 @@ impl<'a> Fonts<'a> {
             ensure_font(object, default_state, warn);
         }
         let default = match &*default_state {
-            FontState::Loaded(font) => Some(font),
+            AssetState::Loaded(font) => Some(font),
             _ => None,
         };
         Fonts {
@@ -194,16 +187,13 @@ impl<'a> Fonts<'a> {
 #[allow(clippy::too_many_arguments)] // a draw call's full parameter list
 pub(crate) fn draw_shadowed_text(
     object: &Object,
-    font: Option<&RetainedVariant>,
+    font: &RetainedVariant,
     pos: Vector2,
     text: &str,
     align: TextAlign,
     size: i32,
     color: palette::Color,
 ) -> usize {
-    let Some(font) = font else {
-        return 0;
-    };
     let mut errors = 0;
     let shadow = palette::COL_SHADOW;
     if !object.draw_string(
@@ -234,16 +224,13 @@ pub(crate) fn draw_shadowed_text(
 #[allow(clippy::too_many_arguments)] // a draw call's full parameter list
 pub(crate) fn draw_outlined_text(
     object: &Object,
-    font: Option<&RetainedVariant>,
+    font: &RetainedVariant,
     pos: Vector2,
     text: &str,
     align: TextAlign,
     size: i32,
     color: palette::Color,
 ) -> usize {
-    let Some(font) = font else {
-        return 0;
-    };
     let mut errors = 0;
     let shadow = palette::COL_HEADER_SHADOW;
     if !object.draw_string(
@@ -509,24 +496,12 @@ fn replay_text_cmd(object: &Object, fonts: &Fonts, text: &TextCmd, offset: Vecto
     let pos = Vector2::new(text.x + offset.x, text.y + offset.y);
     if text.outline {
         return draw_outlined_text(
-            object,
-            Some(font),
-            pos,
-            &text.text,
-            text.align,
-            text.size,
-            text.color,
+            object, font, pos, &text.text, text.align, text.size, text.color,
         );
     }
     if text.shadow {
         return draw_shadowed_text(
-            object,
-            Some(font),
-            pos,
-            &text.text,
-            text.align,
-            text.size,
-            text.color,
+            object, font, pos, &text.text, text.align, text.size, text.color,
         );
     }
     usize::from(!object.draw_string(

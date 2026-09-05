@@ -29,12 +29,6 @@ pub fn installer_script() -> PathBuf {
     workspace_root().join("tools/dotnet-install.sh")
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Dotnet {
-    pub binary: PathBuf,
-    pub version: String,
-}
-
 pub fn newest_major(sdk_list: &str) -> Option<u32> {
     sdk_list
         .lines()
@@ -95,7 +89,7 @@ fn verify_channel(binary: &Path, sdks: &str) -> Result<String> {
 }
 
 /// ALWAYS the bootstrap dir, never PATH.
-pub fn resolve_dotnet(shell: &Shell) -> Result<Dotnet> {
+pub fn resolve_dotnet(shell: &Shell) -> Result<PathBuf> {
     let dir = bootstrap_dir();
     let binary = match pick(&dir) {
         Ok(binary) => binary,
@@ -113,7 +107,7 @@ pub fn resolve_dotnet(shell: &Shell) -> Result<Dotnet> {
     })?;
     let version = verify_channel(&binary, &sdks)?;
     println!("dotnet: {} ({version}, bootstrapped)", binary.display());
-    Ok(Dotnet { binary, version })
+    Ok(binary)
 }
 
 pub fn bootstrap_present(dir: &Path) -> bool {

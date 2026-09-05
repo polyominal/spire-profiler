@@ -13,7 +13,7 @@
 //! identity/seed lines.
 
 use crate::data::run_history::RunSummaryView;
-use crate::data::state::CardStat;
+use crate::data::state::{CardStat, RunOutcome};
 #[cfg(test)]
 use crate::engine::object::TextAlign;
 use crate::ui::chart_layout::{self, Cmd, truncate};
@@ -23,9 +23,9 @@ use crate::ui::panel_common;
 use crate::ui::theme::{self, TextRole};
 use crate::ui::ui_model::{UiMeta, UiRow, UiTab};
 
-/// The result is omitted when empty; an unknown ascension (-1) is omitted
-/// rather than rendered as "A-1". The character is deliberately absent:
-/// the avatar row carries the identity, never a text name.
+/// An unknown ascension (-1) is omitted rather than rendered as "A-1". The
+/// character is deliberately absent: the avatar row carries the identity,
+/// never a text name.
 pub(crate) fn identity_line(view: &RunSummaryView) -> String {
     let mut line = String::new();
     if view.ascension >= 0 {
@@ -37,12 +37,16 @@ pub(crate) fn identity_line(view: &RunSummaryView) -> String {
         }
         line.push_str(&view.game_mode);
     }
-    if !view.result.is_empty() {
-        if !line.is_empty() {
-            line.push_str(" · ");
-        }
-        line.push_str(&view.result);
+    let result = match view.outcome {
+        Some(RunOutcome::Victory) => "Victory",
+        Some(RunOutcome::Defeat) => "Defeat",
+        Some(RunOutcome::Abandoned) => "Abandoned",
+        None => "Unfinished",
+    };
+    if !line.is_empty() {
+        line.push_str(" · ");
     }
+    line.push_str(result);
     line
 }
 
@@ -148,7 +152,6 @@ impl RunLayout {
                 }),
                 Cmd::Text(t) => Cmd::Text(chart_layout::TextCmd {
                     y: t.y + y_offset,
-                    text: t.text.clone(),
                     ..t.clone()
                 }),
                 Cmd::Texture(t) => Cmd::Texture(chart_layout::TextureCmd {
@@ -304,8 +307,28 @@ fn emit_header(
         drew = true;
     }
     if !drew {
-        let y = emit_identity(l, view, content.x, y_in);
-        return emit_seed(l, view, content.x, y);
+        let left = content.x + 8.0;
+        let width = (l.content.right() - left).max(0.0);
+        l.sink().text_left_clipped(
+            left,
+            width,
+            y_in + 25.0,
+            SIZE_BODY,
+            palette::COL_CREAM,
+            TextRole::Body,
+            identity_line(view),
+        );
+        let y = y_in + LINE_H;
+        l.sink().text_left_clipped(
+            left,
+            width,
+            y + 25.0,
+            SIZE_BODY,
+            palette::COL_DIM,
+            TextRole::Body,
+            format!("seed {}", truncate(&view.seed, 72)),
+        );
+        return y + LINE_H;
     }
     // The alignment box starts past the icon groups, so an overlong line
     // clips there instead of drawing over the icons.
@@ -328,36 +351,6 @@ fn emit_header(
         format!("seed {}", truncate(&view.seed, 72)),
     );
     y_in + ICON_ROW_H
-}
-
-fn emit_identity(l: &mut RunLayout, view: &RunSummaryView, x: f32, y_in: f32) -> f32 {
-    let left = x + 8.0;
-    let width = (l.content.right() - left).max(0.0);
-    l.sink().text_left_clipped(
-        left,
-        width,
-        y_in + 25.0,
-        SIZE_BODY,
-        palette::COL_CREAM,
-        TextRole::Body,
-        identity_line(view),
-    );
-    y_in + LINE_H
-}
-
-fn emit_seed(l: &mut RunLayout, view: &RunSummaryView, x: f32, y_in: f32) -> f32 {
-    let left = x + 8.0;
-    let width = (l.content.right() - left).max(0.0);
-    l.sink().text_left_clipped(
-        left,
-        width,
-        y_in + 25.0,
-        SIZE_BODY,
-        palette::COL_DIM,
-        TextRole::Body,
-        format!("seed {}", truncate(&view.seed, 72)),
-    );
-    y_in + LINE_H
 }
 
 fn emit_meta(l: &mut RunLayout, content: &theme::ContentBox, meta: &UiMeta, y_in: f32) -> f32 {
@@ -410,7 +403,7 @@ fn emit_chart(
 mod tests {
     use super::*;
     use crate::data::run_history::CombatView;
-    use crate::data::state::{CardStat, RunOutcome};
+    use crate::data::state::{CardStat, CombatResult, RunOutcome};
     use crate::source_kind::SourceKind;
     use crate::test_util::cmd_texts as texts;
     use crate::ui::ui_model;
@@ -423,7 +416,7 @@ mod tests {
                 .map(|i| CombatView {
                     seq: i + 1,
                     encounter: format!("ENC{i}"),
-                    result: "completed".to_owned(),
+                    result: CombatResult::Completed,
                     damage_dealt: 30,
                     damage_taken: 10,
                     turns: 3,
@@ -446,7 +439,6 @@ mod tests {
             ascension: 7,
             game_mode: "Standard".to_owned(),
             outcome: Some(RunOutcome::Defeat),
-            result: "Defeat".to_owned(),
             seed: "BETA".to_owned(),
             combats: combats(2),
             rollup: vec![
@@ -465,29 +457,19 @@ mod tests {
         assert_eq!(identity_line(&v), "A7 · Standard · Defeat");
         let mut won = view();
         won.outcome = Some(RunOutcome::Victory);
-        won.result = "Victory".to_owned();
         assert_eq!(identity_line(&won), "A7 · Standard · Victory");
         // An abandoned run reads "Abandoned", never a false "Defeat".
         let mut abandoned = view();
         abandoned.outcome = Some(RunOutcome::Abandoned);
-        abandoned.result = "Abandoned".to_owned();
         assert_eq!(identity_line(&abandoned), "A7 · Standard · Abandoned");
         // An unknown ascension is omitted; the fallback's "Unfinished"
         // still renders.
         let unfinished = RunSummaryView {
             ascension: -1,
             character: "SHROUD".to_owned(),
-            result: "Unfinished".to_owned(),
             ..RunSummaryView::default()
         };
         assert_eq!(identity_line(&unfinished), "Unfinished");
-        // No stray leading separator.
-        let bare = RunSummaryView {
-            ascension: -1,
-            character: "SHROUD".to_owned(),
-            ..RunSummaryView::default()
-        };
-        assert_eq!(identity_line(&bare), "");
     }
 
     fn layout_of(view: Option<&RunSummaryView>) -> RunLayout {
@@ -536,7 +518,7 @@ mod tests {
 
         let mut unfinished = view();
         unfinished.character = "SHROUD".to_owned();
-        unfinished.result = "Unfinished".to_owned();
+        unfinished.outcome = None;
         let l = layout_of(Some(&unfinished));
         let header: Vec<&str> = texts(&l.header_cmds).collect();
         assert!(header.contains(&"A7 · Standard · Unfinished"));
@@ -554,7 +536,7 @@ mod tests {
             .map(|i| CombatView {
                 seq: i + 1,
                 encounter: format!("ENC{i}"),
-                result: "completed".to_owned(),
+                result: CombatResult::Completed,
                 damage_dealt: 10,
                 damage_taken: 2,
                 turns: 1,

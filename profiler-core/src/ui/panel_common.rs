@@ -5,7 +5,7 @@ use std::cell::Cell;
 use std::time::Instant;
 
 use crate::data::state::PlayerFilter;
-use crate::engine::gdext::Object;
+use crate::engine::gdext::{MOUSE_BUTTON_LEFT, Object, mouse_button_pressed};
 use crate::engine::math::{Rect2, Vector2};
 use crate::ui::chart_layout::{self, Cmd, RectCmd};
 use crate::ui::theme::Theme;
@@ -21,8 +21,8 @@ pub(crate) fn over_panel(rect: Rect2, mouse: Vector2) -> bool {
 
 /// A held button drifting outside is not a dismissal (a scrollbar drag
 /// must survive leaving the box).
-pub(crate) fn dismiss_on_outside_press(shown: bool, press_edge: bool, over: bool) -> bool {
-    shown && press_edge && !over
+pub(crate) fn dismiss_on_outside_press(press_edge: bool, over: bool) -> bool {
+    press_edge && !over
 }
 
 /// Guarded to the visible box: input is polled globally, and the zones are
@@ -172,7 +172,7 @@ pub(crate) fn interaction_step(
     scrollbar: ScrollbarFrame,
     scroll: &mut f32,
 ) -> InteractionStep {
-    let pressed = crate::engine::gdext::mouse_button_left();
+    let pressed = mouse_button_pressed(MOUSE_BUTTON_LEFT);
     let on_track = scrollbar_step(
         children,
         rect.size,
@@ -471,6 +471,23 @@ pub(crate) fn apply_control_frame(
     true
 }
 
+/// Stores the frame-local legend/tip rect and, on change only, redraws
+/// the panel and the overlay child — a steady frame must not re-issue
+/// engine calls.
+pub(crate) fn apply_overlay_rect(
+    slot: &mut Option<Rect2>,
+    rect: Option<Rect2>,
+    object: &Object,
+    children: &mut crate::ui::panel_body::PanelChildren,
+) {
+    if *slot == rect {
+        return;
+    }
+    *slot = rect;
+    object.queue_redraw();
+    children.queue_overlay_redraw();
+}
+
 /// The viewport's visible size, or None when the panel is not in the tree
 /// (init runs before `AddChild`).
 pub(crate) fn viewport_size(object: &Object) -> Option<Vector2> {
@@ -595,16 +612,10 @@ mod tests {
     }
 
     #[test]
-    fn outside_press_dismisses_only_on_the_edge_while_shown() {
-        assert!(dismiss_on_outside_press(true, true, false));
-        for (shown, edge, over) in [
-            (false, true, false),
-            (true, false, false),
-            (true, true, true),
-            (false, false, true),
-        ] {
-            assert!(!dismiss_on_outside_press(shown, edge, over));
-        }
+    fn outside_press_dismisses_only_on_the_edge() {
+        assert!(dismiss_on_outside_press(true, false));
+        assert!(!dismiss_on_outside_press(false, false));
+        assert!(!dismiss_on_outside_press(true, true));
     }
 
     fn hits() -> Vec<RowHit> {

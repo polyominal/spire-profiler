@@ -9,10 +9,9 @@ use xshell::Shell;
 use crate::{build, bundle, discover, workspace_root};
 
 /// Wiped first so files removed from the bundle cannot linger.
-pub fn install_mod(shell: &Shell) -> Result<()> {
-    build::build(shell)?;
+pub fn install_mod(shell: &Shell) -> Result<discover::GamePaths> {
+    let game = build::build(shell)?;
 
-    let game = discover::locate_game()?;
     let source = workspace_root().join("target/mods").join(bundle::MOD_ID);
     let destination = game.mods_dir.join(bundle::MOD_ID);
 
@@ -23,7 +22,7 @@ pub fn install_mod(shell: &Shell) -> Result<()> {
     }
     copy_bundle(&source, &destination)?;
     println!("install-mod: installed to {}", destination.display());
-    Ok(())
+    Ok(game)
 }
 
 /// A subdirectory would mean the bundle contract changed; error rather

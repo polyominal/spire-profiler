@@ -2,7 +2,7 @@
 //! snapshot rows/footers, the chart-row payload, and the filter toggle.
 
 use super::*;
-use crate::data::state::{PlayerFilter, RunOutcome};
+use crate::data::state::{CombatResult, PlayerFilter, RunOutcome};
 use crate::source_kind::SourceKind;
 use crate::test_util::wiped_dir;
 use crate::ui::ui_model::{Section, Segment, UiRow, UiTab};
@@ -20,12 +20,12 @@ fn assert_self_test_combat(combat: &CombatRec, combat_json: &serde_json::Value) 
             .potions_used),
         1
     );
-    assert_eq!(combat.result, "completed");
+    assert_eq!(combat.result, CombatResult::Completed);
     let run = combat.run.as_ref().expect("combat record carries its run");
     assert_eq!(run.seq, 1);
     assert_eq!(run.character, "SELF_TEST_CHAR");
-    assert!(combat_json[0].get("profile").is_none());
-    assert!(combat_json[0].get("build").is_none());
+    assert!(combat_json.get("profile").is_none());
+    assert!(combat_json.get("build").is_none());
     let zap = card_row(combat, "ZAP");
     assert_eq!(
         (zap.kind, zap.plays, zap.damage_dealt),
@@ -76,7 +76,7 @@ fn self_test_pipeline_writes_combat_and_run_files() {
         .into_iter()
         .next()
         .expect("one combat record");
-    assert_self_test_combat(&combat_rec, &serde_json::json!([combat_doc]));
+    assert_self_test_combat(&combat_rec, &combat_doc);
 
     let runs = read_all_runs(&base);
     let run_doc = &runs[0];

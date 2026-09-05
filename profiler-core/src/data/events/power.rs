@@ -5,8 +5,9 @@ use crate::data::ledger;
 use crate::data::ledger::AsyncFallback;
 use crate::data::persistence::event_log;
 use crate::data::state::{
-    DebuffLayer, DoomLayer, DoomTarget, EnemyHit, PowerSourceEntry, STATE, SourceKind, SourceSlot,
-    State, StrReduction, TEAM_SLOT, caps, clamp_modifier_kind,
+    Combat, DURATION_DEBUFFS, DebuffLayer, DoomLayer, DoomTarget, EnemyHit, Fallback,
+    PowerSourceEntry, STATE, SourceKind, SourceSlot, State, StrReduction, TEAM_SLOT, caps,
+    clamp_modifier_kind,
 };
 use crate::fail;
 
@@ -37,29 +38,25 @@ pub fn power_applied(
         };
         // A slotless event can fire before any slot event grew it.
         let ambient = applier_slot;
-        let mut source_id: Option<String> = None;
-        let mut kind = SourceKind::Card;
-        if let Some(top) = state.context_stack.last() {
-            source_id = Some(top.id.clone());
-            kind = top.kind;
-        } else if let Some((id, play_kind)) = state
+        let resolved: Option<(String, SourceKind)> = if let Some(top) = state.context_stack.last() {
+            Some((top.id.clone(), top.kind))
+        } else if let Some(play) = state
             .per_player
             .get(ambient)
-            .and_then(|slot| slot.active_play_source.clone())
+            .and_then(|slot| slot.active_play.clone())
         {
-            source_id = Some(id);
-            kind = play_kind;
-        } else if let Some(i) = state
+            Some((play.id, play.kind))
+        } else if let Some(Fallback::Potion(source)) = state
             .per_player
             .get(ambient)
-            .and_then(|slot| slot.potion_fallback)
+            .and_then(|slot| slot.fallback.clone())
         {
             // Potions run outside plays and contexts.
-            let source = &state.orb_sources[i];
-            source_id = Some(source.id.clone());
-            kind = source.kind;
-        }
-        let Some(source_id) = source_id else {
+            Some((source.id, source.kind))
+        } else {
+            None
+        };
+        let Some((source_id, kind)) = resolved else {
             return;
         };
         // Self-doom targets the player and is skipped.
@@ -150,7 +147,7 @@ fn record_power_source_in(
     event_log!("  power {power_id} +{amount} attributed to '{source_id}'");
 
     // Debuff layer for duration debuffs applied to enemies.
-    if is_player == 0 && crate::data::persistence::is_duration_debuff(power_id) {
+    if is_player == 0 && DURATION_DEBUFFS.contains(&power_id) {
         if state.debuff_layers.len() >= caps::DEBUFF_LAYERS {
             fail!("debuff layer table overflow");
             return;
@@ -188,16 +185,12 @@ pub fn power_decreased(
         if power_id == "STRENGTH_POWER" {
             if is_player != 0 {
                 consume_player_strength_in(&mut state, amount as i64);
-            } else if state
-                .current
-                .as_mut()
-                .is_some_and(|combat| !combat.finished)
-            {
+            } else if Combat::active_mut(&mut state.current).is_some() {
                 record_str_reduction_in(&mut state, creature_hash, amount as i64);
             }
             return;
         }
-        if !crate::data::persistence::is_duration_debuff(power_id) {
+        if !DURATION_DEBUFFS.contains(&power_id) {
             return;
         }
         ledger::consume_debuff_layers_in(&mut state, creature_hash, power_id, amount as i64);
@@ -255,12 +248,7 @@ pub fn doom_kills_completed() {
         if !state.initialized {
             return;
         }
-        if state
-            .current
-            .as_mut()
-            .filter(|combat| !combat.finished)
-            .is_none()
-        {
+        if Combat::active_mut(&mut state.current).is_none() {
             state.doom_targets.clear();
             return;
         }
@@ -268,9 +256,7 @@ pub fn doom_kills_completed() {
         let targets = std::mem::take(&mut state.doom_targets);
         let count = targets.len();
         for target in &targets {
-            if !attribute_doom_target_in(&mut state, target.creature_hash, target.hp) {
-                return;
-            }
+            attribute_doom_target_in(&mut state, target.creature_hash, target.hp);
         }
         event_log!("  doom kills completed, {count} targets attributed");
     });
@@ -278,7 +264,7 @@ pub fn doom_kills_completed() {
 
 /// First against the matching Doom layers FIFO, then to the active context
 /// or a DOOM catch-all entry.
-fn attribute_doom_target_in(state: &mut State, creature_hash: u64, hp: i64) -> bool {
+fn attribute_doom_target_in(state: &mut State, creature_hash: u64, hp: i64) {
     let mut remaining = hp;
     let mut i = 0;
     while i < state.doom_layers.len() && remaining > 0 {
@@ -290,8 +276,8 @@ fn attribute_doom_target_in(state: &mut State, creature_hash: u64, hp: i64) -> b
         let take = layer.amount.min(remaining);
         let (source_id, kind, player) = (layer.source_id.clone(), layer.kind, layer.player);
         {
-            let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
-                return false;
+            let Some(combat) = Combat::active_mut(&mut state.current) else {
+                return;
             };
             if let Some(index) = ledger::get_or_create_card_kind(combat, player, &source_id, kind) {
                 let card = &mut combat.cards[index];
@@ -317,8 +303,8 @@ fn attribute_doom_target_in(state: &mut State, creature_hash: u64, hp: i64) -> b
             .map(|(index, _)| index);
         match index {
             Some(index) => {
-                let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
-                    return false;
+                let Some(combat) = Combat::active_mut(&mut state.current) else {
+                    return;
                 };
                 let card = &mut combat.cards[index];
                 card.damage_dealt += remaining;
@@ -326,8 +312,8 @@ fn attribute_doom_target_in(state: &mut State, creature_hash: u64, hp: i64) -> b
                 ledger::assert_card_damage_segments(card);
             }
             None => {
-                let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
-                    return false;
+                let Some(combat) = Combat::active_mut(&mut state.current) else {
+                    return;
                 };
                 if let Some(index) =
                     ledger::get_or_create_card_kind(combat, TEAM_SLOT, "DOOM", SourceKind::Card)
@@ -340,7 +326,15 @@ fn attribute_doom_target_in(state: &mut State, creature_hash: u64, hp: i64) -> b
             }
         }
     }
-    true
+}
+
+/// Which pending queue one modifier event feeds: the dealer's for damage
+/// attribution when the hit lands, the gainer's to attach to the next
+/// block chunk.
+#[derive(Clone, Copy)]
+enum ContribQueue {
+    Damage,
+    Block,
 }
 
 /// Queue it on the DEALER's slot for attribution when the hit lands.
@@ -352,30 +346,14 @@ pub fn damage_modifier_contribution(
 ) {
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
-        if !state.initialized || contribution <= 0 {
-            return;
-        }
-        let mod_kind = clamp_modifier_kind(kind);
-        // Each share carries its applier's slot; the no-applier fallback
-        // rides the DEALER's slot.
-        let shares = ledger::split_over_appliers_in(
-            &state,
+        modifier_contribution_in(
+            &mut state,
             modifier_id,
-            mod_kind,
-            contribution as i64,
+            kind,
+            contribution,
             player_slot,
+            ContribQueue::Damage,
         );
-        let slot = state.slot_index(player_slot);
-        let mut count = 0usize;
-        for share in shares {
-            if state.per_player[slot].pending_contribs.len() >= caps::PENDING_CONTRIBS {
-                fail!("pending modifier contribution overflow");
-                break;
-            }
-            state.per_player[slot].pending_contribs.push(share);
-            count += 1;
-        }
-        event_log!("  modifier {modifier_id} +{contribution} split across {count} appliers");
     });
 }
 
@@ -388,30 +366,61 @@ pub fn block_modifier_contribution(
 ) {
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
-        if !state.initialized || contribution <= 0 {
-            return;
-        }
-        let mod_kind = clamp_modifier_kind(kind);
-        // Same applier-slot stamping as the damage path.
-        let shares = ledger::split_over_appliers_in(
-            &state,
+        modifier_contribution_in(
+            &mut state,
             modifier_id,
-            mod_kind,
-            contribution as i64,
+            kind,
+            contribution,
             player_slot,
+            ContribQueue::Block,
         );
-        let slot = state.slot_index(player_slot);
-        let mut count = 0usize;
-        for share in shares {
-            if state.per_player[slot].pending_block_contribs.len() >= caps::PENDING_BLOCK_CONTRIBS {
-                fail!("pending block modifier contribution overflow");
-                break;
-            }
-            state.per_player[slot].pending_block_contribs.push(share);
-            count += 1;
-        }
-        event_log!("  block modifier {modifier_id} +{contribution} split across {count} appliers");
     });
+}
+
+fn modifier_contribution_in(
+    state: &mut State,
+    modifier_id: &str,
+    kind: i32,
+    contribution: i32,
+    player_slot: i32,
+    queue_kind: ContribQueue,
+) {
+    if !state.initialized || contribution <= 0 {
+        return;
+    }
+    let mod_kind = clamp_modifier_kind(kind);
+    // Each share carries its applier's slot; the no-applier fallback rides
+    // the DEALER's slot.
+    let shares = ledger::split_over_appliers_in(
+        state,
+        modifier_id,
+        mod_kind,
+        contribution as i64,
+        player_slot,
+    );
+    let slot = state.slot_index(player_slot);
+    let (queue, cap, label) = match queue_kind {
+        ContribQueue::Damage => (
+            &mut state.per_player[slot].pending_contribs,
+            caps::PENDING_CONTRIBS,
+            "modifier",
+        ),
+        ContribQueue::Block => (
+            &mut state.per_player[slot].pending_block_contribs,
+            caps::PENDING_BLOCK_CONTRIBS,
+            "block modifier",
+        ),
+    };
+    let mut count = 0usize;
+    for share in shares {
+        if queue.len() >= cap {
+            fail!("pending {label} contribution overflow");
+            break;
+        }
+        queue.push(share);
+        count += 1;
+    }
+    event_log!("  {label} {modifier_id} +{contribution} split across {count} appliers");
 }
 
 /// Credited to the FIFO head source of the enemy's WEAK_POWER layers.
@@ -421,12 +430,7 @@ pub fn weak_mitigation(prevented: i32, dealer_hash: u64) {
         if !state.initialized || prevented <= 0 {
             return;
         }
-        if state
-            .current
-            .as_mut()
-            .filter(|combat| !combat.finished)
-            .is_none()
-        {
+        if Combat::active_mut(&mut state.current).is_none() {
             return;
         }
         let layer = state
@@ -435,7 +439,7 @@ pub fn weak_mitigation(prevented: i32, dealer_hash: u64) {
             .find(|l| l.creature_hash == dealer_hash && l.power_id == "WEAK_POWER")
             .map(|l| (l.source_id.clone(), l.kind, l.player));
         if let Some((source_id, kind, player)) = layer {
-            let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
+            let Some(combat) = Combat::active_mut(&mut state.current) else {
                 return;
             };
             if let Some(index) = ledger::get_or_create_card_kind(combat, player, &source_id, kind) {
@@ -455,12 +459,7 @@ pub fn buff_mitigation(power_id: &str, prevented: i32) {
         if !state.initialized || prevented <= 0 {
             return;
         }
-        if state
-            .current
-            .as_mut()
-            .filter(|combat| !combat.finished)
-            .is_none()
-        {
+        if Combat::active_mut(&mut state.current).is_none() {
             return;
         }
         let ambient = state.ambient_slot() as i32;
@@ -472,7 +471,7 @@ pub fn buff_mitigation(power_id: &str, prevented: i32) {
             ambient,
         );
         let count = shares.len();
-        let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
+        let Some(combat) = Combat::active_mut(&mut state.current) else {
             return;
         };
         for share in shares {
@@ -493,12 +492,7 @@ pub fn forge(source_id: &str, source_kind: i32, amount: i32, player_slot: i32) {
         if !state.initialized || amount <= 0 {
             return;
         }
-        if state
-            .current
-            .as_mut()
-            .filter(|combat| !combat.finished)
-            .is_none()
-        {
+        if Combat::active_mut(&mut state.current).is_none() {
             return;
         }
         let kind = SourceKind::from_c(source_kind);
@@ -506,7 +500,7 @@ pub fn forge(source_id: &str, source_kind: i32, amount: i32, player_slot: i32) {
         // resolve_card would create a kind-0 entry). The row keys at the
         // forging player's slot.
         let index = if !source_id.is_empty() {
-            let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
+            let Some(combat) = Combat::active_mut(&mut state.current) else {
                 return;
             };
             let row_slot = crate::data::state::clamp_source_slot(player_slot);
@@ -523,7 +517,7 @@ pub fn forge(source_id: &str, source_kind: i32, amount: i32, player_slot: i32) {
         };
         match index {
             Some(index) => {
-                let Some(combat) = state.current.as_mut().filter(|combat| !combat.finished) else {
+                let Some(combat) = Combat::active_mut(&mut state.current) else {
                     return;
                 };
                 combat.cards[index].forge += amount as i64;
@@ -577,7 +571,7 @@ pub(super) fn apply_str_mitigation_in(state: &mut State, dealer_hash: u64) {
     if effective <= 0 {
         return;
     }
-    let combat = state.current.as_mut().filter(|combat| !combat.finished);
+    let combat = Combat::active_mut(&mut state.current);
     let Some(combat) = combat else { return };
     let mut allocated: i64 = 0;
     let mut seen: usize = 0;

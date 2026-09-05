@@ -78,7 +78,7 @@ use crate::data::persistence::{
     CardStatKey, card_stat_from_rec, load_combat_docs_from, parse_combat_docs, upsert_card_stat,
 };
 use crate::data::records::{CombatRec, PlayerRec};
-use crate::data::state::{CardStat, PlayerFilter, RunOutcome, STATE, TEAM_SLOT};
+use crate::data::state::{CardStat, CombatResult, PlayerFilter, RunOutcome, STATE, TEAM_SLOT};
 
 /// Generous for the run-start → first-combat gap, yet two same-seed
 /// replays played further apart never merge.
@@ -125,7 +125,7 @@ impl Default for RunEntry {
 pub struct CombatView {
     pub seq: u32,
     pub encounter: String,
-    pub result: String,
+    pub result: CombatResult,
     pub damage_dealt: i64,
     pub damage_taken: i64,
     pub turns: u32,
@@ -145,10 +145,8 @@ pub struct RunSummaryView {
     pub character: String,
     pub ascension: i32,
     pub game_mode: String,
-    /// None on the combats-only fallback.
+    /// None on the combats-only fallback: the truth is unknown.
     pub outcome: Option<RunOutcome>,
-    /// "Unfinished" for the fallback: the truth is unknown.
-    pub result: String,
     pub seed: String,
     pub started_at: i64,
     pub ended_at: i64,
@@ -195,7 +193,7 @@ fn store_paths() -> (PathBuf, PathBuf) {
 
 /// One JSON object per line; one bad line never hides the rest.
 fn load_runs(path: &Path) -> Vec<RunEntry> {
-    let Some(content) = crate::data::persistence::read_file(path) else {
+    let Some(content) = crate::data::persistence::read_file(path).content() else {
         return Vec::new();
     };
     let mut runs = Vec::new();
@@ -297,12 +295,6 @@ fn build_view(entry: &RunEntry, combats: &[CombatRec]) -> RunSummaryView {
         ascension: entry.ascension,
         game_mode: entry.game_mode.clone(),
         outcome: Some(entry.outcome),
-        result: match entry.outcome {
-            RunOutcome::Victory => "Victory",
-            RunOutcome::Abandoned => "Abandoned",
-            RunOutcome::Defeat => "Defeat",
-        }
-        .to_owned(),
         seed: entry.seed.clone(),
         started_at: entry.started_at,
         ended_at: entry.ended_at,
@@ -317,7 +309,7 @@ fn build_view(entry: &RunEntry, combats: &[CombatRec]) -> RunSummaryView {
         view.combats.push(CombatView {
             seq: combat.combat_id,
             encounter: combat.encounter_id.clone(),
-            result: combat.result.clone(),
+            result: combat.result,
             damage_dealt: combat.cards.iter().map(|c| c.damage_dealt).sum(),
             damage_taken: combat.damage_received,
             turns: combat.turns,
@@ -439,7 +431,6 @@ fn fallback_from_combats(cache: &Cache, seed: &str, profile: i32, start_time: i6
     // The combats-only fallback has no run record: the terminal state is
     // unknown, never a false "Defeat".
     view.outcome = None;
-    view.result = "Unfinished".to_owned();
     RunSelection::Selected(Box::new(view))
 }
 
@@ -490,7 +481,6 @@ fn view_fingerprint(view: &RunSummaryView) -> u64 {
     view.ascension.hash(&mut h);
     view.game_mode.hash(&mut h);
     view.outcome.hash(&mut h);
-    view.result.hash(&mut h);
     view.seed.hash(&mut h);
     view.started_at.hash(&mut h);
     view.ended_at.hash(&mut h);

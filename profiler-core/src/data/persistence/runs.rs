@@ -13,8 +13,9 @@ pub fn rebuild_run_accumulator(seq: u32) -> (u32, u32) {
     let mut turns = 0u32;
     let mut count = 0u32;
     for combat in combats {
-        let Some(run) = &combat.run else { continue };
-        if run.seq != seq {
+        // The path IS the run: a mismatch means we misfiled the record.
+        if combat.run.as_ref().is_none_or(|run| run.seq != seq) {
+            fail!("combat {} misfiled outside run {seq}", combat.combat_id);
             continue;
         }
         count += 1;
@@ -39,10 +40,12 @@ pub fn rebuild_run_accumulator(seq: u32) -> (u32, u32) {
 pub fn merge_into_run(c: &Combat) {
     STATE.with(|s| {
         let mut state = s.borrow_mut();
-        if !state.run_ctx.active || c.run_seq == 0 || c.run_seq != state.run_ctx.seq {
-            return;
-        }
-        if state.run_seq_accumulated != state.run_ctx.seq {
+        let Some(run) = &c.run else { return };
+        if !state
+            .run_ctx
+            .as_ref()
+            .is_some_and(|context| context.run.seq == run.seq)
+        {
             return;
         }
         state.run_turns += c.turns;
@@ -107,8 +110,17 @@ mod tests {
     use crate::data::persistence::build_combat_json;
     use crate::data::persistence::test_support::*;
     use crate::data::records;
-    use crate::data::state::{RunPlayer, caps};
+    use crate::data::state::{RunContext, RunPlayer, caps};
     use crate::source_kind::SourceKind;
+
+    fn set_active_run(seq: u32) {
+        STATE.with(|s| {
+            s.borrow_mut().run_ctx = Some(RunContext {
+                run: synthetic_run(seq),
+                ..RunContext::default()
+            });
+        });
+    }
 
     #[test]
     fn two_players_same_id_cards_round_trip_and_stay_separate() {
@@ -155,11 +167,9 @@ mod tests {
 
         STATE.with(|s| {
             let mut st = s.borrow_mut();
-            st.run_ctx.active = true;
-            st.run_ctx.seq = 42;
-            st.run_seq_accumulated = 42;
             st.run_cards.clear();
         });
+        set_active_run(42);
         merge_into_run(&c);
         STATE.with(|s| {
             let st = s.borrow();
@@ -207,12 +217,10 @@ mod tests {
     fn merge_into_run_accumulates_for_active_run() {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
-            st.run_ctx.active = true;
-            st.run_ctx.seq = 42;
-            st.run_seq_accumulated = 42;
             st.run_turns = 1;
             st.run_combats = 1;
         });
+        set_active_run(42);
         let c = synthetic_combat(); // run_seq 42, turns 5
         merge_into_run(&c);
         let mut c2 = synthetic_combat();
@@ -238,25 +246,13 @@ mod tests {
 
     #[test]
     fn merge_into_run_ignores_inactive_or_foreign_combats() {
-        STATE.with(|s| {
-            let mut st = s.borrow_mut();
-            st.run_ctx.active = true;
-            st.run_ctx.seq = 42;
-            st.run_seq_accumulated = 42;
-        });
+        set_active_run(42);
         let mut c = synthetic_combat();
-        c.run_seq = 0; // outside any run
+        c.run = None; // outside any run
         merge_into_run(&c);
         let mut foreign = synthetic_combat();
-        foreign.run_seq = 99; // another run
+        foreign.run = Some(synthetic_run(99)); // another run
         merge_into_run(&foreign);
-        STATE.with(|s| {
-            let st = s.borrow();
-            assert_eq!(st.run_combats, 0);
-            assert!(st.run_cards.is_empty());
-        });
-        STATE.with(|s| s.borrow_mut().run_seq_accumulated = 7);
-        merge_into_run(&synthetic_combat());
         STATE.with(|s| {
             let st = s.borrow();
             assert_eq!(st.run_combats, 0);
@@ -415,13 +411,11 @@ mod tests {
 
         STATE.with(|s| {
             let mut st = s.borrow_mut();
-            st.run_ctx.active = true;
-            st.run_ctx.seq = 42;
-            st.run_seq_accumulated = 42;
             st.run_turns = 0;
             st.run_combats = 0;
             st.run_cards.clear();
         });
+        set_active_run(42);
         merge_into_run(&c1);
         merge_into_run(&c2);
         let (live_cards, live_turns, live_combats) = STATE.with(|s| {

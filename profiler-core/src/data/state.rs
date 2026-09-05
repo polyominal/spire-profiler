@@ -253,15 +253,60 @@ pub struct CardStat {
     pub forge: i64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum CombatResult {
+    #[default]
+    Completed,
+    Defeat,
+    Interrupted,
+}
+
+impl CombatResult {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            CombatResult::Completed => "completed",
+            CombatResult::Defeat => "defeat",
+            CombatResult::Interrupted => "interrupted",
+        }
+    }
+}
+
+impl Serialize for CombatResult {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.name())
+    }
+}
+
+impl<'de> Deserialize<'de> for CombatResult {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let name = String::deserialize(deserializer)?;
+        Ok(match name.as_str() {
+            "completed" => CombatResult::Completed,
+            "defeat" => CombatResult::Defeat,
+            "interrupted" => CombatResult::Interrupted,
+            _ => {
+                fail!("unknown combat result '{name}'; reading completed");
+                CombatResult::Completed
+            }
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum CombatPhase {
+    #[default]
+    Active,
+    Finished(CombatResult),
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct Combat {
     pub seq: u32,
     pub encounter_id: String,
     pub encounter_type: String,
     pub started_at: i64,
     /// The record stays available for the panel after the fight.
-    pub finished: bool,
-    pub result: String,
+    pub phase: CombatPhase,
     /// Bounded at [`caps::COMBAT_CARDS`].
     pub cards: Vec<CardStat>,
     pub plays: u32,
@@ -273,40 +318,57 @@ pub struct Combat {
     pub damage_received: i64,
     pub block_total: i64,
     pub potions_used: u32,
-    // Run context stamped at combat start.
-    pub run_seq: u32,
-    pub run_character: String,
-    pub run_ascension: i32,
-    pub run_game_mode: String,
-    /// So a resumed run's fragments re-join by seed.
-    pub run_seed: String,
+    /// The run identity stamped at combat start; `None` outside a run.
+    pub run: Option<RunSnapshot>,
     /// In-memory only.
     pub players: Vec<RunPlayer>,
 }
 
-impl Default for Combat {
+impl Combat {
+    /// Liveness for gameplay events: present and not finished. The record
+    /// stays in `current` after combat end so the panel keeps showing it,
+    /// but its file is already on disk, so events must not mutate it.
+    pub fn active(current: &Option<Combat>) -> Option<&Combat> {
+        current
+            .as_ref()
+            .filter(|combat| combat.phase == CombatPhase::Active)
+    }
+
+    pub fn active_mut(current: &mut Option<Combat>) -> Option<&mut Combat> {
+        current
+            .as_mut()
+            .filter(|combat| combat.phase == CombatPhase::Active)
+    }
+
+    pub fn result(&self) -> Option<CombatResult> {
+        match self.phase {
+            CombatPhase::Active => None,
+            CombatPhase::Finished(result) => Some(result),
+        }
+    }
+}
+
+/// The run identity a combat was fought under. `None` serializes as the
+/// absent run block (see the persistence module doc).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunSnapshot {
+    pub seq: u32,
+    pub character: String,
+    pub ascension: i32,
+    pub game_mode: String,
+    /// So a resumed run's fragments re-join by seed.
+    pub seed: String,
+}
+
+impl Default for RunSnapshot {
     fn default() -> Self {
-        Combat {
+        RunSnapshot {
             seq: 0,
-            encounter_id: String::new(),
-            encounter_type: String::new(),
-            started_at: 0,
-            finished: false,
-            result: "completed".to_owned(),
-            cards: Vec::new(),
-            plays: 0,
-            generated_plays: 0,
-            generation_triggers: 0,
-            turns: 0,
-            damage_received: 0,
-            block_total: 0,
-            potions_used: 0,
-            run_seq: 0,
-            run_character: String::new(),
-            run_ascension: -1,
-            run_game_mode: String::new(),
-            run_seed: String::new(),
-            players: Vec::new(),
+            character: String::new(),
+            // -1 means "the shim never reported an ascension".
+            ascension: -1,
+            game_mode: String::new(),
+            seed: String::new(),
         }
     }
 }
@@ -383,42 +445,22 @@ where
     *value == 0u8.into()
 }
 
-/// Only meaningful while `active`.
-#[derive(Clone, Debug)]
+/// The active run's identity and roster.
+#[derive(Clone, Debug, Default)]
 pub struct RunContext {
-    pub active: bool,
-    /// Derived from the store so it never repeats.
-    pub seq: u32,
-    pub character: String,
-    pub ascension: i32,
-    pub game_mode: String,
-    /// So a resumed run rejoins its earlier fragments.
-    pub seed: String,
+    pub run: RunSnapshot,
     /// Falls back to `now_seconds()` when the shim reports no time.
     pub started_at: i64,
-    pub ended_at: i64,
-    /// `ended_at` is the abandon moment.
-    pub outcome: RunOutcome,
     /// Serialized as runs.jsonl's `"players"`.
     pub players: Vec<RunPlayer>,
 }
 
-impl Default for RunContext {
-    /// -1 means "the shim never reported an ascension".
-    fn default() -> Self {
-        RunContext {
-            active: false,
-            seq: 0,
-            character: String::new(),
-            ascension: -1,
-            game_mode: String::new(),
-            seed: String::new(),
-            started_at: 0,
-            ended_at: 0,
-            outcome: RunOutcome::Defeat,
-            players: Vec::new(),
-        }
-    }
+#[derive(Clone, Debug)]
+pub struct EndedRun {
+    pub context: RunContext,
+    pub outcome: RunOutcome,
+    /// The abandon moment when the outcome is abandonment.
+    pub ended_at: i64,
 }
 
 #[derive(Clone, Debug)]
@@ -478,31 +520,46 @@ pub struct PendingContrib {
     pub amount: i64,
 }
 
+/// The in-flight play's attribution target: everything during the play
+/// credits this source.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActivePlay {
+    pub id: String,
+    pub kind: SourceKind,
+    /// The generator's recorded slot, else the playing player's own.
+    pub row_slot: SourceSlot,
+    /// The played card's own id, which the chains treat as "the card
+    /// being played", not an override.
+    pub card_id: String,
+    /// True once an orb trigger fired during this play; only the first
+    /// trigger credits the channeling source.
+    pub orb_first_trigger_used: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PotionSource {
+    pub id: String,
+    pub kind: SourceKind,
+}
+
+#[derive(Clone, Debug)]
+pub enum Fallback {
+    /// Index into the global [`State::orb_sources`].
+    Orb(usize),
+    Potion(PotionSource),
+}
+
 /// Plays nest across slots, so each slot owns its transient combat state.
 #[derive(Clone, Debug, Default)]
 pub struct PlayerSlotState {
-    pub active_play_source: Option<(String, SourceKind)>,
-    /// The row slot of the play's source: the generator's recorded slot,
-    /// else the playing player's own.
-    pub active_play_source_slot: SourceSlot,
-    /// The playing card's own id, which the chains treat as "the card
-    /// being played", not an override.
-    pub active_play_card_id: Option<String>,
-    /// True once an orb trigger fired during the current play; only the
-    /// first trigger credits the channeling source.
-    pub orb_first_trigger_used: bool,
-    /// How many of this slot's plays are nested; plays interleave across
-    /// slots, never within one.
-    pub play_depth: u32,
+    pub active_play: Option<ActivePlay>,
     /// This slot's block pool (bounded at [`caps::BLOCK_POOL`] chunks).
     pub block_pool: Vec<BlockEntry>,
     pub pending_block_contribs: Vec<PendingContrib>,
     /// Queued per-hit damage-modifier contributions, applied to the next
     /// hit this slot's dealer lands.
     pub pending_contribs: Vec<PendingContrib>,
-    /// Index into the global [`State::orb_sources`].
-    pub orb_fallback: Option<usize>,
-    pub potion_fallback: Option<usize>,
+    pub fallback: Option<Fallback>,
     /// This slot's Osty defensive HP stack; absorbed damage consumes LIFO.
     pub osty_stack: Vec<OstyEntry>,
     /// True once the slot's creature died; the team record is "defeat" iff
@@ -609,13 +666,12 @@ pub struct State {
     pub run_cards: Vec<CardStat>,
     pub run_turns: u32,
     pub run_combats: u32,
-    pub run_seq_accumulated: u32,
     /// The session's profile id (-1 until known); run-history matching
     /// filters on it so profiles never mix.
     pub run_profile: i32,
     pub player_filter: PlayerFilter,
 
-    pub run_ctx: RunContext,
+    pub run_ctx: Option<RunContext>,
 
     /// Per-slot transient state; sized on first slot sight and cleared at
     /// the combat boundary.
@@ -665,7 +721,7 @@ impl State {
     pub fn ambient_slot(&self) -> usize {
         self.per_player
             .iter()
-            .position(|slot| slot.play_depth > 0)
+            .position(|slot| slot.active_play.is_some())
             .unwrap_or(0)
     }
 }
@@ -675,10 +731,8 @@ pub mod caps {
     /// push pairs with an end pop, so the cap bounds how deep hooks nest
     /// into each other, not the combat's hook count.
     pub const CONTEXT_STACK: usize = 32;
-    /// Channeling sources keyed by orb hash (a re-channel upserts) plus
-    /// two hash-0 potion entries per use; nothing leaves the table before
-    /// the combat boundary, so whole-combat potion uses drive the worst
-    /// case.
+    /// Channeling sources keyed by orb hash; a re-channel upserts and
+    /// nothing leaves the table before the combat boundary.
     pub const ORB_SOURCES: usize = 32;
     /// The game's lobby cap; per-player state never needs a fifth PLAYER.
     pub const MAX_PLAYERS: usize = 4;

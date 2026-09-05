@@ -2,16 +2,16 @@
 //! finalizer: the run finalizer, which rewrites `runs.jsonl` atomically.
 
 use super::combats::{load_run_combat_docs, parse_combat_docs};
-use super::io::{read_file, write_file};
+use super::io::{ReadFile, read_file, write_file};
 use crate::data::persistence::event_log;
 use crate::data::records;
-use crate::data::state::STATE;
+use crate::data::state::{EndedRun, STATE};
 
 /// The record comes from the run context: identity and header facts only.
-pub fn write_run_record() {
-    let run_ctx = STATE.with(|s| s.borrow().run_ctx.clone());
-    if parse_combat_docs(&load_run_combat_docs(run_ctx.seq)).is_empty() {
-        event_log!("run {} ended with no combat records", run_ctx.seq);
+pub fn write_run_record(ended: &EndedRun) {
+    let run = &ended.context.run;
+    if parse_combat_docs(&load_run_combat_docs(run.seq)).is_empty() {
+        event_log!("run {} ended with no combat records", run.seq);
         return;
     }
 
@@ -19,8 +19,12 @@ pub fn write_run_record() {
         let st = s.borrow();
         (st.run_profile, st.runs_path_full.clone())
     });
-    let line = records::build_run_json(&run_ctx, profile);
-    let mut content = read_file(&runs_path).unwrap_or_default();
+    let line = records::build_run_json(ended, profile);
+    let mut content = match read_file(&runs_path) {
+        ReadFile::Missing => String::new(),
+        ReadFile::Content(content) => content,
+        ReadFile::Failed => return,
+    };
     if !content.is_empty() && !content.ends_with('\n') {
         content.push('\n');
     }
@@ -32,10 +36,10 @@ pub fn write_run_record() {
 
     event_log!(
         "run {} ended: {} ({}), {}",
-        run_ctx.seq,
-        run_ctx.character,
-        run_ctx.game_mode,
-        run_ctx.outcome.name(),
+        run.seq,
+        run.character,
+        run.game_mode,
+        ended.outcome.name(),
     );
 }
 
@@ -44,7 +48,7 @@ mod tests {
     use super::*;
     use crate::data::persistence::build_combat_json;
     use crate::data::persistence::test_support::*;
-    use crate::data::state::RunOutcome;
+    use crate::data::state::{RunContext, RunOutcome, RunSnapshot};
 
     #[test]
     fn write_run_record_appends_one_line_per_run() {
@@ -55,21 +59,26 @@ mod tests {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
             st.run_profile = 3;
-            st.run_ctx.active = true;
-            st.run_ctx.seq = 42;
-            st.run_ctx.character = "SHROUD".to_owned();
-            st.run_ctx.ascension = 5;
-            st.run_ctx.game_mode = "standard".to_owned();
-            st.run_ctx.seed = "SEED123".to_owned();
-            st.run_ctx.started_at = 1_786_624_000;
-            st.run_ctx.ended_at = 1_786_624_496;
-            st.run_ctx.outcome = RunOutcome::Victory;
-            st.run_ctx.players = synthetic_roster();
         });
-        let c = synthetic_combat(); // run_seq 42, seq 7
+        let ended = EndedRun {
+            context: RunContext {
+                run: RunSnapshot {
+                    seq: 42,
+                    character: "SHROUD".to_owned(),
+                    ascension: 5,
+                    game_mode: "standard".to_owned(),
+                    seed: "SEED123".to_owned(),
+                },
+                started_at: 1_786_624_000,
+                players: synthetic_roster(),
+            },
+            outcome: RunOutcome::Victory,
+            ended_at: 1_786_624_496,
+        };
+        let c = synthetic_combat(); // run 42, seq 7
         write_store_file(&data, 42, 7, &build_combat_json(&c));
 
-        write_run_record();
+        write_run_record(&ended);
 
         let content = std::fs::read_to_string(data.join("runs.jsonl")).unwrap();
         let lines: Vec<&str> = content.lines().collect();
@@ -93,17 +102,23 @@ mod tests {
         let log = std::fs::read_to_string(data.join("profiler.log")).unwrap();
         assert!(log.contains("run 42 ended: SHROUD (standard), victory"));
 
-        STATE.with(|s| {
-            let mut st = s.borrow_mut();
-            st.run_ctx.seq = 43;
-            st.run_ctx.character = "IRONCLAD".to_owned();
-            st.run_ctx.outcome = RunOutcome::Defeat;
-        });
+        let ended = EndedRun {
+            context: RunContext {
+                run: RunSnapshot {
+                    seq: 43,
+                    character: "IRONCLAD".to_owned(),
+                    ..RunSnapshot::default()
+                },
+                ..RunContext::default()
+            },
+            outcome: RunOutcome::Defeat,
+            ended_at: 1_786_624_996,
+        };
         let mut c2 = synthetic_combat();
-        c2.run_seq = 43;
+        c2.run = Some(synthetic_run(43));
         c2.seq = 8;
         write_store_file(&data, 43, 8, &build_combat_json(&c2));
-        write_run_record();
+        write_run_record(&ended);
         let content = std::fs::read_to_string(data.join("runs.jsonl")).unwrap();
         let lines: Vec<&str> = content.lines().collect();
         assert_eq!(lines.len(), 2);
@@ -116,13 +131,43 @@ mod tests {
         let data = dir.join("data");
         std::fs::create_dir_all(&data).unwrap();
         init_state(&data);
-        STATE.with(|s| {
-            let mut st = s.borrow_mut();
-            st.run_ctx.seq = 42;
+        write_run_record(&EndedRun {
+            context: RunContext {
+                run: RunSnapshot {
+                    seq: 42,
+                    ..RunSnapshot::default()
+                },
+                ..RunContext::default()
+            },
+            outcome: RunOutcome::Defeat,
+            ended_at: 1_786_624_996,
         });
-        write_run_record();
         assert!(!data.join("runs.jsonl").exists());
         let log = std::fs::read_to_string(data.join("profiler.log")).unwrap();
         assert!(log.contains("run 42 ended with no combat records"));
+    }
+
+    #[test]
+    fn write_run_record_preserves_unreadable_history() {
+        let dir = unique_dir("run-record-unreadable");
+        let data = dir.join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        init_state(&data);
+        let c = synthetic_combat();
+        write_store_file(&data, 42, 7, &build_combat_json(&c));
+        let runs_path = data.join("runs.jsonl");
+        std::fs::write(&runs_path, [0xff]).unwrap();
+
+        write_run_record(&EndedRun {
+            context: RunContext {
+                run: synthetic_run(42),
+                ..RunContext::default()
+            },
+            outcome: RunOutcome::Victory,
+            ended_at: 1_786_624_496,
+        });
+
+        assert_eq!(std::fs::read(&runs_path).unwrap(), vec![0xff]);
+        assert!(!runs_path.with_extension("jsonl.tmp").exists());
     }
 }

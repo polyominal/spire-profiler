@@ -2,6 +2,7 @@
 //! generator-tree credit model and its async-gap resolution).
 
 use super::*;
+use crate::data::state::ActivePlay;
 use crate::source_kind::SourceKind;
 
 #[test]
@@ -430,12 +431,18 @@ fn interleaved_plays_keep_per_slot_play_stacks() {
     card_play_finished(1);
     STATE.with(|cell| {
         let state = cell.borrow();
-        assert_eq!(state.per_player[0].play_depth, 1);
+        assert!(state.per_player[0].active_play.is_some());
         assert_eq!(
-            state.per_player[0].active_play_source,
-            Some(("STRIKE".to_owned(), SourceKind::Card))
+            state.per_player[0].active_play,
+            Some(ActivePlay {
+                id: "STRIKE".to_owned(),
+                kind: SourceKind::Card,
+                row_slot: 0,
+                card_id: "STRIKE".to_owned(),
+                orb_first_trigger_used: false,
+            })
         );
-        assert_eq!(state.per_player[1].play_depth, 0);
+        assert!(state.per_player[1].active_play.is_none());
     });
     damage_dealt(DamageDealt {
         total: 6,

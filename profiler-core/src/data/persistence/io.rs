@@ -41,6 +41,14 @@ pub fn ensure_data_dir() -> bool {
 
 /// A sibling `.tmp` file, then a rename (atomic on POSIX).
 pub fn write_file(path: &Path, bytes: &str) -> bool {
+    if bytes.len() > MAX_JSON_SIZE {
+        fail!(
+            "cannot write '{}': {} bytes exceeds the {MAX_JSON_SIZE}-byte limit",
+            path.display(),
+            bytes.len()
+        );
+        return false;
+    }
     let mut tmp_name = path.as_os_str().to_os_string();
     tmp_name.push(".tmp");
     let tmp_path = PathBuf::from(tmp_name);
@@ -73,11 +81,26 @@ pub fn write_file(path: &Path, bytes: &str) -> bool {
     }
 }
 
+pub(crate) enum ReadFile {
+    Missing,
+    Content(String),
+    Failed,
+}
+
+impl ReadFile {
+    pub(crate) fn content(self) -> Option<String> {
+        match self {
+            ReadFile::Content(content) => Some(content),
+            ReadFile::Missing | ReadFile::Failed => None,
+        }
+    }
+}
+
 /// An empty file yields a zero-length string: "no data yet" is a state.
-pub fn read_file(path: &Path) -> Option<String> {
+pub(crate) fn read_file(path: &Path) -> ReadFile {
     let meta = match fs::metadata(path) {
         Ok(meta) => meta,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return ReadFile::Missing,
         Err(err) => {
             fail!(
                 "cannot open '{}': {} (os error {})",
@@ -85,7 +108,7 @@ pub fn read_file(path: &Path) -> Option<String> {
                 err.kind(),
                 err.raw_os_error().unwrap_or(-1)
             );
-            return None;
+            return ReadFile::Failed;
         }
     };
     if meta.len() > MAX_JSON_SIZE as u64 {
@@ -94,7 +117,7 @@ pub fn read_file(path: &Path) -> Option<String> {
             path.display(),
             meta.len()
         );
-        return None;
+        return ReadFile::Failed;
     }
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
@@ -105,14 +128,14 @@ pub fn read_file(path: &Path) -> Option<String> {
                 err.kind(),
                 err.raw_os_error().unwrap_or(-1)
             );
-            return None;
+            return ReadFile::Failed;
         }
     };
     match String::from_utf8(bytes) {
-        Ok(content) => Some(content),
+        Ok(content) => ReadFile::Content(content),
         Err(err) => {
             fail!("'{}' is not valid UTF-8: {err}", path.display());
-            None
+            ReadFile::Failed
         }
     }
 }
@@ -146,18 +169,29 @@ mod tests {
         let dir = unique_dir("write");
         let path = dir.join("f.json");
         assert!(write_file(&path, "hello"));
-        assert_eq!(read_file(&path).unwrap(), "hello");
+        assert_eq!(read_file(&path).content().unwrap(), "hello");
         assert!(!dir.join("f.json.tmp").exists());
         assert!(write_file(&path, "bye"));
-        assert_eq!(read_file(&path).unwrap(), "bye");
+        assert_eq!(read_file(&path).content().unwrap(), "bye");
         assert!(!dir.join("f.json.tmp").exists());
     }
 
     #[test]
     fn read_file_missing_vs_empty() {
         let dir = unique_dir("read");
-        assert!(read_file(&dir.join("missing.json")).is_none());
+        assert!(matches!(
+            read_file(&dir.join("missing.json")),
+            ReadFile::Missing
+        ));
         fs::write(dir.join("empty.json"), "").unwrap();
-        assert_eq!(read_file(&dir.join("empty.json")).unwrap(), "");
+        assert_eq!(read_file(&dir.join("empty.json")).content().unwrap(), "");
+    }
+
+    #[test]
+    fn read_file_reports_invalid_utf8_as_failed() {
+        let dir = unique_dir("read-invalid");
+        let path = dir.join("invalid.jsonl");
+        fs::write(&path, [0xff]).unwrap();
+        assert!(matches!(read_file(&path), ReadFile::Failed));
     }
 }

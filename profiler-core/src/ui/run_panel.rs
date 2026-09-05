@@ -125,7 +125,7 @@ pub struct SpireProfilerRunPanel {
     /// Nothing signals a resize, so the panel polls.
     viewport_seen: Option<Vector2>,
     mouse: Vector2,
-    font: panel_replay::FontState,
+    font: crate::ui::theme::AssetState,
     font_plan: panel_replay::FontPlan,
     theme: crate::ui::theme::Theme,
     gutter: f32,
@@ -166,7 +166,7 @@ impl SpireProfilerRunPanel {
             tip_lines: Vec::new(),
             viewport_seen: None,
             mouse: Vector2::ZERO,
-            font: panel_replay::FontState::Unfetched,
+            font: crate::ui::theme::AssetState::Unfetched,
             font_plan: panel_replay::FontPlan::default(),
             theme: crate::ui::theme::Theme::new(),
             gutter: 0.0,
@@ -370,17 +370,14 @@ impl SpireProfilerRunPanel {
         );
         self.children.update_frames(frame, body_frame);
         let legend = legend.map(|rect| Rect2::new(rect.position - frame.position, rect.size));
-        if legend != self.legend {
-            self.legend = legend;
-            self.object.queue_redraw();
-            self.children.queue_overlay_redraw();
-        }
+        panel_common::apply_overlay_rect(
+            &mut self.legend,
+            legend,
+            &self.object,
+            &mut self.children,
+        );
         let tip = tip.map(|tip| Rect2::new(tip.position - frame.position, tip.size));
-        if tip != self.tip {
-            self.tip = tip;
-            self.object.queue_redraw();
-            self.children.queue_overlay_redraw();
-        }
+        panel_common::apply_overlay_rect(&mut self.tip, tip, &self.object, &mut self.children);
     }
 
     /// An unmapped id yields no portrait, never a guess.
@@ -538,7 +535,6 @@ impl SpireProfilerRunPanel {
             &mut self.scroll,
         );
         if panel_common::dismiss_on_outside_press(
-            true,
             step.pressed && !was_down,
             panel_common::over_panel(rect, mouse),
         ) {

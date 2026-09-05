@@ -13,7 +13,7 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::{Result, bail};
 use xshell::Shell;
 
-use crate::{discover, game_version, install, workspace_root};
+use crate::{discover, install, workspace_root};
 
 const BOOT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
@@ -34,10 +34,7 @@ const GAME_ARGS: [&str; 6] = [
 const MIN_PATCHES: u64 = 199;
 
 pub fn headless_test(shell: &Shell) -> Result<()> {
-    install::install_mod(shell)?;
-    let game = discover::locate_game()?;
-    // Refuse to boot a game the mod was not verified against.
-    game_version::check_pin(&game)?;
+    let game = install::install_mod(shell)?;
 
     let log_dir = game_log_dir(game.platform)?;
     let root = workspace_root();
@@ -50,9 +47,10 @@ pub fn headless_test(shell: &Shell) -> Result<()> {
     // satisfy the verdict.
     let boot_started = SystemTime::now();
     let (game_out, boot_duration, exit_code) = run_game_captured(&game, &scratch_data_dir, root)?;
-    let (log_path, log_text) = find_newest_log(&log_dir, boot_started);
-
-    let combined = format!("{log_text}\n{game_out}");
+    let newest_log = newest_boot_log(&log_dir, boot_started);
+    if newest_log.is_none() {
+        eprintln!("headless-test: warning: no godot*.log written during this boot");
+    }
 
     println!("--- headless-test verdict ---");
     println!("boot duration: {:.1} s", boot_duration.as_secs_f64());
@@ -62,9 +60,12 @@ pub fn headless_test(shell: &Shell) -> Result<()> {
             .map(|code| code.to_string())
             .unwrap_or_else(|| "unknown".to_owned())
     );
-    if let Some(path) = &log_path {
+    if let Some((path, _)) = &newest_log {
         println!("game log: {}", path.display());
     }
+
+    let log_text = newest_log.map(|(_, text)| text).unwrap_or_default();
+    let combined = format!("{log_text}\n{game_out}");
 
     assemble_verdict(&combined).report()
 }
@@ -384,18 +385,6 @@ fn spawn_pumps(
     (receiver, pumps)
 }
 
-/// The game rotates its previous log at boot, so the newest in-window file
-/// is this run's; a stale log must never satisfy the patch-count marker.
-fn find_newest_log(log_dir: &Path, boot_started: SystemTime) -> (Option<PathBuf>, String) {
-    match newest_boot_log(log_dir, boot_started) {
-        Some((path, text)) => (Some(path), text),
-        None => {
-            eprintln!("headless-test: warning: no godot*.log written during this boot");
-            (None, String::new())
-        }
-    }
-}
-
 /// The log's mtime comes from the game's clock, `boot_started` from the
 /// host's; under WSL2 the Windows game and the WSL clock skew after a
 /// Windows sleep, and a strictly in-window filter would drop this run's
@@ -403,6 +392,8 @@ fn find_newest_log(log_dir: &Path, boot_started: SystemTime) -> (Option<PathBuf>
 /// slack cannot let a stale log pass on its own.
 const LOG_CLOCK_SLACK: Duration = Duration::from_secs(60);
 
+/// The game rotates its previous log at boot, so the newest in-window
+/// file is this run's.
 fn newest_boot_log(log_dir: &Path, boot_started: SystemTime) -> Option<(PathBuf, String)> {
     let entries = std::fs::read_dir(log_dir).ok()?;
     let mut candidates: Vec<(SystemTime, PathBuf)> = entries
