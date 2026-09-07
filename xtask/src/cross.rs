@@ -110,24 +110,12 @@ pub(crate) fn build_matrix(shell: &Shell, root: &Path) -> Result<Vec<(String, Pa
 pub(crate) const ZIGBUILD_VERSION: &str = "0.23.0";
 
 fn ensure_zigbuild(shell: &Shell) -> Result<()> {
-    let remedy = format!(
-        "install it with `cargo +stable install cargo-zigbuild --version {ZIGBUILD_VERSION} --locked`"
-    );
-    let output = cmd!(shell, "cargo-zigbuild --version")
-        .read()
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "cross-compilation needs cargo-zigbuild, which is not installed; {remedy}"
-            )
-        })?;
-    if !output.contains(ZIGBUILD_VERSION) {
-        return Err(anyhow::anyhow!(
-            "cross-compilation needs cargo-zigbuild {ZIGBUILD_VERSION}, but the installed one \
-             reports '{}'; {remedy}",
-            output.trim()
-        ));
-    }
-    Ok(())
+    crate::ensure_cargo_tool(
+        shell,
+        &["cargo-zigbuild", "--version"],
+        &format!("cargo-zigbuild --version {ZIGBUILD_VERSION} --locked"),
+        ZIGBUILD_VERSION,
+    )
 }
 
 /// Zig supplies only the linker and C libraries; rustc still needs each

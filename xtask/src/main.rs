@@ -198,15 +198,22 @@ pub(crate) fn workspace_root() -> &'static Path {
         .expect("xtask manifest always lives directly below the workspace root")
 }
 
-/// Streamed in 64 KiB chunks (the zig tarball and GDRE zip are 50-100 MB,
-/// so never loaded whole).
 pub(crate) fn sha256_file(path: &Path) -> Result<String> {
+    hash_file::<sha2::Sha256>(path)
+}
+
+/// The dotnet release metadata publishes SHA-512 hashes, not SHA-256.
+pub(crate) fn sha512_file(path: &Path) -> Result<String> {
+    hash_file::<sha2::Sha512>(path)
+}
+
+/// Streamed in 64 KiB chunks (the SDK tarballs and GDRE zip are 50-250 MB,
+/// so never loaded whole).
+fn hash_file<D: sha2::Digest>(path: &Path) -> Result<String> {
     use std::io::Read;
 
-    use sha2::{Digest, Sha256};
-
     let file = std::fs::File::open(path)?;
-    let mut hasher = Sha256::new();
+    let mut hasher = D::new();
     let mut reader = std::io::BufReader::new(file);
     let mut buf = [0u8; 64 * 1024];
     loop {
@@ -216,7 +223,13 @@ pub(crate) fn sha256_file(path: &Path) -> Result<String> {
         }
         hasher.update(&buf[..n]);
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    // GenericArray only implements LowerHex for concrete sizes; encode by
+    // hand to keep the digest generic.
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
 }
 
 /// Fail with the remedy, not a raw spawn error, before the work runs.
@@ -243,24 +256,29 @@ fn smoke(shell: &Shell) -> Result<()> {
     Ok(())
 }
 
+/// Toolchain that builds the host tools: a pinned stable, never the repo
+/// nightly (nightlies reject the rustc_* attributes cargo-insta's locked
+/// rustix dependency uses). rustup auto-fetches the pin on first use.
+pub(crate) const TOOL_STABLE: &str = "1.96.0";
+const NEXTEST_VERSION: &str = "0.9.143";
+const INSTA_VERSION: &str = "1.48.0";
+
 /// The build bootstraps these lazily when missing, so install-tool is the
 /// optional up-front/offline path, not a prerequisite.
 fn install_tool(shell: &Shell) -> Result<()> {
     // Same host gate as build: the toolchain bootstraps are Unix-only.
     discover::Platform::detect()?;
 
-    let tool_checks: [(&[&str], String, String, Option<&str>); 3] = [
+    let tool_checks: [(&[&str], String, &str); 3] = [
         (
             &["cargo", "nextest", "--version"],
-            "cargo-nextest --locked".to_owned(),
-            "cargo-nextest".to_owned(),
-            None,
+            format!("cargo-nextest --version {NEXTEST_VERSION} --locked"),
+            NEXTEST_VERSION,
         ),
         (
             &["cargo", "insta", "--version"],
-            "cargo-insta --locked".to_owned(),
-            "cargo-insta".to_owned(),
-            None,
+            format!("cargo-insta --version {INSTA_VERSION} --locked"),
+            INSTA_VERSION,
         ),
         (
             &["cargo-zigbuild", "--version"],
@@ -268,24 +286,11 @@ fn install_tool(shell: &Shell) -> Result<()> {
                 "cargo-zigbuild --version {} --locked",
                 cross::ZIGBUILD_VERSION
             ),
-            format!("cargo-zigbuild {}", cross::ZIGBUILD_VERSION),
-            Some(cross::ZIGBUILD_VERSION),
+            cross::ZIGBUILD_VERSION,
         ),
     ];
-    for (probe, install_spec, label, expected_version) in tool_checks {
-        match Shell::cmd(shell, probe[0]).args(&probe[1..]).read() {
-            Ok(output) if expected_version.is_none_or(|v| output.contains(v)) => {
-                println!("{label}: {}", output.trim());
-            }
-            _ => {
-                if let Some(expected_version) = expected_version {
-                    println!("{label}: wrong version; upgrading to the pinned {expected_version}");
-                }
-                let argv = install_tool_argv(&install_spec);
-                cmd!(shell, "cargo {argv...}").run()?;
-                println!("{label}: installed");
-            }
-        }
+    for (probe, install_spec, expected_version) in tool_checks {
+        ensure_cargo_tool(shell, probe, &install_spec, expected_version)?;
     }
 
     crate::dotnet::ensure_bootstrap(shell)?;
@@ -296,11 +301,60 @@ fn install_tool(shell: &Shell) -> Result<()> {
     Ok(())
 }
 
+/// Install a cargo-hosted tool when PATH has the wrong version or none,
+/// using the same pinned stable as the eager `install-tool` path.
+pub(crate) fn ensure_cargo_tool(
+    shell: &Shell,
+    probe: &[&str],
+    install_spec: &str,
+    expected_version: &str,
+) -> Result<()> {
+    let probe_command = probe[0];
+    let tool = install_spec
+        .split_whitespace()
+        .next()
+        .expect("every install spec names its cargo package");
+    let version = Shell::cmd(shell, probe_command)
+        .args(&probe[1..])
+        .read()
+        .ok()
+        .filter(|output| reports_version(output, tool, expected_version));
+    if let Some(output) = version {
+        println!("{tool}: {}", output.trim());
+        return Ok(());
+    }
+
+    println!("{tool}: installing pinned {expected_version}");
+    let argv = install_tool_argv(install_spec);
+    cmd!(shell, "cargo {argv...}").run().map_err(|e| {
+        anyhow::anyhow!("installing {tool} {expected_version} with cargo failed: {e}")
+    })?;
+    let output = Shell::cmd(shell, probe_command)
+        .args(&probe[1..])
+        .read()
+        .map_err(|e| anyhow::anyhow!("{tool} installed, but its version probe failed: {e}"))?;
+    if !reports_version(&output, tool, expected_version) {
+        return Err(anyhow::anyhow!(
+            "{tool} reports '{}', expected {expected_version}",
+            output.trim()
+        ));
+    }
+    println!("{tool}: {}", output.trim());
+    Ok(())
+}
+
+fn reports_version(output: &str, tool: &str, expected_version: &str) -> bool {
+    output.lines().any(|line| {
+        let mut fields = line.split_whitespace();
+        fields.next() == Some(tool) && fields.next() == Some(expected_version)
+    })
+}
+
 /// The spec arrives as one string; it must reach cargo as separate argv
 /// elements — a single argument would name a bogus crate and always fail.
-fn install_tool_argv(install_spec: &str) -> Vec<&str> {
-    let mut argv = vec!["+stable", "install"];
-    argv.extend(install_spec.split_whitespace());
+fn install_tool_argv(install_spec: &str) -> Vec<String> {
+    let mut argv = vec![format!("+{TOOL_STABLE}"), "install".to_owned()];
+    argv.extend(install_spec.split_whitespace().map(str::to_owned));
     argv
 }
 
@@ -313,7 +367,7 @@ mod tests {
         assert_eq!(
             install_tool_argv("cargo-zigbuild --version 0.23.0 --locked"),
             vec![
-                "+stable",
+                "+1.96.0",
                 "install",
                 "cargo-zigbuild",
                 "--version",
@@ -322,8 +376,40 @@ mod tests {
             ]
         );
         assert_eq!(
-            install_tool_argv("cargo-insta --locked"),
-            vec!["+stable", "install", "cargo-insta", "--locked"]
+            install_tool_argv("cargo-insta --version 1.48.0 --locked"),
+            vec![
+                "+1.96.0",
+                "install",
+                "cargo-insta",
+                "--version",
+                "1.48.0",
+                "--locked"
+            ]
         );
+    }
+
+    #[test]
+    fn tool_versions_must_match_exactly() {
+        let nextest = "\
+cargo-nextest 0.9.143 (60fa45f63 2026-08-04)
+release: 0.9.143
+host: aarch64-apple-darwin
+";
+        assert!(reports_version(nextest, "cargo-nextest", NEXTEST_VERSION));
+        assert!(reports_version(
+            "cargo-insta 1.48.0\n",
+            "cargo-insta",
+            INSTA_VERSION
+        ));
+        assert!(!reports_version(
+            "cargo-insta 1.48.0-alpha.1\n",
+            "cargo-insta",
+            INSTA_VERSION
+        ));
+        assert!(!reports_version(
+            "cargo-nextest 0.9.143\n",
+            "cargo-insta",
+            INSTA_VERSION
+        ));
     }
 }

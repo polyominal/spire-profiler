@@ -179,6 +179,7 @@ fn ensure_gdre_tools(shell: &Shell, host: discover::Platform, root: &Path) -> Re
     if exe.is_file() {
         println!("GDRE Tools: present at {}", tools_dir.display());
     } else {
+        crate::ensure_cli(shell, "curl", "--version", "the GDRE Tools download")?;
         crate::ensure_cli(shell, "unzip", "-v", "extraction")?;
         let asset = format!("GDRE_tools-{GDRE_VERSION}-{os_name}.zip");
         let url = format!(
