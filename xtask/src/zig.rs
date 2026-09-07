@@ -104,6 +104,8 @@ pub fn ensure_bootstrap_in(shell: &Shell, dir: &Path) -> Result<()> {
         }
         std::fs::remove_dir_all(dir)?;
     }
+    crate::ensure_cli(shell, "curl", "--version", "the zig bootstrap")?;
+    crate::ensure_cli(shell, "tar", "--version", "the zig bootstrap")?;
     let pin = pin(std::env::consts::OS, std::env::consts::ARCH)?;
     println!(
         "zig bootstrap: downloading the pinned zig {ZIG_VERSION} into {} (first run only; \
