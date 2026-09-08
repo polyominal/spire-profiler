@@ -15,8 +15,8 @@ A sufficient continuation prompt is: “Continue ADOPTION.md from the next pendi
 
 ## Current checkpoint
 
-Uncommitted checkpoint: fresh, isolated fixtures, based on clean HEAD `f81aaed39b9f94f028b343e398543e52b39f5943` on 2026-09-09. That HEAD is the documentation-only handoff audit; the last committed implementation remains `2c6555c` (release packaging hardening).
-Implementation, independent review (SHIP), and required checks are complete. Stop for the human commit before the next correction, trustworthy headless verdict.
+Uncommitted checkpoint: trustworthy headless verdict, based on clean HEAD `c8e403c526a44d8ca9c85ab5346391d4c73ca7a2` on 2026-09-09. The previous fixture-isolation checkpoint is committed there.
+Implementation, independent review (SHIP), and required checks are complete. Stop for the human commit before the next correction, locking the outer Cargo invocation.
 
 Completed work:
 
@@ -24,34 +24,27 @@ Completed work:
 - Corrective fixes preserve context-scope balance/attribution, exact run identity across suspension, checked ID exhaustion, write-dependent persistence success/cache invalidation, and finite scroll input with hide/dismiss/reopen expiry. Private rustdoc fixed four broken links/rendering cases. Simulation seed errors fail loudly, failures identify seed/scenario, and model comparisons use deterministic order.
 - Release requires clean committed input, smoke, exact bundle/stamp validation, explicit archive members, and checksums after successful replacements. Tests pin archive entries, extracted bytes, checksum rows, and failures. Replacement is atomic per file, not across the archive set; target input staging trees are gone.
 - [chart_layout.rs](profiler-core/src/ui/chart_layout.rs) tests moved into [tests.rs](profiler-core/src/ui/chart_layout/tests.rs): production file 2,037 to 946 lines, 31 tests preserved, two snapshots renamed content-identically with unchanged module paths.
-- [test_util.rs](profiler-core/src/test_util.rs) reserves fresh empty directories with atomic `create_dir`, retries only occupied candidates, and reports other setup errors with paths. `wiped_dir` and its destructive setup are removed; profiler callers retain isolated fixtures under `tmp/unique/`. [discover.rs](xtask/src/discover.rs) `FakeTree` owns `xshell::TempDir`. Four new tests cover occupied directory/file sentinels, same-label contention, parent/candidate errors, and independent teardown. Existing behavior tests and snapshots are preserved; the 15-file source diff adds 249 and deletes 140 lines, chiefly helper replacement and caller renames.
+- [test_util.rs](profiler-core/src/test_util.rs) reserves fresh empty directories with atomic `create_dir`, retries only occupied candidates, and reports other setup errors with paths. `wiped_dir` and its destructive setup are removed; profiler callers retain isolated fixtures under `tmp/unique/`. [discover.rs](xtask/src/discover.rs) `FakeTree` owns `xshell::TempDir`. Tests cover occupied directory/file sentinels, same-label contention, parent/candidate errors, and independent teardown. A four-process probe also verified separate same-label directories and sentinel retention after all reservations and process exits.
+- [headless.rs](xtask/src/headless.rs) carries the child's full `ExitStatus` into the verdict and rejects unsuccessful termination alongside existing marker/error gates. Patch counts require the full profiler marker, retaining maximum-count deduplication and the minimum threshold. [AGENTS.md](AGENTS.md) and [verify.md](docs/verify.md) agree with that contract. The implementation/docs diff adds 129 and deletes 26 lines across three files, including four new behavioral tests. Watchdog, output capture, engine, shim, ABI, schema, and snapshots are unchanged.
 
 Verification:
 
-- `cargo xtask smoke` passed 360/360 tests, workspace Clippy, private rustdoc, formatting, citations, 38 ABI bindings, and em-dash checks. Rust comment density is 10.5% (3,080 / 29,361); em-dash pins remain 39 files / 130 dashes.
-- Targeted checks passed: `cargo test --package profiler_core --locked test_util::tests` (3), `cargo test --package profiler_core --locked same_seed_replays_never_collide` (1), and `cargo test --package xtask --locked discover::tests` (10). `cargo fmt --all`, `cargo xtask fmt-md`, and `git diff --check` passed.
-- After `cargo build --package profiler_core --features test-support --locked`, a standalone Rust probe linked that library and started four overlapping child processes with the same fixture label. Each reserved a directory, wrote its PID sentinel, and waited on stdin until all four reservations completed. All paths differed and every sentinel survived, including after process exit.
-- Before source or handoff edits, `ZIG_GLOBAL_CACHE_DIR="$PWD/target/zig-cache" cargo xtask release` passed from clean committed HEAD `f81aaed39b9f94f028b343e398543e52b39f5943`: smoke (356 tests), all four native targets, the pinned v0.111.0 Windows game discovery, C# shim (zero warnings/errors), and five ZIPs under `dist/`. `sha256sum --check SHA256SUMS` passed there; separate archive inspection verified exact members, matching bundle content hashes, and stamp `v0.111.0-f81aaed3`. Native cross-compilation emitted macOS SDK-discovery and deprecated-linker-setting warnings but completed successfully. These archives precede the uncommitted fixture change.
+- `cargo xtask smoke` passed 364/364 tests, workspace Clippy, private rustdoc, formatting, citations, 38 ABI bindings, and em-dash checks. Rust comment density is 10.5% (3,080 / 29,451); em-dash pins remain 39 files / 130 dashes.
+- `cargo test --package xtask --locked headless::tests` passed 6/6 tests. New cases reject marker-complete exit 7 and Unix SIGTERM, retain marker/error failures after successful exit, reject unrelated counts masking a missing/insufficient profiler count, and preserve threshold/duplicate/malformed/overflow handling. The successful fixture pins the shim's literal prefix independently of the parser constant. `cargo fmt --all`, `cargo xtask fmt-md`, and `git diff --check` passed.
+- `ZIG_GLOBAL_CACHE_DIR="$PWD/target/zig-cache" cargo xtask headless-test` passed on this working tree against Windows game v0.111.0 through WSL: game exit status 0 after 36.3 seconds, 194 patches (minimum 194), all draw/persistence markers, no unexpected profiler errors, command exit 0. All four native targets and the C# shim built; C# had zero warnings/errors. Native cross-compilation emitted macOS SDK-discovery and deprecated-linker-setting warnings but completed. WSL interop and installation into the game directory required sandbox escalation.
+- Clean release verification remains at `f81aaed39b9f94f028b343e398543e52b39f5943`: `ZIG_GLOBAL_CACHE_DIR="$PWD/target/zig-cache" cargo xtask release` passed smoke, all four native targets, the C# shim, and five ZIPs under `dist/`. `sha256sum --check SHA256SUMS` passed there; separate archive inspection verified exact members, matching bundle content hashes, and stamp `v0.111.0-f81aaed3`. Those archives precede the fixture and headless-verdict changes.
 - GNU tar and BSD tar previously passed gzip/xz long-option extraction probes; dirty release rejection remains covered by smoke.
-- Headless at `d6f75b2` passed on Windows game v0.111.0 through WSL: 194 patches, draw/persistence markers, exit 0, no unexpected profiler errors. This covers combat-panel boot/draw, not interactive scrolling or the lazy history panel. Subsequent packaging and test-fixture changes affect no engine, registration, shim, or ABI behavior, so require no later headless run.
-- Fixture/error execution is verified on Linux/WSL only. macOS runtime and Windows/macOS filesystem failure execution remain unverified.
+- Live headless covers successful Windows termination and combat-panel boot/draw, not interactive scrolling or the lazy history panel. Failed-exit/signal verdicts use constructed OS statuses in Linux/WSL tests. Native Linux/macOS game runtime and Windows/macOS filesystem failure execution remain unverified.
 
 Follow [build.md](docs/build.md), [verify.md](docs/verify.md), and [game.md](docs/game.md). Record missing tools or mismatch with [game_version.rs](xtask/src/game_version.rs); never silently bump `PIN` or weaken gates.
 
 ## Priority corrections
 
-### 1. Trustworthy headless verdict
-
-- [ ] In [headless.rs](xtask/src/headless.rs), require successful termination as well as markers/error checks. `run_game_captured` accepts nonzero/signal completion, `headless_test` prints the code, and `assemble_verdict` checks only output. Pin marker-complete failed-exit and successful-exit cases; preserve watchdog kill/wait failure handling.
-- [ ] Scope `check_patch_count` to `[SpireProfiler] harmony patches applied; patched methods: ` and test unrelated matching text. Keep `>= MIN_PATCHES`: the shim uses `Harmony.GetAllPatchedMethods`, including other mods. Correct [AGENTS.md](AGENTS.md)'s “exact” count wording to [verify.md](docs/verify.md)'s canonical minimum semantics in this change.
-
-Keep this one verdict concern, without a process-runner redesign. Run smoke and headless; report unavailable runtime validation.
-
-### 2. Lock the outer Cargo invocation
+### 1. Lock the outer Cargo invocation
 
 - [ ] Add `--locked` to the `run --package xtask --` alias in [.cargo/config.toml](.cargo/config.toml). Cargo can resolve before inner locked gates run. Verify stale-lock refusal and no rewrite in an isolated disposable fixture, then smoke. Never modify the user's lockfile for the probe; this audit did not experimentally reproduce mutation.
 
-### 3. Reconcile ownership and reproducibility policy
+### 2. Reconcile ownership and reproducibility policy
 
 Keep documentation concerns separate from behavior fixes.
 

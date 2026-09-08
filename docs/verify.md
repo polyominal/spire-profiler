@@ -8,9 +8,11 @@
   --all-features --locked -- --deny warnings`, `check-docs` (warning-free `cargo
   doc --document-private-items` and the comment-density budget), `cargo nextest
   run --workspace --locked --no-fail-fast`.
-- `cargo xtask headless-test` PASS: at least `MIN_PATCHES` patched Harmony
-  methods (derived from the attribution catalog plus the fixed class-level and
-  orb groups), no unexpected `[SpireProfiler]` ERROR lines (skipped dynamic
+- `cargo xtask headless-test` PASS: the game exits successfully, its
+  `[SpireProfiler] harmony patches applied; patched methods: N` marker reports
+  at least `MIN_PATCHES` patched Harmony methods (derived from the attribution
+  catalog plus the fixed class-level and orb groups; other mods can increase the
+  count), no unexpected `[SpireProfiler]` ERROR lines (skipped dynamic
   catalog/orb patches included; panel-attach failures are deliberate failures,
   never allowlisted), and the combat panel's parent, rows-child, and
   overlay-child `draw` virtuals fire under the headless dummy renderer (draw

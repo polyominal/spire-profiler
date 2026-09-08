@@ -153,8 +153,8 @@ manual re-verification:
    snapshot and re-date them to the pin; they record traps check-catalog cannot
    see (dead hook bodies, renamed parameter types).
 4. Run the gate set in [verify.md](docs/verify.md). `headless-test` is the only
-   check of the fixed shim patches: its patch count is exact and a skipped patch
-   logs an ERROR.
+   check of the fixed shim patches: it enforces a minimum patch count because
+   Harmony includes other mods, and a skipped patch logs an ERROR.
 
 ## Testing
 
