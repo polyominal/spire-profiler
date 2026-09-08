@@ -119,6 +119,8 @@ commit boundaries.
 - The implementer spec carries the motivation, the standard to apply, the
   hard constraints (scope, what not to touch, gate requirements), and the
   deliverable shape.
+- Work stops at each commit boundary: the human commits. Present the
+  finished change, the gates run, and a suggested commit title, then wait.
 - The reviewer is independent: fresh context, never the implementer's
   reasoning. It sees the original material, the changed material, and the
   standard, and audits both directions (anything load-bearing lost, any
@@ -223,7 +225,18 @@ commands, symbols, and untracked paths stay raw backticks.
 - [ ] Record inline-test share before and after extraction.
 
 Extraction changes are move-only. Preserve test names, fixtures, and snapshots;
-do not rewrite production code in the same change.
+do not rewrite production code in the same change. Insta derives the snapshot
+directory from the test's source file, so each extraction git-renames the
+file's .snap files into the new sibling's snapshots/ directory (R100, content
+untouched; the test module path and snapshot names are unchanged).
+
+Inline-test share at the start of Stage 3 (committed tree, before the first
+extraction; the "before" half of the record item): profiler-core/src held
+23,553 lines — 4,738 inline-test lines in `#[cfg(test)] mod tests {}` blocks
+(20.1%), 4,056 already-extracted sibling-test lines (17.2%), 14,759
+production lines. The extraction targets' inline shares: chart_layout.rs
+54%, run_layout.rs 58%, tooltip.rs 52%, snapshot.rs 44%; the evaluation
+candidate persistence/runs.rs sat at 79%, the highest in the tree.
 
 ### 4. Test-value audit
 
