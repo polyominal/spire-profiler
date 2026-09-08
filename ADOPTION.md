@@ -209,7 +209,7 @@ commands, symbols, and untracked paths stay raw backticks.
 - [-] Deduplicate the unsafe-quarantine policy.
 - [-] Split generic GDExtension mechanics from empirical environment guidance.
 - [x] Remove child-module dictionaries from `lib.rs` and `data.rs`.
-- [ ] Remove obvious restatement comments.
+- [x] Remove obvious restatement comments.
 - [x] Delete the README roadmap or move it outside the repository.
 - [ ] Report C# shim comment density before deciding whether to gate it.
 
@@ -313,6 +313,25 @@ snapshots unless a concrete replacement is stronger.
   the limit (exit 1 with a named error).
 
 ## Session log
+
+### 2026-09-08: obvious restatement comments removed
+
+Stage 2, restatement-comments item. Audited every plain `//` comment, the
+trailing comments, and the `///`/`//!` docs across the three in-house Rust
+roots; the honest yield was six deletions and no trims, matching an already
+comment-disciplined tree. Deleted: self_test.rs's "BASH hits an enemy" step
+narration (its siblings name the behavior each step pins), power.rs's
+predicate re-wording over the debuff-layer branch, events.rs's stale
+"conversion happens once, here" (init has taken &Path since publicize),
+build.rs's name-carried build_matrix line, headless.rs's "print and
+capture" narration over the polling loop, and release.rs's "one zip per
+matrix row" loop label. Kept everything carrying an invariant, a why, a
+trap, a wire decode, or a SAFETY contract; the gdext.rs section banners
+stay because each carries provenance or a constraint. No em dashes removed,
+so no pin moves (41 files, 137 dashes). Independent reviewer verdict:
+SHIP, all six deletions ruled safe (the closest, power.rs's debuff-layer
+label, holds because the enemy decode lives at the boundary function).
+Gates run: `cargo xtask smoke` (331/331, density 11.2%).
 
 ### 2026-09-08: module-doc budgets applied
 

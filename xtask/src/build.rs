@@ -16,7 +16,6 @@ pub fn build(shell: &Shell) -> Result<discover::GamePaths> {
 
     check_abi::run()?;
 
-    // One multi-target cargo-zigbuild invocation builds the whole matrix.
     let libs = cross::build_matrix(shell, root)?;
 
     let game = discover::locate_game()?;

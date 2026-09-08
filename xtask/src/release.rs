@@ -26,7 +26,6 @@ pub fn release(shell: &Shell) -> Result<()> {
 
     let mut zips = Vec::new();
     zips.push(zip_universal(shell, &mods_dir, &out_dir, &version)?);
-    // One zip per matrix row.
     for row in cross::MATRIX {
         zips.push(zip_target(
             shell,

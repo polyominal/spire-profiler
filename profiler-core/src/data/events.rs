@@ -52,7 +52,6 @@ pub fn init(data_dir: &Path) {
     }
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
-        // The conversion to a path happens once, here.
         let data_dir = PathBuf::from(data_dir);
         state.data_dir = data_dir.clone();
         state.runs_dir_full = data_dir.join("runs");

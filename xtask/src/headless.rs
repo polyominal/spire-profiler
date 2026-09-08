@@ -314,7 +314,6 @@ fn run_game_captured(
     ];
     let (receiver, pumps) = spawn_pumps(streams);
 
-    // Print and capture output as it arrives.
     let boot_start = Instant::now();
     let mut captured = String::new();
     let status = loop {

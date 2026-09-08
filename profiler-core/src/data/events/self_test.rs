@@ -45,7 +45,6 @@ pub fn self_test() {
     });
     // Potion use becomes a fallback source.
     potion_used("FIRE_POTION", 0);
-    // BASH hits an enemy.
     card_play_started("BASH", 0, 1, 0, 0);
     damage_dealt(DamageDealt {
         total: 6,

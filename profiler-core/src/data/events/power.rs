@@ -146,7 +146,6 @@ fn record_power_source_in(
     });
     event_log!("  power {power_id} +{amount} attributed to '{source_id}'");
 
-    // Debuff layer for duration debuffs applied to enemies.
     if is_player == 0 && DURATION_DEBUFFS.contains(&power_id) {
         if state.debuff_layers.len() >= caps::DEBUFF_LAYERS {
             fail!("debuff layer table overflow");
