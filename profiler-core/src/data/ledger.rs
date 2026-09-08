@@ -275,7 +275,7 @@ pub fn resolve_card_in(
 }
 
 /// The sibling tables arrive separately because the caller holds a
-/// `&mut Combat` borrowed out of [`State`].
+/// `&mut Combat` borrowed out of [`state::State`].
 fn resolve_damage_route(
     combat: &mut Combat,
     context_stack: &[ContextEntry],

@@ -6,8 +6,8 @@
   `check-citations`, `check-emdash`, `check-abi` (shim `GetExport` bindings
   against the Rust exports), `cargo clippy --workspace --all-targets
   --all-features --locked -- --deny warnings`, `check-docs` (warning-free `cargo
-  doc` and the comment-density budget), `cargo nextest run --workspace --locked
-  --no-fail-fast`.
+  doc --document-private-items` and the comment-density budget), `cargo nextest
+  run --workspace --locked --no-fail-fast`.
 - `cargo xtask headless-test` PASS: at least `MIN_PATCHES` patched Harmony
   methods (derived from the attribution catalog plus the fixed class-level and
   orb groups), no unexpected `[SpireProfiler]` ERROR lines (skipped dynamic

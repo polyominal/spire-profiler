@@ -310,7 +310,8 @@ impl SpireProfilerPanel {
     }
 
     /// The `chart draw ok` marker proves clean parent engine calls, not
-    /// just entry; child-call failures surface via [`fail_call_failed`].
+    /// just entry; child-call failures surface via
+    /// [`fail_call_failed`](crate::engine::gdext::fail_call_failed).
     fn log_draw_ok(&mut self, call_errors: usize) {
         if !self.draw_ok_logged && call_errors == 0 {
             self.draw_ok_logged = true;

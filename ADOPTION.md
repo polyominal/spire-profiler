@@ -9,7 +9,7 @@ documentation. Delete it in the final change that merges this branch to main.
 ## Branch facts
 
 - Branch: `llm-dev-hygiene`
-- Worktree: `../spire-profiler-llm-dev-hygiene`
+- Worktree: `../spire-profiler-working`
 - Base commit: `67bc66e`
 - Source comparison: local Codex commit `6750f5bd13`
 - Human rule: agents do not create commits or pull requests.
@@ -173,6 +173,36 @@ Additional operating rules:
 
 ## Workstreams
 
+### Corrective pass (before remaining extraction and style work)
+
+Approved 2026-09-09 after the branch review. Each item follows the existing
+implementer/reviewer and human-commit workflow. Runtime reproductions live in
+the review's machine-local probe harness; permanent regression coverage belongs
+with each fix.
+
+- [x] Include private items in the documentation gate, fix the four exposed
+      links, and update the gate description.
+- [ ] Preserve begin/end balance for empty and overflowing contexts; pin the
+      surviving outer context through observable ABI tests.
+- [ ] Persist the full run identity (profile, seed, original start time) and
+      rejoin exactly across suspension; test same-seed profiles and replays.
+- [ ] Use overflow-safe timestamp distance and checked combat/run ID
+      allocation; verify debug and release behavior and prevent record reuse.
+- [ ] Propagate persistence write outcomes so success markers require a
+      successful write; exercise filesystem failures.
+- [ ] Reject non-finite scroll input, keep accumulation finite, and clear
+      pending input while hidden; test recovery and hide/reopen behavior.
+- [ ] Harden release packaging with fresh archives, exact staged and archived
+      contents, smoke before packaging, and rejection of dirty release inputs.
+- [ ] Reconcile state-ownership and reproducibility policy with the code,
+      revisit unconditional test deletions using their behavioral coverage,
+      and reconcile the remaining workstreams before resuming extraction.
+
+The run-identity change follows the existing disposable-WIP schema policy:
+review snapshot changes, add no migrations, and never guess a continuation from
+seed alone when reliable identity is missing. The negative-hash and stored-kind
+decoder coverage stays until a reviewed replacement or redundancy finding.
+
 ### 0. Resolve contradictory contracts
 
 - [x] Choose persistence policy: disposable WIP data or additive-only records.
@@ -331,6 +361,22 @@ snapshots unless a concrete replacement is stronger.
   the limit (exit 1 with a named error).
 
 ## Session log
+
+### 2026-09-09: private documentation checked
+
+Corrective pass, first item. The implementer enabled
+`--document-private-items` and reproduced the four unresolved links before
+fixing them: State and fail_call_failed now resolve to their definitions;
+the literal relic and orb prefixes render as code. The gate retains
+`--locked` and warnings-as-errors, and verify.md names its expanded scope.
+Independent reviewer verdict: SHIP, including inspection of the generated
+link targets and prefix rendering. Gates run: `cargo xtask check-docs`
+(failed before the fixes, passed after), `cargo fmt --all`,
+`cargo xtask fmt-md`, `cargo xtask smoke` (331/331, 38 bindings, density
+11.2%), and `git diff --check`. No runtime behavior, ABI, schema, test, or
+snapshot changes; no headless validation needed for this gate/doc change.
+The approved corrective sequence is recorded above and the worktree path
+is corrected. Next item: context begin/end balance, after the human commit.
 
 ### 2026-09-08: chart_layout tests extracted
 

@@ -88,7 +88,7 @@ const FOOTER_LINE_H: f32 = 32.0;
 /// and an uncovered glyph falls the whole panel back to the default font.
 const SELF_INDENT: f32 = 18.0;
 
-/// The common id + "[R] " prefix at the measured 24px advances (259px of
+/// The common id + `"[R] "` prefix at the measured 24px advances (259px of
 /// 264); longer ids truncate.
 const NAME_W: f32 = 264.0;
 /// Worst case overhangs ~15px into the plays column — accepted; a cut
