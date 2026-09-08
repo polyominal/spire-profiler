@@ -35,8 +35,8 @@ mod flags {
         src "./src/main.rs"
 
         cmd xtask {
-            /// Format check (rust + markdown) + clippy + nextest + citation check:
-            /// the commit gate.
+            /// The commit gate: format checks (rust + markdown), citation,
+            /// ABI, and doc checks, clippy, and nextest.
             cmd smoke {}
             /// Install the pinned toolchain and verify the dev tools.
             cmd install-tool {}
@@ -247,11 +247,13 @@ fn smoke(shell: &Shell) -> Result<()> {
     cmd!(shell, "cargo fmt --all -- --check").run()?;
     md::fmt_md(true)?;
     check_citations::run()?;
+    check_abi::run()?;
     cmd!(
         shell,
         "cargo clippy --workspace --all-targets --all-features -- --deny warnings"
     )
     .run()?;
+    check_docs::check_docs(shell, None)?;
     cmd!(shell, "cargo nextest run --workspace").run()?;
     Ok(())
 }

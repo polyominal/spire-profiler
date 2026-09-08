@@ -161,7 +161,7 @@ Additional operating rules:
 
 ### 1. Gate wiring
 
-- [ ] Add `check-abi` and `check-docs` to `smoke`.
+- [x] Add `check-abi` and `check-docs` to `smoke`.
 - [ ] Add `--locked` to Cargo doc, clippy, nextest, and zigbuild invocations.
 - [ ] Consider explicit Nextest `--no-fail-fast`.
 - [ ] Add profiler-core lints for direct printing and production `unwrap`.
@@ -254,6 +254,17 @@ snapshots unless a concrete replacement is stronger.
   the limit (exit 1 with a named error).
 
 ## Session log
+
+### 2026-09-08: smoke runs the ABI and doc gates
+
+Stage 1, item 1. `smoke` stopped at fmt, fmt-md, check-citations, clippy, and
+nextest, so the commit gate could pass with a broken shim ABI or an
+over-budget comment density. Both checks are now smoke steps: check-abi joins
+the cheap text scans before clippy, and check-docs runs after clippy (its
+`cargo doc` is compile-priced) and before nextest. The verify.md gate list
+folds the standalone check-abi bullet into the smoke step list so the gate
+set is still stated once. Gates run: `cargo xtask smoke` (every step green,
+including the two new ones; 325/325 tests, density 11.5%, 38 bindings).
 
 ### 2026-09-08: persistence policy resolved
 

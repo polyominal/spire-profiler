@@ -8,12 +8,10 @@ layout and discovery live in `game.md`.
 
 - `cargo xtask smoke` green — the pre-commit gate: `cargo fmt --all --
   --check`, the markdown wrap check (`fmt-md --check`), the citation check
-  (`check-citations`), `cargo clippy --workspace --all-targets --all-features --
-  --deny warnings`, `cargo nextest run --workspace`. Each step propagates its
-  exit code, so the gate cannot silently pass.
-- `cargo xtask check-abi` green — the shim's `GetExport` bindings verified
-  against the Rust exports. The binding count is the command's own output;
-  nothing else pins it, so no count is stated here.
+  (`check-citations`), the ABI check (`check-abi`: shim `GetExport` bindings
+  against the Rust exports), `cargo clippy --workspace --all-targets
+  --all-features -- --deny warnings`, the doc gate (`check-docs`: warning-free
+  `cargo doc` and the comment-density budget), `cargo nextest run --workspace`.
 - `cargo xtask headless-test` PASS — at least the shim's expected number of
   patched Harmony methods (`MIN_PATCHES`, derived from the attribution catalog
   plus the fixed class-level and orb groups), no unexpected `[SpireProfiler]`
@@ -37,7 +35,7 @@ verifies lives in `game.md`.
   that is `~/Library/Application Support/SlayTheSpire2/default/1/settings.save`.
   Mod loading requires `mod_settings.mods_enabled: true` there (the consent
   model is described in `game.md`); the one-time enable (macOS):
-  
+
   ```sh
   python3 -c "import json,os; p=os.path.expanduser('~/Library/Application Support/SlayTheSpire2/default/1/settings.save'); d=json.load(open(p)); d.setdefault('mod_settings',{})['mods_enabled']=True; json.dump(d,open(p,'w'))"
   ```
