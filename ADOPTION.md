@@ -267,6 +267,17 @@ snapshots unless a concrete replacement is stronger.
 
 ## Session log
 
+### 2026-09-08: line scanner extracted to scan.rs
+
+Follow-up to Stage 1, item 5. check_emdash importing check_docs' internals
+was the crate's only gate-to-gate import; the line classifier (LineKind,
+LineScanner, count_lines, and the string/char helpers) and its six tests
+moved verbatim into a new mechanism module `scan.rs`, matching the
+discover/catalog/md pattern of mechanism modules the gates consume.
+Move-only: no logic changed, test names preserved, check-emdash and
+check-docs output identical. Gates run: `cargo xtask smoke` (331/331,
+density 11.5%, 38 bindings, 46 pins).
+
 ### 2026-09-08: em-dash ratchet wired into smoke
 
 Stage 1, item 5. New `check-emdash` gate pins per-file em-dash ceilings (46

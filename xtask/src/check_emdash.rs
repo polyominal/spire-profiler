@@ -9,7 +9,7 @@
 //! strings are all developer-facing), while profiler-core counts comments
 //! only, because its string and char literals hold player-visible
 //! typography and the renderer's glyph allowlist. Comment classification
-//! reuses the per-line scanner from [`crate::check_docs`], so a trailing
+//! reuses the per-line scanner from [`crate::scan`], so a trailing
 //! comment on a code line is out of scope.
 
 use std::collections::BTreeMap;
@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
-use crate::check_docs::{LineKind, LineScanner};
+use crate::scan::{LineKind, LineScanner};
 use crate::{md, workspace_root};
 
 const EM_DASH: char = '\u{2014}';

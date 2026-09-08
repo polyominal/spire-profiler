@@ -25,6 +25,7 @@ mod headless;
 mod install;
 mod md;
 mod release;
+mod scan;
 mod shim;
 mod zig;
 
