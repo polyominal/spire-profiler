@@ -71,11 +71,12 @@
 //! the combat store. The roster carries slot + character; the net id stays
 //! in-memory (nothing reads it back).
 //!
-//! Schema evolution is additive-only, enforced by the parse structs: new
-//! fields arrive optional-on-read, existing fields never change type or
-//! meaning, and every parser ignores unknown fields — a reader of any age
-//! parses any record. There is no migration machinery and no schema
-//! version.
+//! The schema changes with the structs: a breaking change lands directly,
+//! and incompatible old data is deleted by hand, never migrated. There is
+//! no schema version and no migration machinery. The parse structs stay
+//! lenient (missing fields default, unknown fields ignored) so a partial
+//! or stale record still reads; that leniency is boundary robustness, not
+//! a compatibility contract.
 //!
 //! # Write protocol
 //!

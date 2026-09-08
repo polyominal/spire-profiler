@@ -1,7 +1,7 @@
 //! The persisted record types and their serde contracts: the read-side
 //! mirrors of the JSON the core writes. Unknown fields are ignored and
-//! missing fields fall back to defaults — that tolerance is the schema's
-//! additive evolution contract.
+//! missing fields fall back to defaults; that tolerance is boundary
+//! robustness, not an evolution contract.
 
 use serde::{Deserialize, Serialize};
 
@@ -116,7 +116,6 @@ struct RunDoc<'a> {
     seed: &'a str,
     started_at: i64,
     ended_at: i64,
-    /// Omitted when empty, so the field is additive.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     players: Vec<PlayerDoc<'a>>,
 }

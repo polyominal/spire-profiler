@@ -81,8 +81,7 @@ fn parse_combat_doc_ignores_unknown_fields_and_fills_defaults() {
     assert_eq!(c.cards[0].mitigate_str, 9);
     assert_eq!(c.cards[0].player, 3);
     // Missing fields fall back to defaults; unknown fields are skipped.
-    // A card row without `player` reads as slot 0 (single-player), the
-    // additive-schema rule.
+    // A card row without `player` reads as slot 0 (single-player).
     assert_eq!(
         c.cards[1],
         CardRec {
