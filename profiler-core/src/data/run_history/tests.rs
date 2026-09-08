@@ -7,7 +7,7 @@ use std::path::Path;
 use super::*;
 use crate::data::state::{CombatResult, RunOutcome};
 use crate::source_kind::SourceKind;
-use crate::test_util::wiped_dir;
+use crate::test_util::unique_dir;
 
 fn seed_data(data: &Path, runs_text: &str, combats_text: &str) {
     STATE.with(|s| {
@@ -116,7 +116,7 @@ const BETA_START: i64 = 1_786_665_600;
 
 #[test]
 fn next_run_id_advances_past_runs_file_and_run_dirs() {
-    let data = wiped_dir("next-run-id");
+    let data = unique_dir("next-run-id");
     seed_data(
         &data,
         r#"[{"run_id":9,"profile":2,"character":"A","ascension":0,"game_mode":"Standard",
@@ -131,7 +131,7 @@ fn next_run_id_advances_past_runs_file_and_run_dirs() {
         next_run_id(&data.join("runs.jsonl"), &data.join("runs")),
         Some(13)
     );
-    let empty = wiped_dir("next-run-id-empty");
+    let empty = unique_dir("next-run-id-empty");
     assert_eq!(
         next_run_id(&empty.join("runs.jsonl"), &empty.join("runs")),
         Some(1)
@@ -140,7 +140,7 @@ fn next_run_id_advances_past_runs_file_and_run_dirs() {
 
 #[test]
 fn next_run_id_reserves_abandoned_run_dirs() {
-    let data = wiped_dir("next-run-id-abandoned");
+    let data = unique_dir("next-run-id-abandoned");
     seed_data(&data, "[]", "[]");
     fs::create_dir_all(data.join("runs/12")).unwrap();
     assert_eq!(
@@ -158,7 +158,7 @@ fn next_run_id_reserves_abandoned_run_dirs() {
 fn next_run_id_checks_both_maxima_for_exhaustion() {
     for source in ["record", "directory"] {
         for reserved in [u32::MAX - 1, u32::MAX] {
-            let data = wiped_dir(&format!("next-run-id-{source}-{reserved}"));
+            let data = unique_dir(&format!("next-run-id-{source}-{reserved}"));
             if source == "record" {
                 fs::write(
                     data.join("runs.jsonl"),
@@ -182,7 +182,7 @@ fn next_run_id_checks_both_maxima_for_exhaustion() {
 
 #[test]
 fn continued_run_id_rejoins_the_exact_identity() {
-    let data = wiped_dir("continued-run-id");
+    let data = unique_dir("continued-run-id");
     seed_data(
         &data,
         "[]",
@@ -219,7 +219,7 @@ fn continued_run_id_rejoins_the_exact_identity() {
 
 #[test]
 fn select_by_seed_assembles_the_full_view() {
-    let base = wiped_dir("run-history-seed");
+    let base = unique_dir("run-history-seed");
     let data = &base;
     seed_data(data, RUNS, COMBATS);
 
@@ -265,7 +265,7 @@ fn select_by_seed_assembles_the_full_view() {
 
 #[test]
 fn combat_only_runs_fall_back_to_a_synthesized_view() {
-    let base = wiped_dir("run-history-combats-only");
+    let base = unique_dir("run-history-combats-only");
     let data = &base;
     seed_data(data, "[]", COMBATS_ONLY);
 
@@ -314,7 +314,7 @@ fn missing_or_corrupt_identity_cannot_select_or_resume() {
     .into_iter()
     .enumerate()
     {
-        let data = wiped_dir(&format!("run-history-invalid-{case}"));
+        let data = unique_dir(&format!("run-history-invalid-{case}"));
         let mut combat = json!({"combat_id":1,"started_at":1000,
             "run":{"seq":3,"profile":4,"seed":"GAMMA","started_at":1000}});
         let identity = combat["run"].as_object_mut().unwrap();
@@ -361,7 +361,7 @@ fn missing_or_corrupt_identity_cannot_select_or_resume() {
 fn multiple_matching_run_ids_cannot_select_or_resume() {
     use serde_json::json;
     for source in ["runs", "combats"] {
-        let data = wiped_dir(&format!("run-history-ambiguous-{source}"));
+        let data = unique_dir(&format!("run-history-ambiguous-{source}"));
         let mut runs: serde_json::Value = serde_json::from_str(RUNS).unwrap();
         let mut combats: serde_json::Value = serde_json::from_str(COMBATS).unwrap();
         if source == "runs" {
@@ -395,7 +395,7 @@ fn multiple_matching_run_ids_cannot_select_or_resume() {
 #[test]
 fn shared_run_id_does_not_merge_different_identities() {
     use serde_json::json;
-    let data = wiped_dir("run-history-mixed-identities");
+    let data = unique_dir("run-history-mixed-identities");
     seed_data(&data, RUNS, COMBATS);
     let expected = selected("BETA", BETA_START, 2);
     let mut combats: serde_json::Value = serde_json::from_str(COMBATS).unwrap();
@@ -418,7 +418,7 @@ fn shared_run_id_does_not_merge_different_identities() {
 
 #[test]
 fn seeds_without_combats_or_entries_stay_empty() {
-    let base = wiped_dir("run-history-fallback-empty");
+    let base = unique_dir("run-history-fallback-empty");
     let data = &base;
     seed_data(
         data,
@@ -438,7 +438,7 @@ fn seeds_without_combats_or_entries_stay_empty() {
         select_run("", 1_786_624_800, 2),
         RunSelection::Empty
     ));
-    let fresh = wiped_dir("run-history-fallback-fresh");
+    let fresh = unique_dir("run-history-fallback-fresh");
     let fresh_data = std::path::Path::new(&fresh);
     seed_data(fresh_data, "[]", "[]");
     assert!(matches!(
@@ -449,7 +449,7 @@ fn seeds_without_combats_or_entries_stay_empty() {
 
 #[test]
 fn closed_runs_never_take_the_fallback() {
-    let base = wiped_dir("run-history-no-fallback");
+    let base = unique_dir("run-history-no-fallback");
     let data = &base;
     seed_data(data, RUNS, COMBATS);
 
@@ -461,7 +461,7 @@ fn closed_runs_never_take_the_fallback() {
 
 #[test]
 fn abandoned_runs_render_the_abandoned_label() {
-    let base = wiped_dir("run-history-abandoned");
+    let base = unique_dir("run-history-abandoned");
     let data = &base;
     let runs = r#"[
             {"run_id":5,"profile":2,"character":"DEFECT","ascension":2,"game_mode":"Standard",
@@ -481,7 +481,7 @@ fn abandoned_runs_render_the_abandoned_label() {
 
 #[test]
 fn fallback_views_flow_through_the_selection_plumbing() {
-    let base = wiped_dir("run-history-fallback-plumbing");
+    let base = unique_dir("run-history-fallback-plumbing");
     let data = &base;
     seed_data(data, "[]", COMBATS_ONLY);
 
@@ -501,7 +501,7 @@ fn fallback_views_flow_through_the_selection_plumbing() {
 
 #[test]
 fn fallback_disambiguates_same_seed_replays_by_start_time() {
-    let base = wiped_dir("run-history-fallback-seq");
+    let base = unique_dir("run-history-fallback-seq");
     let data = &base;
     seed_data(
         data,
@@ -530,7 +530,7 @@ fn fallback_disambiguates_same_seed_replays_by_start_time() {
 
 #[test]
 fn same_seed_without_the_exact_time_selects_empty() {
-    let base = wiped_dir("run-history-tiebreak");
+    let base = unique_dir("run-history-tiebreak");
     let data = &base;
     seed_data(data, DAILY_RUNS, "[]");
 
@@ -542,7 +542,7 @@ fn same_seed_without_the_exact_time_selects_empty() {
 
 #[test]
 fn seed_match_with_exact_start_time_wins() {
-    let base = wiped_dir("run-history-exact-seed-time");
+    let base = unique_dir("run-history-exact-seed-time");
     let data = &base;
     seed_data(data, DAILY_RUNS, "[]");
 
@@ -553,7 +553,7 @@ fn seed_match_with_exact_start_time_wins() {
 
 #[test]
 fn a_wrong_seed_never_matches_even_at_the_exact_time() {
-    let base = wiped_dir("run-history-exact-no-seed");
+    let base = unique_dir("run-history-exact-no-seed");
     let data = &base;
     let runs = r#"[
             {"run_id":1,"profile":2,"character":"A","ascension":0,"game_mode":"Standard","outcome":"defeat",
@@ -569,7 +569,7 @@ fn a_wrong_seed_never_matches_even_at_the_exact_time() {
 
 #[test]
 fn unknown_runs_select_empty() {
-    let base = wiped_dir("run-history-empty");
+    let base = unique_dir("run-history-empty");
     let data = &base;
     seed_data(data, RUNS, COMBATS);
 
@@ -588,7 +588,7 @@ fn unknown_runs_select_empty() {
         RunSelection::Empty
     ));
 
-    let fresh = wiped_dir("run-history-fresh");
+    let fresh = unique_dir("run-history-fresh");
     let fresh_data = std::path::Path::new(&fresh);
     STATE.with(|s| {
         let mut st = s.borrow_mut();
@@ -601,7 +601,7 @@ fn unknown_runs_select_empty() {
         RunSelection::Empty
     ));
 
-    let bare = wiped_dir("run-history-bare");
+    let bare = unique_dir("run-history-bare");
     let bare_data = std::path::Path::new(&bare);
     seed_data(
         bare_data,
@@ -617,7 +617,7 @@ fn unknown_runs_select_empty() {
 
 #[test]
 fn cache_reuses_until_invalidated() {
-    let base = wiped_dir("run-history-cache");
+    let base = unique_dir("run-history-cache");
     let data = &base;
     seed_data(data, RUNS, COMBATS);
 
@@ -636,7 +636,7 @@ fn cache_reuses_until_invalidated() {
 
 #[test]
 fn rollup_keys_on_id_and_kind_and_teams_merge() {
-    let base = wiped_dir("run-history-kinds");
+    let base = unique_dir("run-history-kinds");
     let data = &base;
     let runs = r#"[{"run_id":1,"profile":2,"character":"A","ascension":0,"game_mode":"Standard",
                         "outcome":"victory","seed":"K","started_at":1786579200,
@@ -673,7 +673,7 @@ fn rollup_keys_on_id_and_kind_and_teams_merge() {
 
 #[test]
 fn select_stores_and_clear_drops_the_panel_view() {
-    let base = wiped_dir("run-history-selection");
+    let base = unique_dir("run-history-selection");
     let data = &base;
     seed_data(data, RUNS, COMBATS);
 
@@ -760,7 +760,7 @@ fn view_fingerprint_tracks_every_view_field() {
 
 #[test]
 fn per_player_rollups_split_the_run() {
-    let base = wiped_dir("run-history-phase3-rollups");
+    let base = unique_dir("run-history-phase3-rollups");
     let data = &base;
     let runs = r#"[{"run_id":7,"profile":2,"character":"IRONCLAD,SILENT","ascension":0,"game_mode":"Standard",
                         "outcome":"victory","seed":"P3","started_at":1786579200,
@@ -795,7 +795,7 @@ fn per_player_rollups_split_the_run() {
 
 #[test]
 fn run_filter_toggle_selects_and_deselects_players() {
-    let base = wiped_dir("run-history-phase3-filter");
+    let base = unique_dir("run-history-phase3-filter");
     let data = &base;
     let runs = r#"[{"run_id":8,"profile":2,"character":"A,B","ascension":0,"game_mode":"Standard",
                         "outcome":"victory","seed":"F","started_at":1786579200,
@@ -822,7 +822,7 @@ fn run_filter_toggle_selects_and_deselects_players() {
 
 #[test]
 fn run_filter_heals_when_the_roster_lacks_the_selected_slot() {
-    let base = wiped_dir("run-history-phase3-heal");
+    let base = unique_dir("run-history-phase3-heal");
     let data = &base;
     let runs = r#"[{"run_id":9,"profile":2,"character":"A","ascension":0,"game_mode":"Standard",
                         "outcome":"victory","seed":"H","started_at":1786579200,

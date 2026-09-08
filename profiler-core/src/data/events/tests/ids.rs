@@ -6,7 +6,7 @@ use crate::data::state::RunOutcome;
 fn exhausted_combat_ids_preserve_records_and_clear_active_state() {
     for ending in ["empty", "interrupted", "completed"] {
         let written = ending != "empty";
-        let base = wiped_dir(&format!("combat-ids-{ending}"));
+        let base = unique_dir(&format!("combat-ids-{ending}"));
         write_store_file(&base, 0, u32::MAX - 1, "reserved filename, corrupt content");
         test_reset();
         init(&base);
@@ -78,7 +78,7 @@ fn exhausted_combat_ids_preserve_records_and_clear_active_state() {
 
 #[test]
 fn exhausted_combat_ids_from_store_preserve_the_existing_file() {
-    let base = wiped_dir("combat-ids-exhausted-boot");
+    let base = unique_dir("combat-ids-exhausted-boot");
     write_store_file(&base, 0, u32::MAX, "reserved filename, corrupt content");
     test_reset();
     init(&base);
@@ -98,7 +98,7 @@ fn exhausted_combat_ids_from_store_preserve_the_existing_file() {
 #[test]
 fn exhausted_run_ids_close_previous_run_and_discard_stale_data() {
     for source in ["record", "directory"] {
-        let base = wiped_dir(&format!("run-ids-{source}"));
+        let base = unique_dir(&format!("run-ids-{source}"));
         test_reset();
         init(&base);
         run_started("IRONCLAD", 0, "Standard", "PREVIOUS", 0, "", 1000);
@@ -166,7 +166,7 @@ fn exhausted_run_ids_close_previous_run_and_discard_stale_data() {
 
 #[test]
 fn final_run_id_resumes_after_fresh_allocation_exhaustion() {
-    let base = wiped_dir("run-id-last-resume");
+    let base = unique_dir("run-id-last-resume");
     std::fs::create_dir_all(base.join(format!("runs/{}", u32::MAX - 1))).unwrap();
     test_reset();
     init(&base);

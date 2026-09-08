@@ -6,7 +6,7 @@ use super::*;
 use crate::data::records::CombatRec;
 use crate::data::state::{CombatResult, RunOutcome, TEAM_SLOT};
 use crate::source_kind::SourceKind;
-use crate::test_util::wiped_dir;
+use crate::test_util::unique_dir;
 
 #[test]
 fn relic_and_power_contexts_attribute_damage_and_block() {
@@ -354,7 +354,7 @@ fn pending_modifier_contribs_apply_per_slot() {
 /// A partial death stays "completed"; a full wipe is "defeat".
 #[test]
 fn team_defeat_requires_every_slot_dead() {
-    let base = wiped_dir("spire-profiler-test-mp-defeat");
+    let base = unique_dir("spire-profiler-test-mp-defeat");
     test_reset();
     init(&base);
     run_started("IRONCLAD", 0, "Standard", "SEED_MP_DEFEAT", 0, "", 0);

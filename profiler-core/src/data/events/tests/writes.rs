@@ -56,7 +56,7 @@ fn failed_interrupted_writes_merge_once_and_recover() {
 }
 
 fn exercise_combat_write_failure(stage: &str, interrupted: bool) {
-    let base = wiped_dir(&format!("combat-write-{stage}-{interrupted}"));
+    let base = unique_dir(&format!("combat-write-{stage}-{interrupted}"));
     test_reset();
     init(&base);
     set_run_meta(2);
@@ -139,7 +139,7 @@ fn failed_run_writes_close_once_and_recover() {
         return;
     }
     for stage in ["empty", "unreadable", "temp"] {
-        let base = wiped_dir(&format!("run-write-{stage}"));
+        let base = unique_dir(&format!("run-write-{stage}"));
         test_reset();
         init(&base);
         set_run_meta(2);

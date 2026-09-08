@@ -49,7 +49,7 @@ mod tests {
     use crate::data::persistence::build_combat_json;
     use crate::data::persistence::test_support::*;
     use crate::data::state::{RunContext, RunOutcome, RunSnapshot};
-    use crate::test_util::wiped_dir;
+    use crate::test_util::unique_dir;
 
     #[test]
     fn write_run_record_appends_one_line_per_run() {
@@ -129,7 +129,7 @@ mod tests {
 
     #[test]
     fn write_run_record_with_no_combats_logs_and_writes_nothing() {
-        let dir = wiped_dir("run-record-empty");
+        let dir = unique_dir("run-record-empty");
         let data = dir.join("data");
         std::fs::create_dir_all(&data).unwrap();
         init_state(&data);
@@ -152,7 +152,7 @@ mod tests {
 
     #[test]
     fn write_run_record_preserves_unreadable_history() {
-        let dir = wiped_dir("run-record-unreadable");
+        let dir = unique_dir("run-record-unreadable");
         let data = dir.join("data");
         std::fs::create_dir_all(&data).unwrap();
         init_state(&data);
@@ -177,7 +177,7 @@ mod tests {
 
     #[test]
     fn write_run_record_refuses_history_growth_over_the_json_cap() {
-        let data = wiped_dir("run-write-overflow");
+        let data = unique_dir("run-write-overflow");
         init_state(&data);
         write_store_file(&data, 42, 7, &build_combat_json(&synthetic_combat()));
         let path = data.join("runs.jsonl");

@@ -5,7 +5,7 @@
 use super::*;
 use crate::data::records::{CardRec, CombatRec};
 use crate::data::state::CardStat;
-use crate::test_util::{combat_ids, wiped_dir};
+use crate::test_util::{combat_ids, unique_dir};
 
 mod card;
 mod combat;
@@ -16,11 +16,9 @@ mod run;
 mod self_test;
 mod writes;
 
-/// The standard test opening: a wiped data dir, a fresh core, and a
-/// running combat. The encounter id doubles as the wiped-dir label, so
-/// each test passes its own.
+/// A fresh data dir and core with a running combat.
 fn combat_fixture(encounter: &str) -> PathBuf {
-    let base = wiped_dir(&format!("spire-profiler-test-{encounter}"));
+    let base = unique_dir(&format!("spire-profiler-test-{encounter}"));
     test_reset();
     init(&base);
     combat_started(encounter, "test");

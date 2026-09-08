@@ -688,10 +688,13 @@ mod tests {
     use super::*;
     use crate::data::state::{STATE, SourceKind, caps};
 
-    fn wiped_dir(label: &str) -> (std::path::PathBuf, CString) {
-        let dir = crate::test_util::wiped_dir(label);
-        let c_dir =
-            CString::new(dir.to_str().expect("wiped path is UTF-8")).expect("no NUL in wiped path");
+    fn unique_dir(label: &str) -> (std::path::PathBuf, CString) {
+        let dir = crate::test_util::unique_dir(label);
+        let c_dir = CString::new(
+            dir.to_str()
+                .expect("the checkout path and fixture label must be UTF-8 for the ABI"),
+        )
+        .expect("filesystem directory names cannot contain NUL");
         (dir, c_dir)
     }
 
@@ -732,7 +735,7 @@ mod tests {
 
     #[test]
     fn empty_context_exports_preserve_outer_sources_and_named_descendants() {
-        let (_base, c_base) = wiped_dir("spire-profiler-abi-context-empty");
+        let (_base, c_base) = unique_dir("spire-profiler-abi-context-empty");
         // SAFETY: pointers are null or live, NUL-terminated C strings; 0xff tests UTF-8 rejection.
         unsafe {
             spire_profiler_test_reset();
@@ -763,7 +766,7 @@ mod tests {
 
     #[test]
     fn overflowing_context_exports_unwind_across_turn_and_combat_boundaries() {
-        let (_base, c_base) = wiped_dir("spire-profiler-abi-context-overflow");
+        let (_base, c_base) = unique_dir("spire-profiler-abi-context-overflow");
         // SAFETY: every pointer refers to a live, NUL-terminated C string.
         unsafe {
             spire_profiler_test_reset();
@@ -811,7 +814,7 @@ mod tests {
     /// The exported surface drives the whole pipeline end to end.
     #[test]
     fn exported_surface_runs_the_self_test_pipeline() {
-        let (base, c_base) = wiped_dir("spire-profiler-abi-test");
+        let (base, c_base) = unique_dir("spire-profiler-abi-test");
         // SAFETY: the test forms valid C-string arguments for these exports.
         unsafe {
             spire_profiler_test_reset();
@@ -850,7 +853,7 @@ mod tests {
     /// A null string argument must not crash the core: the ABI maps it to "".
     #[test]
     fn null_string_arguments_are_treated_as_empty() {
-        let (_base, c_base) = wiped_dir("spire-profiler-abi-null");
+        let (_base, c_base) = unique_dir("spire-profiler-abi-null");
         // SAFETY: the test forms valid C-string arguments for these exports.
         unsafe {
             spire_profiler_test_reset();
@@ -875,7 +878,7 @@ mod tests {
 
     #[test]
     fn scroll_input_export_preserves_routing_and_recovers_from_corrupt_deltas() {
-        let data = crate::test_util::wiped_dir("spire-profiler-abi-scroll");
+        let data = crate::test_util::unique_dir("spire-profiler-abi-scroll");
         events::test_reset();
         events::init(&data);
         STATE.with(|s| s.borrow_mut().run_ctx = Some(Default::default()));
@@ -921,7 +924,7 @@ mod tests {
     /// toggle.
     #[test]
     fn panel_toggle_export_flips_panel_state_by_run_context() {
-        let (_base, c_base) = wiped_dir("spire-profiler-abi-toggle");
+        let (_base, c_base) = unique_dir("spire-profiler-abi-toggle");
         let char_ids = CString::new("IRONCLAD").expect("no NUL");
         let mode = CString::new("Standard").expect("no NUL");
         let seed = CString::new("TOGGLE_SEED").expect("no NUL");
@@ -988,7 +991,7 @@ mod tests {
     /// Select/clear drive the whole matching pipeline end to end.
     #[test]
     fn run_history_select_and_clear_exports_drive_the_selection() {
-        let (base, c_base) = wiped_dir("spire-profiler-abi-run-history");
+        let (base, c_base) = unique_dir("spire-profiler-abi-run-history");
         let seed = CString::new("SELF_TEST_SEED").expect("no NUL in seed");
         // SAFETY: the test forms valid C-string arguments for these exports.
         unsafe {

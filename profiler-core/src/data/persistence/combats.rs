@@ -230,7 +230,7 @@ pub fn write_combat_file(c: &Combat) -> bool {
 mod tests {
     use super::*;
     use crate::data::persistence::test_support::*;
-    use crate::test_util::{combat_ids, wiped_dir};
+    use crate::test_util::{combat_ids, unique_dir};
 
     fn store_ids(data: &std::path::Path) -> Vec<u32> {
         combat_ids(&data.join("runs"))
@@ -257,7 +257,7 @@ mod tests {
 
     #[test]
     fn write_combat_file_refuses_oversized_json() {
-        let data = wiped_dir("combat-write-overflow");
+        let data = unique_dir("combat-write-overflow");
         init_state(&data);
         let mut combat = synthetic_combat();
         combat.encounter_id = "x".repeat(MAX_JSON_SIZE);

@@ -5,7 +5,7 @@
 use super::*;
 use crate::data::records::CombatRec;
 use crate::data::state::{self, RunOutcome, RunPlayer};
-use crate::test_util::wiped_dir;
+use crate::test_util::unique_dir;
 
 fn read_run(base: &Path) -> serde_json::Value {
     let runs = read_all_runs(base);
@@ -15,8 +15,8 @@ fn read_run(base: &Path) -> serde_json::Value {
 
 #[test]
 fn repeated_init_keeps_the_first_data_dir() {
-    let first = wiped_dir("spire-profiler-test-init-first");
-    let second = wiped_dir("spire-profiler-test-init-second");
+    let first = unique_dir("spire-profiler-test-init-first");
+    let second = unique_dir("spire-profiler-test-init-second");
     test_reset();
     init(&first);
     init(&second);
@@ -39,7 +39,7 @@ fn repeated_init_keeps_the_first_data_dir() {
 
 #[test]
 fn resumed_run_records_the_seed() {
-    let base = wiped_dir("spire-profiler-test-resume");
+    let base = unique_dir("spire-profiler-test-resume");
     test_reset();
     init(&base);
     run_started("IRONCLAD", 7, "Standard", "SEED_123", 1, "", 0);
@@ -54,7 +54,7 @@ fn resumed_run_records_the_seed() {
 /// Clears `active` WITHOUT writing any record: the run is not over.
 #[test]
 fn suspend_clears_active_without_writing_a_run_record() {
-    let base = wiped_dir("spire-profiler-test-suspend");
+    let base = unique_dir("spire-profiler-test-suspend");
     test_reset();
     init(&base);
     run_started("IRONCLAD", 0, "Standard", "SEED_SUSPEND", 0, "", 0);
@@ -73,7 +73,7 @@ fn suspend_clears_active_without_writing_a_run_record() {
 /// there is no avatar row, so a selected player would strand the run tab.
 #[test]
 fn suspend_resets_the_player_filter() {
-    let base = wiped_dir("spire-profiler-test-suspend-filter");
+    let base = unique_dir("spire-profiler-test-suspend-filter");
     test_reset();
     init(&base);
     run_started("IRONCLAD", 0, "Standard", "SEED_SUSPEND_FILTER", 0, "", 0);
@@ -93,7 +93,7 @@ fn suspend_resets_the_player_filter() {
 /// The screen-open flag must survive a no-op suspend.
 #[test]
 fn suspend_without_an_active_run_is_a_no_op() {
-    let base = wiped_dir("spire-profiler-test-suspend-noop");
+    let base = unique_dir("spire-profiler-test-suspend-noop");
     test_reset();
     init(&base);
     run_history_select("SELF_TEST_SEED", 0, 1);
@@ -116,7 +116,7 @@ fn suspend_without_an_active_run_is_a_no_op() {
 /// the fragments rejoin under the original run id.
 #[test]
 fn suspend_then_continue_rejoins_without_a_spurious_defeat() {
-    let base = wiped_dir("spire-profiler-test-suspend-resume");
+    let base = unique_dir("spire-profiler-test-suspend-resume");
     test_reset();
     init(&base);
     set_run_meta(2);
@@ -161,7 +161,7 @@ fn suspend_then_continue_rejoins_without_a_spurious_defeat() {
 /// Both sessions' combats land in one directory; close writes one record.
 #[test]
 fn resumed_run_rejoins_its_fragment_and_rebuilds_the_summary() {
-    let base = wiped_dir("spire-profiler-test-resume-fragments");
+    let base = unique_dir("spire-profiler-test-resume-fragments");
     test_reset();
     init(&base);
     set_run_meta(2);
@@ -233,7 +233,7 @@ fn resumed_run_rejoins_its_fragment_and_rebuilds_the_summary() {
 
 #[test]
 fn resumed_run_log_lines_keep_their_legacy_order() {
-    let base = wiped_dir("spire-profiler-test-resume-log-order");
+    let base = unique_dir("spire-profiler-test-resume-log-order");
     test_reset();
     init(&base);
     set_run_meta(2);
@@ -274,7 +274,7 @@ fn resumed_run_log_lines_keep_their_legacy_order() {
 /// The game restarts the combat after loading, so it is never persisted.
 #[test]
 fn resumed_run_discards_the_unfinished_combat() {
-    let base = wiped_dir("spire-profiler-test-resume-midcombat");
+    let base = unique_dir("spire-profiler-test-resume-midcombat");
     test_reset();
     init(&base);
     run_started("DEFECT", 1, "Standard", "SEED_MID", 0, "", 0);
@@ -323,7 +323,7 @@ fn resumed_run_discards_the_unfinished_combat() {
 /// [`player_died`] double-fires idempotently; the run closes as a loss.
 #[test]
 fn player_death_marks_the_combat_and_run_as_defeat() {
-    let base = wiped_dir("spire-profiler-test-defeat");
+    let base = unique_dir("spire-profiler-test-defeat");
     test_reset();
     init(&base);
     run_started("IRONCLAD", 0, "Standard", "SEED_DEFEAT", 0, "", 0);
@@ -357,7 +357,7 @@ fn player_death_marks_the_combat_and_run_as_defeat() {
 /// `net_ids` pairs positionally with `character_ids`; mismatches truncate.
 #[test]
 fn roster_parses_from_net_ids_and_truncates() {
-    let base = wiped_dir("spire-profiler-test-mp2-roster");
+    let base = unique_dir("spire-profiler-test-mp2-roster");
     test_reset();
     init(&base);
     run_started(
@@ -424,7 +424,7 @@ fn roster_parses_from_net_ids_and_truncates() {
 /// Unreadable metadata cannot fabricate a reliable identity.
 #[test]
 fn run_started_stamps_the_forwarded_start_time() {
-    let base = wiped_dir("spire-profiler-test-start-time");
+    let base = unique_dir("spire-profiler-test-start-time");
     test_reset();
     init(&base);
     run_started(
@@ -467,7 +467,7 @@ fn run_started_stamps_the_forwarded_start_time() {
 
 #[test]
 fn later_metadata_cannot_relabel_the_previous_run() {
-    let base = wiped_dir("spire-profiler-test-run-profile-snapshot");
+    let base = unique_dir("spire-profiler-test-run-profile-snapshot");
     test_reset();
     init(&base);
     set_run_meta(2);
@@ -500,7 +500,7 @@ fn unknown_run_identity_never_rejoins() {
     .into_iter()
     .enumerate()
     {
-        let base = wiped_dir(&format!("spire-profiler-unknown-run-{case}"));
+        let base = unique_dir(&format!("spire-profiler-unknown-run-{case}"));
         test_reset();
         init(&base);
         if let Some(profile) = profile {
@@ -523,7 +523,7 @@ fn unknown_run_identity_never_rejoins() {
 }
 #[test]
 fn combat_after_run_end_joins_no_run() {
-    let base = wiped_dir("spire-profiler-test-post-run-combat");
+    let base = unique_dir("spire-profiler-test-post-run-combat");
     test_reset();
     init(&base);
     run_started("IRONCLAD", 0, "Standard", "SEED_POST", 0, "", 0);

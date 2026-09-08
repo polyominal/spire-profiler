@@ -5,7 +5,7 @@
 //! failing run replays exactly: the same event stream, the same assertion
 //! failure. Combat start times are the one nondeterminism (the wall clock
 //! stamps them) and no assertion reads them. The lifecycle walk runs 20
-//! scenarios x 40 weighted events in a wiped dir, re-checking ledger
+//! scenarios x 40 weighted events in a fresh dir, re-checking ledger
 //! invariants (segment sums, sign constraints, combat totals, queue bounds)
 //! after every event, then parses the JSON back; the block-pool test does
 //! the same against an independent naive FIFO model.
@@ -24,7 +24,7 @@ use profiler_core::data::state::{
     self, CombatResult, PendingContrib, RunOutcome, STATE, SourceKind,
 };
 use profiler_core::data::{events, ledger, records};
-use profiler_core::test_util::{combat_ids, wiped_dir};
+use profiler_core::test_util::{combat_ids, unique_dir};
 
 const DEFAULT_SEED: u64 = 0x5EED_5EED_5EED_5EED;
 const SCENARIOS: u32 = 20;
@@ -494,7 +494,7 @@ fn randomized_context_scopes_match_naive_attribution() {
     let repro = format!("SIM_SEED={seed} context scopes");
     let mut rng = Rng::new(seed);
     events::test_reset();
-    events::init(&wiped_dir("sim/context-scopes"));
+    events::init(&unique_dir("sim/context-scopes"));
     events::combat_started("CONTEXT", "test");
     // The naive model stores every logical scope, even those beyond the
     // source-storage cap, and re-scans the accepted prefix for each event.
@@ -567,7 +567,7 @@ fn randomized_combat_lifecycle_invariants() {
     for scenario in 0..SCENARIOS {
         let repro = format!("SIM_SEED={base_seed} scenario {scenario}");
         let mut rng = Rng::new(base_seed ^ u64::from(scenario).wrapping_mul(0x9E37_79B9_7F4A_7C15));
-        let base = wiped_dir(&format!("sim/lifecycle-{scenario}"));
+        let base = unique_dir(&format!("sim/lifecycle-{scenario}"));
         events::test_reset();
         events::init(&base);
         events::set_run_meta(7);
@@ -948,7 +948,7 @@ fn block_pool_consume_matches_naive_model() {
     let base_seed = sim_seed();
     let repro = format!("SIM_SEED={base_seed}");
     let mut rng = Rng::new(base_seed ^ 0xB10C_3001_C0DE);
-    let base = wiped_dir("sim/blockpool");
+    let base = unique_dir("sim/blockpool");
     events::test_reset();
     events::init(&base);
     events::combat_started("BLOCKPOOL_SIM", "test");

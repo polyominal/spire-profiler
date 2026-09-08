@@ -374,46 +374,55 @@ pub(crate) fn resolve_from_root_for(
 mod tests {
     use super::*;
 
-    /// Wiped per call, so a crashed run cannot leak state; parallel tests
-    /// need distinct labels.
-    fn wiped_dir(label: &str) -> PathBuf {
-        let dir = crate::workspace_root().join("tmp/wiped").join(label);
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("tmp/wiped is writable");
-        dir
-    }
-
     struct FakeTree {
         root: PathBuf,
+        _temp: xshell::TempDir,
     }
 
     impl FakeTree {
         fn new(name: &str) -> Self {
-            Self {
-                root: wiped_dir(&format!("xtask-discover-{name}")),
-            }
+            let shell = xshell::Shell::new().expect("cargo test runs with a working directory");
+            let temp = shell
+                .create_temp_dir()
+                .expect("each fake game tree needs an isolated temporary directory");
+            let root = temp.path().join(name);
+            std::fs::create_dir(&root).expect("the owned temporary directory is writable");
+            Self { root, _temp: temp }
         }
 
         fn touch(&self, rel: &str) {
             let path = self.root.join(rel);
             std::fs::create_dir_all(path.parent().expect("every tree file has a parent"))
-                .expect("tmp/wiped is writable");
-            std::fs::write(&path, []).expect("tmp/wiped is writable");
+                .expect("the owned fake game tree is writable");
+            std::fs::write(&path, []).expect("the owned fake game tree is writable");
+        }
+
+        fn touch_windows_tree(&self) {
+            self.touch("release_info.json");
+            self.touch("data_sts2_windows_x86_64/sts2.dll");
+            self.touch("data_sts2_windows_x86_64/0Harmony.dll");
+            self.touch("data_sts2_windows_x86_64/GodotSharp.dll");
+            self.touch("SlayTheSpire2.exe");
         }
     }
 
-    fn touch_windows_tree(tree: &FakeTree) {
-        tree.touch("release_info.json");
-        tree.touch("data_sts2_windows_x86_64/sts2.dll");
-        tree.touch("data_sts2_windows_x86_64/0Harmony.dll");
-        tree.touch("data_sts2_windows_x86_64/GodotSharp.dll");
-        tree.touch("SlayTheSpire2.exe");
+    #[test]
+    fn same_label_trees_keep_their_files_when_another_owner_drops() {
+        let first = FakeTree::new("shared-label");
+        first.touch("first-sentinel");
+        let second = FakeTree::new("shared-label");
+        second.touch("second-sentinel");
+        assert!(first.root.join("first-sentinel").is_file());
+        assert!(!first.root.join("second-sentinel").exists());
+        assert!(!second.root.join("first-sentinel").exists());
+        drop(first);
+        assert!(second.root.join("second-sentinel").is_file());
     }
 
     #[test]
     fn windows_layout_is_detected_from_a_linux_host() {
         let tree = FakeTree::new("windows-from-linux");
-        touch_windows_tree(&tree);
+        tree.touch_windows_tree();
         // No mods/ on purpose: a never-modded install must still resolve.
         let game = resolve_from_root_for(&tree.root, Platform::Linux, Arch::X86_64)
             .expect("a complete Windows tree resolves");
@@ -495,7 +504,7 @@ mod tests {
     #[test]
     fn a_windows_tree_is_not_a_game_for_a_macos_host() {
         let tree = FakeTree::new("windows-from-macos");
-        touch_windows_tree(&tree);
+        tree.touch_windows_tree();
         let error = resolve_from_root_for(&tree.root, Platform::Macos, Arch::Arm64)
             .expect_err("WSL2 aside, foreign layouts are unsupported");
         assert!(

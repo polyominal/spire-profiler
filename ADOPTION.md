@@ -7,17 +7,16 @@ Delete this file and its branch-only pointer in [AGENTS.md](AGENTS.md) before th
 ## Start here
 
 1. Read [AGENTS.md](AGENTS.md) and this file; run `git status --short --branch` and reconcile local changes before editing.
-2. From a clean checkout, attempt the pending release verification **before the next scratchpad edit** if the pinned game and tools are available. Do not stash user work to manufacture a clean checkout.
-3. Complete priority fixes before extraction or cosmetic work, one bounded logical change through implementation, independent review, gates, and a human commit.
-4. Replace the checkpoint at handoff; prune completed material instead of appending a session log.
+2. Complete priority fixes before extraction or cosmetic work, one bounded logical change through implementation, independent review, gates, and a human commit.
+3. Replace the checkpoint at handoff; prune completed material instead of appending a session log.
 
 `[ ]` means pending. Missing prerequisites leave affected verification pending while independent work continues.
 A sufficient continuation prompt is: “Continue ADOPTION.md from the next pending item, using its implementation/review workflow.”
 
 ## Current checkpoint
 
-Last implementation checkpoint: `2c6555c`, release packaging hardening, committed on 2026-09-09.
-Documentation-only changes do not advance it. This audit revised the plan only; the changes below remain pending.
+Uncommitted checkpoint: fresh, isolated fixtures, based on clean HEAD `f81aaed39b9f94f028b343e398543e52b39f5943` on 2026-09-09. That HEAD is the documentation-only handoff audit; the last committed implementation remains `2c6555c` (release packaging hardening).
+Implementation, independent review (SHIP), and required checks are complete. Stop for the human commit before the next correction, trustworthy headless verdict.
 
 Completed work:
 
@@ -25,43 +24,34 @@ Completed work:
 - Corrective fixes preserve context-scope balance/attribution, exact run identity across suspension, checked ID exhaustion, write-dependent persistence success/cache invalidation, and finite scroll input with hide/dismiss/reopen expiry. Private rustdoc fixed four broken links/rendering cases. Simulation seed errors fail loudly, failures identify seed/scenario, and model comparisons use deterministic order.
 - Release requires clean committed input, smoke, exact bundle/stamp validation, explicit archive members, and checksums after successful replacements. Tests pin archive entries, extracted bytes, checksum rows, and failures. Replacement is atomic per file, not across the archive set; target input staging trees are gone.
 - [chart_layout.rs](profiler-core/src/ui/chart_layout.rs) tests moved into [tests.rs](profiler-core/src/ui/chart_layout/tests.rs): production file 2,037 to 946 lines, 31 tests preserved, two snapshots renamed content-identically with unchanged module paths.
+- [test_util.rs](profiler-core/src/test_util.rs) reserves fresh empty directories with atomic `create_dir`, retries only occupied candidates, and reports other setup errors with paths. `wiped_dir` and its destructive setup are removed; profiler callers retain isolated fixtures under `tmp/unique/`. [discover.rs](xtask/src/discover.rs) `FakeTree` owns `xshell::TempDir`. Four new tests cover occupied directory/file sentinels, same-label contention, parent/candidate errors, and independent teardown. Existing behavior tests and snapshots are preserved; the 15-file source diff adds 249 and deletes 140 lines, chiefly helper replacement and caller renames.
 
-Historical verification:
+Verification:
 
-- At `2c6555c`, `cargo xtask smoke` passed 356/356 tests, workspace Clippy, private rustdoc, formatting, citations, 38 ABI bindings, and em-dash checks. Rust comment density was 10.6% (3,092 / 29,257); em-dash pins covered 39 files / 130 dashes.
-- Four native targets and the C# shim built on Linux/WSL, with no C# warnings/errors. GNU tar and BSD tar passed gzip/xz long-option extraction probes. Dirty release rejection passed; build success does not verify a clean full release.
-- Headless at `d6f75b2` passed on Windows game v0.111.0 through WSL: 194 patches, draw/persistence markers, exit 0, no unexpected profiler errors. This covers combat-panel boot/draw, not interactive scrolling or the lazy history panel. Release packaging changed no engine, registration, shim, or ABI behavior, so required no later headless run.
-- macOS runtime, Windows/macOS filesystem failure execution, and a clean top-level release remain unverified.
-
-### Pending clean release verification
-
-- [ ] Run `cargo xtask release` from clean committed input; record tested HEAD and outcome. This audit did not run it: staged ADOPTION changes made the checkout ineligible.
+- `cargo xtask smoke` passed 360/360 tests, workspace Clippy, private rustdoc, formatting, citations, 38 ABI bindings, and em-dash checks. Rust comment density is 10.5% (3,080 / 29,361); em-dash pins remain 39 files / 130 dashes.
+- Targeted checks passed: `cargo test --package profiler_core --locked test_util::tests` (3), `cargo test --package profiler_core --locked same_seed_replays_never_collide` (1), and `cargo test --package xtask --locked discover::tests` (10). `cargo fmt --all`, `cargo xtask fmt-md`, and `git diff --check` passed.
+- After `cargo build --package profiler_core --features test-support --locked`, a standalone Rust probe linked that library and started four overlapping child processes with the same fixture label. Each reserved a directory, wrote its PID sentinel, and waited on stdin until all four reservations completed. All paths differed and every sentinel survived, including after process exit.
+- Before source or handoff edits, `ZIG_GLOBAL_CACHE_DIR="$PWD/target/zig-cache" cargo xtask release` passed from clean committed HEAD `f81aaed39b9f94f028b343e398543e52b39f5943`: smoke (356 tests), all four native targets, the pinned v0.111.0 Windows game discovery, C# shim (zero warnings/errors), and five ZIPs under `dist/`. `sha256sum --check SHA256SUMS` passed there; separate archive inspection verified exact members, matching bundle content hashes, and stamp `v0.111.0-f81aaed3`. Native cross-compilation emitted macOS SDK-discovery and deprecated-linker-setting warnings but completed successfully. These archives precede the uncommitted fixture change.
+- GNU tar and BSD tar previously passed gzip/xz long-option extraction probes; dirty release rejection remains covered by smoke.
+- Headless at `d6f75b2` passed on Windows game v0.111.0 through WSL: 194 patches, draw/persistence markers, exit 0, no unexpected profiler errors. This covers combat-panel boot/draw, not interactive scrolling or the lazy history panel. Subsequent packaging and test-fixture changes affect no engine, registration, shim, or ABI behavior, so require no later headless run.
+- Fixture/error execution is verified on Linux/WSL only. macOS runtime and Windows/macOS filesystem failure execution remain unverified.
 
 Follow [build.md](docs/build.md), [verify.md](docs/verify.md), and [game.md](docs/game.md). Record missing tools or mismatch with [game_version.rs](xtask/src/game_version.rs); never silently bump `PIN` or weaken gates.
-For a read-only Zig global cache, use `ZIG_GLOBAL_CACHE_DIR="$PWD/target/zig-cache" cargo xtask release`. This override passed build-only verification; full release remains pending.
 
 ## Priority corrections
 
-### 1. Fresh, isolated fixtures
-
-- [ ] Change [test_util.rs](profiler-core/src/test_util.rs) `unique_dir` to reserve with atomic `create_dir`, retry only `AlreadyExists`, and report other errors; create the parent separately. PID/counter naming plus `create_dir_all` accepts stale contents. Guarantee a fresh empty exclusive directory, not a pathname never used in history.
-- [ ] Consolidate `wiped_dir` isolation if practical, including [discover.rs](xtask/src/discover.rs) `tests::wiped_dir`/`FakeTree`: fixed labels and ignored removal errors let processes wipe/contaminate each other. xtask already uses `Shell::create_temp_dir` for Git/release fixtures; no new framework/dependency is needed. Preserve intentional fixture retention, fail setup errors, and allow best-effort teardown only after isolation.
-- [ ] Cover an occupied candidate with a sentinel, same-label concurrency, and creation failure deterministically. After fixing, verify overlapping processes retain their own sentinels; avoid overlapping affected suites until then. Run targeted tests and smoke; no headless requirement.
-
-Reproduction: [combats.rs](profiler-core/src/data/persistence/combats.rs) `same_seed_replays_never_collide` read stale run-43 files after PID reuse, yielding max ID 4 instead of 2. Construct the collision in the test; fresh fixtures making smoke pass was only a workaround.
-
-### 2. Trustworthy headless verdict
+### 1. Trustworthy headless verdict
 
 - [ ] In [headless.rs](xtask/src/headless.rs), require successful termination as well as markers/error checks. `run_game_captured` accepts nonzero/signal completion, `headless_test` prints the code, and `assemble_verdict` checks only output. Pin marker-complete failed-exit and successful-exit cases; preserve watchdog kill/wait failure handling.
 - [ ] Scope `check_patch_count` to `[SpireProfiler] harmony patches applied; patched methods: ` and test unrelated matching text. Keep `>= MIN_PATCHES`: the shim uses `Harmony.GetAllPatchedMethods`, including other mods. Correct [AGENTS.md](AGENTS.md)'s “exact” count wording to [verify.md](docs/verify.md)'s canonical minimum semantics in this change.
 
 Keep this one verdict concern, without a process-runner redesign. Run smoke and headless; report unavailable runtime validation.
 
-### 3. Lock the outer Cargo invocation
+### 2. Lock the outer Cargo invocation
 
 - [ ] Add `--locked` to the `run --package xtask --` alias in [.cargo/config.toml](.cargo/config.toml). Cargo can resolve before inner locked gates run. Verify stale-lock refusal and no rewrite in an isolated disposable fixture, then smoke. Never modify the user's lockfile for the probe; this audit did not experimentally reproduce mutation.
 
-### 4. Reconcile ownership and reproducibility policy
+### 3. Reconcile ownership and reproducibility policy
 
 Keep documentation concerns separate from behavior fixes.
 
@@ -77,6 +67,7 @@ Preserve [run_panel.rs](profiler-core/src/ui/run_panel.rs) `run_manual_visible_c
 Existing context ABI tests observe null/empty/valid non-UTF-8 attribution; add no duplicate context matrix.
 Keep deterministic simulation, the naive block model, allocation tests, persistence snapshots, and failure coverage.
 
+- [ ] Isolate [check_catalog.rs](xtask/src/check_catalog.rs) fixtures in `hook_universe_accepts_non_task_return_types`, `class_files_reject_namespace_drift`, and `class_files_reject_bodyless_declarations` with owned `Shell::create_temp_dir` directories. Their fixed system-temp paths and teardown still let concurrent processes contaminate/delete each other's fixtures; avoid overlapping full xtask or smoke suites until fixed. Preserve the semantic assertions and leave production headless/decompile scratch separate.
 - [ ] Replace `u64_from_hash_sign_extends` in [ledger/tests.rs](profiler-core/src/data/ledger/tests.rs) only after strengthening [power.rs](profiler-core/src/data/events/tests/power.rs) `doom_kills_attribute_enemy_hp_to_the_doom_appliers` with `-1` and `i32::MIN` credit cases. Signed shim doom hashes must match unsigned power hashes; an intervening `u32` cast must fail. Existing event coverage uses positive 42/43.
 - [ ] Replace `from_u8_round_trips_all_kinds` only with focused stored-record decoding coverage for 3/4/255 (Potion/Osty/unknown to Osty). `From<u8>` differs from `from_c`; [combat_doc.rs](profiler-core/src/data/persistence/combat_doc.rs) `all_zero_card_rows_round_trip_as_identity_only` covers Potion only.
 - [ ] Keep handwritten valid/invalid wire decoder cases: const discriminants do not exercise decoding. Drop only the membership-only `-64..=64` source-kind sweep. Preserve modifier attribution coverage; correct its stale `0=Power` comment to `2=Power`/`1=Relic`. In the same bounded decoder concern, fix `SourceKind::from_c` documentation/diagnostic claiming invalid negatives clamp to Power: nearest-clamping yields Card for negatives, Power above 2. Preserve behavior.

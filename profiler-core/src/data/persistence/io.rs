@@ -178,7 +178,7 @@ mod tests {
 
     #[test]
     fn write_file_failures_preserve_existing_content() {
-        let dir = crate::test_util::wiped_dir("write-file-failures");
+        let dir = crate::test_util::unique_dir("write-file-failures");
         let path = dir.join("f.json");
         let tmp = dir.join("f.json.tmp");
         fs::write(&path, "old").unwrap();

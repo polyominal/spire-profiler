@@ -1,13 +1,10 @@
 //! Test-only helpers shared by the crate's test modules and the
 //! integration tests (the latter link with the `test-support` feature).
-//! Everything is `pub`: under the feature build `cfg(test)` is off, so
-//! `pub(crate)` items would be dead code.
-//!
-//! Filesystem workspaces live under the gitignored tmp/: `wiped/` holds
-//! deterministic per-label dirs (wiped on each call), `unique/` holds
-//! per-call dirs that are never cleaned up (delete freely when it grows).
+//! Filesystem fixtures are freshly reserved under the gitignored tmp/unique/
+//! and retained for inspection (delete freely when it grows).
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::{fmt, fs, io};
 
 use crate::data::persistence::{bind_log_path, event_log};
@@ -18,34 +15,41 @@ use crate::ui::theme::ContentBox;
 use crate::ui::ui_model::{SEG_COUNT, Section, UiRow};
 use crate::{fail, marker, warn};
 
-fn tmp_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
+/// A fresh empty directory, exclusively reserved even after PID reuse.
+pub fn unique_dir(label: &str) -> PathBuf {
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("profiler-core is a workspace member")
-        .join("tmp")
+        .join("tmp/unique");
+    reserve_dir(&root, label, &COUNTER).expect("fixture directory must be freshly reserved")
 }
 
-/// A fresh dir under tmp/wiped/ (wiped first, so a crashed run cannot
-/// leak state). The label must be unique per test binary: parallel tests
-/// sharing one wipe each other.
-pub fn wiped_dir(label: &str) -> PathBuf {
-    let dir = tmp_root().join("wiped").join(label);
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).expect("create wiped dir");
-    dir
-}
-
-/// A dir under tmp/unique/, unique per process and call, so parallel runs
-/// never collide. Prefer [`wiped_dir`]; use this only when a test needs a
-/// path that has never existed or calls repeatedly with one label.
-pub fn unique_dir(label: &str) -> PathBuf {
-    static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir = tmp_root()
-        .join("unique")
-        .join(format!("{label}-{}-{n}", std::process::id()));
-    fs::create_dir_all(&dir).expect("create unique dir");
-    dir
+fn reserve_dir(root: &Path, label: &str, counter: &AtomicU32) -> io::Result<PathBuf> {
+    let prefix = root.join(label);
+    let parent = prefix
+        .parent()
+        .expect("fixture labels have a workspace root");
+    fs::create_dir_all(parent).map_err(|err| {
+        io::Error::new(
+            err.kind(),
+            format!("creating fixture parent {}: {err}", parent.display()),
+        )
+    })?;
+    loop {
+        let n = counter.fetch_add(1, Ordering::Relaxed);
+        let dir = root.join(format!("{label}-{}-{n}", std::process::id()));
+        match fs::create_dir(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(err) => {
+                return Err(io::Error::new(
+                    err.kind(),
+                    format!("reserving fixture {}: {err}", dir.display()),
+                ));
+            }
+        }
+    }
 }
 
 /// The combat store under `runs_dir` as (run id, combat id) pairs, in
@@ -277,4 +281,99 @@ fn hex(c: [f32; 4]) -> String {
         ch(c[2]),
         ch(c[3])
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn occupied_candidates_keep_their_contents() {
+        let root = unique_dir("fixture-occupied");
+        let parent = root.join("nested");
+        fs::create_dir(&parent).expect("the isolated fixture parent is writable");
+        let stale = parent.join(format!("reused-{}-0", std::process::id()));
+        fs::create_dir(&stale).expect("the first candidate is unoccupied");
+        fs::write(stale.join("sentinel"), b"stale run-43").expect("the stale fixture is writable");
+        let occupied_file = parent.join(format!("reused-{}-1", std::process::id()));
+        fs::write(&occupied_file, b"unrelated file").expect("the next candidate is writable");
+
+        let fresh = reserve_dir(&root, "nested/reused", &AtomicU32::new(0))
+            .expect("occupied candidates must be skipped");
+        assert_eq!(
+            fresh,
+            parent.join(format!("reused-{}-2", std::process::id()))
+        );
+        assert!(
+            fs::read_dir(&fresh)
+                .expect("the fixture exists")
+                .next()
+                .is_none()
+        );
+        assert_eq!(
+            fs::read(stale.join("sentinel")).expect("the stale sentinel must survive"),
+            b"stale run-43"
+        );
+        assert_eq!(
+            fs::read(&occupied_file).expect("the occupied file must survive"),
+            b"unrelated file"
+        );
+    }
+
+    #[test]
+    fn concurrent_same_label_reservations_keep_their_sentinels() {
+        let root = unique_dir("fixture-concurrent");
+        let dirs = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..8)
+                .map(|id| {
+                    let root = &root;
+                    scope.spawn(move || {
+                        // Independent counters force contention on the same candidates.
+                        let dir = reserve_dir(root, "same-label", &AtomicU32::new(0))
+                            .expect("each caller must reserve its own fixture");
+                        fs::write(dir.join("sentinel"), id.to_string())
+                            .expect("the reserved fixture is writable");
+                        (dir, id)
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| {
+                    handle
+                        .join()
+                        .expect("fixture setup must succeed in every thread")
+                })
+                .collect::<Vec<_>>()
+        });
+        for (dir, id) in dirs {
+            assert_eq!(
+                fs::read_to_string(dir.join("sentinel"))
+                    .expect("each caller's sentinel must survive"),
+                id.to_string()
+            );
+        }
+    }
+
+    #[test]
+    fn creation_errors_fail_without_retrying_or_removing_contents() {
+        let root = unique_dir("fixture-errors");
+        let blocked = root.join("blocked");
+        fs::write(&blocked, b"unrelated file").expect("the isolated fixture is writable");
+        let counter = AtomicU32::new(0);
+        let error = reserve_dir(&blocked, "nested/fixture", &counter)
+            .expect_err("a file cannot contain a fixture parent");
+        assert!(error.to_string().contains(&blocked.display().to_string()));
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
+
+        let error = reserve_dir(&root, "invalid\0", &counter)
+            .expect_err("a NUL cannot be part of a directory name");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains(&root.display().to_string()));
+        assert_eq!(counter.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            fs::read(&blocked).expect("setup errors must preserve existing files"),
+            b"unrelated file"
+        );
+    }
 }

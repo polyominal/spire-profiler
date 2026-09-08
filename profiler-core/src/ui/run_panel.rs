@@ -565,7 +565,7 @@ mod tests {
 
     #[test]
     fn run_manual_visible_cycles() {
-        let data = crate::test_util::wiped_dir("run-panel-scroll-toggle");
+        let data = crate::test_util::unique_dir("run-panel-scroll-toggle");
         crate::data::persistence::test_support::init_state(&data);
         crate::data::run_history::select("", 0, 1);
         RUN_MANUAL_VISIBLE.with(|v| v.set(false));
@@ -583,7 +583,7 @@ mod tests {
 
     #[test]
     fn dismiss_run_manual_lands_on_hidden() {
-        let data = crate::test_util::wiped_dir("run-panel-scroll-dismiss");
+        let data = crate::test_util::unique_dir("run-panel-scroll-dismiss");
         crate::data::persistence::test_support::init_state(&data);
         crate::data::run_history::select("", 0, 1);
         RUN_MANUAL_VISIBLE.with(|v| v.set(true));
