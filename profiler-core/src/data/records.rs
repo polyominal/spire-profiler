@@ -47,6 +47,8 @@ pub struct RunRec {
     pub ascension: i32,
     pub game_mode: String,
     pub seed: String,
+    pub profile: i32,
+    pub started_at: i64,
 }
 
 impl Default for RunRec {
@@ -58,7 +60,21 @@ impl Default for RunRec {
             ascension: -1,
             game_mode: String::new(),
             seed: String::new(),
+            profile: -1,
+            started_at: 0,
         }
+    }
+}
+
+impl RunRec {
+    pub(crate) fn matches_identity(&self, seed: &str, started_at: i64, profile: i32) -> bool {
+        self.seq != 0
+            && !seed.is_empty()
+            && started_at > 0
+            && profile >= 0
+            && self.seed == seed
+            && self.started_at == started_at
+            && self.profile == profile
     }
 }
 
@@ -137,19 +153,17 @@ struct RunDocOwned {
     players: Vec<PlayerRec>,
 }
 
-/// `profile` is the shim-forwarded SaveManager.ProfileId (-1 when never
-/// reported).
-pub fn build_run_json(ended: &EndedRun, profile: i32) -> String {
+pub fn build_run_json(ended: &EndedRun) -> String {
     let run = &ended.context;
     let doc = RunDoc {
         run_id: run.run.seq,
-        profile,
+        profile: run.run.profile,
         character: &run.run.character,
         ascension: run.run.ascension,
         game_mode: &run.run.game_mode,
         outcome: ended.outcome,
         seed: &run.run.seed,
-        started_at: run.started_at,
+        started_at: run.run.started_at,
         ended_at: ended.ended_at,
         players: run.players.iter().map(PlayerDoc::from).collect(),
     };
@@ -159,7 +173,10 @@ pub fn build_run_json(ended: &EndedRun, profile: i32) -> String {
     {
         let parsed: RunDocOwned = serde_json::from_str(&json).expect("run JSON must parse back");
         debug_assert_eq!(parsed.run_id, run.run.seq, "run run_id must round-trip");
-        debug_assert_eq!(parsed.profile, profile, "run profile must round-trip");
+        debug_assert_eq!(
+            parsed.profile, run.run.profile,
+            "run profile must round-trip"
+        );
         debug_assert_eq!(
             parsed.character, run.run.character,
             "run character must round-trip"
@@ -175,7 +192,7 @@ pub fn build_run_json(ended: &EndedRun, profile: i32) -> String {
         debug_assert_eq!(parsed.outcome, ended.outcome, "run outcome must round-trip");
         debug_assert_eq!(parsed.seed, run.run.seed, "run seed must round-trip");
         debug_assert_eq!(
-            parsed.started_at, run.started_at,
+            parsed.started_at, run.run.started_at,
             "run started_at must round-trip"
         );
         debug_assert_eq!(

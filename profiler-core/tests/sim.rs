@@ -3,7 +3,7 @@
 //! https://github.com/tigerbeetle/tigerbeetle/blob/97c7a8ef385270ebe0e1b75959d3d21d134629df/docs/internals/vopr.md
 //! A seeded PRNG feeds every scenario; `SIM_SEED` overrides the default so a
 //! failing run replays exactly: the same event stream, the same assertion
-//! failure. Persisted start times are the one nondeterminism (the wall clock
+//! failure. Combat start times are the one nondeterminism (the wall clock
 //! stamps them) and no assertion reads them. The lifecycle walk runs 20
 //! scenarios x 40 weighted events in a wiped dir, re-checking ledger
 //! invariants (segment sums, sign constraints, combat totals, queue bounds)
@@ -578,8 +578,7 @@ fn randomized_combat_lifecycle_invariants() {
             "SIM_SEED",
             rng.range_i32(0, 1),
             "SIM_NET",
-            // No StartTime forwarded: started_at falls back to the clock.
-            0,
+            1_786_579_200,
         );
         events::combat_started("SIM_ENCOUNTER", "test");
         let mut follow_up = false;
@@ -665,15 +664,15 @@ fn check_written_files(base: &Path, player_died: bool, repro: &str) {
     check_run_and_store_files(base, player_died, repro);
 }
 
-/// i64 epoch timestamps, no roster/profile, zero-omission on numeric fields.
+/// i64 epoch timestamps, no roster, zero-omission on numeric fields.
 fn check_wire_shape(combats_text: &str, rec: &records::CombatRec, repro: &str) {
     assert!(
         !combats_text.contains("\"started_at\":\""),
         "{repro}: combat started_at must be an epoch integer, not an ISO string"
     );
     assert!(
-        !combats_text.contains("\"players\"") && !combats_text.contains("\"profile\""),
-        "{repro}: combat docs must not carry the roster or profile"
+        !combats_text.contains("\"players\""),
+        "{repro}: combat docs must not carry the roster"
     );
     assert!(
         !combats_text.contains("\"damage_unblocked\""),

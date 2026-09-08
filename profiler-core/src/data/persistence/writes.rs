@@ -15,11 +15,8 @@ pub fn write_run_record(ended: &EndedRun) {
         return;
     }
 
-    let (profile, runs_path) = STATE.with(|s| {
-        let st = s.borrow();
-        (st.run_profile, st.runs_path_full.clone())
-    });
-    let line = records::build_run_json(ended, profile);
+    let runs_path = STATE.with(|s| s.borrow().runs_path_full.clone());
+    let line = records::build_run_json(ended);
     let mut content = match read_file(&runs_path) {
         ReadFile::Missing => String::new(),
         ReadFile::Content(content) => content,
@@ -68,8 +65,9 @@ mod tests {
                     ascension: 5,
                     game_mode: "standard".to_owned(),
                     seed: "SEED123".to_owned(),
+                    profile: 3,
+                    started_at: 1_786_624_000,
                 },
-                started_at: 1_786_624_000,
                 players: synthetic_roster(),
             },
             outcome: RunOutcome::Victory,

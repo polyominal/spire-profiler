@@ -15,13 +15,19 @@ pub fn set_run_meta(profile_id: i32) {
         if !state.initialized {
             return;
         }
+        let profile_id = if profile_id < -1 {
+            fail!("invalid run profile {profile_id}; clamping to unknown");
+            -1
+        } else {
+            profile_id
+        };
         state.run_profile = profile_id;
         event_log!("run meta: profile {profile_id}");
     });
 }
 
 /// `start_time` is the game's own `StartTime`; 0 means the read failed and
-/// the core stamps its own clock.
+/// the identity stays unknown.
 pub fn run_started(
     character_ids: &str,
     ascension: i32,
@@ -35,15 +41,28 @@ pub fn run_started(
         fail!("run_started called before init");
         return;
     }
+    let start_time = if start_time < 0 {
+        fail!("invalid run start time {start_time}; clamping to unknown");
+        0
+    } else {
+        start_time
+    };
     if let Some(ended) = take_ended_run(RunOutcome::Defeat) {
         // Closing with 0 would fabricate a win.
         record_ended_run(&ended);
     }
     let (seq, resumed_seq) = STATE.with(|cell| {
         let mut state = cell.borrow_mut();
-        // A resumed run rejoins its earlier fragments by seed.
         let resumed = (continued != 0)
-            .then(|| crate::data::run_history::continued_run_id(&state.runs_dir_full, seed))
+            .then(|| {
+                crate::data::run_history::continued_run_id(
+                    &state.runs_path_full,
+                    &state.runs_dir_full,
+                    seed,
+                    start_time,
+                    state.run_profile,
+                )
+            })
             .flatten();
         // The run id comes from the store, not a session counter.
         let seq = resumed.unwrap_or_else(|| {
@@ -65,12 +84,8 @@ pub fn run_started(
                 ascension,
                 game_mode: game_mode.to_owned(),
                 seed: seed.to_owned(),
-            },
-            started_at: if start_time > 0 {
-                start_time
-            } else {
-                // The session clock preserves the old behavior.
-                now_seconds()
+                profile: state.run_profile,
+                started_at: start_time,
             },
             players: roster,
         });

@@ -5,12 +5,21 @@ use crate::data::state::RunOutcome;
 use crate::ui::snapshot;
 
 /// The host verifies the bridge without a real fight.
+#[allow(clippy::too_many_lines)] // a scripted end-to-end event sequence
 pub fn self_test() {
     if !STATE.with(|cell| cell.borrow().initialized) {
         return;
     }
-    run_started("SELF_TEST_CHAR", 0, "Standard", "SELF_TEST_SEED", 0, "", 0);
     set_run_meta(1);
+    run_started(
+        "SELF_TEST_CHAR",
+        0,
+        "Standard",
+        "SELF_TEST_SEED",
+        0,
+        "",
+        1_786_579_200,
+    );
     combat_started("SELF_TEST", "test");
     // The off-by-default F8 state would hide the panel and skip `_draw`.
     crate::ui::panel::enable_for_selftest();

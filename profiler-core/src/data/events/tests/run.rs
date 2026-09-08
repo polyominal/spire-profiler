@@ -119,7 +119,8 @@ fn suspend_then_continue_rejoins_without_a_spurious_defeat() {
     let base = wiped_dir("spire-profiler-test-suspend-resume");
     test_reset();
     init(&base);
-    run_started("DEFECT", 1, "Standard", "SEED_SUSPEND_RESUME", 0, "", 0);
+    set_run_meta(2);
+    run_started("DEFECT", 1, "Standard", "SEED_SUSPEND_RESUME", 0, "", 1000);
     combat_started("FRAG_ONE", "test");
     card_play_started("STRIKE", 0, 1, 0, 0);
     damage_dealt(DamageDealt {
@@ -132,7 +133,7 @@ fn suspend_then_continue_rejoins_without_a_spurious_defeat() {
     run_suspended();
     assert!(STATE.with(|s| s.borrow().run_ctx.is_none()));
 
-    run_started("DEFECT", 1, "Standard", "SEED_SUSPEND_RESUME", 1, "", 0);
+    run_started("DEFECT", 1, "Standard", "SEED_SUSPEND_RESUME", 1, "", 1000);
     assert_eq!(
         STATE.with(|s| s.borrow().run_ctx.as_ref().map(|run| run.run.seq)),
         Some(1)
@@ -151,6 +152,8 @@ fn suspend_then_continue_rejoins_without_a_spurious_defeat() {
     run_ended(RunOutcome::Abandoned); // the run really ends now
     let run = read_run(&base);
     assert_eq!(run["outcome"], "abandoned");
+    assert_eq!(run["profile"], 2);
+    assert_eq!(run["started_at"], 1000);
     assert!(run["ended_at"].is_i64());
     assert_eq!(read_all_combats(&base).len(), 2, "both fragments persist");
 }
@@ -161,7 +164,8 @@ fn resumed_run_rejoins_its_fragment_and_rebuilds_the_summary() {
     let base = wiped_dir("spire-profiler-test-resume-fragments");
     test_reset();
     init(&base);
-    run_started("DEFECT", 1, "Standard", "SEED_FRAG", 0, "", 0);
+    set_run_meta(2);
+    run_started("DEFECT", 1, "Standard", "SEED_FRAG", 0, "", 1000);
     combat_started("FRAG_ONE", "test");
     card_play_started("STRIKE", 0, 1, 0, 0);
     damage_dealt(DamageDealt {
@@ -171,12 +175,25 @@ fn resumed_run_rejoins_its_fragment_and_rebuilds_the_summary() {
     });
     card_play_finished(0);
     combat_ended();
-    STATE.with(|s| {
-        let mut st = s.borrow_mut();
-        st.run_ctx = None;
-        st.current = None;
-    });
-    run_started("DEFECT", 1, "Standard", "SEED_FRAG", 1, "", 0);
+    run_suspended();
+    for (profile, start, damage) in [(3, 1000, 60), (2, 1001, 90)] {
+        set_run_meta(profile);
+        run_started("DEFECT", 1, "Standard", "SEED_FRAG", 0, "", start);
+        combat_started("OTHER_RUN", "test");
+        card_play_started("STRIKE", 0, 1, 0, 0);
+        damage_dealt(DamageDealt {
+            total: damage,
+            unblocked: damage,
+            ..DamageDealt::default()
+        });
+        card_play_finished(0);
+        combat_ended();
+        run_suspended();
+    }
+    test_reset();
+    init(&base);
+    set_run_meta(2);
+    run_started("DEFECT", 1, "Standard", "SEED_FRAG", 1, "", 1000);
     assert_eq!(
         STATE.with(|s| s.borrow().run_ctx.as_ref().map(|run| run.run.seq)),
         Some(1)
@@ -198,7 +215,20 @@ fn resumed_run_rejoins_its_fragment_and_rebuilds_the_summary() {
     run_ended(RunOutcome::Abandoned); // abandoned after the resumed fragment
     let run = read_run(&base);
     assert_eq!(run["outcome"], "abandoned");
-    assert_eq!(read_all_combats(&base).len(), 2, "both fragments persist");
+    assert_eq!(run["profile"], 2);
+    assert_eq!(run["started_at"], 1000);
+    let view = match crate::data::run_history::select_run("SEED_FRAG", 1000, 2) {
+        crate::data::run_history::RunSelection::Selected(view) => view,
+        crate::data::run_history::RunSelection::Empty => panic!("resumed run must match"),
+    };
+    assert_eq!(view.combats.len(), 2);
+    assert_eq!(view.rollup[0].damage_dealt, 6);
+    assert_eq!(view.rollup[1].block_gained, 5);
+    assert_eq!(
+        read_all_combats(&base).len(),
+        4,
+        "other identities also persist"
+    );
 }
 
 #[test]
@@ -206,7 +236,8 @@ fn resumed_run_log_lines_keep_their_legacy_order() {
     let base = wiped_dir("spire-profiler-test-resume-log-order");
     test_reset();
     init(&base);
-    run_started("DEFECT", 1, "Standard", "SEED_LOG_ORDER", 0, "", 0);
+    set_run_meta(2);
+    run_started("DEFECT", 1, "Standard", "SEED_LOG_ORDER", 0, "", 1000);
     combat_started("FRAG_ONE", "test");
     card_play_started("STRIKE", 0, 1, 0, 0);
     card_play_finished(0);
@@ -219,7 +250,7 @@ fn resumed_run_log_lines_keep_their_legacy_order() {
         "SEED_LOG_ORDER",
         1,
         "1,2",
-        0,
+        1000,
     );
     let log = read_test_file(&base, "profiler.log");
     let ended = log
@@ -390,8 +421,7 @@ fn roster_parses_from_net_ids_and_truncates() {
     );
 }
 
-/// The forwarded StartTime IS the run's identity; a 0 from the shim falls
-/// back to the session clock.
+/// Unreadable metadata cannot fabricate a reliable identity.
 #[test]
 fn run_started_stamps_the_forwarded_start_time() {
     let base = wiped_dir("spire-profiler-test-start-time");
@@ -407,7 +437,7 @@ fn run_started_stamps_the_forwarded_start_time() {
         1_786_579_200,
     );
     assert_eq!(
-        STATE.with(|s| s.borrow().run_ctx.as_ref().map(|run| run.started_at)),
+        STATE.with(|s| s.borrow().run_ctx.as_ref().map(|run| run.run.started_at)),
         Some(1_786_579_200),
         "the forwarded StartTime is stamped verbatim"
     );
@@ -421,17 +451,75 @@ fn run_started_stamps_the_forwarded_start_time() {
         1_786_579_200,
     );
     assert_eq!(
-        STATE.with(|s| s.borrow().run_ctx.as_ref().map(|run| run.started_at)),
+        STATE.with(|s| s.borrow().run_ctx.as_ref().map(|run| run.run.started_at)),
         Some(1_786_579_200)
     );
     run_started("IRONCLAD", 0, "Standard", "SEED_START_TIME", 0, "", 0);
     let fallback = STATE
-        .with(|s| s.borrow().run_ctx.as_ref().map(|run| run.started_at))
+        .with(|s| s.borrow().run_ctx.as_ref().map(|run| run.run.started_at))
         .expect("active run start");
-    assert!(
-        fallback > 1_700_000_000,
-        "the 0 fallback stamps the session clock ({fallback})"
+    assert_eq!(fallback, 0);
+    assert_eq!(
+        STATE.with(|s| s.borrow().run_ctx.as_ref().unwrap().run.profile),
+        -1
     );
+}
+
+#[test]
+fn later_metadata_cannot_relabel_the_previous_run() {
+    let base = wiped_dir("spire-profiler-test-run-profile-snapshot");
+    test_reset();
+    init(&base);
+    set_run_meta(2);
+    run_started("IRONCLAD", 0, "Standard", "SAME", 0, "", 1000);
+    combat_started("FIRST", "test");
+    combat_ended();
+    set_run_meta(3);
+    run_started("IRONCLAD", 0, "Standard", "SAME", 0, "", 1000);
+    let previous = read_run(&base);
+    assert_eq!(previous["profile"], 2);
+    assert_eq!(previous["started_at"], 1000);
+    let (combat, _) = read_combat(&base);
+    assert_eq!(combat.run.unwrap().profile, 2);
+    combat_started("SECOND", "test");
+    combat_ended();
+    set_run_meta(4);
+    run_ended(RunOutcome::Victory);
+    let runs = read_all_runs(&base);
+    assert_eq!(runs[1]["profile"], 3);
+}
+
+#[test]
+fn unknown_run_identity_never_rejoins() {
+    for (case, (profile, seed, start)) in [
+        (None, "S", 1000),
+        (Some(2), "", 1000),
+        (Some(2), "S", 0),
+        (Some(-2), "S", -10),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let base = wiped_dir(&format!("spire-profiler-unknown-run-{case}"));
+        test_reset();
+        init(&base);
+        if let Some(profile) = profile {
+            set_run_meta(profile);
+        }
+        run_started("IRONCLAD", 0, "Standard", seed, 0, "", start);
+        combat_started("UNKNOWN", "test");
+        combat_ended();
+        run_suspended();
+        run_started("IRONCLAD", 0, "Standard", seed, 1, "", start);
+        STATE.with(|s| {
+            let state = s.borrow();
+            let run = &state.run_ctx.as_ref().unwrap().run;
+            assert_eq!(run.seq, 2, "unknown component case {case}");
+            assert_eq!(run.started_at, start.max(0));
+            assert_eq!(run.profile, profile.unwrap_or(-1).max(-1));
+            assert_eq!(state.run_combats, 0);
+        });
+    }
 }
 #[test]
 fn combat_after_run_end_joins_no_run() {

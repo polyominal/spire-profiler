@@ -120,7 +120,7 @@ pub unsafe extern "C" fn spire_profiler_set_run_meta(profile_id: i32) {
 /// `net_ids` is the comma-joined player NetId list, same shape as
 /// `character_ids`; the two pair positionally to build the run's roster.
 /// `start_time` is the game's `StartTime` run id (0 when the shim's read
-/// failed; the core then stamps its own clock).
+/// failed; the identity stays unknown).
 ///
 /// # Safety
 /// Pointer arguments, if any, are null or valid C strings.
@@ -968,9 +968,7 @@ mod tests {
             spire_profiler_init(c_base.as_ptr());
             spire_profiler_self_test();
         }
-        // The selection needs the record's exact StartTime: the self-test
-        // started its run without one (the session-clock fallback), so
-        // read the value it stamped from the written record.
+        // Select the identity that traversed the ABI and persisted writer.
         let text = fs::read_to_string(base.join("runs.jsonl")).expect("runs.jsonl readable");
         let record: serde_json::Value =
             serde_json::from_str(text.lines().next().expect("a run line"))

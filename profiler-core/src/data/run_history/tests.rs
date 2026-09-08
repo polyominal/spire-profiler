@@ -73,14 +73,14 @@ const RUNS: &str = r#"[
 const COMBATS: &str = r#"[
         {"combat_id":1,"encounter_id":"A","result":"completed","turns":4,"damage_received":12,
          "block_total":0,
-         "run":{"seq":1,"character":"SHROUD","ascension":3,"game_mode":"Standard"},
+         "run":{"seq":1,"seed":"ALPHA","profile":2,"started_at":1786579200,"character":"SHROUD","ascension":3,"game_mode":"Standard"},
          "cards":[
             {"id":"STRIKE","kind":0,"plays":2,"damage_dealt":20,"block_gained":0,"block_effective":0,"heal":0},
             {"id":"CRACKED_CORE","kind":1,"plays":0,"damage_dealt":10,"block_gained":0,"block_effective":0,"heal":0}
          ]},
         {"combat_id":2,"encounter_id":"B","result":"completed","turns":5,"damage_received":15,
          "block_total":16,
-         "run":{"seq":2,"character":"IRONCLAD","ascension":7,"game_mode":"Standard"},
+         "run":{"seq":2,"seed":"BETA","profile":2,"started_at":1786665600,"character":"IRONCLAD","ascension":7,"game_mode":"Standard"},
          "cards":[
             {"id":"STRIKE","kind":0,"plays":3,"damage_dealt":40,"block_gained":0,"block_effective":0,"heal":0,
              "dmg_direct":30,"dmg_attributed":10,"dmg_modifier":0},
@@ -88,7 +88,7 @@ const COMBATS: &str = r#"[
          ]},
         {"combat_id":3,"encounter_id":"C","result":"defeat","turns":3,"damage_received":25,
          "block_total":0,
-         "run":{"seq":2,"character":"IRONCLAD","ascension":7,"game_mode":"Standard"},
+         "run":{"seq":2,"seed":"BETA","profile":2,"started_at":1786665600,"character":"IRONCLAD","ascension":7,"game_mode":"Standard"},
          "cards":[
             {"id":"STRIKE","kind":0,"plays":1,"damage_dealt":30,"block_gained":0,"block_effective":0,"heal":0,
              "dmg_direct":20,"dmg_attributed":0,"dmg_modifier":5},
@@ -99,14 +99,14 @@ const COMBATS: &str = r#"[
 const COMBATS_ONLY: &str = r#"[
         {"combat_id":10,"encounter_id":"A","result":"completed","turns":4,"damage_received":12,
          "block_total":5,
-         "run":{"seq":3,"character":"SHROUD","ascension":1,"game_mode":"Standard","seed":"GAMMA"},
+         "run":{"seq":3,"character":"SHROUD","ascension":1,"game_mode":"Standard","seed":"GAMMA","profile":4,"started_at":1000},
          "cards":[
             {"id":"STRIKE","kind":0,"plays":2,"damage_dealt":20,"block_gained":0,"block_effective":0,"heal":0},
             {"id":"DASH","kind":0,"plays":1,"damage_dealt":15,"block_gained":5,"block_effective":5,"heal":0}
          ]},
         {"combat_id":11,"encounter_id":"B","result":"defeated","turns":3,"damage_received":25,
          "block_total":0,
-         "run":{"seq":3,"character":"SHROUD","ascension":1,"game_mode":"Standard","seed":"GAMMA"},
+         "run":{"seq":3,"character":"SHROUD","ascension":1,"game_mode":"Standard","seed":"GAMMA","profile":4,"started_at":1000},
          "cards":[
             {"id":"STRIKE","kind":0,"plays":1,"damage_dealt":10,"block_gained":0,"block_effective":0,"heal":0}
          ]}
@@ -155,28 +155,40 @@ fn next_run_id_reserves_abandoned_run_dirs() {
 }
 
 #[test]
-fn continued_run_id_rejoins_the_latest_matching_fragment() {
+fn continued_run_id_rejoins_the_exact_identity() {
     let data = wiped_dir("continued-run-id");
     seed_data(
         &data,
         "[]",
         r#"[{"combat_id":1,"encounter_id":"A","result":"completed","turns":4,"damage_received":12,
                 "block_total":0,
-                "run":{"seq":7,"character":"DEFECT","ascension":1,"game_mode":"Standard","seed":"AAA"},
+                "run":{"seq":7,"character":"DEFECT","ascension":1,"game_mode":"Standard","seed":"AAA","profile":2,"started_at":1000},
                 "cards":[]},
                {"combat_id":2,"encounter_id":"B","result":"completed","turns":4,"damage_received":12,
                 "block_total":0,
-                "run":{"seq":9,"character":"IRONCLAD","ascension":1,"game_mode":"Standard","seed":"BBB"},
+                "run":{"seq":9,"character":"IRONCLAD","ascension":1,"game_mode":"Standard","seed":"BBB","profile":2,"started_at":1000},
                 "cards":[]},
                {"combat_id":3,"encounter_id":"C","result":"completed","turns":4,"damage_received":12,
                 "block_total":0,
-                "run":{"seq":7,"character":"DEFECT","ascension":1,"game_mode":"Standard","seed":"AAA"},
+                "run":{"seq":7,"character":"DEFECT","ascension":1,"game_mode":"Standard","seed":"AAA","profile":2,"started_at":1000},
                 "cards":[]}]"#,
     );
-    assert_eq!(continued_run_id(&data.join("runs"), "AAA"), Some(7));
-    assert_eq!(continued_run_id(&data.join("runs"), "BBB"), Some(9));
-    assert_eq!(continued_run_id(&data.join("runs"), "CCC"), None);
-    assert_eq!(continued_run_id(&data.join("runs"), ""), None);
+    assert_eq!(
+        continued_run_id(&data.join("runs.jsonl"), &data.join("runs"), "AAA", 1000, 2),
+        Some(7)
+    );
+    assert_eq!(
+        continued_run_id(&data.join("runs.jsonl"), &data.join("runs"), "BBB", 1000, 2),
+        Some(9)
+    );
+    assert_eq!(
+        continued_run_id(&data.join("runs.jsonl"), &data.join("runs"), "CCC", 1000, 2),
+        None
+    );
+    assert_eq!(
+        continued_run_id(&data.join("runs.jsonl"), &data.join("runs"), "", 1000, 2),
+        None
+    );
 }
 
 #[test]
@@ -231,21 +243,18 @@ fn combat_only_runs_fall_back_to_a_synthesized_view() {
     let data = &base;
     seed_data(data, "[]", COMBATS_ONLY);
 
-    let view = selected("GAMMA", 0, 4);
+    let view = selected("GAMMA", 1000, 4);
     assert_eq!(view.run_id, 3);
     assert_eq!(view.character, "SHROUD");
     assert_eq!(view.ascension, 1);
     assert_eq!(view.game_mode, "Standard");
     assert_eq!(view.seed, "GAMMA");
-    assert_eq!(
-        view.profile, 4,
-        "the select's profile carries onto the view"
-    );
+    assert_eq!(view.profile, 4, "the stored profile carries onto the view");
     assert!(
         view.outcome.is_none(),
         "the run never closed, so its terminal state is unknown"
     );
-    assert_eq!(view.started_at, 0);
+    assert_eq!(view.started_at, 1000);
     assert_eq!(view.ended_at, 0);
     assert!(view.players.is_empty());
     assert_eq!(view.combats.len(), 2);
@@ -259,6 +268,126 @@ fn combat_only_runs_fall_back_to_a_synthesized_view() {
     assert_eq!(view.rollup[1].id, "DASH");
     assert_eq!(view.rollup[1].damage_dealt, 15);
     assert_eq!(view.rollup[1].block_effective, 5);
+}
+
+#[test]
+fn missing_or_corrupt_identity_cannot_select_or_resume() {
+    use serde_json::json;
+    for (case, (field, value)) in [
+        ("profile", None),
+        ("profile", Some(json!(-1))),
+        ("profile", Some(json!("bad"))),
+        ("seed", None),
+        ("seed", Some(json!(""))),
+        ("started_at", None),
+        ("started_at", Some(json!(0))),
+        ("started_at", Some(json!(i64::MIN))),
+        ("started_at", Some(json!("bad"))),
+        ("seq", Some(json!(0))),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let data = wiped_dir(&format!("run-history-invalid-{case}"));
+        let mut combat = json!({"combat_id":1,"started_at":1000,
+            "run":{"seq":3,"profile":4,"seed":"GAMMA","started_at":1000}});
+        let identity = combat["run"].as_object_mut().unwrap();
+        if let Some(value) = value {
+            identity.insert(field.to_owned(), value);
+        } else {
+            identity.remove(field);
+        }
+        let mut entry = identity.clone();
+        let seq = entry.remove("seq").unwrap();
+        entry.insert("run_id".to_owned(), seq);
+        seed_data(
+            &data,
+            &json!([entry]).to_string(),
+            &json!([combat]).to_string(),
+        );
+        for (seed, time, profile) in [
+            ("GAMMA", 1000, 4),
+            ("", 1000, 4),
+            ("GAMMA", 0, 4),
+            ("GAMMA", i64::MIN, 4),
+            ("GAMMA", 1000, -1),
+        ] {
+            assert!(
+                matches!(select_run(seed, time, profile), RunSelection::Empty),
+                "invalid case {case}"
+            );
+            assert_eq!(
+                continued_run_id(
+                    &data.join("runs.jsonl"),
+                    &data.join("runs"),
+                    seed,
+                    time,
+                    profile
+                ),
+                None,
+                "invalid case {case}"
+            );
+        }
+    }
+}
+
+#[test]
+fn multiple_matching_run_ids_cannot_select_or_resume() {
+    use serde_json::json;
+    for source in ["runs", "combats"] {
+        let data = wiped_dir(&format!("run-history-ambiguous-{source}"));
+        let mut runs: serde_json::Value = serde_json::from_str(RUNS).unwrap();
+        let mut combats: serde_json::Value = serde_json::from_str(COMBATS).unwrap();
+        if source == "runs" {
+            let mut duplicate = runs[1].clone();
+            duplicate["run_id"] = json!(9);
+            runs.as_array_mut().unwrap().push(duplicate);
+        } else {
+            let mut duplicate = combats[1].clone();
+            duplicate["combat_id"] = json!(9);
+            duplicate["run"]["seq"] = json!(9);
+            combats.as_array_mut().unwrap().push(duplicate);
+        }
+        seed_data(&data, &runs.to_string(), &combats.to_string());
+        assert!(matches!(
+            select_run("BETA", BETA_START, 2),
+            RunSelection::Empty
+        ));
+        assert_eq!(
+            continued_run_id(
+                &data.join("runs.jsonl"),
+                &data.join("runs"),
+                "BETA",
+                BETA_START,
+                2
+            ),
+            None
+        );
+    }
+}
+
+#[test]
+fn shared_run_id_does_not_merge_different_identities() {
+    use serde_json::json;
+    let data = wiped_dir("run-history-mixed-identities");
+    seed_data(&data, RUNS, COMBATS);
+    let expected = selected("BETA", BETA_START, 2);
+    let mut combats: serde_json::Value = serde_json::from_str(COMBATS).unwrap();
+    for (index, (field, value)) in [
+        ("profile", json!(3)),
+        ("seed", json!("ALPHA")),
+        ("started_at", json!(BETA_START + 1)),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut foreign = combats[1].clone();
+        foreign["combat_id"] = json!(index + 4);
+        foreign["run"][field] = value;
+        combats.as_array_mut().unwrap().push(foreign);
+    }
+    seed_data(&data, RUNS, &combats.to_string());
+    assert_eq!(selected("BETA", BETA_START, 2), expected);
 }
 
 #[test]
@@ -330,14 +459,14 @@ fn fallback_views_flow_through_the_selection_plumbing() {
     let data = &base;
     seed_data(data, "[]", COMBATS_ONLY);
 
-    assert!(select("GAMMA", 0, 4));
+    assert!(select("GAMMA", 1000, 4));
     assert!(screen_open(), "select marks the screen open");
-    let expected = selected("GAMMA", 0, 4);
+    let expected = selected("GAMMA", 1000, 4);
     let stored = selected_view().expect("fallback selection stored");
     assert_eq!(&*expected, &stored);
     assert_eq!(stored.outcome, None);
     let fp = selected_view_fingerprint().expect("fingerprint present");
-    assert!(select("GAMMA", 0, 4));
+    assert!(select("GAMMA", 1000, 4));
     assert_eq!(selected_view_fingerprint(), Some(fp));
     clear();
     assert!(selected_view().is_none());
@@ -353,24 +482,24 @@ fn fallback_disambiguates_same_seed_replays_by_start_time() {
         "[]",
         r#"[{"combat_id":1,"started_at":1000,"encounter_id":"A","result":"completed","turns":1,
                  "damage_received":0,"block_total":0,
-                 "run":{"seq":4,"character":"DEFECT","ascension":1,"game_mode":"Standard","seed":"OMEGA"},
+                 "run":{"seq":4,"profile":2,"started_at":100,"character":"DEFECT","ascension":1,"game_mode":"Standard","seed":"OMEGA"},
                  "cards":[]},
                 {"combat_id":2,"started_at":2000,"encounter_id":"B","result":"completed","turns":1,
                  "damage_received":0,"block_total":7,
-                 "run":{"seq":6,"character":"IRONCLAD","ascension":2,"game_mode":"Standard","seed":"OMEGA"},
+                 "run":{"seq":6,"profile":2,"started_at":101,"character":"IRONCLAD","ascension":2,"game_mode":"Standard","seed":"OMEGA"},
                  "cards":[]}]"#,
     );
-    let view = selected("OMEGA", 1050, 2);
-    assert_eq!(view.run_id, 4, "the closest group wins, not the latest");
+    let view = selected("OMEGA", 100, 2);
+    assert_eq!(
+        view.run_id, 4,
+        "the original run start selects the exact replay"
+    );
     assert_eq!(view.character, "DEFECT");
     assert_eq!(view.combats.len(), 1, "replays never merge");
     assert_eq!(view.combats[0].seq, 1);
-    let view = selected("OMEGA", 2050, 2);
+    let view = selected("OMEGA", 101, 2);
     assert_eq!(view.run_id, 6);
-    assert!(matches!(
-        select_run("OMEGA", 10_000, 2),
-        RunSelection::Empty
-    ));
+    assert!(matches!(select_run("OMEGA", 1000, 2), RunSelection::Empty));
 }
 
 #[test]
@@ -430,7 +559,7 @@ fn unknown_runs_select_empty() {
     ));
     assert!(matches!(
         select_run("ALPHA", 1_786_579_200, -1),
-        RunSelection::Selected(_)
+        RunSelection::Empty
     ));
 
     let fresh = wiped_dir("run-history-fresh");
@@ -487,7 +616,7 @@ fn rollup_keys_on_id_and_kind_and_teams_merge() {
                         "outcome":"victory","seed":"K","started_at":1786579200,
                         "ended_at":1786579800,"combats":1}]"#;
     let combats = r#"[{"combat_id":1,"encounter_id":"K","result":"completed","turns":1,
-                           "damage_received":0,"run":{"seq":1,"character":"A","ascension":0,"game_mode":"Standard"},
+                           "damage_received":0,"run":{"seq":1,"seed":"K","profile":2,"started_at":1786579200,"character":"A","ascension":0,"game_mode":"Standard"},
                            "cards":[
                             {"id":"DUPE","kind":0,"player":0,"plays":1,"damage_dealt":5,"block_gained":0,"block_effective":0,"heal":0},
                             {"id":"ZERO_A","kind":0,"player":0,"plays":1,"damage_dealt":0,"block_gained":1,"block_effective":0,"heal":0},
@@ -614,7 +743,7 @@ fn per_player_rollups_split_the_run() {
                                    {"slot":1,"net_id":"2","character":"SILENT"}]}]"#;
     let combats = r#"[{"combat_id":1,"encounter_id":"P3","result":"completed","turns":1,
                            "damage_received":0,"started_at":1786579200,
-                           "run":{"seq":7,"character":"IRONCLAD,SILENT","ascension":0,"game_mode":"Standard"},
+                           "run":{"seq":7,"seed":"P3","profile":2,"started_at":1786579200,"character":"IRONCLAD,SILENT","ascension":0,"game_mode":"Standard"},
                            "cards":[
                             {"id":"STRIKE","kind":0,"player":0,"plays":1,"damage_dealt":5,"block_gained":0,"block_effective":0,"heal":0},
                             {"id":"STRIKE","kind":0,"player":1,"plays":2,"damage_dealt":7,"block_gained":0,"block_effective":0,"heal":0},

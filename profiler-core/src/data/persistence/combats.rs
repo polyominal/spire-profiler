@@ -1,9 +1,8 @@
 //! The combat store: one atomic, write-once file per combat under
-//! `runs/<run_id>/`, named by its globally-unique id. Run membership is
-//! structural — the path IS the run — so the per-run paths (run-end
-//! summary, save+quit resume rebuild, next-run-id derivation) read one
-//! run's directory instead of the whole history. Combats outside any run
-//! land in `runs/0/`.
+//! `runs/<run_id>/`, named by its globally-unique id. Paths locate a run's
+//! records; persisted header identities validate their membership before
+//! history or resume aggregation. Per-run reads scan one directory;
+//! combats outside any run land in `runs/0/`.
 
 use std::fs;
 use std::path::{Path, PathBuf};

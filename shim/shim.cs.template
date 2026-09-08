@@ -1069,8 +1069,7 @@ internal static class RunStartPatches
         // original run's start for a resume), already set before these
         // SetUp* postfixes run. Forwarding it makes run-history matching
         // exact — both sides carry the same integer by provenance. The
-        // read degrades to 0 on any failure; the core then stamps its own
-        // clock, the pre-forwarding behavior.
+        // read degrades to 0 on failure, leaving the identity unknown.
         long startTime = 0;
         try
         {
@@ -2095,12 +2094,11 @@ internal static class PatchRunSuspend
 /// disconnect reason cannot distinguish "host saved and quit" (the run is
 /// resumable) from "host quit without saving", so the run must be
 /// SUSPENDED, not closed: run_suspended deactivates without writing a
-/// record, and a later resume rejoins the same run id by seed (closing as
-/// defeat here would split one run across two runs.json entries). The
+/// record, and a later resume rejoins by profile, seed, and original
+/// StartTime (closing as defeat here would split one run across two records). The
 /// game-over case never reaches this forward: QuitGameOver disconnects are
 /// skipped below, and an already-abandoned run is closed by the OnEnded
-/// postfix. StateDivergence disconnects suspend as well (the stale record
-/// then closes as a loss at the next run start).
+/// postfix. StateDivergence disconnects suspend as well.
 /// </summary>
 [HarmonyPatch(typeof(RunManager), nameof(RunManager.LocalPlayerDisconnected))]
 internal static class PatchRunDisconnected

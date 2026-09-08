@@ -53,6 +53,8 @@ struct RunDoc<'a> {
     ascension: i32,
     game_mode: &'a str,
     seed: &'a str,
+    profile: i32,
+    started_at: i64,
 }
 
 /// One combat record's JSON shape; `run` is absent outside a run.
@@ -103,6 +105,8 @@ pub fn build_combat_json(c: &Combat) -> String {
         ascension: run.ascension,
         game_mode: &run.game_mode,
         seed: &run.seed,
+        profile: run.profile,
+        started_at: run.started_at,
     });
     let cards = c.cards.iter().map(card_doc).collect();
     let doc = CombatDoc {

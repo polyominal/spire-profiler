@@ -13,27 +13,16 @@
 //!
 //! # The join key
 //!
-//! The game's run id IS `StartTime` (Unix seconds): its history store
-//! names one file per run `{StartTime}.run`, and a resumed run keeps the
-//! ORIGINAL start. The shim forwards the same `RunManager._startTime`,
-//! the core stamps it verbatim as `started_at`, and matching is exact
-//! equality on seed + time, nothing else:
+//! The game's history store names runs `{StartTime}.run`; resumed runs keep
+//! the original `RunManager._startTime`. The shim forwards that time, the
+//! profile, and `RunRngSet.StringSeed` at both run start and history selection.
+//! The persisted identity contract lives in [`crate::data::persistence`].
 //!
-//! 1. Same seed AND `started_at == start_time` — the only runs.jsonl match. Both values are
-//!    identical by provenance (the seed is RunRngSet.StringSeed on both sides), so equality never
-//!    pairs the wrong run; the seed disambiguates the same-second collision the game's file naming
-//!    loses to. A failed reflection read sends 0, the core stamps its own clock, and such a record
-//!    selects Empty: matching never guesses.
-//! 2. Combats fallback: seed-stamped combats with no runs.jsonl entry (save & quit, a crash, an
-//!    unfired close hook) select a synthesized view instead of the empty state. Same-seed combats
-//!    group by run seq; the group whose earliest combat start is closest to the displayed
-//!    `StartTime` within [`COMBAT_GROUP_WINDOW_SECS`] wins. The window is unavoidable — a combat's
-//!    timestamp is its own start, never the run's — but only ever picks among same-seed replays.
-//!    The result reads "Unfinished": victory is unknown, never a false "Defeat".
-//! 3. Neither entry nor combats: [`RunSelection::Empty`].
-//!
-//! The profile id pre-filters the `runs.jsonl` match when one is known
-//! (≥ 0); combats carry no profile, so the fallback matches on seed alone.
+//! A unique exact identity selects its runs.jsonl entry, or synthesizes a
+//! combat-only view for an unclosed run (save & quit, crash, unfired close
+//! hook). The latter reads "Unfinished": its terminal outcome is unknown.
+//! Missing identity components or multiple matching run IDs select Empty;
+//! combat timestamps never decide run membership.
 //!
 //! # The run close lifecycle
 //!
@@ -60,10 +49,6 @@ use crate::data::persistence::{
 use crate::data::records::{CombatRec, PlayerRec};
 use crate::data::state::{CardStat, CombatResult, PlayerFilter, RunOutcome, STATE, TEAM_SLOT};
 
-/// Generous for the run-start → first-combat gap, yet two same-seed
-/// replays played further apart never merge.
-const COMBAT_GROUP_WINDOW_SECS: i64 = 300;
-
 /// Roll-ups are undeclared on purpose: the view recomputes them.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
@@ -76,7 +61,7 @@ pub struct RunEntry {
     /// The view's result label derives from it.
     pub outcome: RunOutcome,
     pub seed: String,
-    /// Epoch seconds; matching is direct integer arithmetic.
+    /// Original game StartTime in epoch seconds.
     pub started_at: i64,
     pub ended_at: i64,
     /// Empty on pre-roster records.
@@ -98,6 +83,15 @@ impl Default for RunEntry {
             ended_at: 0,
             players: Vec::new(),
         }
+    }
+}
+
+impl RunEntry {
+    fn contains(&self, combat: &CombatRec) -> bool {
+        combat.run.as_ref().is_some_and(|run| {
+            run.seq == self.run_id
+                && run.matches_identity(&self.seed, self.started_at, self.profile)
+        })
     }
 }
 
@@ -193,18 +187,20 @@ fn load_combats(dir: &Path) -> Vec<CombatRec> {
     parse_combat_docs(&load_combat_docs_from(dir))
 }
 
-/// The `seq` of the most recent combat record carrying `seed`; O(history)
-/// — the seed join has no index.
-pub(crate) fn continued_run_id(runs_dir: &Path, seed: &str) -> Option<u32> {
-    if seed.is_empty() {
-        return None;
-    }
-    load_combats(runs_dir)
-        .iter()
-        .filter_map(|combat| combat.run.as_ref())
-        .filter(|run| run.seed == seed)
-        .map(|run| run.seq)
-        .next_back()
+pub(crate) fn continued_run_id(
+    runs_path: &Path,
+    runs_dir: &Path,
+    seed: &str,
+    start_time: i64,
+    profile: i32,
+) -> Option<u32> {
+    matching_run_id(
+        &load_runs(runs_path),
+        &load_combats(runs_dir),
+        seed,
+        start_time,
+        profile,
+    )
 }
 
 /// An abandoned run leaves its directory but no entry, so the directory
@@ -254,17 +250,38 @@ pub fn invalidate() {
     CACHE.with(|cell| *cell.borrow_mut() = None);
 }
 
-/// Same seed AND `started_at == start_time`, profile pre-filtered when
-/// known.
-fn match_run<'a>(
-    runs: &'a [RunEntry],
+fn matching_run_id(
+    runs: &[RunEntry],
+    combats: &[CombatRec],
     seed: &str,
     start_time: i64,
     profile: i32,
-) -> Option<&'a RunEntry> {
-    runs.iter().find(|r| {
-        (profile < 0 || r.profile == profile) && r.seed == seed && r.started_at == start_time
-    })
+) -> Option<u32> {
+    if seed.is_empty() || start_time <= 0 || profile < 0 {
+        return None;
+    }
+    let mut ids = runs
+        .iter()
+        .filter(|run| {
+            run.run_id != 0
+                && run.profile == profile
+                && run.seed == seed
+                && run.started_at == start_time
+        })
+        .map(|run| run.run_id)
+        .chain(
+            combats
+                .iter()
+                .filter_map(|combat| combat.run.as_ref())
+                .filter(|run| run.matches_identity(seed, start_time, profile))
+                .map(|run| run.seq),
+        );
+    let id = ids.next()?;
+    if ids.any(|other| other != id) {
+        crate::fail!("multiple run IDs share profile {profile}, seed '{seed}', start {start_time}");
+        return None;
+    }
+    Some(id)
 }
 
 fn build_view(entry: &RunEntry, combats: &[CombatRec]) -> RunSummaryView {
@@ -282,8 +299,7 @@ fn build_view(entry: &RunEntry, combats: &[CombatRec]) -> RunSummaryView {
         ..RunSummaryView::default()
     };
     for combat in combats {
-        let Some(run) = &combat.run else { continue };
-        if run.seq != entry.run_id {
+        if !entry.contains(combat) {
             continue;
         }
         view.combats.push(CombatView {
@@ -295,17 +311,16 @@ fn build_view(entry: &RunEntry, combats: &[CombatRec]) -> RunSummaryView {
             turns: combat.turns,
         });
     }
-    view.rollup = roll_up_cards(combats, entry.run_id);
+    view.rollup = roll_up_cards(combats, entry);
     view.player_rollups = build_player_rollups(entry, combats);
     view
 }
 
 /// TEAM-merged; rows keep first-seen order.
-fn roll_up_cards(combats: &[CombatRec], run_id: u32) -> Vec<CardStat> {
+fn roll_up_cards(combats: &[CombatRec], entry: &RunEntry) -> Vec<CardStat> {
     let mut rollup: Vec<CardStat> = Vec::new();
     for combat in combats {
-        let Some(run) = &combat.run else { continue };
-        if run.seq != run_id {
+        if !entry.contains(combat) {
             continue;
         }
         for rec in &combat.cards {
@@ -318,11 +333,10 @@ fn roll_up_cards(combats: &[CombatRec], run_id: u32) -> Vec<CardStat> {
 }
 
 /// Merging same-id rows within that slot only.
-fn roll_up_cards_for_slot(combats: &[CombatRec], run_id: u32, slot: u8) -> Vec<CardStat> {
+fn roll_up_cards_for_slot(combats: &[CombatRec], entry: &RunEntry, slot: u8) -> Vec<CardStat> {
     let mut rollup: Vec<CardStat> = Vec::new();
     for combat in combats {
-        let Some(run) = &combat.run else { continue };
-        if run.seq != run_id {
+        if !entry.contains(combat) {
             continue;
         }
         for rec in &combat.cards {
@@ -344,74 +358,9 @@ fn build_player_rollups(entry: &RunEntry, combats: &[CombatRec]) -> Vec<PlayerRo
         .map(|player| PlayerRollup {
             slot: player.slot,
             character: player.character.clone(),
-            cards: roll_up_cards_for_slot(combats, entry.run_id, player.slot),
+            cards: roll_up_cards_for_slot(combats, entry, player.slot),
         })
         .collect()
-}
-
-fn fallback_from_combats(cache: &Cache, seed: &str, profile: i32, start_time: i64) -> RunSelection {
-    // An empty seed would merge unrelated legacy records.
-    if seed.is_empty() {
-        return RunSelection::Empty;
-    }
-    let mut groups: Vec<(u32, i64)> = Vec::new();
-    for combat in cache
-        .combats
-        .iter()
-        .filter(|combat| combat.run.as_ref().is_some_and(|run| run.seed == seed))
-    {
-        let seq = combat
-            .run
-            .as_ref()
-            .expect("filtered on a present run record")
-            .seq;
-        match groups.iter_mut().find(|(group_seq, _)| *group_seq == seq) {
-            Some((_, group_start)) => *group_start = (*group_start).min(combat.started_at),
-            None => groups.push((seq, combat.started_at)),
-        }
-    }
-    // Closest group start within the window; two replays never merge.
-    let Some((run_seq, group_start)) = groups
-        .into_iter()
-        .filter(|(_, start)| (start - start_time).abs() <= COMBAT_GROUP_WINDOW_SECS)
-        .min_by_key(|(_, start)| (start - start_time).abs())
-    else {
-        return RunSelection::Empty;
-    };
-    let latest = cache
-        .combats
-        .iter()
-        .rfind(|combat| combat.run.as_ref().is_some_and(|run| run.seq == run_seq))
-        .expect("the group came from a combat record");
-    let run = latest
-        .run
-        .as_ref()
-        .expect("filtered on a present run record");
-    let group_end = cache
-        .combats
-        .iter()
-        .filter(|combat| combat.run.as_ref().is_some_and(|run| run.seq == run_seq))
-        .map(|combat| combat.started_at)
-        .max()
-        .unwrap_or(group_start);
-    let entry = RunEntry {
-        run_id: run_seq,
-        profile,
-        character: run.character.clone(),
-        ascension: run.ascension,
-        game_mode: run.game_mode.clone(),
-        outcome: RunOutcome::Defeat,
-        seed: seed.to_owned(),
-        started_at: group_start,
-        ended_at: group_end,
-        // Combat records carry no roster.
-        players: Vec::new(),
-    };
-    let mut view = build_view(&entry, &cache.combats);
-    // The combats-only fallback has no run record: the terminal state is
-    // unknown, never a false "Defeat".
-    view.outcome = None;
-    RunSelection::Selected(Box::new(view))
 }
 
 /// Exact runs.jsonl match, else the combats fallback, else Empty.
@@ -422,10 +371,44 @@ pub fn select_run(seed: &str, start_time: i64, profile: i32) -> RunSelection {
         let cache = cache
             .as_ref()
             .expect("ensure_loaded just populated the cache");
-        let Some(entry) = match_run(&cache.runs, seed, start_time, profile) else {
-            return fallback_from_combats(cache, seed, profile, start_time);
+        let Some(run_id) = matching_run_id(&cache.runs, &cache.combats, seed, start_time, profile)
+        else {
+            return RunSelection::Empty;
         };
-        RunSelection::Selected(Box::new(build_view(entry, &cache.combats)))
+        if let Some(entry) = cache.runs.iter().find(|run| {
+            run.run_id == run_id
+                && run.seed == seed
+                && run.started_at == start_time
+                && run.profile == profile
+        }) {
+            return RunSelection::Selected(Box::new(build_view(entry, &cache.combats)));
+        }
+        let run = cache
+            .combats
+            .iter()
+            .filter_map(|combat| combat.run.as_ref())
+            .rfind(|run| run.seq == run_id && run.matches_identity(seed, start_time, profile))
+            .expect("a matching ID without a run entry came from a combat");
+        let mut entry = RunEntry {
+            run_id,
+            profile: run.profile,
+            character: run.character.clone(),
+            ascension: run.ascension,
+            game_mode: run.game_mode.clone(),
+            seed: run.seed.clone(),
+            started_at: run.started_at,
+            ..RunEntry::default()
+        };
+        entry.ended_at = cache
+            .combats
+            .iter()
+            .filter(|combat| entry.contains(combat))
+            .map(|combat| combat.started_at)
+            .max()
+            .unwrap_or(0);
+        let mut view = build_view(&entry, &cache.combats);
+        view.outcome = None;
+        RunSelection::Selected(Box::new(view))
     })
 }
 

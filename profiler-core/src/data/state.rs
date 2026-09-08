@@ -357,8 +357,10 @@ pub struct RunSnapshot {
     pub character: String,
     pub ascension: i32,
     pub game_mode: String,
-    /// So a resumed run's fragments re-join by seed.
     pub seed: String,
+    pub profile: i32,
+    /// Original game StartTime in epoch seconds; 0 means unknown.
+    pub started_at: i64,
 }
 
 impl Default for RunSnapshot {
@@ -370,6 +372,8 @@ impl Default for RunSnapshot {
             ascension: -1,
             game_mode: String::new(),
             seed: String::new(),
+            profile: -1,
+            started_at: 0,
         }
     }
 }
@@ -450,8 +454,6 @@ where
 #[derive(Clone, Debug, Default)]
 pub struct RunContext {
     pub run: RunSnapshot,
-    /// Falls back to `now_seconds()` when the shim reports no time.
-    pub started_at: i64,
     /// Serialized as runs.jsonl's `"players"`.
     pub players: Vec<RunPlayer>,
 }
@@ -725,8 +727,7 @@ pub struct State {
     pub run_cards: Vec<CardStat>,
     pub run_turns: u32,
     pub run_combats: u32,
-    /// The session's profile id (-1 until known); run-history matching
-    /// filters on it so profiles never mix.
+    /// Profile metadata for the next run (-1 until known).
     pub run_profile: i32,
     pub player_filter: PlayerFilter,
 

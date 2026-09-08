@@ -54,6 +54,7 @@ pub fn init(data_dir: &Path) {
         state.data_dir = data_dir.clone();
         state.runs_dir_full = data_dir.join("runs");
         state.runs_path_full = data_dir.join("runs.jsonl");
+        state.run_profile = -1;
         state.initialized = true;
     });
     bind_log_path(&data_dir.join("profiler.log"));

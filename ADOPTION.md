@@ -184,10 +184,10 @@ with each fix.
       links, and update the gate description.
 - [x] Preserve begin/end balance for empty and overflowing contexts; pin the
       surviving outer context through observable ABI tests.
-- [ ] Persist the full run identity (profile, seed, original start time) and
+- [x] Persist the full run identity (profile, seed, original start time) and
       rejoin exactly across suspension; test same-seed profiles and replays.
-- [ ] Use overflow-safe timestamp distance and checked combat/run ID
-      allocation; verify debug and release behavior and prevent record reuse.
+- [ ] Use checked combat/run ID allocation; verify debug and release behavior
+      and prevent record reuse.
 - [ ] Propagate persistence write outcomes so success markers require a
       successful write; exercise filesystem failures.
 - [ ] Reject non-finite scroll input, keep accumulation finite, and clear
@@ -361,6 +361,51 @@ snapshots unless a concrete replacement is stronger.
   the limit (exit 1 with a named error).
 
 ## Session log
+
+### 2026-09-09: full run identity persists across suspension
+
+Corrective pass, third item. RunSnapshot and each combat's run header now
+capture profile, seed, and the original game StartTime. The run record uses
+that captured profile, so metadata for a later run cannot relabel the previous
+one. The duplicated context timestamp is removed. Missing metadata stays
+unknown (-1 profile, 0 time); invalid negative wire values clamp and fail-log.
+Initialization explicitly sets the unknown profile instead of accepting the
+derived default's 0.
+
+Continuation and history share a unique exact identity match across run
+records and combat fragments. Unknown components, run ID 0, and ambiguous IDs
+cannot match. Rebuilds and every history rollup exclude foreign identities even
+under the same numeric run ID. The combat-time proximity heuristic is deleted,
+which also removes the timestamp-distance overflow from the next corrective
+item; only checked ID allocation remains there.
+
+Five new tests cover later metadata, unknown live identities, corrupt/missing
+stored components, ambiguous IDs, and foreign fragments sharing an ID. Existing
+resume coverage now suspends, records same-seed profiles and replays, resets
+state, and checks the original run's rebuilt totals and timestamp. Existing
+rebuild and fallback tests pin exact membership instead of seed/time guesses.
+The self-test and simulation use deterministic original run times; the
+self-test's metadata order matches the shim and its scripted sequence has a
+local function-length lint allowance. The combat snapshot adds profile/time
+and a known fixture seed; run JSON bytes stay unchanged, with only its snapshot
+expression metadata updated. No migration or real-data deletion occurred;
+older combat headers without full identity remain unmatchable.
+
+Independent reviewer verdict: SHIP, including the final lint allowance and
+schema diffs. Gates run: `cargo fmt --all`, `cargo xtask fmt-md`, targeted
+Nextest (94/94), `cargo xtask check-abi` (38 bindings), focused release Nextest
+(48/48), `cargo xtask smoke` (340/340, private rustdoc clean, density 10.9%),
+and `git diff --check`. Smoke first exposed the self-test length lint, then
+passed after the local allowance. Em-dash pins are 40 files / 131 dashes.
+The 795 changed lines outside this scratchpad are wider than the rough budget;
+the reviewer accepts the single logical change because identity must cross
+state, both serializers, matching, and aggregates together, with explicit
+fixture and regression updates. Net source/test/doc change: +277 lines.
+No production unsafe, ABI signature, engine, registration, or executable shim
+changes. The local shim confirms all four new/saved setup paths forward the
+identity before run start; the v0.111.0 decompiled game tree is absent, so no
+new game-body verification or live-game/headless run was performed. Next item:
+checked combat/run ID allocation, after the human commit.
 
 ### 2026-09-09: rejected context scopes keep their balance
 
