@@ -182,7 +182,7 @@ with each fix.
 
 - [x] Include private items in the documentation gate, fix the four exposed
       links, and update the gate description.
-- [ ] Preserve begin/end balance for empty and overflowing contexts; pin the
+- [x] Preserve begin/end balance for empty and overflowing contexts; pin the
       surviving outer context through observable ABI tests.
 - [ ] Persist the full run identity (profile, seed, original start time) and
       rejoin exactly across suspension; test same-seed profiles and replays.
@@ -361,6 +361,40 @@ snapshots unless a concrete replacement is stronger.
   the limit (exit 1 with a named error).
 
 ## Session log
+
+### 2026-09-09: rejected context scopes keep their balance
+
+Corrective pass, second item. A private ContextStack retains empty logical
+frames and counts rejected scopes above the 32-frame cap, so their ends cannot
+pop an accepted outer source. Every consumer resolves the nearest named frame;
+valid named descendants of empty scopes still attribute normally. Accepted
+named begins retain the existing last_source and fallback behavior. Checked
+counter exhaustion freezes unwinding until whole-state reset, preserving outer
+sources without a panic or wrap. Turn, combat, and run boundaries keep open
+scopes intact.
+
+Four new tests pin distinct failures: observable ABI damage/block attribution
+after null, empty, and non-UTF-8 begins; nested overflow across turn/combat
+boundaries and subsequent recovery; counter exhaustion and reset; and a
+256-event seeded comparison against an independent full-scope model. Distinct
+outer IDs prevent last_source from hiding a bad pop. Temporarily restoring the
+original empty/overflow rejection behavior made both ABI regressions and the
+model fail; the mutation was removed. The direct stack-length check was removed
+from the integration simulation with the private stack representation; the
+capped push path enforces storage bounds and the model checks attribution at
+the cap.
+
+Independent reviewer verdict: SHIP. Gates run: `cargo fmt --all`,
+`cargo xtask fmt-md`, targeted Nextest suites (23/23 at the default seed,
+35/35 with SIM_SEED=42, then 4/4 restored regressions),
+`cargo xtask check-abi` (38 bindings), `cargo xtask smoke` (335/335, density
+11.1%), `cargo test --locked -p profiler_core --release context_ --
+--test-threads=1` (5/5), and `git diff --check`. Source/test scope is 348 changed
+lines, net +262; the modest boundary-change size overage covers separate ABI,
+counter-exhaustion, and independent-model regressions. No production unsafe, ABI signature,
+schema, snapshot, shim, or engine changes. No live-game/headless run; engine and
+shim behavior are unchanged. Next item: full persisted run identity, after the
+human commit.
 
 ### 2026-09-09: private documentation checked
 

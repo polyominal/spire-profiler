@@ -38,7 +38,8 @@ pub fn power_applied(
         };
         // A slotless event can fire before any slot event grew it.
         let ambient = applier_slot;
-        let resolved: Option<(String, SourceKind)> = if let Some(top) = state.context_stack.last() {
+        let resolved: Option<(String, SourceKind)> = if let Some(top) = state.context_stack.active()
+        {
             Some((top.id.clone(), top.kind))
         } else if let Some(play) = state
             .per_player

@@ -3,7 +3,9 @@
 
 use super::*;
 use crate::data::persistence::{bind_log_path, reset_log_sink};
-use crate::data::state::{ActivePlay, DebuffLayer, Fallback, PotionSource, PowerSourceEntry, caps};
+use crate::data::state::{
+    ActivePlay, ContextEntry, DebuffLayer, Fallback, PotionSource, PowerSourceEntry, caps,
+};
 use crate::test_util::unique_dir;
 
 fn reset_state() {
@@ -170,11 +172,9 @@ fn resolve_card_priority_chain() {
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         state.current = Some(Combat::default());
-        state.context_stack.push(ContextEntry {
-            id: "CRACKED_CORE".to_owned(),
-            kind: SourceKind::Relic,
-            slot: 0,
-        });
+        state
+            .context_stack
+            .begin("CRACKED_CORE", SourceKind::Relic, 0);
         state.orb_sources.push(OrbSource {
             hash: 7,
             id: "ZAP".to_owned(),
@@ -208,7 +208,7 @@ fn resolve_card_priority_chain() {
     );
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
-        state.context_stack.pop();
+        state.context_stack.end();
         state.slot_state_mut(0).fallback = Some(Fallback::Orb(0));
     });
     assert_card(

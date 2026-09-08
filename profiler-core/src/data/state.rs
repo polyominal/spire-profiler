@@ -473,6 +473,64 @@ pub struct ContextEntry {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) struct ContextStack {
+    frames: Vec<Option<ContextEntry>>,
+    // Rejected scopes unwind above a full stack. None freezes unwinding
+    // after counter overflow: a lost depth must never pop an outer source.
+    rejected_depth: Option<usize>,
+}
+
+impl Default for ContextStack {
+    fn default() -> Self {
+        Self {
+            frames: Vec::new(),
+            rejected_depth: Some(0),
+        }
+    }
+}
+
+impl ContextStack {
+    pub(crate) fn begin(
+        &mut self,
+        source_id: &str,
+        kind: SourceKind,
+        slot: SourceSlot,
+    ) -> Option<&ContextEntry> {
+        let rejected = self.rejected_depth?;
+        if self.frames.len() >= caps::CONTEXT_STACK {
+            self.rejected_depth = rejected.checked_add(1);
+            fail!("context stack overflow ({}) entries", caps::CONTEXT_STACK);
+            return None;
+        }
+        self.frames
+            .push((!source_id.is_empty()).then(|| ContextEntry {
+                id: source_id.to_owned(),
+                kind,
+                slot,
+            }));
+        self.frames.last().and_then(Option::as_ref)
+    }
+
+    pub(crate) fn end(&mut self) -> Option<ContextEntry> {
+        let rejected = self.rejected_depth.as_mut()?;
+        if *rejected > 0 {
+            debug_assert_eq!(
+                self.frames.len(),
+                caps::CONTEXT_STACK,
+                "rejected scopes must unwind above a full accepted stack"
+            );
+            *rejected -= 1;
+            return None;
+        }
+        self.frames.pop().flatten()
+    }
+
+    pub(crate) fn active(&self) -> Option<&ContextEntry> {
+        self.frames.iter().rev().find_map(Option::as_ref)
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct OrbSource {
     pub hash: i32,
     pub id: String,
@@ -678,7 +736,7 @@ pub struct State {
     /// the combat boundary.
     pub per_player: Vec<PlayerSlotState>,
 
-    pub context_stack: Vec<ContextEntry>,
+    pub(crate) context_stack: ContextStack,
     /// Most recent attribution source, remembered across async gaps so
     /// effects firing after a hook's pop still resolve to their cause.
     pub last_source: Option<ContextEntry>,
@@ -728,9 +786,8 @@ impl State {
 }
 
 pub mod caps {
-    /// Open hook contexts at one instant: each relic/power hook's begin
-    /// push pairs with an end pop, so the cap bounds how deep hooks nest
-    /// into each other, not the combat's hook count.
+    /// Open hook frames, including empty sources; deeper scopes are counted
+    /// without storing sources so their ends preserve accepted outer frames.
     pub const CONTEXT_STACK: usize = 32;
     /// Channeling sources keyed by orb hash; a re-channel upserts and
     /// nothing leaves the table before the combat boundary.
@@ -801,6 +858,38 @@ thread_local! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_counter_exhaustion_freezes_unwinding_until_reset() {
+        crate::data::events::test_reset();
+        STATE.with(|cell| {
+            let contexts = &mut cell.borrow_mut().context_stack;
+            for _ in 0..caps::CONTEXT_STACK {
+                contexts.begin("OUTER", SourceKind::Relic, 0);
+            }
+            contexts.rejected_depth = Some(usize::MAX);
+            contexts.begin("REJECTED", SourceKind::Power, 0);
+            for _ in 0..caps::CONTEXT_STACK + 2 {
+                contexts.end();
+            }
+            contexts.begin("STILL_REJECTED", SourceKind::Power, 0);
+            assert_eq!(
+                contexts.active().map(|source| source.id.as_str()),
+                Some("OUTER")
+            );
+        });
+        crate::data::events::test_reset();
+        STATE.with(|cell| {
+            let contexts = &mut cell.borrow_mut().context_stack;
+            assert!(contexts.active().is_none());
+            contexts.begin("RECOVERED", SourceKind::Relic, 0);
+            assert_eq!(
+                contexts.end().map(|source| source.id),
+                Some("RECOVERED".to_owned())
+            );
+            assert!(contexts.active().is_none());
+        });
+    }
 
     #[test]
     fn from_c_clamps_every_input_to_a_catalogued_kind() {

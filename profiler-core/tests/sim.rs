@@ -196,10 +196,6 @@ fn check_card_invariants(combat: &state::Combat, repro: &str, step: u32) {
 
 fn check_queue_bounds(st: &state::State, repro: &str, step: u32) {
     assert!(
-        st.context_stack.len() <= state::caps::CONTEXT_STACK,
-        "{repro} step {step}: context stack overflow"
-    );
-    assert!(
         st.orb_sources.len() <= state::caps::ORB_SOURCES,
         "{repro} step {step}: orb source table overflow"
     );
@@ -490,6 +486,79 @@ fn drive_card_generated(rng: &mut Rng) {
         rng.range_i32(0, 5),
         rng.range_i32(0, 3),
     );
+}
+
+#[test]
+fn randomized_context_scopes_match_naive_attribution() {
+    let seed = sim_seed();
+    let repro = format!("SIM_SEED={seed} context scopes");
+    let mut rng = Rng::new(seed);
+    events::test_reset();
+    events::init(&wiped_dir("sim/context-scopes"));
+    events::combat_started("CONTEXT", "test");
+    // The naive model stores every logical scope, even those beyond the
+    // source-storage cap, and re-scans the accepted prefix for each event.
+    let mut scopes = Vec::new();
+    let mut last = None;
+    let mut expected = BTreeMap::new();
+    for step in 0..256 {
+        if step == 20 {
+            events::turn_started();
+            last = None;
+        }
+        if step == 90 {
+            events::combat_started("NEXT_CONTEXT", "test");
+            last = None;
+            expected.clear();
+        }
+        if step < state::caps::CONTEXT_STACK as u32 + 4 || (step < 128 && rng.below(3) != 0) {
+            let source = if rng.below(3) == 0 {
+                ""
+            } else {
+                rng.pick(&RELIC_POOL)
+            };
+            if scopes.len() < state::caps::CONTEXT_STACK && !source.is_empty() {
+                last = Some(source);
+            }
+            scopes.push(source);
+            events::context_begin(source, 1, 0);
+        } else {
+            scopes.pop();
+            events::context_end();
+        }
+        let damage = rng.range_i32(1, 19);
+        let block = rng.range_i32(1, 23);
+        let source = scopes
+            .iter()
+            .take(state::caps::CONTEXT_STACK)
+            .rfind(|id| !id.is_empty())
+            .copied()
+            .or(last);
+        if let Some(source) = source {
+            let credit = expected.entry(source.to_owned()).or_insert((0_i64, 0_i64));
+            credit.0 += i64::from(damage);
+            credit.1 += i64::from(block);
+        }
+        events::damage_dealt(events::DamageDealt {
+            total: damage,
+            unblocked: damage,
+            ..Default::default()
+        });
+        events::block_gained(block, "", 0, 0);
+        STATE.with(|cell| {
+            let state = cell.borrow();
+            let actual: BTreeMap<_, _> = state
+                .current
+                .as_ref()
+                .unwrap_or_else(|| panic!("{repro} step {step}: missing combat"))
+                .cards
+                .iter()
+                .map(|row| (row.id.clone(), (row.damage_dealt, row.block_gained)))
+                .collect();
+            assert_eq!(actual, expected, "{repro} step {step}: context attribution");
+        });
+        check_invariants(&repro, step);
+    }
 }
 
 #[test]

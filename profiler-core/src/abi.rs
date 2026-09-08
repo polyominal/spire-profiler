@@ -695,12 +695,126 @@ mod tests {
     use std::fs;
 
     use super::*;
+    use crate::data::state::{STATE, SourceKind, caps};
 
     fn wiped_dir(label: &str) -> (std::path::PathBuf, CString) {
         let dir = crate::test_util::wiped_dir(label);
         let c_dir =
             CString::new(dir.to_str().expect("wiped path is UTF-8")).expect("no NUL in wiped path");
         (dir, c_dir)
+    }
+
+    fn assert_context_credit(id: &str, kind: SourceKind, slot: u8) {
+        let before = STATE.with(|cell| {
+            cell.borrow()
+                .current
+                .as_ref()
+                .expect("test combat is active")
+                .cards
+                .iter()
+                .find(|row| row.id == id && row.kind == kind && row.player == slot)
+                .map(|row| (row.damage_dealt, row.block_gained))
+                .unwrap_or_default()
+        });
+        // SAFETY: string literals are valid C strings for the duration of each call.
+        unsafe {
+            spire_profiler_damage_dealt(7, 7, 0, c"".as_ptr(), 0, 0, 0, 0, 0, 0, 0);
+            spire_profiler_block_gained(11, c"".as_ptr(), 0, 0);
+        }
+        STATE.with(|cell| {
+            let state = cell.borrow();
+            let row = state
+                .current
+                .as_ref()
+                .expect("test combat is active")
+                .cards
+                .iter()
+                .find(|row| row.id == id && row.kind == kind && row.player == slot)
+                .unwrap_or_else(|| panic!("missing {id} ({kind:?}) in slot {slot}"));
+            assert_eq!(
+                (row.damage_dealt, row.block_gained),
+                (before.0 + 7, before.1 + 11),
+                "{id}"
+            );
+        });
+    }
+
+    #[test]
+    fn empty_context_exports_preserve_outer_sources_and_named_descendants() {
+        let (_base, c_base) = wiped_dir("spire-profiler-abi-context-empty");
+        // SAFETY: pointers are null or live, NUL-terminated C strings; 0xff tests UTF-8 rejection.
+        unsafe {
+            spire_profiler_test_reset();
+            spire_profiler_init(c_base.as_ptr());
+            spire_profiler_combat_started(c"CONTEXT".as_ptr(), c"test".as_ptr());
+            spire_profiler_context_begin(c"OUTER_A".as_ptr(), 1, 1);
+            spire_profiler_context_begin(c"OUTER_B".as_ptr(), 2, 2);
+            for empty in [std::ptr::null(), c"".as_ptr(), c"\xff".as_ptr()] {
+                spire_profiler_context_begin(empty, 1, 0);
+                spire_profiler_context_begin(empty, 1, 0);
+                assert_context_credit("OUTER_B", SourceKind::Power, 2);
+                spire_profiler_context_begin(c"CHILD".as_ptr(), 1, 3);
+                assert_context_credit("CHILD", SourceKind::Relic, 3);
+                spire_profiler_context_end();
+                assert_context_credit("OUTER_B", SourceKind::Power, 2);
+                spire_profiler_context_end();
+                assert_context_credit("OUTER_B", SourceKind::Power, 2);
+                spire_profiler_context_end();
+                assert_context_credit("OUTER_B", SourceKind::Power, 2);
+            }
+            spire_profiler_context_end();
+            assert_context_credit("OUTER_A", SourceKind::Relic, 1);
+            spire_profiler_context_end();
+            spire_profiler_context_end();
+            assert_context_credit("CHILD", SourceKind::Relic, 3);
+        }
+    }
+
+    #[test]
+    fn overflowing_context_exports_unwind_across_turn_and_combat_boundaries() {
+        let (_base, c_base) = wiped_dir("spire-profiler-abi-context-overflow");
+        // SAFETY: every pointer refers to a live, NUL-terminated C string.
+        unsafe {
+            spire_profiler_test_reset();
+            spire_profiler_init(c_base.as_ptr());
+            let sources: Vec<_> = (0..caps::CONTEXT_STACK)
+                .map(|i| CString::new(format!("SOURCE_{i}")).expect("numeric IDs contain no NUL"))
+                .collect();
+            for source in &sources {
+                spire_profiler_context_begin(source.as_ptr(), 1, 1);
+            }
+            for source in [
+                c"REJECTED".as_ptr(),
+                c"".as_ptr(),
+                c"REJECTED_CHILD".as_ptr(),
+            ] {
+                spire_profiler_context_begin(source, 2, 2);
+            }
+            spire_profiler_combat_started(c"CONTEXT".as_ptr(), c"test".as_ptr());
+            spire_profiler_turn_started();
+            let innermost = sources
+                .last()
+                .expect("context cap is nonzero")
+                .to_str()
+                .expect("numeric IDs are UTF-8");
+            for _ in 0..3 {
+                assert_context_credit(innermost, SourceKind::Relic, 1);
+                spire_profiler_context_end();
+            }
+            for source in sources.iter().rev() {
+                assert_context_credit(
+                    source.to_str().expect("numeric IDs are UTF-8"),
+                    SourceKind::Relic,
+                    1,
+                );
+                spire_profiler_context_end();
+            }
+            spire_profiler_context_end();
+            spire_profiler_context_begin(c"RECOVERED".as_ptr(), 2, 2);
+            assert_context_credit("RECOVERED", SourceKind::Power, 2);
+            spire_profiler_context_end();
+            assert_context_credit("RECOVERED", SourceKind::Power, 2);
+        }
     }
 
     /// The exported surface drives the whole pipeline end to end.

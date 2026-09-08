@@ -13,10 +13,8 @@ use crate::data::ledger;
 use crate::data::persistence::{
     bind_log_path, ensure_data_dir, event_log, max_combat_id, reset_log_sink,
 };
-use crate::data::state::{
-    ContextEntry, PlayerFilter, STATE, SourceKind, State, caps, clamp_source_slot,
-};
-use crate::{fail, marker};
+use crate::data::state::{PlayerFilter, STATE, SourceKind, State, clamp_source_slot};
+use crate::marker;
 
 mod card;
 mod combat;
@@ -75,26 +73,16 @@ pub fn init(data_dir: &Path) {
 pub fn context_begin(source_id: &str, kind: i32, player_slot: i32) {
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
-        if !state.initialized || source_id.is_empty() {
-            return;
-        }
-        if state.context_stack.len() >= caps::CONTEXT_STACK {
-            fail!("context stack overflow ({}) entries", caps::CONTEXT_STACK);
+        if !state.initialized {
             return;
         }
         let kind = SourceKind::from_c(kind);
         // The slot is a row key, not a per-player index.
         let slot = clamp_source_slot(player_slot);
-        state.context_stack.push(ContextEntry {
-            id: source_id.to_owned(),
-            kind,
-            slot,
-        });
-        state.last_source = Some(ContextEntry {
-            id: source_id.to_owned(),
-            kind,
-            slot,
-        });
+        let Some(source) = state.context_stack.begin(source_id, kind, slot).cloned() else {
+            return;
+        };
+        state.last_source = Some(source);
         // The context is team-global but the fallbacks are per slot, so
         // only the AMBIENT slot's clear.
         let ambient = state.ambient_slot() as i32;
@@ -106,7 +94,7 @@ pub fn context_begin(source_id: &str, kind: i32, player_slot: i32) {
 pub fn context_end() {
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
-        if let Some(top) = state.context_stack.pop() {
+        if let Some(top) = state.context_stack.end() {
             event_log!("  context end: {}", top.id);
         }
     });

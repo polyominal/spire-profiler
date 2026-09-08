@@ -51,7 +51,7 @@ use crate::data::persistence::event_log;
 #[cfg(test)]
 use crate::data::state::STATE;
 use crate::data::state::{
-    self, BlockEntry, BlockMod, CardStat, Combat, ContextEntry, Fallback, OrbSource,
+    self, BlockEntry, BlockMod, CardStat, Combat, ContextStack, Fallback, OrbSource,
     PendingContrib, PlayerSlotState, SourceKind, SourceSlot, clamp_source_slot,
 };
 use crate::fail;
@@ -231,7 +231,7 @@ pub fn resolve_card_in(
             get_or_create_card_kind(combat, play.row_slot, &play.id, play.kind)?,
             play.row_slot,
         )
-    } else if let Some(top) = state.context_stack.last() {
+    } else if let Some(top) = state.context_stack.active() {
         // Clone before the card append: the id must outlive the stack read.
         let id = top.id.clone();
         let kind = top.kind;
@@ -278,7 +278,7 @@ pub fn resolve_card_in(
 /// `&mut Combat` borrowed out of [`state::State`].
 fn resolve_damage_route(
     combat: &mut Combat,
-    context_stack: &[ContextEntry],
+    context_stack: &ContextStack,
     orb_sources: &[OrbSource],
     slot: &PlayerSlotState,
     caller_slot: SourceSlot,
@@ -311,7 +311,7 @@ fn resolve_damage_route(
             play.row_slot,
             false,
         )
-    } else if let Some(top) = context_stack.last() {
+    } else if let Some(top) = context_stack.active() {
         let id = top.id.clone();
         let kind = top.kind;
         let row_slot = top.slot;
