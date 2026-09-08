@@ -65,7 +65,6 @@ const PINS: &[(&str, usize)] = &[
     ("xtask/src/discover.rs", 3),
     ("xtask/src/game_version.rs", 1),
     ("xtask/src/main.rs", 1),
-    ("xtask/src/release.rs", 1),
 ];
 
 const COMMENT_ROOTS: &[&str] = &["profiler-core/src", "profiler-core/tests"];

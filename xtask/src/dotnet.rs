@@ -158,7 +158,11 @@ pub fn ensure_bootstrap_in(shell: &Shell, dir: &Path) -> Result<()> {
             ));
         }
     }
-    cmd!(shell, "tar -xzf {tarball} -C {dir}").run()?;
+    cmd!(
+        shell,
+        "tar --extract --gzip --file {tarball} --directory {dir}"
+    )
+    .run()?;
     let binary = binary_in(dir);
     let sdks = list_sdks_of(shell, dir, &binary).map_err(|e| {
         anyhow::anyhow!(

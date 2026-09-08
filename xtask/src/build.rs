@@ -104,6 +104,10 @@ fn run_dotnet_build(shell: &Shell, gen_dir: &Path) -> Result<()> {
             .parent()
             .expect("the bootstrapped binary always has a parent dir"),
     );
-    cmd!(shell, "{binary} build -c Release --nologo -v q").run()?;
+    cmd!(
+        shell,
+        "{binary} build --configuration Release --nologo --verbosity quiet"
+    )
+    .run()?;
     Ok(())
 }

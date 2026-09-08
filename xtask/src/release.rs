@@ -1,153 +1,258 @@
-//! `cargo xtask release`: rebuild the mod and package the bundle as five
-//! zips under dist/ — one universal archive plus one per target. Zipping
-//! shells out to the `zip` CLI (present on the macOS/Linux hosts the bundle
-//! can be built on) rather than implementing zip writing in Rust.
+//! Info-ZIP updates existing archives, so releases write fresh ZIPs in
+//! dist/.stage. Failed staging is discarded on the next attempt; explicit file
+//! lists select each platform from the checked bundle.
 
-use std::path::{Path, PathBuf};
+use std::collections::BTreeSet;
+use std::fs;
+use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context, Result, ensure};
 use xshell::{Shell, cmd};
 
 use crate::{bundle, cross, sha256_file, workspace_root};
 
-const OUT_DIR: &str = "dist";
+const SHARED_FILES: [&str; 3] = [
+    "manifest.json",
+    "spire-profiler.dll",
+    "spire_profiler.gdextension",
+];
 
 pub fn release(shell: &Shell) -> Result<()> {
-    let root = workspace_root();
-    // Always rebuild first: a release is only as fresh as its bundle.
+    let commit = crate::git::release_commit(shell)?;
+    crate::smoke(shell)?;
     crate::build::build(shell)?;
-
-    let mods_dir = root.join("target/mods");
-    let bundle_dir = mods_dir.join(bundle::MOD_ID);
-    let version = bundle_version(&bundle_dir)?;
-    let out_dir = root.join(OUT_DIR);
-    std::fs::create_dir_all(&out_dir)?;
+    ensure!(
+        crate::git::release_commit(shell)? == commit,
+        "HEAD changed during the release build"
+    );
+    let short = cmd!(shell, "git rev-parse --short=8 {commit}").read()?;
+    let version = format!("{}-{short}", crate::game_version::PIN);
+    let root = workspace_root();
+    let out_dir = root.join("dist");
     crate::ensure_cli(shell, "zip", "--version", "packaging")?;
+    crate::ensure_cli(shell, "unzip", "-v", "archive validation")?;
+    let bundle_dir = root.join("target/mods").join(bundle::MOD_ID);
+    package(shell, &bundle_dir, &out_dir, &version)?;
+    println!("release: {version} -> {}", out_dir.display());
+    Ok(())
+}
 
-    let mut zips = Vec::new();
-    zips.push(zip_universal(shell, &mods_dir, &out_dir, &version)?);
-    for row in cross::MATRIX {
-        zips.push(zip_target(
-            shell,
-            &bundle_dir,
-            &out_dir,
-            &version,
-            &format!("{}-{}", row.os, row.arch),
-            row.bundle_name,
-        )?);
+fn package(shell: &Shell, bundle_dir: &Path, out_dir: &Path, version: &str) -> Result<()> {
+    let mut universal = SHARED_FILES.to_vec();
+    universal.extend(cross::MATRIX.iter().map(|row| row.bundle_name));
+    validate_files(bundle_dir, &universal)?;
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(bundle_dir.join("manifest.json"))?)?;
+    ensure!(
+        manifest["version"].as_str() == Some(version),
+        "bundle version differs from release commit"
+    );
+    let stage = out_dir.join(".stage");
+    match fs::remove_dir_all(&stage) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+            return Err(error).context("removing stale release staging directory");
+        }
+        _ => {}
     }
-    write_checksums(&out_dir, &zips)?;
-    // A failed run may leave the staging dir behind; the next run wipes it.
-    let _ = std::fs::remove_dir_all(out_dir.join(".stage"));
+    fs::create_dir_all(&stage)?;
+    let mut variants = vec![("universal".to_owned(), universal)];
+    for row in cross::MATRIX {
+        let mut files = SHARED_FILES.to_vec();
+        files.push(row.bundle_name);
+        variants.push((format!("{}-{}", row.os, row.arch), files));
+    }
+    let mods_dir = bundle_dir
+        .parent()
+        .context("bundle has no parent directory")?;
+    let _dir = shell.push_dir(mods_dir);
+    let mut names = Vec::new();
+    let mut sums = String::new();
+    for (label, files) in variants {
+        let name = format!("{}-{version}-{label}.zip", bundle::MOD_ID);
+        let zip = stage.join(&name);
+        let paths = files
+            .iter()
+            .map(|file| format!("{}/{file}", bundle::MOD_ID));
+        cmd!(shell, "zip --must-match --quiet --strip-extra --test {zip}")
+            .args(paths)
+            .env("ZIPOPT", "")
+            .run()?;
+        sums.push_str(&format!("{}  {name}\n", sha256_file(&zip)?));
+        names.push(name);
+    }
+    fs::write(stage.join("SHA256SUMS"), sums)?;
+    // Partial publication must not leave checksums for the previous set.
+    match fs::remove_file(out_dir.join("SHA256SUMS")) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+            return Err(error).context("invalidating published checksums");
+        }
+        _ => {}
+    }
+    for name in names {
+        fs::rename(stage.join(&name), out_dir.join(&name))?;
+    }
+    fs::rename(stage.join("SHA256SUMS"), out_dir.join("SHA256SUMS"))?;
+    fs::remove_dir_all(&stage)?;
+    Ok(())
+}
 
-    println!(
-        "release: {version} -> {} zips + SHA256SUMS under {}",
-        zips.len(),
-        out_dir.display()
+fn validate_files(dir: &Path, expected: &[&str]) -> Result<()> {
+    ensure!(
+        fs::symlink_metadata(dir)?.is_dir(),
+        "bundle must be a directory, not a symlink"
+    );
+    let mut actual = BTreeSet::new();
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        ensure!(
+            entry.file_type()?.is_file(),
+            "nonregular bundle file: {:?}",
+            entry.path()
+        );
+        actual.insert(entry.file_name());
+    }
+    let expected: BTreeSet<_> = expected.iter().map(std::ffi::OsString::from).collect();
+    ensure!(
+        actual == expected,
+        "unexpected bundle files: {actual:?}; expected {expected:?}"
     );
     Ok(())
-}
-
-fn bundle_version(bundle_dir: &Path) -> Result<String> {
-    let path = bundle_dir.join("manifest.json");
-    let text = std::fs::read_to_string(&path)
-        .map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?;
-    manifest_version(&text).map_err(|e| anyhow::anyhow!("in {}: {e}", path.display()))
-}
-
-/// Else the zip names would be invented.
-fn manifest_version(text: &str) -> Result<String> {
-    let value: serde_json::Value = serde_json::from_str(text)
-        .map_err(|e| anyhow::anyhow!("parsing the manifest as JSON: {e}"))?;
-    value
-        .get("version")
-        .and_then(|version| version.as_str())
-        .map(str::to_owned)
-        .ok_or_else(|| anyhow::anyhow!("the manifest has no string \"version\" field"))
-}
-
-/// Godot only consults the running platform's key; the rest are inert.
-fn shared_files() -> Vec<String> {
-    vec![
-        "manifest.json".to_owned(),
-        format!("{}.dll", bundle::MOD_ID),
-        "spire_profiler.gdextension".to_owned(),
-    ]
-}
-
-/// Zipping from target/mods makes extraction into mods/ the whole install.
-fn zip_universal(shell: &Shell, mods_dir: &Path, out_dir: &Path, version: &str) -> Result<PathBuf> {
-    let mod_id = bundle::MOD_ID;
-    let out = out_dir.join(format!("{mod_id}-{version}-universal.zip"));
-    let _dir = shell.push_dir(mods_dir);
-    // -X strips extended attributes; Info-ZIP has no long form for it.
-    cmd!(shell, "zip --recurse-paths --quiet -X {out} {mod_id}").run()?;
-    Ok(out)
-}
-
-fn zip_target(
-    shell: &Shell,
-    bundle_dir: &Path,
-    out_dir: &Path,
-    version: &str,
-    label: &str,
-    lib: &str,
-) -> Result<PathBuf> {
-    let mod_id = bundle::MOD_ID;
-    let out = out_dir.join(format!("{mod_id}-{version}-{label}.zip"));
-    let stage_root = out_dir.join(".stage");
-    let stage = stage_root.join(label).join(mod_id);
-
-    let _ = std::fs::remove_dir_all(stage_root.join(label));
-    std::fs::create_dir_all(&stage)?;
-    for shared in &shared_files() {
-        copy_file(&bundle_dir.join(shared), &stage.join(shared))?;
-    }
-    copy_file(&bundle_dir.join(lib), &stage.join(lib))?;
-
-    // A plain block (not a closure) so the scratch dir is cleaned before
-    // the error propagates.
-    let result = {
-        let _dir = shell.push_dir(stage_root.join(label));
-        cmd!(shell, "zip --recurse-paths --quiet -X {out} {mod_id}").run()
-    };
-    let _ = std::fs::remove_dir_all(stage_root.join(label));
-    result?;
-    Ok(out)
-}
-
-/// The sums file sits beside the zips, so it must not embed the output path.
-fn write_checksums(out_dir: &Path, zips: &[PathBuf]) -> Result<()> {
-    let mut lines = Vec::new();
-    for zip in zips {
-        let name = zip
-            .file_name()
-            .expect("zip paths always end in a file name");
-        lines.push(format!("{}  {}", sha256_file(zip)?, name.to_string_lossy()));
-    }
-    std::fs::write(out_dir.join("SHA256SUMS"), lines.join("\n") + "\n")?;
-    Ok(())
-}
-
-fn copy_file(source: &Path, destination: &Path) -> Result<()> {
-    std::fs::copy(source, destination).map(|_| ()).map_err(|e| {
-        anyhow::anyhow!(
-            "copying {} -> {}: {e}",
-            source.display(),
-            destination.display()
-        )
-    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    const VERSION: &str = "0.111.0-73925250";
+    const FILES: &[&str] = &[
+        "manifest.json",
+        "spire-profiler.dll",
+        "spire_profiler.gdextension",
+        "libprofiler_core.macos.arm64.dylib",
+        "libprofiler_core.macos.x86_64.dylib",
+        "libprofiler_core.linux.x86_64.so",
+        "libprofiler_core.windows.x86_64.dll",
+    ];
+    const LABELS: &[&str] = &[
+        "universal",
+        "macos-arm64",
+        "macos-x86_64",
+        "linux-x86_64",
+        "windows-x86_64",
+    ];
+
+    fn fixture(shell: &Shell) -> Result<xshell::TempDir> {
+        let temp = shell.create_temp_dir()?;
+        let bundle = temp.path().join(bundle::MOD_ID);
+        fs::create_dir(&bundle)?;
+        for file in FILES {
+            fs::write(bundle.join(file), file)?;
+        }
+        fs::write(
+            bundle.join("manifest.json"),
+            format!(r#"{{"version":"{VERSION}"}}"#),
+        )?;
+        Ok(temp)
+    }
+
     #[test]
-    fn manifest_version_extracts_the_stamped_version() {
-        let manifest = r#"{"id":"spire-profiler","version":"0.111.0-7392525","has_dll":true}"#;
-        assert_eq!(manifest_version(manifest).unwrap(), "0.111.0-7392525");
-        assert!(manifest_version(r#"{"version":42}"#).is_err());
-        assert!(manifest_version(r#"{"id":"x"}"#).is_err());
+    fn packages_exact_variants_and_checksums_without_stale_entries() -> Result<()> {
+        let shell = Shell::new()?;
+        let temp = fixture(&shell)?;
+        shell.change_dir(temp.path());
+        let bundle = temp.path().join(bundle::MOD_ID);
+        let out = temp.path().join("dist");
+        fs::create_dir(&out)?;
+        let archive_name = format!("spire-profiler-{VERSION}-universal.zip");
+        let stale = out.join(&archive_name);
+        fs::write(temp.path().join("obsolete"), "old release")?;
+        cmd!(shell, "zip --quiet {stale} obsolete").run()?;
+        fs::create_dir(out.join(".stage"))?;
+        fs::copy(&stale, out.join(".stage").join(archive_name))?;
+        package(&shell, &bundle, &out, VERSION)?;
+        let mut sums = String::new();
+        for (index, label) in LABELS.iter().enumerate() {
+            let name = format!("spire-profiler-{VERSION}-{label}.zip");
+            let zip = out.join(&name);
+            let listing = cmd!(shell, "unzip -Z -1 {zip}").read()?;
+            let expected: Vec<_> = FILES
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| index == 0 || *i < 3 || *i == index + 2)
+                .map(|(_, file)| format!("spire-profiler/{file}"))
+                .collect();
+            assert_eq!(listing.lines().collect::<Vec<_>>(), expected);
+            let extracted = temp.path().join(label);
+            cmd!(shell, "unzip -q {zip} -d {extracted}").run()?;
+            for entry in expected {
+                assert_eq!(
+                    fs::read(extracted.join(&entry))?,
+                    fs::read(temp.path().join(entry))?
+                );
+            }
+            sums.push_str(&format!("{}  {name}\n", sha256_file(&zip)?));
+        }
+        assert_eq!(fs::read_to_string(out.join("SHA256SUMS"))?, sums);
+        assert_eq!(fs::read_dir(&out)?.count(), 6);
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_invalid_bundle_files_and_stamp() -> Result<()> {
+        let shell = Shell::new()?;
+        let temp = fixture(&shell)?;
+        let bundle = temp.path().join(bundle::MOD_ID);
+        let out = temp.path().join("dist");
+        assert!(package(&shell, &bundle, &out, "wrong-version").is_err());
+        let file = bundle.join(FILES[3]);
+        fs::remove_file(&file)?;
+        assert!(package(&shell, &bundle, &out, VERSION).is_err());
+        fs::create_dir(&file)?;
+        assert!(package(&shell, &bundle, &out, VERSION).is_err());
+        fs::remove_dir(&file)?;
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("spire-profiler.dll", &file)?;
+            assert!(package(&shell, &bundle, &out, VERSION).is_err());
+            fs::remove_file(&file)?;
+        }
+        fs::write(&file, FILES[3])?;
+        fs::write(bundle.join("extra"), "unexpected")?;
+        assert!(package(&shell, &bundle, &out, VERSION).is_err());
+        fs::remove_file(bundle.join("extra"))?;
+        validate_files(&bundle, FILES)?;
+        #[cfg(unix)]
+        {
+            let linked = temp.path().join("linked");
+            std::os::unix::fs::symlink(&bundle, &linked)?;
+            assert!(validate_files(&linked, FILES).is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn failed_staging_and_publication_leave_no_stale_checksums() -> Result<()> {
+        let shell = Shell::new()?;
+        let temp = fixture(&shell)?;
+        let bundle = temp.path().join(bundle::MOD_ID);
+        let out = temp.path().join("dist");
+        fs::create_dir(&out)?;
+        let stage = out.join(".stage");
+        fs::write(&stage, "not a directory")?;
+        assert!(package(&shell, &bundle, &out, VERSION).is_err());
+        fs::remove_file(&stage)?;
+        let universal = out.join(format!("spire-profiler-{VERSION}-universal.zip"));
+        fs::write(&universal, "previous release")?;
+        let sums = out.join("SHA256SUMS");
+        fs::create_dir(&sums)?;
+        assert!(package(&shell, &bundle, &out, VERSION).is_err());
+        assert_eq!(fs::read_to_string(&universal)?, "previous release");
+        fs::remove_dir(&sums)?;
+        fs::write(&sums, "previous checksums")?;
+        fs::create_dir(out.join(format!("spire-profiler-{VERSION}-macos-arm64.zip")))?;
+        assert!(package(&shell, &bundle, &out, VERSION).is_err());
+        cmd!(shell, "unzip -tqq {universal}").run()?;
+        assert!(!sums.exists());
+        Ok(())
     }
 }

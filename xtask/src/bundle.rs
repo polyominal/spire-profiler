@@ -22,7 +22,12 @@ pub(crate) fn assemble_bundle(
     commit: &str,
 ) -> Result<()> {
     // Wipe first so a removed library cannot linger.
-    let _ = std::fs::remove_dir_all(mod_dir);
+    match std::fs::remove_dir_all(mod_dir) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+            return Err(anyhow::anyhow!("removing {}: {error}", mod_dir.display()));
+        }
+        _ => {}
+    }
     std::fs::create_dir_all(mod_dir)?;
     write_manifest(root, mod_dir, commit)?;
     copy_file(

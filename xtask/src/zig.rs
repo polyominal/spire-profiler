@@ -131,7 +131,11 @@ pub fn ensure_bootstrap_in(shell: &Shell, dir: &Path) -> Result<()> {
             ));
         }
     }
-    cmd!(shell, "tar -xJf {tarball} --strip-components=1 -C {dir}").run()?;
+    cmd!(
+        shell,
+        "tar --extract --xz --file {tarball} --strip-components=1 --directory {dir}"
+    )
+    .run()?;
     let version = zig_version_of(shell, &binary_in(dir))?;
     if version != ZIG_VERSION {
         return Err(anyhow::anyhow!(

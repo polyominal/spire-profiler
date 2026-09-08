@@ -24,6 +24,8 @@
 - Markdown docs wrap at 80 columns via `cargo xtask fmt-md` (the wrapped set is
   pinned in [md.rs](xtask/src/md.rs)); run it after doc edits, never reflow by
   hand. `smoke` runs `fmt-md --check`.
+- Prefer long options when invoking external commands; use short options only
+  when the tool has no long equivalent.
 
 ## Comments
 

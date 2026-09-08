@@ -119,6 +119,7 @@ commit boundaries.
 - The implementer spec carries the motivation, the standard to apply, the
   hard constraints (scope, what not to touch, gate requirements), and the
   deliverable shape.
+- Start the reviewer only after the implementer finishes.
 - Work stops at each commit boundary: the human commits. Present the
   finished change, the gates run, and a suggested commit title, then wait.
 - The reviewer is independent: fresh context, never the implementer's
@@ -192,7 +193,7 @@ with each fix.
       successful write; exercise filesystem failures.
 - [x] Reject non-finite scroll input, keep accumulation finite, and clear
       pending input while hidden; test recovery and hide/reopen behavior.
-- [ ] Harden release packaging with fresh archives, exact staged and archived
+- [x] Harden release packaging with fresh archives, exact bundle and archived
       contents, smoke before packaging, and rejection of dirty release inputs.
 - [ ] Reconcile state-ownership and reproducibility policy with the code,
       revisit unconditional test deletions using their behavioral coverage,
@@ -300,12 +301,24 @@ snapshots unless a concrete replacement is stronger.
 
 ### 6. Release hardening
 
-- [ ] Validate the exact universal bundle layout before zipping.
-- [ ] Validate each target staging directory before zipping.
-- [ ] Run `smoke` before release packaging.
-- [ ] Reject dirty release inputs or encode a dirty marker.
+- [x] Validate the exact universal bundle layout before zipping.
+- [-] Validate each target staging directory before zipping.
+- [x] Run `smoke` before release packaging.
+- [x] Reject dirty release inputs or encode a dirty marker.
 - [ ] Optionally add one minimal CI job if shared-branch verification becomes
       useful.
+
+### 6a. xtask simplification
+
+Deferred until after the corrective pass, with one module or cohesive concern
+per human commit. The release change includes the requested long-option cleanup;
+broader reductions get their own implementation and review.
+
+- [ ] Audit production code and tests separately for redundant validation,
+      wrappers, duplication of tool guarantees, and tests with no distinct
+      behavioral failure. Turn the findings into concrete follow-up items,
+      preserving checks that protect game compatibility and distribution
+      correctness.
 
 ### 7. Final branch cleanup
 
@@ -316,6 +329,11 @@ snapshots unless a concrete replacement is stronger.
 
 ## Decision log
 
+- Target input staging: removed. Releases select explicit file lists from one
+  validated bundle, so target copy trees and their validation are unnecessary.
+  Fresh output archives use ZIP's missing-input and integrity checks; the
+  regression test inspects their exact entries and extracted bytes. Failed
+  scratch staging may remain until the next strict wipe.
 - Worktree and branch: accepted. The branch is short-lived, and the final merge
   remains human-made.
 - Codex topology: rejected. Keep the profiler-core and xtask split only.
@@ -361,6 +379,61 @@ snapshots unless a concrete replacement is stronger.
   the limit (exit 1 with a named error).
 
 ## Session log
+
+### 2026-09-09: small, checked release packaging
+
+Corrective pass, seventh item. Release requires a committed, clean Git checkout
+before smoke and build, then rechecks cleanliness and HEAD. Tracked edits,
+staged changes, untracked files, missing HEAD, and Git errors stop release;
+ordinary developer builds keep their permissive commit resolution. The bundle
+stamp must match the checked commit and game pin.
+
+The universal bundle is checked once for its exact regular-file set. Each ZIP
+receives an explicit member list, with native names from the build matrix.
+ZIP's `--must-match` and `--test` enforce readable inputs and archive integrity.
+Archives are created in freshly cleared `dist/.stage`; no target input trees
+are copied and no ZIP metadata parser is maintained. Stale bundle cleanup
+errors propagate. Failed scratch may remain until the next strict wipe.
+
+All archives and checksums are prepared before publication. Old `SHA256SUMS`
+is invalidated before replacing any archive, and new sums appear only after
+all archive replacements succeed. Replacements are atomic per file, not as a
+whole set; a failed partial publication leaves no stale checksum manifest.
+
+Three release tests cover exact names, entries, extracted bytes, and checksum
+rows for all five variants; stale members in published and staged ZIPs;
+missing, extra, directory, symlink and mismatched-stamp inputs; blocked staging,
+checksum invalidation failure, and partial publication. The root-symlink case
+first verifies its original directory is valid. A separate Git fixture test
+reuses an existing commit in an isolated clone and exercises clean, unstaged,
+staged, untracked, corrupt-index, missing-repository, and unborn-HEAD cases.
+Fixtures reserve fresh temporary directories without wall-clock dependence.
+
+The user's long-option preference is persisted in AGENTS.md and applied across
+xtask where supported. UnZip, macOS xattr, and wslpath retain short flags.
+Broader xtask minimization is deferred to workstream 6a. Reviewers now start
+after implementers finish, as requested.
+
+Verification: `cargo xtask smoke` passed all 356 tests, Clippy, private rustdoc,
+formatting, citations, the 38-binding ABI check, and the em-dash gate (39 pins,
+130 dashes). Rust comment density is 10.6% (3092 / 29257). The four-target build
+passed with `ZIG_GLOBAL_CACHE_DIR="$PWD/target/zig-cache" cargo xtask build`;
+the C# build had no warnings or errors. The default Zig cache was read-only in
+the sandbox, so the successful run used a workspace cache. Both GNU tar and
+BSD tar passed local gzip/xz extraction probes with the new long options.
+The release command rejects this dirty worktree before smoke or build.
+
+Independent review: SHIP. Scope outside this scratchpad is 459 changed lines
+(322 added, 137 removed), including the requested option spelling changes;
+release.rs totals 258 lines including tests. Runtime, ABI, engine, shim,
+persistence schemas, dependencies, and snapshots are unchanged. No headless
+boot was needed. macOS execution and a successful clean top-level release are
+not yet verified.
+
+After the human commit, run `cargo xtask release` on the clean checkout before
+editing this scratchpad, using the workspace Zig cache if needed. Then proceed
+to corrective item eight, including fixture freshness and workstream
+reconciliation. No commits or PRs were created.
 
 ### 2026-09-09: scroll queues stay finite and expire on hide
 

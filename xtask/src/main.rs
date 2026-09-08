@@ -44,7 +44,7 @@ mod flags {
             cmd install-tool {}
             /// Assemble the cross-platform mod bundle under target/mods/.
             cmd build {}
-            /// Rebuild and package the mod as release zips under dist/.
+            /// Require clean Git inputs, run smoke, rebuild, and package under dist/.
             cmd release {}
             /// Copy the mod into the game's mods directory.
             cmd install-mod {}

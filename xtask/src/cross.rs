@@ -86,7 +86,7 @@ pub(crate) fn build_matrix(shell: &Shell, root: &Path) -> Result<Vec<(String, Pa
         .arg("zigbuild")
         .arg("--release")
         .arg("--locked")
-        .arg("-p")
+        .arg("--package")
         .arg("profiler_core");
     for row in MATRIX {
         zigbuild = zigbuild.arg("--target").arg(row.zigbuild_triple);
