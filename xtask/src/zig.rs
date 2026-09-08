@@ -37,22 +37,8 @@ pub fn pick(bootstrap_dir: &Path) -> Result<PathBuf> {
 /// feed the build.
 pub fn resolve_zig(shell: &Shell) -> Result<PathBuf> {
     let dir = bootstrap_dir();
-    let binary = match pick(&dir) {
-        Ok(binary) => binary,
-        Err(_) => {
-            // The build provisions the pin itself instead of asking for
-            // install-tool.
-            ensure_bootstrap_in(shell, &dir)?;
-            pick(&dir)?
-        }
-    };
-    // Refreshing wipes the dir and reinstalls the pinned tarball.
-    if zig_version_of(shell, &binary)? != ZIG_VERSION {
-        ensure_bootstrap_in(shell, &dir)?;
-    }
+    ensure_bootstrap_in(shell, &dir)?;
     let binary = pick(&dir)?;
-    // The check above (and the refresh's post-install verify) pins the
-    // version, so the println needs no second query.
     println!("zig: {} ({ZIG_VERSION}, bootstrapped)", binary.display());
     Ok(binary)
 }
