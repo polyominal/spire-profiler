@@ -190,7 +190,7 @@ with each fix.
       and prevent record reuse.
 - [x] Propagate persistence write outcomes so success markers require a
       successful write; exercise filesystem failures.
-- [ ] Reject non-finite scroll input, keep accumulation finite, and clear
+- [x] Reject non-finite scroll input, keep accumulation finite, and clear
       pending input while hidden; test recovery and hide/reopen behavior.
 - [ ] Harden release packaging with fresh archives, exact staged and archived
       contents, smoke before packaging, and rejection of dirty release inputs.
@@ -361,6 +361,67 @@ snapshots unless a concrete replacement is stronger.
   the limit (exit 1 with a named error).
 
 ## Session log
+
+### 2026-09-09: scroll queues stay finite and expire on hide
+
+Corrective pass, sixth item. Pan input stays f64 through ABI forwarding and
+wheel/pan translation. The shared queue rejects and fail-logs non-finite
+translated deltas, preserving already queued valid pixels. It adds finite
+values in f64, clamps and logs overflow beyond the finite f32 range, then
+narrows. The queue and offset consumer assert their finite-input contracts.
+Pressed wheel buttons still override the unused pan value; release/pan
+translation, unknown-panel no-op behavior, and routing remain intact.
+
+Both instance `pending_scroll` fields and the combat panel's single-use wheel
+wrapper are deleted. Each refresh drains into a local delta before any early
+return, so hidden and unplaced frames cannot retain pending input. Toggle and
+dismiss transitions clear the queues, including hide/reopen without a refresh;
+effective-hidden enqueue discards both queued and incoming pixels. Shared
+visibility predicates preserve the combat self-test override and the user's
+stored visibility preference. Scroll offsets and panel positions survive
+hide cycles. No run-lifecycle hooks or extra state flags were added.
+
+Three new tests pin finite accumulation/cancellation/recovery, consumed input's
+hit guard and finite scrollbar geometry, and combat input arriving while its
+run is inactive despite the stored visible flag. The ABI scroll test now
+exercises NaN, both infinities, both signs of f64::MAX, queued-value
+preservation, later valid input, wheel precedence, and per-panel routing.
+The ABI toggle test also checks run-history clear and reopening. Existing
+combat/run toggle and dismissal tests now check immediate hide/reopen with no
+intervening input or drain, immediate dismissal cleanup, and hidden-input
+refusal independently, so one cleanup path cannot mask another's removal.
+The run dismissal test covers an effectively closed history screen too.
+
+The direct `queue_panel_scroll_routes_translated_pixels` test is deleted:
+its routing, translation, and unknown-ID mutations are covered through the
+expanded ABI test, and the shared queue test preserves repeat-drain coverage.
+The two run-panel tests listed for deletion in workstream 4 now protect scroll
+lifecycle behavior; revisit those deletion entries in the queued corrective
+reconciliation rather than deleting these regressions wholesale.
+
+Independent reviewer verdict: SHIP. Gates run: `cargo fmt --all`,
+`cargo xtask fmt-md`, targeted Nextest (33/33), profiler-core Clippy,
+`cargo xtask smoke` (353/353, workspace Clippy/private rustdoc clean,
+38 ABI bindings, density 10.7%), independent focused release Nextest (18/18),
+and `git diff --check`. Em-dash pins remain 40 files / 131 dashes. Scope outside
+this scratchpad: 314 changed lines across five files, net +146. No new lint
+allowances, production unsafe, ABI signature, dependency, persistence schema,
+snapshot, shim, registration, or engine-API changes.
+
+`cargo xtask headless-test` passes on the pinned v0.111.0 Windows game through
+WSL: all four native targets built, the C# build had no warnings/errors, 194
+patches applied, all required draw/persistence markers appeared, and the game
+exited 0 after 46.5 seconds with no unexpected profiler errors. Windows interop
+could not bind its socket inside the sandbox; approved outside-sandbox
+execution passed. The gate installed the tested development bundle and used
+isolated profiler self-test data. It exercises combat-panel boot refresh/draw,
+not interactive scroll gestures or the lazily created history panel. Those
+paths have queue/visibility and shared-math tests plus source review of local
+delta disposal; no unsafe engine mock was introduced.
+
+Before smoke, existing PID-based fixtures were preserved in
+`tmp/unique-before-scroll-verification`; their helper fix remains queued.
+Next item: release packaging hardening, after the human commit.
 
 ### 2026-09-09: persistence success follows the write outcome
 

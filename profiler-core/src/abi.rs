@@ -676,16 +676,7 @@ pub unsafe extern "C" fn spire_profiler_scroll_input(
     pan_y: f64,
 ) {
     contain("spire_profiler_scroll_input", (), || {
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "pan deltas are single-pixel precise scrolls; f32 range is ample"
-        )]
-        crate::ui::scroll::queue_panel_scroll(
-            panel,
-            i64::from(button_index),
-            pressed != 0,
-            pan_y as f32,
-        );
+        crate::ui::scroll::queue_panel_scroll(panel, i64::from(button_index), pressed != 0, pan_y);
     });
 }
 
@@ -882,21 +873,48 @@ mod tests {
         contain("spire_profiler_test_reset", (), || panic!("str payload"));
     }
 
-    /// Scroll input queues pixels into the addressed panel's pending queue.
     #[test]
-    fn scroll_input_export_queues_pixels_per_panel() {
-        // Drain leftovers from any prior test on this thread.
-        let _ = crate::ui::panel::take_queued_scroll();
-        let _ = crate::ui::run_panel::take_queued_scroll();
-        // SAFETY: the test forms valid C-string arguments for these exports.
-        unsafe {
-            spire_profiler_scroll_input(0, 5, 1, 0.0); // combat: wheel down (+60)
-            spire_profiler_scroll_input(1, 0, 0, -10.0); // run: pan (−10 px)
-            spire_profiler_scroll_input(0, 4, 0, 0.0); // wheel-up release: nothing
-            spire_profiler_scroll_input(7, 5, 1, 0.0); // unknown panel: dropped
+    fn scroll_input_export_preserves_routing_and_recovers_from_corrupt_deltas() {
+        let data = crate::test_util::wiped_dir("spire-profiler-abi-scroll");
+        events::test_reset();
+        events::init(&data);
+        STATE.with(|s| s.borrow_mut().run_ctx = Some(Default::default()));
+        crate::ui::panel::dismiss();
+        crate::ui::panel::toggle();
+        crate::data::run_history::select("", 0, 1);
+        crate::ui::run_panel::dismiss_run_manual();
+        crate::ui::run_panel::toggle_run_manual();
+
+        for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            // SAFETY: these exports take only scalar values.
+            unsafe {
+                spire_profiler_scroll_input(0, 5, 1, invalid);
+                spire_profiler_scroll_input(0, 0, 0, 12.5);
+                spire_profiler_scroll_input(0, 0, 0, invalid);
+                spire_profiler_scroll_input(1, 0, 0, -10.0);
+                spire_profiler_scroll_input(1, 4, 0, invalid);
+                spire_profiler_scroll_input(1, 4, 0, -2.5);
+                spire_profiler_scroll_input(1, 4, 1, invalid);
+                spire_profiler_scroll_input(7, 5, 1, 0.0);
+                spire_profiler_scroll_input(7, 0, 0, invalid);
+            }
+            assert_eq!(crate::ui::panel::take_queued_scroll(), 72.5);
+            assert_eq!(crate::ui::run_panel::take_queued_scroll(), -72.5);
         }
-        assert_eq!(crate::ui::panel::take_queued_scroll(), 60.0);
-        assert_eq!(crate::ui::run_panel::take_queued_scroll(), -10.0);
+        // SAFETY: these exports take only scalar values.
+        unsafe {
+            spire_profiler_scroll_input(0, 0, 0, f64::MAX);
+            spire_profiler_scroll_input(1, 0, 0, -f64::MAX);
+        }
+        assert_eq!(crate::ui::panel::take_queued_scroll(), f32::MAX);
+        assert_eq!(crate::ui::run_panel::take_queued_scroll(), -f32::MAX);
+        // SAFETY: these exports take only scalar values.
+        unsafe {
+            spire_profiler_scroll_input(0, 0, 0, 15.0);
+            spire_profiler_scroll_input(1, 0, 0, -12.5);
+        }
+        assert_eq!(crate::ui::panel::take_queued_scroll(), 15.0);
+        assert_eq!(crate::ui::run_panel::take_queued_scroll(), -12.5);
     }
 
     /// F8 changes observable state: the run panel's flag, else the combat
@@ -953,8 +971,18 @@ mod tests {
         // The clear that precedes every screen entry resets the flag: the
         // panel starts closed on each visit.
         // SAFETY: the test forms valid C-string arguments for these exports.
-        unsafe { spire_profiler_run_history_clear() };
+        unsafe {
+            spire_profiler_scroll_input(1, 5, 1, 0.0);
+            spire_profiler_run_history_clear();
+        }
         assert!(!crate::ui::run_panel::run_manual_visible());
+        assert_eq!(crate::ui::run_panel::take_queued_scroll(), 0.0);
+        // SAFETY: seed is a valid C string; the other arguments are scalars.
+        unsafe {
+            spire_profiler_run_history_select(seed.as_ptr(), 0, 1);
+            spire_profiler_panel_toggle();
+        }
+        assert_eq!(crate::ui::run_panel::take_queued_scroll(), 0.0);
     }
 
     /// Select/clear drive the whole matching pipeline end to end.

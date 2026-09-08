@@ -63,10 +63,24 @@ pub(crate) fn hover_row(
     chart_layout::row_at(hits, local_y + scroll)
 }
 
-/// Wheel deltas queue between frames (one cell per panel) and drain into
-/// the panel's pending amount at every refresh.
-pub(crate) fn queue_scroll(queue: &Cell<f32>, delta: f32) {
-    queue.set(queue.get() + delta);
+/// Queues stay finite so a corrupt event cannot poison later frames.
+pub(crate) fn queue_scroll(queue: &Cell<f32>, delta: f64) {
+    if !delta.is_finite() {
+        crate::fail!("non-finite scroll delta {delta}; ignoring");
+        return;
+    }
+    let queued = queue.get();
+    debug_assert!(
+        queued.is_finite(),
+        "queued pixels must be finite to accumulate"
+    );
+    let sum = f64::from(queued) + delta;
+    let limit = f64::from(f32::MAX);
+    let bounded = sum.clamp(-limit, limit);
+    if sum != bounded {
+        crate::fail!("scroll queue overflow {sum}; clamping");
+    }
+    queue.set(bounded as f32);
 }
 
 pub(crate) fn take_queued_scroll(queue: &Cell<f32>) -> f32 {
@@ -90,19 +104,21 @@ impl ChildObjects {
     }
 }
 
-/// The pending amount is read AND cleared every frame; the header rides
-/// in both content and box heights, so it cancels out of the overflow.
+/// The header rides in both content and box heights, cancelling from overflow.
 /// Rows and scrollbar are separate items: a moved offset redraws both children.
 pub(crate) fn wheel_scroll(
     children: ChildObjects,
     scroll: &mut f32,
-    pending: &mut f32,
+    delta: f32,
     rect: Rect2,
     mouse: Vector2,
     content_height: f32,
 ) {
     let old_scroll = *scroll;
-    let delta = std::mem::take(pending);
+    debug_assert!(
+        delta.is_finite(),
+        "queued pixels must be finite to move the offset"
+    );
     if over_panel(rect, mouse) && delta != 0.0 {
         *scroll = crate::ui::scroll::apply_scroll(*scroll, delta, rect.size.y, content_height);
     }
@@ -550,6 +566,68 @@ mod tests {
     use super::*;
     use crate::ui::chart_layout::RowHit;
     use crate::ui::panel_replay::body_band;
+
+    #[test]
+    fn scroll_queue_saturates_without_losing_cancellation_or_recovery() {
+        let queue = Cell::new(0.0);
+        for sign in [-1.0, 1.0] {
+            let limit = sign * f64::from(f32::MAX);
+            queue_scroll(&queue, limit);
+            queue_scroll(&queue, limit);
+            assert_eq!(f64::from(queue.get()), limit);
+            queue_scroll(&queue, -limit);
+            assert_eq!(take_queued_scroll(&queue), 0.0);
+            queue_scroll(&queue, 12.5);
+            queue_scroll(&queue, 7.5);
+            assert_eq!(take_queued_scroll(&queue), 20.0);
+            assert_eq!(take_queued_scroll(&queue), 0.0);
+        }
+    }
+
+    #[test]
+    fn consumed_scroll_obeys_hit_guard_and_keeps_geometry_finite() {
+        let queue = Cell::new(0.0);
+        let rect = Rect2::new(Vector2::new(10.0, 20.0), Vector2::new(600.0, 400.0));
+        let inside = rect.position + Vector2::new(1.0, 1.0);
+        let mut offset = 90.0;
+        for (delta, mouse, expected) in [
+            (f64::MAX, Vector2::new(0.0, 0.0), 90.0),
+            (15.0, inside, 105.0),
+            (f64::MAX, inside, 200.0),
+            (-f64::MAX, inside, 0.0),
+            (25.0, inside, 25.0),
+        ] {
+            queue_scroll(&queue, delta);
+            wheel_scroll(
+                ChildObjects::default(),
+                &mut offset,
+                take_queued_scroll(&queue),
+                rect,
+                mouse,
+                600.0,
+            );
+            assert_eq!(offset, expected);
+            assert_eq!(take_queued_scroll(&queue), 0.0);
+            let geom =
+                crate::ui::scroll::scrollbar_geom(rect.size, false, (100.0, 380.0), 600.0, offset)
+                    .expect("content overflows");
+            for r in [
+                geom.track,
+                geom.body,
+                geom.cap_top,
+                geom.cap_bottom,
+                geom.grabber,
+            ] {
+                assert!(
+                    [r.position.x, r.position.y, r.size.x, r.size.y]
+                        .into_iter()
+                        .all(f32::is_finite)
+                );
+            }
+            assert!(geom.grabber.position.y >= geom.track.position.y);
+            assert!(geom.grabber.position.y + geom.grabber.size.y <= 380.0);
+        }
+    }
 
     fn assert_scale(actual: f32, expected: f32) {
         assert!(

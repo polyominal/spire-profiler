@@ -34,7 +34,11 @@ thread_local! {
     static QUEUED_SCROLL: Cell<f32> = const { Cell::new(0.0) };
 }
 
-pub(crate) fn queue_scroll(delta: f32) {
+pub(crate) fn queue_scroll(delta: f64) {
+    if !shown() {
+        take_queued_scroll();
+        return;
+    }
     QUEUED_SCROLL.with(|q| panel_common::queue_scroll(q, delta));
 }
 
@@ -50,6 +54,10 @@ pub(crate) fn run_active() -> bool {
     STATE.with(|s| s.borrow().run_ctx.is_some())
 }
 
+fn shown() -> bool {
+    visible() && (run_active() || SELFTEST_FORCE.get())
+}
+
 /// Outside a run the press is ignored; the stored state carries forward.
 pub(crate) fn toggle() {
     if !run_active() {
@@ -58,10 +66,12 @@ pub(crate) fn toggle() {
     }
     let next = VISIBLE.with(|v| !v.get());
     VISIBLE.set(next);
+    take_queued_scroll();
 }
 
 pub(crate) fn dismiss() {
     VISIBLE.with(|v| v.set(false));
+    take_queued_scroll();
 }
 
 /// A hidden Control never dispatches `_draw`.
@@ -90,8 +100,6 @@ pub struct SpireProfilerPanel {
     hover_row: Option<usize>,
     interaction: InteractionState,
     scroll: f32,
-    /// Input arrives as events, the offset moves per frame.
-    pending_scroll: f32,
     box_size: Vector2,
     /// Parent-relative == viewport space (a scene-root child).
     plate_pos: Option<Vector2>,
@@ -141,7 +149,6 @@ impl SpireProfilerPanel {
             hover_row: None,
             interaction: InteractionState::default(),
             scroll: 0.0,
-            pending_scroll: 0.0,
             box_size,
             plate_pos: None,
             applied_frame: None,
@@ -325,14 +332,11 @@ impl SpireProfilerPanel {
     /// Rebuilds only on change, pre-checked by a cheap state hash so an
     /// unchanged frame does no snapshot work.
     pub(crate) fn refresh(&mut self) {
-        // Consume the shim-forwarded scroll queue before any early return
-        // (including the hidden frame): queued input must never linger past
-        // one frame, and the over-panel guard in `wheel_scroll` still
-        // governs whether the accumulated pixels apply.
-        self.pending_scroll += take_queued_scroll();
+        // Frame-local ownership discards input on hidden or unplaced returns.
+        let scroll_delta = take_queued_scroll();
         // Plain F8 toggle, effective only inside a run; the stored state
         // carries into the next run. The self-test force is the exception.
-        let shown = visible() && (run_active() || SELFTEST_FORCE.get());
+        let shown = shown();
         self.object.set_visible(shown);
         if !shown {
             self.sig = None;
@@ -368,7 +372,14 @@ impl SpireProfilerPanel {
         panel_common::viewport_mouse(&self.object, &mut self.mouse);
         let mouse = self.mouse;
         self.interaction(control_rect, mouse);
-        self.apply_wheel_scroll(control_rect, mouse);
+        panel_common::wheel_scroll(
+            self.children.objects(),
+            &mut self.scroll,
+            scroll_delta,
+            control_rect,
+            mouse,
+            self.layout.height,
+        );
 
         // Hover maps through the row hit table, gated to the body band:
         // the pinned header has tab zones, not rows. The hits are
@@ -515,19 +526,6 @@ impl SpireProfilerPanel {
             self.layout.height,
             self.scroll,
         )
-    }
-
-    /// A scroll moves pixels without touching the content signature, so
-    /// the dirty checks must not be the ones to catch it.
-    fn apply_wheel_scroll(&mut self, rect: Rect2, mouse: Vector2) {
-        panel_common::wheel_scroll(
-            self.children.objects(),
-            &mut self.scroll,
-            &mut self.pending_scroll,
-            rect,
-            mouse,
-            self.layout.height,
-        );
     }
 
     /// A content change redraws every panel-owned canvas item.
@@ -853,10 +851,14 @@ mod tests {
         assert!(!visible());
         toggle();
         assert!(visible());
+        queue_scroll(60.0);
         toggle();
         assert!(!visible());
         toggle();
         assert!(visible());
+        assert_eq!(take_queued_scroll(), 0.0);
+        queue_scroll(12.5);
+        assert_eq!(take_queued_scroll(), 12.5);
     }
 
     #[test]
@@ -882,10 +884,36 @@ mod tests {
             st.run_ctx = Some(Default::default());
         });
         VISIBLE.with(|v| v.set(true));
+        queue_scroll(60.0);
         dismiss();
         assert!(!visible());
+        assert_eq!(take_queued_scroll(), 0.0);
+        queue_scroll(15.0);
+        assert_eq!(take_queued_scroll(), 0.0);
         toggle();
         assert!(visible(), "F8 after a click-away shows the panel again");
+        assert_eq!(take_queued_scroll(), 0.0);
+    }
+
+    #[test]
+    fn scroll_input_discards_queue_while_run_is_effectively_hidden() {
+        STATE.with(|s| s.borrow_mut().run_ctx = Some(Default::default()));
+        SELFTEST_FORCE.set(false);
+        VISIBLE.set(true);
+        take_queued_scroll();
+        queue_scroll(60.0);
+        STATE.with(|s| s.borrow_mut().run_ctx = None);
+        assert!(
+            visible(),
+            "the user's visibility preference survives run end"
+        );
+        assert!(!shown());
+        queue_scroll(15.0);
+        STATE.with(|s| s.borrow_mut().run_ctx = Some(Default::default()));
+        assert!(shown());
+        assert_eq!(take_queued_scroll(), 0.0);
+        queue_scroll(12.5);
+        assert_eq!(take_queued_scroll(), 12.5);
     }
 
     #[test]
