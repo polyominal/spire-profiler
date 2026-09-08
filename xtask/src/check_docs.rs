@@ -8,15 +8,13 @@
 //! included) or `/*`, or when it sits inside a `/* */` block; string
 //! literal contents never start a comment, and a line where a block
 //! closes and code follows, or that carries a trailing comment, is code.
-//! Blank lines are not counted. Exceeding
-//! the 15% budget is a warning, not a failure: the figure is a
-//! crate-wide floor checked at checkpoints, not a per-file or per-commit
-//! gate.
+//! Blank lines are not counted. Exceeding the 15% budget fails the gate;
+//! the budget is a crate-wide ceiling, not a per-file one.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use xshell::{Shell, cmd};
 
 /// The AGENTS.md budget: comment+code density, not code-only.
@@ -55,10 +53,11 @@ pub fn check_docs(shell: &Shell, top_offenders: Option<usize>) -> Result<()> {
     println!(
         "in-house Rust density: {density:.1}% ({comments} comments / {total} comment+code lines)"
     );
-    if density > DENSITY_LIMIT_PERCENT {
-        eprintln!("check-docs: warning: density exceeds the {DENSITY_LIMIT_PERCENT:.0}% budget");
-    }
+    // Offenders print before the failure so over-budget drift has a name.
     report_offenders(&files, top_offenders.unwrap_or(DEFAULT_TOP_OFFENDERS));
+    if density > DENSITY_LIMIT_PERCENT {
+        bail!("check-docs: density exceeds the {DENSITY_LIMIT_PERCENT:.0}% budget");
+    }
     Ok(())
 }
 
