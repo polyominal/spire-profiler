@@ -215,7 +215,7 @@ commands, symbols, and untracked paths stay raw backticks.
 
 ### 3. Mechanical test extraction
 
-- [ ] Move `ui/chart_layout.rs` tests to a sibling test module.
+- [x] Move `ui/chart_layout.rs` tests to a sibling test module.
 - [ ] Move `ui/run_layout.rs` tests to a sibling test module.
 - [ ] Move `ui/tooltip.rs` tests to a sibling test module.
 - [ ] Move `ui/snapshot.rs` tests to a sibling test module.
@@ -318,6 +318,18 @@ snapshots unless a concrete replacement is stronger.
   the limit (exit 1 with a named error).
 
 ## Session log
+
+### 2026-09-08: chart_layout tests extracted
+
+Stage 3, first extraction. Implementer subagent moved the inline test module
+to ui/chart_layout/tests.rs (chart_layout.rs 2037 to 946 lines, tests 1092
+lines of 2037 = 54%); the two insta snapshots became pure renames into
+ui/chart_layout/snapshots/ (insta derives the directory from the test's
+source file; content untouched, names stable since the module path is
+unchanged). No em-dash pin moves: the tests' dashes are string literals,
+not comments. Independent reviewer verdict: SHIP (move byte-fidelity, R100
+renames, 31 chart_layout tests before and after, 331/331). Gates run:
+`cargo xtask smoke` (331/331, density 11.2%).
 
 ### 2026-09-08: shim comment density reported; no gate
 
