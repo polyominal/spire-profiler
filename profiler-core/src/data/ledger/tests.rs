@@ -50,7 +50,7 @@ fn consume_chunk(blocked: i64) -> i64 {
 
 fn resolve_damage_source(
     explicit_id: &str,
-    receiver_hash: u64,
+    receiver_hash: i32,
     total: i64,
     slot: i32,
     explicit_slot: i32,
@@ -65,14 +65,6 @@ fn resolve_damage_source(
             explicit_slot,
         )
     })
-}
-
-#[test]
-fn u64_from_hash_sign_extends() {
-    assert_eq!(u64_from_hash(0), 0);
-    assert_eq!(u64_from_hash(1), 1);
-    assert_eq!(u64_from_hash(-1), u64::MAX);
-    assert_eq!(u64_from_hash(i32::MIN), 0xFFFF_FFFF_8000_0000);
 }
 
 /// Potion/osty (3/4) round-trip exactly, unlike `SourceKind::from_c`.

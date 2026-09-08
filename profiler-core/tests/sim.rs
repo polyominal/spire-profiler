@@ -285,7 +285,7 @@ fn drive_one_event(rng: &mut Rng, follow_up: &mut bool) {
             events::power_decreased(
                 power,
                 rng.range_i32(1, 5),
-                rng.next_u64(),
+                rng.next_u64() as i32,
                 rng.range_i32(0, 1),
                 rng.range_i32(0, 3),
             );
@@ -340,7 +340,7 @@ fn drive_one_event(rng: &mut Rng, follow_up: &mut bool) {
             rng.range_i32(0, 3),
         ),
         76..=77 => drive_card_generated(rng),
-        78..=79 => events::weak_mitigation(rng.range_i32(1, 8), rng.next_u64()),
+        78..=79 => events::weak_mitigation(rng.range_i32(1, 8), rng.next_u64() as i32),
         80..=81 => events::buff_mitigation(rng.pick(&POWER_POOL), rng.range_i32(1, 8)),
         82..=83 => events::enemy_hit_context(rng.range_i32(1, 20), rng.range_i32(-8, 8)),
         _ => events::block_pool_clear(0),
@@ -432,8 +432,16 @@ fn drive_damage(rng: &mut Rng, follow_up: &mut bool) {
     let card_source_slot = rng.range_i32(0, 4);
     // A rare player kill drives the defeat record.
     let player_killed = to_player != 0 && rng.below(8) == 0;
-    let receiver = if rng.below(4) == 0 { 0 } else { rng.next_u64() };
-    let dealer = if rng.below(2) == 0 { 0 } else { rng.next_u64() };
+    let receiver = if rng.below(4) == 0 {
+        0
+    } else {
+        rng.next_u64() as i32
+    };
+    let dealer = if rng.below(2) == 0 {
+        0
+    } else {
+        rng.next_u64() as i32
+    };
     events::damage_dealt(events::DamageDealt {
         total: total as i32,
         unblocked: unblocked as i32,
@@ -465,7 +473,11 @@ fn drive_block_gained(rng: &mut Rng) {
 
 fn drive_power_applied(rng: &mut Rng) {
     let power = rng.pick(&POWER_POOL);
-    let creature = if rng.below(4) == 0 { 0 } else { rng.next_u64() };
+    let creature = if rng.below(4) == 0 {
+        0
+    } else {
+        rng.next_u64() as i32
+    };
     let is_player = rng.range_i32(0, 1);
     let player_slot = if is_player != 0 {
         rng.range_i32(0, 3)

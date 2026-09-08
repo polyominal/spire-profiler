@@ -658,7 +658,7 @@ pub struct GeneratedInstance {
 /// current HP) attributes FIFO across the applications.
 #[derive(Clone, Debug)]
 pub struct DoomLayer {
-    pub creature_hash: u64,
+    pub creature_hash: i32,
     pub source_id: String,
     pub kind: SourceKind,
     /// The applier's slot; the DoomKill credit row keys at it.
@@ -668,7 +668,7 @@ pub struct DoomLayer {
 
 #[derive(Clone, Copy, Debug)]
 pub struct DoomTarget {
-    pub creature_hash: u64,
+    pub creature_hash: i32,
     pub hp: i64,
 }
 
@@ -687,7 +687,7 @@ pub struct OstyEntry {
 /// reducer's mitigate_str; a positive delta consumes reductions LIFO.
 #[derive(Clone, Debug)]
 pub struct StrReduction {
-    pub creature_hash: u64,
+    pub creature_hash: i32,
     pub source_id: String,
     pub kind: SourceKind,
     /// The reducer's row slot; the mitigation credit keys at it.
@@ -699,7 +699,7 @@ pub struct StrReduction {
 /// from the head, and poison tick damage splits by duration fraction.
 #[derive(Clone, Debug)]
 pub struct DebuffLayer {
-    pub creature_hash: u64,
+    pub creature_hash: i32,
     pub power_id: String,
     pub source_id: String,
     pub kind: SourceKind,

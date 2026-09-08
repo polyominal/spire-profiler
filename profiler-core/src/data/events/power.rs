@@ -15,7 +15,7 @@ use crate::fail;
 pub fn power_applied(
     power_id: &str,
     amount: i32,
-    creature_hash: u64,
+    creature_hash: i32,
     is_player: i32,
     player_slot: i32,
 ) {
@@ -90,7 +90,7 @@ pub fn power_applied(
 
 fn record_doom_layer_in(
     state: &mut State,
-    creature_hash: u64,
+    creature_hash: i32,
     source_id: &str,
     kind: SourceKind,
     amount: i64,
@@ -119,7 +119,7 @@ fn record_power_source_in(
     kind: SourceKind,
     amount: i64,
     is_player: i32,
-    creature_hash: u64,
+    creature_hash: i32,
     player: SourceSlot,
 ) {
     if let Some(entry) = state
@@ -172,7 +172,7 @@ fn record_power_source_in(
 pub fn power_decreased(
     power_id: &str,
     amount: i32,
-    creature_hash: u64,
+    creature_hash: i32,
     is_player: i32,
     player_slot: i32,
 ) {
@@ -232,12 +232,11 @@ pub fn doom_target_capture(creature_hash: i32, current_hp: i32) {
             fail!("doom target table overflow");
             return;
         }
-        let hash = ledger::u64_from_hash(creature_hash);
         state.doom_targets.push(DoomTarget {
-            creature_hash: hash,
+            creature_hash,
             hp: current_hp as i64,
         });
-        event_log!("  doom target capture: creature {hash} at {current_hp} hp");
+        event_log!("  doom target capture: creature {creature_hash} at {current_hp} hp");
     });
 }
 
@@ -264,7 +263,7 @@ pub fn doom_kills_completed() {
 
 /// First against the matching Doom layers FIFO, then to the active context
 /// or a DOOM catch-all entry.
-fn attribute_doom_target_in(state: &mut State, creature_hash: u64, hp: i64) {
+fn attribute_doom_target_in(state: &mut State, creature_hash: i32, hp: i64) {
     let mut remaining = hp;
     let mut i = 0;
     while i < state.doom_layers.len() && remaining > 0 {
@@ -424,7 +423,7 @@ fn modifier_contribution_in(
 }
 
 /// Credited to the FIFO head source of the enemy's WEAK_POWER layers.
-pub fn weak_mitigation(prevented: i32, dealer_hash: u64) {
+pub fn weak_mitigation(prevented: i32, dealer_hash: i32) {
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         if !state.initialized || prevented <= 0 {
@@ -546,7 +545,7 @@ pub fn enemy_hit_context(base_damage: i32, dealer_str: i32) {
 
 /// Credits the Strength-reduction mitigation for a player-received hit from
 /// `dealer_hash`.
-pub(super) fn apply_str_mitigation_in(state: &mut State, dealer_hash: u64) {
+pub(super) fn apply_str_mitigation_in(state: &mut State, dealer_hash: i32) {
     if dealer_hash == 0 {
         return;
     }
@@ -598,7 +597,7 @@ pub(super) fn apply_str_mitigation_in(state: &mut State, dealer_hash: u64) {
 
 /// The reducer's slot is captured at reduction time; the credit fires
 /// later, with no ambient play.
-fn record_str_reduction_in(state: &mut State, creature_hash: u64, amount: i64) {
+fn record_str_reduction_in(state: &mut State, creature_hash: i32, amount: i64) {
     let ambient = state.ambient_slot() as i32;
     let Some((index, row_slot)) =
         ledger::resolve_card_in(&mut *state, "", ambient, ambient, AsyncFallback::Allow)
@@ -632,7 +631,7 @@ fn record_str_reduction_in(state: &mut State, creature_hash: u64, amount: i64) {
 }
 
 /// An enemy's Strength went up: consume recorded reductions LIFO.
-fn consume_str_reductions_in(state: &mut State, creature_hash: u64, amount: i64) {
+fn consume_str_reductions_in(state: &mut State, creature_hash: i32, amount: i64) {
     let mut remaining = amount;
     let mut i = state.str_reductions.len();
     while i > 0 && remaining > 0 {

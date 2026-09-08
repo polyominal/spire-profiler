@@ -225,8 +225,8 @@ fn self_damage_credits_the_sources_red_segment() {
         unblocked: 3,
         card_source_id: "BLOODLETTING",
         to_player: 1,
-        receiver_hash: 999,
-        dealer_hash: 999,
+        receiver_hash: i32::MIN,
+        dealer_hash: i32::MIN,
         ..DamageDealt::default()
     });
     card_play_finished(0);
@@ -236,17 +236,23 @@ fn self_damage_credits_the_sources_red_segment() {
         unblocked: 6,
         card_source_id: "OFFERING",
         to_player: 1,
-        receiver_hash: 999,
+        receiver_hash: i32::MIN,
         ..DamageDealt::default()
     });
     card_play_finished(0);
+    damage_dealt(DamageDealt {
+        total: 5,
+        unblocked: 5,
+        to_player: 1,
+        ..DamageDealt::default()
+    });
     damage_dealt(DamageDealt {
         total: 10,
         unblocked: 8,
         blocked: 2,
         to_player: 1,
-        receiver_hash: 999,
-        dealer_hash: 42,
+        receiver_hash: i32::MIN,
+        dealer_hash: -1,
         ..DamageDealt::default()
     });
     combat_ended();
@@ -254,7 +260,7 @@ fn self_damage_credits_the_sources_red_segment() {
     let (combat, doc) = read_combat(&base);
     assert_eq!(card_json(&doc, "BLOODLETTING")["self_damage"], 3);
     assert_eq!(card_json(&doc, "OFFERING")["self_damage"], 6);
-    assert_eq!(combat.damage_received, 19);
+    assert_eq!(combat.damage_received, 24);
     let cards = doc["cards"].as_array().expect("combat cards array");
     assert!(
         cards.iter().all(|c| c["self_damage"] != 8),

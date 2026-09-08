@@ -75,7 +75,7 @@ pub(crate) fn assert_card_damage_segments(card: &CardStat) {
 
 pub fn consume_debuff_layers_in(
     state: &mut state::State,
-    creature_hash: u64,
+    creature_hash: i32,
     power_id: &str,
     amount: i64,
 ) {
@@ -99,7 +99,7 @@ pub fn consume_debuff_layers_in(
 }
 
 #[cfg(test)]
-fn attribute_debuff_damage(creature_hash: u64, power_id: &str, amount: i64) -> bool {
+fn attribute_debuff_damage(creature_hash: i32, power_id: &str, amount: i64) -> bool {
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         attribute_debuff_damage_in(&mut state, creature_hash, power_id, amount)
@@ -108,7 +108,7 @@ fn attribute_debuff_damage(creature_hash: u64, power_id: &str, amount: i64) -> b
 
 fn attribute_debuff_damage_in(
     state: &mut state::State,
-    creature_hash: u64,
+    creature_hash: i32,
     power_id: &str,
     amount: i64,
 ) -> bool {
@@ -348,7 +348,7 @@ fn resolve_damage_route(
 pub fn resolve_damage_source_in(
     state: &mut state::State,
     explicit_id: &str,
-    receiver_hash: u64,
+    receiver_hash: i32,
     total: i64,
     slot: i32,
     explicit_slot: i32,
@@ -547,11 +547,6 @@ fn consume_block_chunk_in(combat: &mut Combat, chunk: &mut BlockEntry, take: i64
     );
     chunk.remaining -= take;
     credited
-}
-
-/// Sign-extends a C# GetHashCode int to the u64 creature keys.
-pub fn u64_from_hash(hash: i32) -> u64 {
-    hash as u64
 }
 
 /// Splits `amount` across the recorded appliers of `power_id`; with no
