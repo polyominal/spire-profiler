@@ -1,10 +1,15 @@
-//! Global profiler state: the state types, the file-scope globals, and the
-//! player-slot model. All game state lives in one [`State`] behind the
-//! [`STATE`] thread-local `RefCell`; the game's logic loop is
-//! single-threaded. Fixed-capacity tables are bounded `Vec`s with caps in
-//! [`caps`]; overflow is fail-logged, never a silent grow. Cross-table
-//! references are indices into the owning `Vec` — the safe-Rust way to
-//! reference sibling state without self-borrowing.
+//! Live combat/run data and the player-slot model. [`State`] owns this data
+//! behind the [`STATE`] thread-local `RefCell`; the game's logic loop is
+//! single-threaded.
+//!
+//! Mutations hold one active `STATE` guard. Helpers given `&State` or
+//! `&mut State` must not reborrow `STATE`. Release guards before callbacks
+//! or writers that can reenter it; sequential borrows within an event are valid.
+//!
+//! Fixed-capacity tables are bounded `Vec`s with caps in [`caps`]; overflow
+//! is fail-logged, never a silent grow. Cross-table references are indices
+//! into the owning `Vec` — the safe-Rust way to reference sibling state
+//! without self-borrowing.
 //!
 //! # The game facts the model relies on
 //!

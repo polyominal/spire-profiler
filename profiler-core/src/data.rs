@@ -1,9 +1,5 @@
 //! The data layer — combat facts, attribution, and the persisted JSON
-//! model. Engine-free: nothing here knows the engine exists. All mutable
-//! state sits in the thread-local [`state::STATE`] `RefCell<State>`;
-//! [`events`] holds the borrow once while mutating and emitting the
-//! gameplay event trace; the `profiler.log` sink owns its destination and
-//! never re-enters [`state::STATE`].
+//! model. Engine-free: nothing here knows the engine exists.
 //!
 //! # The attribution model
 //!

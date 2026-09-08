@@ -1,9 +1,6 @@
 //! The event surface: the `spire_profiler_*` export bodies as plain `pub fn`s
 //! taking Rust types; `abi.rs` wraps these in the C signatures.
 //!
-//! Borrowing discipline: every event holds the STATE borrow while mutating
-//! and may emit a trace line immediately; the `profiler.log` sink owns its
-//! path and never re-enters STATE.
 //! TODO: extend steady-state allocation freedom from trace emission to the
 //! event-state representation.
 

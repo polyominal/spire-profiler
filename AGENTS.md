@@ -5,8 +5,8 @@
 1. **The game must never crash because of us.** A panic unwinding across the C
    ABI, an OOB index, or corrupted state crashes the player's game. Every
    boundary discipline below follows from this.
-2. **Bugs must reproduce.** Seeded determinism in tests; no wall-clock or
-   HashMap-iteration-order dependence in logic.
+2. **Bugs must reproduce.** Seed randomized tests; gameplay calculations must
+   not depend on wall-clock time or HashMap iteration order.
 3. **The best code is no code.** Delete before you abstract. A feature that is
    gone leaves no maintenance surface; an unused abstraction is worse than none.
 
@@ -91,11 +91,13 @@ comments or docs.
 
 ## State and borrowing
 
-- All mutable state lives in one thread-local `RefCell<State>`; the game's logic
-  loop is single-threaded. No locks or atomics.
-- Hold one `borrow_mut` per event. The log sink owns a separate thread-local, so
-  logging while the state borrow is held is safe; the sink must never re-borrow
-  `STATE`.
+- Keep live combat/run data in `State` under
+  [state.rs](profiler-core/src/data/state.rs)'s borrowing contract; independent
+  mutable state stays with its lifetime owner. No locks or atomics for
+  gameplay-state coordination; engine initialization and tests may use them.
+- Logging under a state guard follows the [log
+  sink](profiler-core/src/data/persistence/log.rs)'s no-`STATE`-reentry
+  contract.
 - Fixed-capacity tables are bounded `Vec`s with caps named in `caps`: overflow
   fails loudly via `fail`, never grows the table silently, never panics. Give
   every cap a one-line rationale.
@@ -161,10 +163,10 @@ manual re-verification:
 - Test behavior and invariants, not language semantics: delete a test that can
   only fail when the implementation is deliberately broken (Default is zero,
   clone equals original, serde renames).
-- [sim.rs](profiler-core/tests/sim.rs) is the workhorse: a seeded deterministic
-  walk that re-checks the ledger invariants after every event, so any regression
-  reproduces byte-for-byte via `SIM_SEED`. Extend the walk when adding
-  mechanics.
+- [sim.rs](profiler-core/tests/sim.rs) is the workhorse: a seeded walk that
+  re-checks the ledger invariants after every event. `SIM_SEED` replays events
+  and behavioral assertions under equivalent isolated fixtures; its header
+  defines the timestamp limits. Extend the walk when adding mechanics.
 - Property tests compare against an independent naive model, not the
   implementation itself.
 - Insta snapshots pin the persisted JSON byte-for-byte; accept updates only with
@@ -197,6 +199,7 @@ manual re-verification:
 
 ## `tmp/` directory
 
-`tmp/` is git-ignored scratch space for machine-local files. It may not exist;
-never reference it from source code, though its contents may be discussed with
-the user.
+`tmp/` is git-ignored scratch space for machine-local files and may not exist.
+The shipped profiler must not depend on repository scratch. Tests and xtask may
+use it with explicit setup and cleanup/retention ownership. Headless and
+decompile use fixed paths: do not run concurrent invocations of either command.

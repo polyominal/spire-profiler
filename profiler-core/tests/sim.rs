@@ -1,12 +1,13 @@
 //! Deterministic randomized simulation of the profiler core, inspired by
 //! TigerBeetle's VOPR:
 //! https://github.com/tigerbeetle/tigerbeetle/blob/97c7a8ef385270ebe0e1b75959d3d21d134629df/docs/internals/vopr.md
-//! A seeded PRNG feeds every scenario; `SIM_SEED` overrides the default so a
-//! failing run replays exactly: the same event stream, the same assertion
-//! failure. Combat start times are the one nondeterminism (the wall clock
-//! stamps them) and no assertion reads them. The lifecycle walk runs 20
-//! scenarios x 40 weighted events in a fresh dir, re-checking ledger
-//! invariants (segment sums, sign constraints, combat totals, queue bounds)
+//! A seeded PRNG feeds every scenario; `SIM_SEED` replays the event stream
+//! and behavioral assertions under equivalent isolated fixtures. Combat
+//! `started_at` and run `ended_at` use the wall clock; assertions do not
+//! depend on their values, so persisted bytes may differ. The lifecycle
+//! walk fixes the original run-start identity and runs 20 scenarios x 40
+//! weighted events in fresh directories, re-checking ledger invariants
+//! (segment sums, sign constraints, combat totals, queue bounds)
 //! after every event, then parses the JSON back; the block-pool test does
 //! the same against an independent naive FIFO model.
 //!
