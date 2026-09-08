@@ -197,9 +197,7 @@ pub fn combat_started(encounter_id: &str, encounter_type: &str) {
     }
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
-        // Init seeds at the store's highest id, so this pre-increment
-        // makes the new combat's id max+1.
-        state.next_combat_id += 1;
+        state.current = None;
         // Per-player transient state clears wholesale at the boundary.
         state.per_player.clear();
         ledger::clear_all_fallbacks_in(&mut state);
@@ -212,7 +210,11 @@ pub fn combat_started(encounter_id: &str, encounter_type: &str) {
         state.debuff_layers.clear();
         state.str_reductions.clear();
         state.enemy_hit = None;
-        let seq = state.next_combat_id;
+        let Some(seq) = state.next_combat_id.checked_add(1) else {
+            fail!("combat IDs exhausted; combat not started");
+            return;
+        };
+        state.next_combat_id = seq;
         state.current = Some(Combat {
             seq,
             encounter_id: encounter_id.to_owned(),

@@ -41,17 +41,15 @@ pub fn run_started(
         fail!("run_started called before init");
         return;
     }
-    let start_time = if start_time < 0 {
+    if start_time < 0 {
         fail!("invalid run start time {start_time}; clamping to unknown");
-        0
-    } else {
-        start_time
-    };
+    }
+    let start_time = start_time.max(0);
     if let Some(ended) = take_ended_run(RunOutcome::Defeat) {
         // Closing with 0 would fabricate a win.
         record_ended_run(&ended);
     }
-    let (seq, resumed_seq) = STATE.with(|cell| {
+    let Some((seq, resumed_seq)) = STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         let resumed = (continued != 0)
             .then(|| {
@@ -64,10 +62,6 @@ pub fn run_started(
                 )
             })
             .flatten();
-        // The run id comes from the store, not a session counter.
-        let seq = resumed.unwrap_or_else(|| {
-            crate::data::run_history::next_run_id(&state.runs_path_full, &state.runs_dir_full)
-        });
         // Fresh run: the accumulator starts over. The player filter
         // resets too — the avatar row only ever lists the current
         // roster, so a slot from a previous run's roster would strand
@@ -76,7 +70,14 @@ pub fn run_started(
         state.run_turns = 0;
         state.run_combats = 0;
         state.player_filter = state::PlayerFilter::All;
-        let roster = parse_roster(character_ids, net_ids);
+        // Exact continuation remains valid when fresh IDs are exhausted.
+        let Some(seq) = resumed.or_else(|| {
+            crate::data::run_history::next_run_id(&state.runs_path_full, &state.runs_dir_full)
+        }) else {
+            state.current = None;
+            fail!("run IDs exhausted; run not started");
+            return None;
+        };
         state.run_ctx = Some(RunContext {
             run: RunSnapshot {
                 seq,
@@ -87,10 +88,12 @@ pub fn run_started(
                 profile: state.run_profile,
                 started_at: start_time,
             },
-            players: roster,
+            players: parse_roster(character_ids, net_ids),
         });
-        (seq, resumed)
-    });
+        Some((seq, resumed))
+    }) else {
+        return;
+    };
     // The accumulator rebuild re-borrows STATE, so the start line waits.
     if let Some(seq) = resumed_seq {
         let (combats, turns) = crate::data::persistence::rebuild_run_accumulator(seq);

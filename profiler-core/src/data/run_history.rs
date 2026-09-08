@@ -205,7 +205,7 @@ pub(crate) fn continued_run_id(
 
 /// An abandoned run leaves its directory but no entry, so the directory
 /// name reserves the id; `runs/0/` never counts.
-pub(crate) fn next_run_id(runs_path: &Path, runs_dir: &Path) -> u32 {
+pub(crate) fn next_run_id(runs_path: &Path, runs_dir: &Path) -> Option<u32> {
     let runs_max = load_runs(runs_path)
         .iter()
         .map(|entry| entry.run_id)
@@ -220,7 +220,7 @@ pub(crate) fn next_run_id(runs_path: &Path, runs_dir: &Path) -> u32 {
                 .unwrap_or(0)
         })
         .unwrap_or(0);
-    runs_max.max(dirs_max).saturating_add(1)
+    runs_max.max(dirs_max).checked_add(1)
 }
 
 fn ensure_loaded() {

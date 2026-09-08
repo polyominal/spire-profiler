@@ -19,6 +19,8 @@
 //! max+1 over `runs.jsonl` records and the store's run directory names (an
 //! abandoned run leaves its directory but no record line); a continued run
 //! rejoins only a unique exact (profile, seed, original StartTime) identity.
+//! Both allocate through `u32::MAX`, then fail-log and refuse fresh starts
+//! without wrapping or reusing an ID; exact run continuation still works.
 //!
 //! # On-disk formats
 //!

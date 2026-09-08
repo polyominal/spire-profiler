@@ -186,7 +186,7 @@ with each fix.
       surviving outer context through observable ABI tests.
 - [x] Persist the full run identity (profile, seed, original start time) and
       rejoin exactly across suspension; test same-seed profiles and replays.
-- [ ] Use checked combat/run ID allocation; verify debug and release behavior
+- [x] Use checked combat/run ID allocation; verify debug and release behavior
       and prevent record reuse.
 - [ ] Propagate persistence write outcomes so success markers require a
       successful write; exercise filesystem failures.
@@ -361,6 +361,58 @@ snapshots unless a concrete replacement is stronger.
   the limit (exit 1 with a named error).
 
 ## Session log
+
+### 2026-09-09: exhausted IDs reject fresh starts safely
+
+Corrective pass, fourth item. Combat and run allocation accept `u32::MAX`,
+then fail-log and reject fresh starts instead of overflowing or reusing MAX.
+Combat rejection retains the interrupted-combat flush, clears the active
+combat and per-combat transients, and preserves open context scopes. Run
+rejection closes the previous run normally, clears stale combat, totals, and
+player selection, and creates no new run context or success-start log. Exact
+continuation of the final run still rebuilds its accumulator; combat recording
+outside a run remains available. The persistence module owns the two-line
+exhaustion contract. No extra flags or global recording disable were added.
+
+Five new behavioral regressions cover:
+
+- Empty, interrupted, and completed final combats, repeated failed starts,
+  transient cleanup, balanced context scopes, and unchanged persisted bytes.
+- Initialization from a MAX combat filename with corrupt contents, preventing
+  wrapped allocation and overwrites without depending on JSON decoding.
+- Exhaustion from either run records or directory names, previous-run closure,
+  stale-state cleanup, record preservation, and later out-of-run recording.
+- Allocation of the final run ID, failed fresh and mismatched continuation,
+  exact continuation after restart, and rebuilding only that run's totals.
+- Both run-allocation maxima at MAX-1 and MAX, catching saturation and an
+  allocator that ignores either source. Existing allocator expectations now
+  reflect its fallible return type.
+
+Mutation checks restored unchecked combat addition and saturating run
+allocation temporarily: all four then-new tests failed in both debug and
+release. Debug exposed the overflow; release detected combat ID 0; both
+detected reused run MAX. The mutations were removed. The combined combat test
+was subsequently split into live-transition and initialization cases to meet
+the function-length gate; equivalent run-start syntax was shortened without a
+lint allowance.
+
+Independent reviewer verdict: SHIP. Gates run: `cargo fmt --all`, workspace
+Clippy with warnings denied, targeted Nextest (19/19 after final cleanup),
+focused release Nextest (9/9 independently), `cargo xtask smoke` (345/345,
+38 ABI bindings, private rustdoc clean, density 10.8%), `cargo xtask fmt-md`,
+and `git diff --check`. Em-dash pins remain 40 files / 131 dashes. Scope outside
+this scratchpad: 306 changed lines, net +258, including the new regression
+module. No schema, snapshot, production unsafe, ABI, dependency, engine,
+registration, or shim changes; no live-game or headless run was needed.
+
+Smoke exposed an unrelated reproducibility defect: `unique_dir` combines a PID
+and process-local counter but accepts an existing directory. A reused PID read
+old run-43 files in `same_seed_replays_never_collide`, yielding max ID 4 instead
+of 2. File timestamps confirmed the leftovers preceded the failing run. The
+fixtures were preserved in `tmp/unique-before-id-verification`; smoke passed
+with a fresh `tmp/unique`. Fix atomic directory reservation and review fixture
+isolation in the queued reproducibility item. Persistence write outcomes remain
+the next corrective item, after the human commit.
 
 ### 2026-09-09: full run identity persists across suspension
 

@@ -129,12 +129,12 @@ fn next_run_id_advances_past_runs_file_and_run_dirs() {
     );
     assert_eq!(
         next_run_id(&data.join("runs.jsonl"), &data.join("runs")),
-        13
+        Some(13)
     );
     let empty = wiped_dir("next-run-id-empty");
     assert_eq!(
         next_run_id(&empty.join("runs.jsonl"), &empty.join("runs")),
-        1
+        Some(1)
     );
 }
 
@@ -145,13 +145,39 @@ fn next_run_id_reserves_abandoned_run_dirs() {
     fs::create_dir_all(data.join("runs/12")).unwrap();
     assert_eq!(
         next_run_id(&data.join("runs.jsonl"), &data.join("runs")),
-        13
+        Some(13)
     );
     fs::create_dir_all(data.join("runs/profile-1")).unwrap();
     assert_eq!(
         next_run_id(&data.join("runs.jsonl"), &data.join("runs")),
-        13
+        Some(13)
     );
+}
+
+#[test]
+fn next_run_id_checks_both_maxima_for_exhaustion() {
+    for source in ["record", "directory"] {
+        for reserved in [u32::MAX - 1, u32::MAX] {
+            let data = wiped_dir(&format!("next-run-id-{source}-{reserved}"));
+            if source == "record" {
+                fs::write(
+                    data.join("runs.jsonl"),
+                    format!(r#"{{"run_id":{reserved}}}"#),
+                )
+                .unwrap();
+            } else {
+                fs::create_dir_all(data.join("runs").join(reserved.to_string())).unwrap();
+            }
+            assert_eq!(
+                next_run_id(&data.join("runs.jsonl"), &data.join("runs")),
+                if reserved == u32::MAX {
+                    None
+                } else {
+                    Some(u32::MAX)
+                }
+            );
+        }
+    }
 }
 
 #[test]

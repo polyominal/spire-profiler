@@ -9,6 +9,7 @@ use crate::test_util::{combat_ids, wiped_dir};
 
 mod card;
 mod combat;
+mod ids;
 mod orb_potion;
 mod power;
 mod run;
