@@ -26,11 +26,6 @@ const EM_DASH: char = '\u{2014}';
 /// Hand-curated ceilings, one per file with a nonzero count. A pin only
 /// descends: reword instead of raising, and delete the entry at zero.
 const PINS: &[(&str, usize)] = &[
-    ("AGENTS.md", 2),
-    ("README.md", 1),
-    ("docs/game.md", 15),
-    ("docs/gdextension.md", 14),
-    ("docs/verify.md", 4),
     ("profiler-core/src/abi.rs", 11),
     ("profiler-core/src/data.rs", 13),
     ("profiler-core/src/data/events/card.rs", 2),
