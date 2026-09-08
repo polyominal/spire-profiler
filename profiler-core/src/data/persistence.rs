@@ -89,6 +89,9 @@
 //! crash-durability. [`MAX_JSON_SIZE`] (64 MiB) caps one document in both
 //! directions — the writer refuses a too-large record and [`read_file`]
 //! refuses one.
+//! Combat/run writers return true, report success, and invalidate history
+//! only after rename succeeds. Finished combats merge into their active
+//! run's live totals even on write failure; lifecycle events never retry.
 //!
 //! [`read_file`] keeps “missing” separate from “unreadable” (an empty file
 //! is a state, not an error) and validates UTF-8, so the runs.jsonl rewrite

@@ -188,7 +188,7 @@ with each fix.
       rejoin exactly across suspension; test same-seed profiles and replays.
 - [x] Use checked combat/run ID allocation; verify debug and release behavior
       and prevent record reuse.
-- [ ] Propagate persistence write outcomes so success markers require a
+- [x] Propagate persistence write outcomes so success markers require a
       successful write; exercise filesystem failures.
 - [ ] Reject non-finite scroll input, keep accumulation finite, and clear
       pending input while hidden; test recovery and hide/reopen behavior.
@@ -361,6 +361,63 @@ snapshots unless a concrete replacement is stronger.
   the limit (exit 1 with a named error).
 
 ## Session log
+
+### 2026-09-09: persistence success follows the write outcome
+
+Corrective pass, fifth item. Combat and run writers propagate the atomic
+writer's boolean outcome. Only a completed rename returns true, invalidates
+history, or emits a success event log. The events layer conditions its
+"summary written" and "recorded" console markers on that result; their text
+stays unchanged for the headless gate. Empty runs and unreadable history also
+return false, so neither can produce a false recorded marker.
+
+Live run totals advance independently of disk success. The combat merge moves
+before directory creation so early and late failures behave alike. Normal
+combat completion remains finished, interrupted completion advances to the
+next combat, and run closure still takes the context. Repeated lifecycle
+events neither retry failed writes nor double-count totals. The canonical
+write protocol gains three lines defining these outcomes; the history cache
+doc now says successful writes invalidate it.
+
+Six new regressions cover distinct failures:
+
+- Atomic-file failures preserve old content when a parent component, temporary
+  path, or rename destination blocks the write; failed rename cleans up its
+  temporary file.
+- Oversized combat JSON returns false without a record or success log.
+- Appending a run beyond the JSON cap preserves the existing history bytes
+  and returns false without a success log or temporary file.
+- Normal combat completion exercises runs-directory, run-parent, temporary
+  creation, and rename failures, then a successful independent combat.
+- Interrupted completion exercises the same failure stages while advancing
+  the combat lifecycle and merging live totals exactly once.
+- Run closure exercises empty-run skip, unreadable history, and temporary
+  creation failure, then a successful independent run. Cache priming before
+  the successful close pins the transition from unknown outcome to Victory.
+
+The three lifecycle tests capture real stderr through a shared subprocess
+runner, check absent failure markers and exact recovery marker counts, and
+assert preserved files, live totals, cache state, and no implicit retry.
+Positive marker counts also reject a child invocation that runs zero tests.
+Existing success, empty-run, and unreadable-history tests now assert the
+writer result, with failure-side success-log checks added.
+
+Independent reviewer verdict: SHIP. Gates run: `cargo fmt --all`,
+`cargo xtask fmt-md`, targeted Nextest (60/60 before the final test split,
+then 3/3 revised lifecycle tests), profiler-core Clippy, `cargo xtask smoke`
+(351/351, workspace Clippy and private rustdoc clean, 38 ABI bindings,
+density 10.7%), independent focused release Nextest (10/10), and
+`git diff --check`. Em-dash pins remain 40 files / 131 dashes. Scope outside
+this scratchpad: 320 changed lines across nine files, net +260. No new lint
+allowances, schema/snapshot changes, atomic-write mechanism changes, unsafe,
+ABI, dependency, engine, registration, or shim changes.
+
+Filesystem failure execution covers the Linux host; Windows/macOS filesystem
+runtime and live-game/headless execution were not exercised. Before smoke,
+the old PID-based fixtures were preserved in
+`tmp/unique-before-write-verification` to avoid the previously diagnosed
+fixture collision; the helper fix remains queued. Next item: finite scroll
+input and hidden-panel pending-input cleanup, after the human commit.
 
 ### 2026-09-09: exhausted IDs reject fresh starts safely
 

@@ -177,6 +177,26 @@ mod tests {
     }
 
     #[test]
+    fn write_file_failures_preserve_existing_content() {
+        let dir = crate::test_util::wiped_dir("write-file-failures");
+        let path = dir.join("f.json");
+        let tmp = dir.join("f.json.tmp");
+        fs::write(&path, "old").unwrap();
+        assert!(!write_file(&path.join("child"), "new"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "old");
+        fs::create_dir(&tmp).unwrap();
+        assert!(!write_file(&path, "new"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "old");
+        fs::remove_dir(&tmp).unwrap();
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        fs::write(path.join("old"), "preserved").unwrap();
+        assert!(!write_file(&path, "new"));
+        assert_eq!(fs::read_to_string(path.join("old")).unwrap(), "preserved");
+        assert!(!tmp.exists(), "failed rename cleans up its temporary file");
+    }
+
+    #[test]
     fn read_file_missing_vs_empty() {
         let dir = unique_dir("read");
         assert!(matches!(

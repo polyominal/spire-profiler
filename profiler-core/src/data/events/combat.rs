@@ -563,9 +563,10 @@ pub fn combat_ended() {
         });
         Some(combat.clone())
     });
-    if let Some(combat) = staged {
+    if let Some(combat) = staged
+        && write_combat_file(&combat)
+    {
         let seq = combat.seq;
-        write_combat_file(&combat);
         marker!("combat {seq} summary written");
     }
 }

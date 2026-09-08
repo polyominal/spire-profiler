@@ -14,6 +14,7 @@ mod orb_potion;
 mod power;
 mod run;
 mod self_test;
+mod writes;
 
 /// The standard test opening: a wiped data dir, a fresh core, and a
 /// running combat. The encounter id doubles as the wiped-dir label, so

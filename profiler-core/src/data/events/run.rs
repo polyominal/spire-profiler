@@ -133,12 +133,13 @@ fn take_ended_run(outcome: RunOutcome) -> Option<EndedRun> {
 }
 
 fn record_ended_run(ended: &EndedRun) {
-    write_run_record(ended);
-    marker!(
-        "run {} recorded ({})",
-        ended.context.run.seq,
-        ended.outcome.name()
-    );
+    if write_run_record(ended) {
+        marker!(
+            "run {} recorded ({})",
+            ended.context.run.seq,
+            ended.outcome.name()
+        );
+    }
 }
 
 struct RosterLog<'a>(&'a [RunPlayer]);

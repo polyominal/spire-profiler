@@ -35,8 +35,8 @@
 //!   instead of closing (the reason cannot distinguish save&quit from quit-without-save).
 //!
 //! The cache parses `runs.jsonl` and the combat store once per data-dir
-//! path pair per process, invalidated by any mid-session combat or run
-//! write.
+//! path pair per process, invalidated by successful mid-session combat or
+//! run writes.
 
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
