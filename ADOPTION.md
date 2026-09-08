@@ -162,7 +162,7 @@ Additional operating rules:
 ### 1. Gate wiring
 
 - [x] Add `check-abi` and `check-docs` to `smoke`.
-- [ ] Add `--locked` to Cargo doc, clippy, nextest, and zigbuild invocations.
+- [x] Add `--locked` to Cargo doc, clippy, nextest, and zigbuild invocations.
 - [ ] Consider explicit Nextest `--no-fail-fast`.
 - [ ] Add profiler-core lints for direct printing and production `unwrap`.
 - [ ] Add a targeted em-dash ratchet for Markdown and Rust comments.
@@ -248,12 +248,41 @@ snapshots unless a concrete replacement is stronger.
   mandated no-migrations with old data deleted; the additive-only contract
   in the persistence and records module docs was the contradiction and now
   frames parse leniency as boundary robustness instead.
+- `--locked` scope: kept on the workspace gate invocations despite Codex
+  limiting the flag to `cargo install`. Codex enforces workspace lockfile
+  freshness with a CI clean-worktree gate; this branch has no CI and smoke
+  runs on dirty worktrees, so the flag is the local equivalent.
 - Comment budget enforcement: resolved as a hard gate. AGENTS.md states the
   budget as mandatory; check-docs now fails above 15% after printing the
   offender report, and the breach path was verified by temporarily lowering
   the limit (exit 1 with a named error).
 
 ## Session log
+
+### 2026-09-08: --locked usage validated against the Codex comparison
+
+Consulted the pinned Codex checkout for its `--locked` practice via a
+read-only subagent. Codex passes `--locked` only to `cargo install` of
+third-party tools (this repo's install specs already do) and never to
+workspace build/test/clippy/nextest; lockfile freshness is instead enforced
+by a CI clean-worktree gate that fails when cargo rewrites Cargo.lock. That
+mechanism does not transfer: this branch has no CI and smoke must pass on
+dirty worktrees, so the flags on the gate invocations are the local
+equivalent and stay. No code changed. One corroboration for the next Stage 1
+item: Codex's nextest invocations pass `--no-fail-fast`.
+
+### 2026-09-08: cargo invocations run with --locked
+
+Stage 1, item 2. `cargo doc` (check-docs), `cargo clippy` and `cargo nextest`
+(smoke), and `cargo zigbuild` (the cross build) now pass `--locked`, so a gate
+fails instead of silently resolving against a stale Cargo.lock; verify.md's
+smoke step list names the new flags. The zigbuild invocation is
+compile-checked but not run end-to-end here (it needs the zig and dotnet
+bootstraps); the installed cargo-zigbuild's help lists `--locked`. Gates run:
+`cargo xtask smoke` (325/325, density 11.5%, 38 bindings). Also restored the
+comrak-canonical two-space blank line before the settings.save fence in
+verify.md: something stripped it after the last session, leaving HEAD failing
+`fmt-md --check`.
 
 ### 2026-09-08: smoke runs the ABI and doc gates
 

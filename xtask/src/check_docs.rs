@@ -32,7 +32,7 @@ const DEFAULT_TOP_OFFENDERS: usize = 10;
 pub fn check_docs(shell: &Shell, top_offenders: Option<usize>) -> Result<()> {
     // A rustdoc warning is a doc bug; -D warnings turns every one (broken
     // links, HTML tags, unresolved names) into a hard failure.
-    cmd!(shell, "cargo doc --workspace --no-deps")
+    cmd!(shell, "cargo doc --workspace --no-deps --locked")
         .env("RUSTDOCFLAGS", "-D warnings")
         .run()
         .context("while attempting to run the cargo doc gate")?;

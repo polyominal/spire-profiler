@@ -10,8 +10,9 @@ layout and discovery live in `game.md`.
   --check`, the markdown wrap check (`fmt-md --check`), the citation check
   (`check-citations`), the ABI check (`check-abi`: shim `GetExport` bindings
   against the Rust exports), `cargo clippy --workspace --all-targets
-  --all-features -- --deny warnings`, the doc gate (`check-docs`: warning-free
-  `cargo doc` and the comment-density budget), `cargo nextest run --workspace`.
+  --all-features --locked -- --deny warnings`, the doc gate (`check-docs`:
+  warning-free `cargo doc` and the comment-density budget), `cargo nextest run
+  --workspace --locked`.
 - `cargo xtask headless-test` PASS — at least the shim's expected number of
   patched Harmony methods (`MIN_PATCHES`, derived from the attribution catalog
   plus the fixed class-level and orb groups), no unexpected `[SpireProfiler]`
@@ -35,7 +36,7 @@ verifies lives in `game.md`.
   that is `~/Library/Application Support/SlayTheSpire2/default/1/settings.save`.
   Mod loading requires `mod_settings.mods_enabled: true` there (the consent
   model is described in `game.md`); the one-time enable (macOS):
-
+  
   ```sh
   python3 -c "import json,os; p=os.path.expanduser('~/Library/Application Support/SlayTheSpire2/default/1/settings.save'); d=json.load(open(p)); d.setdefault('mod_settings',{})['mods_enabled']=True; json.dump(d,open(p,'w'))"
   ```

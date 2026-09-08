@@ -250,11 +250,11 @@ fn smoke(shell: &Shell) -> Result<()> {
     check_abi::run()?;
     cmd!(
         shell,
-        "cargo clippy --workspace --all-targets --all-features -- --deny warnings"
+        "cargo clippy --workspace --all-targets --all-features --locked -- --deny warnings"
     )
     .run()?;
     check_docs::check_docs(shell, None)?;
-    cmd!(shell, "cargo nextest run --workspace").run()?;
+    cmd!(shell, "cargo nextest run --workspace --locked").run()?;
     Ok(())
 }
 
