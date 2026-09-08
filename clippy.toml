@@ -1,2 +1,4 @@
 # The function-body code-line budget enforced by clippy's `too_many_lines` lint.
 too-many-lines-threshold = 70
+# Tests unwrap freely; production code uses expect with a reason instead.
+allow-unwrap-in-tests = true

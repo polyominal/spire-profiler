@@ -164,7 +164,7 @@ Additional operating rules:
 - [x] Add `check-abi` and `check-docs` to `smoke`.
 - [x] Add `--locked` to Cargo doc, clippy, nextest, and zigbuild invocations.
 - [x] Consider explicit Nextest `--no-fail-fast`.
-- [ ] Add profiler-core lints for direct printing and production `unwrap`.
+- [x] Add profiler-core lints for direct printing and production `unwrap`.
 - [ ] Add a targeted em-dash ratchet for Markdown and Rust comments.
 
 ### 2. Context economy
@@ -258,6 +258,22 @@ snapshots unless a concrete replacement is stronger.
   the limit (exit 1 with a named error).
 
 ## Session log
+
+### 2026-09-08: print and unwrap lints, Codex layout
+
+Stage 1, item 4. Adopted Codex's two-mechanism split (confirmed by a
+read-only subagent against the pinned checkout): `unwrap_used = "deny"`
+joined the workspace lints table both crates inherit, and
+`#![deny(clippy::print_stdout, clippy::print_stderr)]` went to
+profiler-core's crate root — printing policy is per-crate, and xtask is the
+CLI that prints deliberately. clippy.toml gained `allow-unwrap-in-tests`,
+which excuses every existing test unwrap; no production unwrap existed.
+`emit`'s writeln through a StderrLock did not trip print_stderr, so no
+`#[expect]` exception was needed. Both denies were verified live by injecting
+an eprintln! and a production unwrap into lib.rs: clippy failed naming both
+lints; the probe was then removed. `expect_used` deliberately stays allowed —
+AGENTS.md sanctions expect over unwrap. Gates run: `cargo xtask smoke`
+(325/325, density 11.5%).
 
 ### 2026-09-08: nextest runs with --no-fail-fast
 

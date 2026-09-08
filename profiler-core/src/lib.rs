@@ -62,6 +62,9 @@
 // which only resolve under `--document-private-items`.
 #![deny(rustdoc::broken_intra_doc_links)]
 #![allow(rustdoc::private_intra_doc_links)]
+// `emit` below is the single sanctioned console writer; the deny keeps every
+// other path off the player's terminal.
+#![deny(clippy::print_stdout, clippy::print_stderr)]
 
 use std::cell::Cell;
 use std::fmt;
