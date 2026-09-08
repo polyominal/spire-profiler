@@ -12,7 +12,7 @@ layout and discovery live in `game.md`.
   against the Rust exports), `cargo clippy --workspace --all-targets
   --all-features --locked -- --deny warnings`, the doc gate (`check-docs`:
   warning-free `cargo doc` and the comment-density budget), `cargo nextest run
-  --workspace --locked`.
+  --workspace --locked --no-fail-fast`.
 - `cargo xtask headless-test` PASS — at least the shim's expected number of
   patched Harmony methods (`MIN_PATCHES`, derived from the attribution catalog
   plus the fixed class-level and orb groups), no unexpected `[SpireProfiler]`

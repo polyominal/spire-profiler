@@ -254,7 +254,11 @@ fn smoke(shell: &Shell) -> Result<()> {
     )
     .run()?;
     check_docs::check_docs(shell, None)?;
-    cmd!(shell, "cargo nextest run --workspace --locked").run()?;
+    cmd!(
+        shell,
+        "cargo nextest run --workspace --locked --no-fail-fast"
+    )
+    .run()?;
     Ok(())
 }
 
