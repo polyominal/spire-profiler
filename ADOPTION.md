@@ -151,13 +151,13 @@ Additional operating rules:
 
 ### 0. Resolve contradictory contracts
 
-- [ ] Choose persistence policy: disposable WIP data or additive-only records.
-- [ ] Make the 15% Rust comment-density threshold a hard gate, or document the
+- [x] Choose persistence policy: disposable WIP data or additive-only records.
+- [x] Make the 15% Rust comment-density threshold a hard gate, or document the
       existing behavior as a checkpoint warning.
-- [ ] Make `SIM_SEED` parsing fail loudly on malformed input.
-- [ ] Make simulation start times deterministic or weaken the byte-for-byte
+- [x] Make `SIM_SEED` parsing fail loudly on malformed input.
+- [x] Make simulation start times deterministic or weaken the byte-for-byte
       reproducibility claim.
-- [ ] Include seed and scenario in simulation failure messages.
+- [x] Include seed and scenario in simulation failure messages.
 
 ### 1. Gate wiring
 
@@ -244,11 +244,71 @@ snapshots unless a concrete replacement is stronger.
 - Codex topology: rejected. Keep the profiler-core and xtask split only.
 - Broad Unicode ban: rejected for now. Start with an em-dash ratchet and an
   explicit runtime-glyph allowlist.
-- Persistence evolution: open. Resolve before schema cleanup.
-- Comment budget enforcement: open. The implementation warns; the policy says
-  mandatory.
+- Persistence evolution: resolved as disposable WIP data. AGENTS.md already
+  mandated no-migrations with old data deleted; the additive-only contract
+  in the persistence and records module docs was the contradiction and now
+  frames parse leniency as boundary robustness instead.
+- Comment budget enforcement: resolved as a hard gate. AGENTS.md states the
+  budget as mandatory; check-docs now fails above 15% after printing the
+  offender report, and the breach path was verified by temporarily lowering
+  the limit (exit 1 with a named error).
 
 ## Session log
+
+### 2026-09-08: persistence policy resolved
+
+Stage 0, item 1. Chose disposable WIP data per the standing AGENTS.md policy
+and rewrote the contradicting additive-only contract in the `persistence`
+module doc, the `records` module doc, and one test comment; removed a field
+doc that only restated the schema's zero-omission rule. Documentation-only
+change, no behavior touched. Gates run: `cargo xtask smoke` (325/325) and
+`cargo xtask check-docs` (rustdoc clean, density 11.5%). Remaining risk:
+none identified; the decision is reversible by editing the same docs.
+
+### 2026-09-08: comment-density gate made hard
+
+Stage 0, item 2. check-docs warned instead of failing while AGENTS.md states
+the 15% budget as mandatory; exceeding it is now an error after the offender
+report prints. Gates run: `cargo xtask check-docs` (passes at 11.5%, breach
+path verified with a temporarily lowered limit) and `cargo xtask smoke`
+(325/325).
+
+### 2026-09-08: SIM_SEED fails loudly
+
+Stage 0, item 3. A malformed SIM_SEED silently fell back to the default seed,
+replaying a different walk than the one being debugged; it now panics naming
+the bad value. Verified with SIM_SEED=notanumber (test fails with the new
+message) and a clean `cargo xtask smoke` (325/325).
+
+### 2026-09-08: sim reproducibility claim made precise
+
+Stage 0, item 4. Chose to weaken the claim rather than add clock machinery:
+`combat_started` always wall-clock-stamps the record (the ABI has no combat
+start time) and the walk forwards no run StartTime, so persisted bytes were
+never byte-for-byte reproducible. Nothing in the walk reads a timestamp, so
+the module doc now claims exact replay of the event stream and assertion
+failures, naming persisted start times as the one nondeterminism. `cargo
+xtask smoke` passes (325/325).
+
+### 2026-09-08: sim failure messages carry the repro
+
+Stage 0, item 5. Every sim assert and failure-path panic now leads with a
+repro string ("SIM_SEED=<base> scenario <n>" in the lifecycle walk, the seed
+alone in the block-pool test), so a failure message is enough to replay it.
+Context-free expects in the sim's checkers became panics carrying the same
+prefix. Verified by breaking an invariant under SIM_SEED=42 (message led
+with "SIM_SEED=42 scenario 0 step 0") and reverting; `cargo xtask smoke`
+passes (325/325). One side effect: the block-pool test crossed clippy's
+too-many-lines limit and now carries the file's allow-with-justification
+pattern.
+
+### 2026-09-08: block-pool comparisons iterate deterministically
+
+Review found that the independent block-pool credit model used a HashMap, so
+when multiple credits disagreed the first failing assertion could vary with map
+iteration order. The model now uses a BTreeMap, preserving sorted comparison
+order for a given seed. This completes the exact assertion-failure promise in
+the simulation module doc.
 
 ### 2026-09-08: setup
 
