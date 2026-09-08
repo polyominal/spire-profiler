@@ -27,7 +27,7 @@ const EM_DASH: char = '\u{2014}';
 /// descends: reword instead of raising, and delete the entry at zero.
 const PINS: &[(&str, usize)] = &[
     ("profiler-core/src/abi.rs", 11),
-    ("profiler-core/src/data.rs", 13),
+    ("profiler-core/src/data.rs", 7),
     ("profiler-core/src/data/events/card.rs", 2),
     ("profiler-core/src/data/events/potion.rs", 2),
     ("profiler-core/src/data/events/run.rs", 1),
@@ -43,7 +43,7 @@ const PINS: &[(&str, usize)] = &[
     ("profiler-core/src/engine.rs", 4),
     ("profiler-core/src/engine/gdext.rs", 13),
     ("profiler-core/src/engine/object.rs", 2),
-    ("profiler-core/src/lib.rs", 10),
+    ("profiler-core/src/lib.rs", 5),
     ("profiler-core/src/registration.rs", 2),
     ("profiler-core/src/ui.rs", 2),
     ("profiler-core/src/ui/chart_layout.rs", 7),

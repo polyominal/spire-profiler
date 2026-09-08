@@ -19,25 +19,15 @@
 //! [`data`]'s module doc, the on-disk schema in [`data::persistence`]'s,
 //! and the player-slot model in [`data::state`]'s.
 //!
-//! # Layers
-//!
-//!   * [`abi`] — the `spire_profiler_*` C export surface; one of the three unsafe relaxations of
-//!     the crate-root deny
-//!   * [`registration`] — the composition root for panel classes and instance casts; the second
-//!     relaxation
-//!   * [`data`] — combat facts and the persisted JSON model, engine-free
-//!   * [`engine`] — the hand-rolled GDExtension FFI (the third relaxation) and the local
-//!     Vector2/Rect2/Color stand-ins
-//!   * [`ui`] — the panels and their shared plumbing
-//!
 //! # Standing contracts
 //!
 //! The game must never crash because of the mod: every export routes
 //! through [`crate::abi::contain`], which catches a panic and logs it,
 //! and wire values clamp-and-log instead of panicking. All game state lives in one
 //! thread-local `RefCell<State>` because the game's logic loop is
-//! single-threaded. Unsafe Rust is quarantined in the three modules above,
-//! each with its reason documented. Specs live in the module docs, not in
+//! single-threaded. Unsafe Rust is quarantined in exactly [`abi`],
+//! [`registration`], and [`engine::gdext`], each with its reason documented.
+//! Specs live in the module docs, not in
 //! `docs/`; environment content (building, verification, GDExtension
 //! interop, platform layout) lives in the `docs/` guides. A self-test entry point lets the
 //! host verify the bridge end-to-end under the headless gate.

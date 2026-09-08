@@ -108,6 +108,28 @@ owner's canonical explanation.
 7. Before deleting an uncertain test, name the implementation mutation it is
    expected to catch. If no such mutation exists, delete the test.
 
+## Subagent pairs
+
+Each checklist item (one commit) is executed by an (implementer, reviewer)
+subagent pair; this distributes context pressure and buys independent
+verification. The orchestrating session writes the specs, integrates the
+results, runs the gates, owns this scratchpad, and prompts the human at
+commit boundaries.
+
+- The implementer spec carries the motivation, the standard to apply, the
+  hard constraints (scope, what not to touch, gate requirements), and the
+  deliverable shape.
+- The reviewer is independent: fresh context, never the implementer's
+  reasoning. It sees the original material, the changed material, and the
+  standard, and audits both directions (anything load-bearing lost, any
+  target bloat remaining) plus the mechanics (links, em dashes, diff
+  scope). Verdicts: SHIP, SHIP WITH FIXES, REJECT.
+- SHIP WITH FIXES sends the findings back to the implementer; substantial
+  fixes get a re-review. REJECT starts a fresh implementer round. Reviewer
+  nits below the fix bar are applied by the orchestrator directly.
+- Em-dash pin lowerings in xtask/src/check_emdash.rs ride along in the
+  change that lowers a count.
+
 ## Review and handoff shape
 
 A nontrivial change should be reviewed along six dimensions:
@@ -186,7 +208,7 @@ commands, symbols, and untracked paths stay raw backticks.
       lines for canonical schema, state, and safety owners.
 - [-] Deduplicate the unsafe-quarantine policy.
 - [-] Split generic GDExtension mechanics from empirical environment guidance.
-- [ ] Remove child-module dictionaries from `lib.rs` and `data.rs`.
+- [x] Remove child-module dictionaries from `lib.rs` and `data.rs`.
 - [ ] Remove obvious restatement comments.
 - [x] Delete the README roadmap or move it outside the repository.
 - [ ] Report C# shim comment density before deciding whether to gate it.
@@ -291,6 +313,24 @@ snapshots unless a concrete replacement is stronger.
   the limit (exit 1 with a named error).
 
 ## Session log
+
+### 2026-09-08: subagent-pair practice persisted
+
+The (implementer, reviewer) pair rule is now written into the operating
+rules so future sessions inherit it: independent reviewers with fresh
+context, SHIP / SHIP WITH FIXES / REJECT verdicts, the orchestrator
+integrating and owning the scratchpad.
+
+### 2026-09-08: child-module dictionaries removed
+
+Stage 2, dictionaries item. Implementer subagent deleted lib.rs's `# Layers`
+section and data.rs's dictionary paragraph; the unsafe-quarantine sentence
+now names `abi`, `registration`, `engine::gdext` directly (more accurate
+than the deleted bullet, which credited `engine` broadly). Pins lowered
+10 to 5 (lib.rs) and 13 to 7 (data.rs); the ratchet is at 41 files, 152
+dashes. Independent reviewer verdict: SHIP (scope, completeness, rustdoc,
+and pin actuals all verified). Gates run: `cargo xtask smoke` (331/331,
+density 11.4%).
 
 ### 2026-09-08: README trimmed, roadmap deleted
 

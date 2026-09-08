@@ -5,10 +5,6 @@
 //! gameplay event trace; the `profiler.log` sink owns its destination and
 //! never re-enters [`state::STATE`].
 //!
-//! [`records`] — the persisted record types; [`events`] — the export
-//! bodies; [`ledger`] — attribution mechanics; [`persistence`] — the JSON
-//! files; [`run_history`] — run matching; [`state`] — state types and caps.
-//!
 //! # The attribution model
 //!
 //! Every ledger row carries a [`crate::source_kind::SourceKind`] (also the stored
