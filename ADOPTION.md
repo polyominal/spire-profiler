@@ -211,7 +211,7 @@ commands, symbols, and untracked paths stay raw backticks.
 - [x] Remove child-module dictionaries from `lib.rs` and `data.rs`.
 - [x] Remove obvious restatement comments.
 - [x] Delete the README roadmap or move it outside the repository.
-- [ ] Report C# shim comment density before deciding whether to gate it.
+- [x] Report C# shim comment density before deciding whether to gate it.
 
 ### 3. Mechanical test extraction
 
@@ -299,6 +299,11 @@ snapshots unless a concrete replacement is stronger.
 - Unsafe-quarantine dedupe and the GDExtension mechanics/empirical split:
   absorbed into the AGENTS.md and gdextension.md trims respectively, which
   are the same edits.
+- Shim comment-density gate: not added. The measurement (624 comment /
+  1413 code lines, 30.6%) shows ~89% load-bearing content (marshaling
+  contracts, engine-fork traps, pixel math) and ~0% restatement; a ceiling
+  would punish the project's top-risk documentation, and the file changes
+  only with the patch catalog, so a ratchet would guard a non-target.
 - Em-dash ratchet: loose, not strict. Pins are ceilings that only descend;
   failing on stale pins (check-catalog style) would punish cleanup, the
   behavior the ratchet exists to encourage. The justification is readability
@@ -313,6 +318,21 @@ snapshots unless a concrete replacement is stronger.
   the limit (exit 1 with a named error).
 
 ## Session log
+
+### 2026-09-08: shim comment density reported; no gate
+
+Stage 2, shim-density item. Measurer subagent classified all 2121 lines of
+shim/shim.cs.template (throwaway scanner in tmp/, nothing repo-added): 624
+comment, 1413 code, 84 blank, density 30.6% under the check-docs metric;
+zero block comments, zero trailing comments, zero TODOs. Independent
+verifier confirmed the totals exactly and corrected the secondary claims:
+top clusters are StyleRunButton 43, ModifierDecomposition 37,
+AttachRunPanelTo 33 (doc block plus body, consistent definition), and the
+composition is ~89% load-bearing, ~10% boilerplate (62 XML doc tag lines),
+0.8% banners, ~0% restatement. 181 of 244 members carry no comments; the
+density sits on the trap sites (Harmony-patch correctness, ABI contracts,
+pixel math). Gate decision: none (decision log); a 15% ceiling would have
+to cut mostly load-bearing content.
 
 ### 2026-09-08: obvious restatement comments removed
 
