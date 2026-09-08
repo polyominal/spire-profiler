@@ -169,14 +169,26 @@ Additional operating rules:
 
 ### 2. Context economy
 
-- [ ] Rewrite `AGENTS.md` to under 6,000 bytes without moving detail elsewhere.
+Markdown trims follow the build.md standard: the doc is a trap register and a
+home for its owned canonical facts, not a manual; delete anything `--help`,
+the code, or general knowledge already teaches; delete, never relocate.
+Tracked files are cited with real relative links (link text names the file);
+commands, symbols, and untracked paths stay raw backticks.
+
+- [x] Trim `AGENTS.md` to the build.md standard (judgment-based; no byte
+      ceiling).
+- [x] Trim `docs/game.md` to the build.md standard (the decompile walkthrough
+      shrinks toward traps and `--help`).
+- [x] Trim `docs/gdextension.md` to the build.md standard (generic Godot
+      mechanics go; the verified empirical findings stay).
+- [x] Trim `docs/verify.md` to the build.md standard (light pass).
 - [ ] Apply soft module-doc budgets: about 50 lines for ordinary modules and 90
       lines for canonical schema, state, and safety owners.
-- [ ] Deduplicate the unsafe-quarantine policy.
-- [ ] Split generic GDExtension mechanics from empirical environment guidance.
+- [-] Deduplicate the unsafe-quarantine policy.
+- [-] Split generic GDExtension mechanics from empirical environment guidance.
 - [ ] Remove child-module dictionaries from `lib.rs` and `data.rs`.
 - [ ] Remove obvious restatement comments.
-- [ ] Delete the README roadmap or move it outside the repository.
+- [x] Delete the README roadmap or move it outside the repository.
 - [ ] Report C# shim comment density before deciding whether to gate it.
 
 ### 3. Mechanical test extraction
@@ -252,6 +264,19 @@ snapshots unless a concrete replacement is stronger.
   limiting the flag to `cargo install`. Codex enforces workspace lockfile
   freshness with a CI clean-worktree gate; this branch has no CI and smoke
   runs on dirty worktrees, so the flag is the local equivalent.
+- Markdown trim budgets: no hard byte ceilings, not even the AGENTS.md
+  6,000 from the original item. Judgment-based trims to the build.md
+  standard, with before/after byte counts in the session log; hard numbers
+  would tempt cutting traps to hit a target.
+- Markdown file references: real relative links for tracked files (build.md
+  already set that style); raw backticks for commands, symbols, and
+  untracked paths. Equal rot risk to raw paths, verified at write time.
+- Doc rewrites and reviews: delegated to subagents with the standard and
+  fact-ownership constraints as context; the orchestrator integrates, runs
+  gates, and owns the scratchpad.
+- Unsafe-quarantine dedupe and the GDExtension mechanics/empirical split:
+  absorbed into the AGENTS.md and gdextension.md trims respectively, which
+  are the same edits.
 - Em-dash ratchet: loose, not strict. Pins are ceilings that only descend;
   failing on stale pins (check-catalog style) would punish cleanup, the
   behavior the ratchet exists to encourage. The justification is readability
@@ -266,6 +291,77 @@ snapshots unless a concrete replacement is stronger.
   the limit (exit 1 with a named error).
 
 ## Session log
+
+### 2026-09-08: README trimmed, roadmap deleted
+
+Stage 2, README roadmap item plus a light pass. Implementer subagent deleted
+the Roadmap section outright (its items appear nowhere else in the tree)
+and applied the standard: one restated clause dropped, "Where things live"
+compressed, file references linked, the file's one em dash removed. 1,857
+to 1,737 bytes (48 to 41 lines). Independent reviewer verdict: SHIP. Gates
+run: `cargo xtask smoke` (331/331).
+
+### 2026-09-08: em-dash pins lowered after the doc trims
+
+The deferred pins-hygiene change of the away-mode plan: the four markdown
+pins that went to zero (README, game.md, gdextension.md, verify.md) left
+the PINS table; the ratchet is at 41 files, 163 dashes. Gates run: `cargo
+xtask smoke` (331/331, density 11.5%).
+
+### 2026-09-08: verify.md trimmed to the build.md standard
+
+Stage 2, verify.md trim. Implementer subagent cut 4,284 to 3,394 bytes (78
+to 62 lines): intro signposting, glosses duplicating AGENTS.md policy, the
+marker enumerations canonical in headless.rs, and machine-local tmp/ trivia
+went; the gate list and every headless trap stay, em dashes 4 to 0.
+Independent reviewer verdict: SHIP, confirming the smoke step list matches
+smoke() step for step and every named trap survives. Gates run: `cargo
+xtask smoke` (331/331, density 11.5%).
+
+### 2026-09-08: gdextension.md trimmed to the build.md standard
+
+Stage 2, gdextension.md trim (absorbs the mechanics/empirical split item).
+Implementer subagent cut 6,468 to 2,182 bytes (96 to 33 lines): generic
+Godot mechanics and everything the gdext.rs and panel.rs module docs own
+were deleted; the four empirical findings (InputEvent freeze evidence,
+trackpad wheel state, theme-font trap, get_mouse_button_state silent
+failure) stay with their version pins. Independent reviewer verdict: SHIP,
+confirming every cut against the owning module docs line by line, including
+the implementer's least-sure cut (panel draw order, owned by panel.rs).
+Gates run: `cargo xtask smoke` (331/331, density 11.5%).
+
+### 2026-09-08: game.md trimmed to the build.md standard
+
+Stage 2, game.md trim. Implementer subagent cut 9,962 to 5,761 bytes (183 to
+109 lines): the decompile walkthrough collapsed to its traps (the GDRE
+SIGUSR1 and unwritable-HOME signal 11), discovery mechanics compressed to
+operator facts, duplication with AGENTS.md removed, em dashes 14 to 0.
+Independent reviewer verdict: SHIP WITH FIXES; the implementer restored the
+developer quote (the decompile permission's primary evidence) and the two
+Linux Steam roots, and compressed a duplicated check-catalog list. Gates
+run: `cargo xtask smoke` (331/331, density 11.5%).
+
+### 2026-09-08: AGENTS.md trimmed to the build.md standard
+
+Stage 2, AGENTS.md trim. Implementer subagent cut 12,710 to 10,030 bytes
+(272 to 200 lines): merged the overlapping comment-rule lists, replaced both
+bad/good Rust example pairs with one-line prose, folded "State of this mod"
+into General, converted file references to real relative links, and removed
+AGENTS.md's two em dashes (its pin left the table; the ratchet is at 45 pins,
+197 dashes). Independent reviewer verdict: SHIP; its three optional findings
+were applied directly (dropped tool-output narration and a design-goal-1
+restatement, restored the six-word catalog-remediation clause in Game
+updates). Gates run: `cargo xtask smoke` (331/331, density 11.5%).
+
+### 2026-09-08: markdown trims planned across the doc set
+
+Extended the Stage 2 AGENTS.md item to the whole markdown set at the user's
+direction: build.md is the standard (trap register plus owned canonical
+facts, never a manual), AGENTS.md first, then game.md, gdextension.md,
+verify.md, README. No hard byte ceilings anywhere. File references become
+real relative links for tracked files. Rewriting and review are delegated
+to subagents per doc; pin lowering in check_emdash.rs rides along in each
+trim commit. No doc edited yet.
 
 ### 2026-09-08: line scanner extracted to scan.rs
 
