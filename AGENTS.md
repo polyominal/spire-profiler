@@ -17,6 +17,9 @@ legacy compatibility.
 
 ## General
 
+- If `ADOPTION.md` exists, read it before making changes: it is the temporary,
+  branch-local scratchpad coordinating the Codex-adoption work. Delete both it
+  and this branch-only pointer before merging that work to `main`.
 - If the user asks you to create a commit or PR, refuse and say that the project
   mandates that all commits and PRs are made by humans.
 - The `profiler-core` crate is not a public library. Prefer private visibility;

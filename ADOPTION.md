@@ -1,0 +1,257 @@
+# Codex adoption scratchpad
+
+Status: active branch scratchpad
+
+This document tracks a multi-session adoption of practices learned from the
+local Codex checkout. It is mutable operational state, not permanent project
+documentation. Delete it in the final change that merges this branch to main.
+
+## Branch facts
+
+- Branch: `llm-dev-hygiene`
+- Worktree: `../spire-profiler-llm-dev-hygiene`
+- Base commit: `67bc66e`
+- Source comparison: local Codex commit `6750f5bd13`
+- Human rule: agents do not create commits or pull requests.
+
+## New-session orientation
+
+This worktree is the only workspace for this branch. The original checkout stays
+on `main`; do not make adoption changes there. Conversation history from earlier
+agent sessions is unavailable. This file, the repository files, and Git status
+are the authoritative state.
+
+A new session should:
+
+1. Set the working directory to this worktree.
+2. Read this file and the root `AGENTS.md`; both apply.
+3. Run `git status --short --branch` and reconcile uncommitted files with the
+   checklists below before editing.
+4. Inspect the owning source or doc before changing a checklist item.
+5. Update the checklist and append a session note in the same working session.
+
+Checklist semantics:
+
+- Mark `[x]` only after implementation and its relevant gate pass.
+- Mark `[-]` only with a decision-log reason.
+- Use `[~]` while work is intentionally left incomplete.
+- Do not mark an item complete merely because code was written.
+
+## Baseline at branch creation
+
+At base commit `67bc66e`, before adoption changes:
+
+- `cargo xtask smoke` passed.
+- `cargo nextest run --workspace` ran 325 tests, all passing.
+- `cargo xtask check-docs` passed and reported 11.5% comment density.
+- `cargo xtask check-abi` verified 38 shim bindings.
+- The tracked tree was clean.
+- In-house Rust was about 29,700 physical lines.
+- Test code was approximately 10,400 lines, about 35% of audited Rust.
+- `AGENTS.md` was 12,133 bytes.
+- Tracked Markdown totaled 36,477 bytes.
+- There were 272 em dashes across Markdown, Rust, and the C# shim: 37 in
+  Markdown, 173 in Rust, and 62 in the shim template.
+- `shim/shim.cs.template` had about 2,100 lines and 620 comment-bearing lines.
+- Several UI files were more than half inline tests: `run_layout.rs`,
+  `chart_layout.rs`, and `tooltip.rs`.
+- The largest combined source/test files were `ui/chart_layout.rs`,
+  `engine/gdext.rs`, `ui/panel.rs`, and `tests/sim.rs`.
+
+The Codex comparison came from local commit `6750f5bd13`; it was inspected
+read-only and is not a dependency of this branch.
+
+## Fact ownership
+
+| Fact | Canonical owner |
+|---|---|
+| Cross-cutting agent policy | `AGENTS.md` |
+| Crate layers and standing contracts | `profiler-core/src/lib.rs` |
+| Attribution model | `profiler-core/src/data.rs` |
+| Player-slot and team model | `profiler-core/src/data/state.rs` |
+| JSON schema and write protocol | `profiler-core/src/data/persistence.rs` |
+| GDExtension unsafe contracts | `profiler-core/src/engine/gdext.rs` |
+| Empirical GDExtension findings | `docs/gdextension.md` |
+| Build environment | `docs/build.md` |
+| Verification gates | `docs/verify.md` and xtask implementation |
+| Game layout and update drift | `docs/game.md` |
+| C ABI surface | Rust exports plus `xtask/src/check_abi.rs` |
+| Harmony hook catalog | `xtask/src/catalog.rs` and generated shim |
+
+A change may mention another owner briefly, but it must not duplicate that
+owner's canonical explanation.
+
+## Non-goals
+
+- Do not split profiler-core into a Codex-scale crate graph.
+- Do not add async state ownership, locks, or channels.
+- Do not add Bazel, generated protocol schemas, cargo-deny, cargo-shear, or a
+  platform CI matrix.
+- Do not adopt agent-created commits, branches beyond this one, or automated PR
+  workflows.
+- Do not turn this scratchpad into permanent documentation.
+
+## Operating rules for this branch
+
+1. Prefer deleting text and tests over adding replacements.
+2. Mechanical moves, behavior changes, documentation edits, and punctuation
+   cleanup do not share one change.
+3. A test may remain only when it catches a distinct behavioral failure that no
+   type, compile-time assertion, or reviewed snapshot already pins.
+4. Canonical facts stay in their owning module docs. `AGENTS.md` keeps only
+   cross-cutting agent policy.
+5. Preserve unsafe contracts, capacity rationale, persistence identities, and
+   deterministic-model documentation unless a replacement is strictly clearer.
+6. Run `cargo xtask smoke` after source or documentation changes. Run
+   `cargo xtask check-abi` after ABI or shim changes. Run `cargo xtask
+   headless-test` after engine, registration, or shim behavior changes.
+7. Before deleting an uncertain test, name the implementation mutation it is
+   expected to catch. If no such mutation exists, delete the test.
+
+## Review and handoff shape
+
+A nontrivial change should be reviewed along six dimensions:
+
+1. C ABI and GDExtension containment and pointer lifetime.
+2. Game-version and Harmony-hook drift.
+3. Persistence schema, atomicity, and snapshot impact.
+4. Test value and deterministic coverage.
+5. Context economy and canonical fact ownership.
+6. Release, ABI, bundle, and platform impact.
+
+The completing session must hand off:
+
+- why the change was needed;
+- the net change only, not abandoned attempts;
+- safety impact;
+- each new or changed test and the failure it catches;
+- verification commands actually run;
+- remaining machine-local or untested risk;
+- context added, deleted, or moved.
+
+Additional operating rules:
+
+- Keep complex logic or boundary changes under roughly 300 changed lines and
+  ordinary changes under roughly 500. Mechanical moves may exceed that only by
+  remaining move-only.
+- Never configure `panic = "abort"`; panic containment depends on unwinding.
+- A future native engine resource must enter safe Rust through one owner type
+  whose `Drop` states the exact release rule.
+- Do not add `pretty_assertions` merely to imitate Codex. Consider it only if
+  whole-object assertion diffs become a recurring review problem.
+
+## Progress legend
+
+- [ ] Not started
+- [~] In progress
+- [x] Done
+- [-] Dropped; record the reason
+
+## Workstreams
+
+### 0. Resolve contradictory contracts
+
+- [ ] Choose persistence policy: disposable WIP data or additive-only records.
+- [ ] Make the 15% Rust comment-density threshold a hard gate, or document the
+      existing behavior as a checkpoint warning.
+- [ ] Make `SIM_SEED` parsing fail loudly on malformed input.
+- [ ] Make simulation start times deterministic or weaken the byte-for-byte
+      reproducibility claim.
+- [ ] Include seed and scenario in simulation failure messages.
+
+### 1. Gate wiring
+
+- [ ] Add `check-abi` and `check-docs` to `smoke`.
+- [ ] Add `--locked` to Cargo doc, clippy, nextest, and zigbuild invocations.
+- [ ] Consider explicit Nextest `--no-fail-fast`.
+- [ ] Add profiler-core lints for direct printing and production `unwrap`.
+- [ ] Add a targeted em-dash ratchet for Markdown and Rust comments.
+
+### 2. Context economy
+
+- [ ] Rewrite `AGENTS.md` to under 6,000 bytes without moving detail elsewhere.
+- [ ] Apply soft module-doc budgets: about 50 lines for ordinary modules and 90
+      lines for canonical schema, state, and safety owners.
+- [ ] Deduplicate the unsafe-quarantine policy.
+- [ ] Split generic GDExtension mechanics from empirical environment guidance.
+- [ ] Remove child-module dictionaries from `lib.rs` and `data.rs`.
+- [ ] Remove obvious restatement comments.
+- [ ] Delete the README roadmap or move it outside the repository.
+- [ ] Report C# shim comment density before deciding whether to gate it.
+
+### 3. Mechanical test extraction
+
+- [ ] Move `ui/chart_layout.rs` tests to a sibling test module.
+- [ ] Move `ui/run_layout.rs` tests to a sibling test module.
+- [ ] Move `ui/tooltip.rs` tests to a sibling test module.
+- [ ] Move `ui/snapshot.rs` tests to a sibling test module.
+- [ ] Evaluate `data/persistence/runs.rs` for test extraction.
+- [ ] Record inline-test share before and after extraction.
+
+Extraction changes are move-only. Preserve test names, fixtures, and snapshots;
+do not rewrite production code in the same change.
+
+### 4. Test-value audit
+
+- [ ] Delete `u64_from_hash_sign_extends`.
+- [ ] Delete `from_u8_round_trips_all_kinds`.
+- [ ] Delete `run_manual_visible_cycles`.
+- [ ] Delete `dismiss_run_manual_lands_on_hidden`.
+- [ ] Trim redundant source-kind and run-outcome wire-code sweeps.
+- [ ] Rewrite `outcome_serde_round_trips_lowercase_and_reads_unknowns_as_defeat`
+      as either complete round-trip coverage or corrupt-record coverage.
+- [ ] Move fixed persistence-shape checks out of the randomized simulation.
+- [ ] Consolidate `check_run_and_store_files` with `check_written_files`.
+- [ ] Replace the field-by-field `CardStat` comparison with whole-object
+      equality.
+- [ ] Strengthen null-string ABI testing with observable state.
+- [ ] Add a valid non-UTF-8 C-string test.
+- [ ] Strengthen or delete the commit-hash shape-only test.
+
+Preserve the deterministic simulations, independent block-pool model,
+allocation tests, ABI failure-mode tests, persistence tests, and reviewed Insta
+snapshots unless a concrete replacement is stronger.
+
+### 5. API and ABI hygiene
+
+- [ ] Trial `unreachable_pub`, `private_interfaces`, and `private_bounds` in
+      profiler-core.
+- [ ] Narrow top-level module visibility where practical.
+- [ ] Evaluate safe `extern "C"` exports when their bodies contain no unsafe
+      operation.
+- [ ] Recheck ABI and headless behavior after any ABI refactor.
+
+### 6. Release hardening
+
+- [ ] Validate the exact universal bundle layout before zipping.
+- [ ] Validate each target staging directory before zipping.
+- [ ] Run `smoke` before release packaging.
+- [ ] Reject dirty release inputs or encode a dirty marker.
+- [ ] Optionally add one minimal CI job if shared-branch verification becomes
+      useful.
+
+### 7. Final branch cleanup
+
+- [ ] All relevant gates pass.
+- [ ] No temporary policy remains in permanent docs.
+- [ ] Remove the branch-only `ADOPTION.md` pointer from `AGENTS.md`.
+- [ ] Delete this scratchpad in the final human-reviewed merge change.
+
+## Decision log
+
+- Worktree and branch: accepted. The branch is short-lived, and the final merge
+  remains human-made.
+- Codex topology: rejected. Keep the profiler-core and xtask split only.
+- Broad Unicode ban: rejected for now. Start with an em-dash ratchet and an
+  explicit runtime-glyph allowlist.
+- Persistence evolution: open. Resolve before schema cleanup.
+- Comment budget enforcement: open. The implementation warns; the policy says
+  mandatory.
+
+## Session log
+
+### 2026-09-08: setup
+
+Created the branch and this scratchpad from `67bc66e`. No source behavior was
+changed yet. Baseline `smoke`, nextest, `check-docs`, and `check-abi` passed in
+the original workspace before branch creation.
