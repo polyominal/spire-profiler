@@ -8,11 +8,11 @@ layout and discovery live in `game.md`.
 
 - `cargo xtask smoke` green — the pre-commit gate: `cargo fmt --all --
   --check`, the markdown wrap check (`fmt-md --check`), the citation check
-  (`check-citations`), the ABI check (`check-abi`: shim `GetExport` bindings
-  against the Rust exports), `cargo clippy --workspace --all-targets
-  --all-features --locked -- --deny warnings`, the doc gate (`check-docs`:
-  warning-free `cargo doc` and the comment-density budget), `cargo nextest run
-  --workspace --locked --no-fail-fast`.
+  (`check-citations`), the em-dash ratchet (`check-emdash`), the ABI check
+  (`check-abi`: shim `GetExport` bindings against the Rust exports), `cargo
+  clippy --workspace --all-targets --all-features --locked -- --deny warnings`,
+  the doc gate (`check-docs`: warning-free `cargo doc` and the comment-density
+  budget), `cargo nextest run --workspace --locked --no-fail-fast`.
 - `cargo xtask headless-test` PASS — at least the shim's expected number of
   patched Harmony methods (`MIN_PATCHES`, derived from the attribution catalog
   plus the fixed class-level and orb groups), no unexpected `[SpireProfiler]`

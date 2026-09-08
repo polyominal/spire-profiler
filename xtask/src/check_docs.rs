@@ -114,7 +114,7 @@ fn report_offenders(files: &[FileCount], top_offenders: usize) {
     }
 }
 
-enum LineKind {
+pub(crate) enum LineKind {
     Blank,
     Comment,
     Code,
@@ -126,13 +126,13 @@ enum StringState {
 }
 
 #[derive(Default)]
-struct LineScanner {
+pub(crate) struct LineScanner {
     in_block_comment: bool,
     string: Option<StringState>,
 }
 
 impl LineScanner {
-    fn classify(&mut self, line: &str) -> LineKind {
+    pub(crate) fn classify(&mut self, line: &str) -> LineKind {
         let line = line.trim();
         if line.is_empty() {
             return LineKind::Blank;

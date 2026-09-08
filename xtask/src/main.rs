@@ -14,6 +14,7 @@ mod check_abi;
 mod check_catalog;
 mod check_citations;
 mod check_docs;
+mod check_emdash;
 mod cross;
 mod decompile;
 mod discover;
@@ -36,7 +37,7 @@ mod flags {
 
         cmd xtask {
             /// The commit gate: format checks (rust + markdown), citation,
-            /// ABI, and doc checks, clippy, and nextest.
+            /// em-dash, ABI, and doc checks, clippy, and nextest.
             cmd smoke {}
             /// Install the pinned toolchain and verify the dev tools.
             cmd install-tool {}
@@ -57,6 +58,8 @@ mod flags {
             }
             /// Fail on file:line citations in comments and docs.
             cmd check-citations {}
+            /// Fail on em dashes beyond the pinned per-file ceilings.
+            cmd check-emdash {}
             /// Reflow the project markdown docs to the pinned width.
             cmd fmt-md {
                 /// Check for wrapping drift without rewriting.
@@ -93,6 +96,7 @@ mod flags {
         CheckAbi(CheckAbi),
         CheckDocs(CheckDocs),
         CheckCitations(CheckCitations),
+        CheckEmdash(CheckEmdash),
         FmtMd(FmtMd),
         Decompile(Decompile),
         CheckCatalog(CheckCatalog),
@@ -126,6 +130,9 @@ mod flags {
 
     #[derive(Debug)]
     pub struct CheckCitations;
+
+    #[derive(Debug)]
+    pub struct CheckEmdash;
 
     #[derive(Debug)]
     pub struct FmtMd {
@@ -176,6 +183,7 @@ fn main() -> Result<()> {
         flags::XtaskCmd::CheckCatalog(_) => check_catalog::run(),
         flags::XtaskCmd::CheckDocs(flags) => check_docs::check_docs(&shell, flags.top),
         flags::XtaskCmd::CheckCitations(_) => check_citations::run(),
+        flags::XtaskCmd::CheckEmdash(_) => check_emdash::run(),
         flags::XtaskCmd::FmtMd(flags) => md::fmt_md(flags.check),
         flags::XtaskCmd::Decompile(flags) => {
             decompile::decompile(&shell, flags.output_dir, flags.yes)
@@ -247,6 +255,7 @@ fn smoke(shell: &Shell) -> Result<()> {
     cmd!(shell, "cargo fmt --all -- --check").run()?;
     md::fmt_md(true)?;
     check_citations::run()?;
+    check_emdash::run()?;
     check_abi::run()?;
     cmd!(
         shell,

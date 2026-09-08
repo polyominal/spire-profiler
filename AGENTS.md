@@ -72,6 +72,11 @@ Additional rules:
 - In-house comments and docs never cite `file:line` positions: game line numbers
   move between builds and silently rot. Name the method and pin the game version
   instead; `check-citations` (part of `smoke`) fails on them.
+- Prefer commas, colons, or parentheses over em dashes in Markdown and Rust
+  comments: the dash can stand in for any of them, so the specific mark forces
+  the sentence to commit to a clause relation (heavy use also reads as
+  machine-generated). `check-emdash` (part of `smoke`) pins per-file counts and
+  fails on any increase; pins only move down.
 - Doc comments (`///`) follow the same budget; trivial types, constructors, and
   getters get none. Compress load-bearing derivations (e.g. pixel math) to the
   minimum that lets the reader verify them.

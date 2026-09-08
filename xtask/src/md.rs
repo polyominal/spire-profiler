@@ -9,7 +9,7 @@ use comrak::{Options, markdown_to_commonmark};
 
 use crate::workspace_root;
 
-const DOCS: &[&str] = &[
+pub(crate) const DOCS: &[&str] = &[
     "README.md",
     "AGENTS.md",
     "docs/build.md",
