@@ -1,58 +1,47 @@
 //! Hand-rolled minimal GDExtension FFI — the crate's engine-facing surface:
 //! a direct binding to the engine's `GDExtensionInterface` (vendored header
 //! `vendor/gdextension_interface.h`, Godot 4.5.1). Exports
-//! [`gdextension_entry`] and registers the parent panel classes as `Control`
-//! subclasses with one virtual (`_draw`) and the zero-argument `refresh`
-//! method the shim calls every frame. Each parent natively instantiates the
-//! shared child class through [`instantiate_class`]; that class exposes only
-//! `_draw`.
+//! [`gdextension_entry`] and registers the panel classes as `Control`
+//! subclasses (one virtual, `_draw`, plus the zero-argument `refresh` the
+//! shim calls every frame); each parent instantiates the shared child class
+//! through [`instantiate_class`].
 //!
 //! # Native code never inspects engine input events — scroll arrives from the shim
 //!
 //! The extension registers NO `_gui_input` virtual and never touches an
 //! engine `InputEvent`: any GDExtension-originated call about an
 //! engine-created input event hangs the game's proprietary engine fork,
-//! while the fork's own managed→native calls are fine. Scroll instead
-//! reaches the panels from the shim: it connects to each panel's `GuiInput`
-//! signal and forwards the raw fields through the flat C export
-//! [`crate::abi::spire_profiler_scroll_input`]; the per-frame `refresh` consumes the
-//! queued pixels and all scroll math stays native ([`crate::ui::scroll`]).
-//!
-//! Every engine call targets objects the extension itself created (the
-//! panel Controls) or engine-owned singletons. Raw engine pointers are
-//! trusted only for the callback or wrapper call and only under the pinned
-//! 4.5.1 header/runtime contract.
+//! while the fork's own managed→native calls are fine. Scroll arrives
+//! from the shim instead: it connects each panel's `GuiInput` signal to
+//! the C export [`crate::abi::spire_profiler_scroll_input`], `refresh`
+//! consumes the queued pixels, and the scroll math stays native
+//! ([`crate::ui::scroll`]).
 //!
 //! # Binding mechanics
 //!
-//! The engine API resolves by C name at runtime: [`gdextension_entry`] takes
-//! the engine's `get_proc_address` and looks up every interface function; a
-//! missing symbol fails loudly by name. `_draw` dispatch is `get_virtual2`,
-//! and the virtual-name slot compares interned StringName pointers
-//! (StringName is one interned pointer in 4.5, so that is exact equality).
-//! StringName is interned and engine-owned; String is refcounted, so a
-//! temporary String built for a Variant must be destroyed once the Variant
-//! copies from it. Nothing verifies Rust→engine method names — grep
-//! `extension_api_4.5.1.json` before wiring a new call: a stale name
-//! fails loudly at the call site, as a fail-logged ERROR.
+//! The engine API resolves by C name at runtime: [`gdextension_entry`]
+//! looks up every interface function through `get_proc_address`; a
+//! missing symbol fails loudly by name. `_draw` dispatch is
+//! `get_virtual2`, keyed on the interned StringName pointer. Nothing
+//! verifies Rust→engine method names — grep `extension_api_4.5.1.json`
+//! before wiring a new call: a stale name fails loudly at the call site.
 //!
 //! # Engine-call technique (variant_call everywhere)
 //!
-//! Every engine method call goes through [`variant_call`], not
-//! `object_method_bind_ptrcall`: the ptrcall route requires exact signature
-//! hashes only published in `extension_api.json`, while [`variant_call`]
-//! needs none. Values are built with [`get_variant_from_type_constructor`],
-//! read back with [`variant_get_ptr_internal_getter`] (after a
-//! [`variant_get_type`] tag check — the internal getter is undefined behavior
-//! on a type mismatch), and every temporary Variant is [`variant_destroy`]ed
-//! on drop. Return slots are constructed as NIL first, so a call that
-//! fails before assigning its return value still drops a valid Variant.
+//! [`variant_call`] needs none of the exact signature hashes
+//! `object_method_bind_ptrcall` requires (published only in
+//! `extension_api.json`). Values built with
+//! [`get_variant_from_type_constructor`] are read back with
+//! [`variant_get_ptr_internal_getter`] after a [`variant_get_type`] tag
+//! check (the internal getter is undefined behavior on a type mismatch);
+//! every temporary Variant is [`variant_destroy`]ed on drop. Return slots
+//! start NIL, so a call failing before assignment drops a valid Variant.
 //!
 //! # Where this module's unsafe lives
 //!
-//! `lib.rs` declares `#![deny(unsafe_code)]`, relaxed in exactly three
-//! modules: [`crate::abi`], [`crate::registration`], and this one (whose
-//! `#[allow(unsafe_code)]` sits in `engine.rs`). The unsafe concentrates in:
+//! One of the three `unsafe_code` allow sites `lib.rs` names (its allow
+//! sits in `engine.rs`). Calls target only objects the extension created
+//! (the panel Controls) or engine-owned singletons; the unsafe lives in:
 //!
 //! 1. **Raw engine pointers** — `*mut c_void` the engine supplies, each valid for its call's
 //!    duration: the interned StringName pointer read in [`string_name_eq`], the variant payload
@@ -70,10 +59,10 @@
 //!
 //! # Trusted engine-layout facts
 //!
-//! The header exposes Variant, String, and StringName only as opaque
-//! pointers. The facts below are properties of the pinned Godot 4.5.1
-//! binary; if a pin bump breaks one, [`Opaque`] storage or [`string_name_eq`]
-//! becomes unsound, so they belong on the manual re-verification list:
+//! The facts below are properties of the pinned Godot 4.5.1 binary, which
+//! the header exposes only as opaque pointers; if a pin bump breaks one,
+//! [`Opaque`] storage or [`string_name_eq`] becomes unsound, so they belong
+//! on the manual re-verification list:
 //!
 //! * Variant, String, and StringName fit in [`OPAQUE_SIZE`] bytes with alignment ≤ 16.
 //! * StringName is one pointer to interned storage, so comparing the first 8 bytes of two live

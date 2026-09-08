@@ -21,27 +21,20 @@
 //! [`crate::source_kind::SourceKind::from_c`] clamps an unchecked C `c_int`
 //! to card/relic/power (the shim only sends catalogued kinds for contexts),
 //! while serde's numeric representation (`From<u8>`/`Into<u8>`) round-trips
-//! all five stored bytes so potion/osty survive the JSON. Rows carry
-//! `(slot, id, kind)` but the
-//! ledger's lookups key `(slot, id)` — an id is unique per slot, so two
-//! players' same-id cards stay separate rows; the slot vocabulary is the
-//! player-slot model in [`state`].
+//! all five stored bytes so potion/osty survive the JSON. Row identity and
+//! the slot vocabulary are the player-slot model in [`state`].
 //!
 //! ## Source resolution
 //!
 //! Two "first non-empty wins" chains resolve a source and create the ledger
-//! row when it is missing (the exact branch orders live in [`ledger`]):
-//!
-//! * [`ledger::resolve_card_in`] — block, forge, self-damage, Osty, and mitigation: explicit card
-//!   id → the slot's play source → the innermost context → the orb fallback → the potion fallback →
-//!   `last_source`, else `None` (the event still counts in the combat totals). The Doom kill
-//!   catch-all opts out of `last_source` so an unrelated earlier hook is never guessed.
-//! * [`ledger::resolve_damage_source_in`] — damage, additionally recording how the source resolved
-//!   so the chart splits direct from indirect: explicit card id → direct; the orb fallback →
-//!   indirect (orbs trigger during a play, so their damage belongs to the channeling source); the
-//!   play source → direct; the innermost context → indirect iff a power; the potion fallback →
-//!   direct; then poison layers claim the hit and, failing that, `last_source` catches async
-//!   continuations.
+//! row when it is missing; the exact branch orders live in [`ledger`]. A
+//! `None` resolution still counts in the combat totals, and the Doom kill
+//! catch-all opts out of `last_source` so an unrelated earlier hook is never
+//! guessed. The damage chain also records direct vs indirect for the chart
+//! split: the orb fallback resolves indirect (orbs trigger during a play, so
+//! their damage belongs to the channeling source) and a context indirect iff
+//! a power, the rest direct; poison layers then claim the hit before
+//! `last_source` catches async continuations.
 //!
 //! ## Contexts and the async fallback rule
 //!
@@ -55,10 +48,9 @@
 //!
 //! ## Orb and potion attribution
 //!
-//! Orbs are async, so their channeling source is recorded up front
-//! ([`events::orb_channeled`]: innermost context > play source >
-//! `last_source`); [`events::orb_context_begin`] activates the orb
-//! fallback and clears the potion fallback. During a play only the FIRST
+//! Orbs are async, so their channeling source is recorded up front by
+//! [`events::orb_channeled`]; [`events::orb_context_begin`] activates the
+//! orb fallback and clears the potion fallback. During a play only the FIRST
 //! orb trigger credits the channeling source — later triggers credit the
 //! evoking card. Potions prefix `OnUseWrapper` so the fallback exists
 //! before the effects run (a postfix would be too late for FlexPotion's
@@ -73,8 +65,7 @@
 //! `contribution / plays` is the expected value per trigger:
 //! `plays + generation_triggers == Σ cards[].plays + generated_plays`.
 //! [`events::card_generated`] records the instance→generator mapping;
-//! the play then overrides to that `(id, kind)` for everything during
-//! the play.
+//! the play then overrides to that `(id, kind)` throughout.
 //!
 //! ## Block pool and damage modifiers
 //!
@@ -92,8 +83,7 @@
 //! ## Damage segments and records
 //!
 //! `damage_dealt == dmg_direct + dmg_attributed + dmg_modifier`
-//! is re-checked after every mutation. Per-power records (`power_sources`,
-//! `debuff_layers`, `doom_layers`, `osty_stack`, `str_reductions`) remember
+//! is re-checked after every mutation. The per-power records remember
 //! appliers so proportional splits credit the right source; their caps and
 //! one-line rationales live in [`state::caps`].
 

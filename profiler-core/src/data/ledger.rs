@@ -7,13 +7,10 @@
 //!
 //! [`resolve_card_in`]: explicit card id → the slot's play source →
 //! the innermost context → the orb fallback → the potion fallback →
-//! `last_source` (when [`AsyncFallback::Allow`]) → None. Every branch keys
-//! the created row at the resolved source's own slot: the event's explicit
-//! slot, the generator's recorded slot, the context entry's slot, or the
-//! caller's slot for the fallbacks. An explicit id equal to the slot's
-//! active-play `card_id` is the shim reporting the playing card's own id,
-//! so it falls through to the play source instead of opening a card-kind
-//! row.
+//! `last_source` (when [`AsyncFallback::Allow`]) → None. An explicit id
+//! equal to the slot's active-play `card_id` is the shim reporting the
+//! playing card's own id, so it falls through to the play source instead
+//! of opening a card-kind row.
 //!
 //! [`resolve_damage_route`] mirrors that order but records direct/indirect:
 //! explicit id → direct; orb fallback → indirect; play source → direct;
@@ -40,23 +37,15 @@
 //! the attacker's `dmg_direct` (then `dmg_attributed`) into the modifier
 //! sources' `dmg_modifier`; the share is counted as unblocked.
 //! [`split_over_appliers_in`] distributes a share across the recorded
-//! appliers proportionally to their amounts (last share takes the
-//! residue), or gives the modifier itself the full amount when none are
-//! recorded.
-//!
-//! [`assert_card_damage_segments`] re-checks the segment decomposition
-//! after every mutation so drift surfaces at the mutation site.
+//! appliers proportionally to their amounts (the last share takes the
+//! residue) or, with none recorded, gives the modifier the full amount.
 //!
 //! ## Borrowing and handles
 //!
-//! The mutable tables live in [`state::State`] behind
-//! `STATE: RefCell<State>`. Each function borrows State, mutates, and logs
-//! through the state-independent event sink. A `&mut Combat` cannot escape
-//! the `STATE.with` closure, so the `_in` helpers take `&mut State`. The
-//! `get_or_create_card*` functions return the entry's INDEX ([`None`] at
-//! the [`state::caps::COMBAT_CARDS`] cap — the caller drops the event):
-//! a `Vec` push reallocates the buffer but never moves existing elements,
-//! so the index stays valid.
+//! A `&mut Combat` cannot escape the `STATE.with` closure, so the `_in`
+//! helpers take `&mut State`. The `get_or_create_card*` functions return
+//! the entry's INDEX, or [`None`] at the [`state::caps::COMBAT_CARDS`]
+//! cap, where the caller drops the event.
 
 use crate::data::persistence::event_log;
 #[cfg(test)]

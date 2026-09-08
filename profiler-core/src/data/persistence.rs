@@ -9,12 +9,6 @@
 //! └── runs/<run_id>/<combat_id>.json     one write-once file per finished combat
 //! ```
 //!
-//! Split topically: [`time`] (the epoch-seconds clock), [`log`] (the held
-//! log handle), [`io`] (tmp+rename writes, whole-file reads), [`combats`]
-//! (the combat store), [`combat_doc`] (the combat record's serializer),
-//! [`runs`] (the run accumulator and its fold), [`writes`] (the run
-//! finalizer).
-//!
 //! # Identifiers
 //!
 //! Both ids are u32s derived from the store itself, never a process
@@ -72,11 +66,10 @@
 //! in-memory (nothing reads it back).
 //!
 //! The schema changes with the structs: a breaking change lands directly,
-//! and incompatible old data is deleted by hand, never migrated. There is
-//! no schema version and no migration machinery. The parse structs stay
-//! lenient (missing fields default, unknown fields ignored) so a partial
-//! or stale record still reads; that leniency is boundary robustness, not
-//! a compatibility contract.
+//! and incompatible old data is deleted by hand, never migrated. The parse
+//! structs stay lenient (missing fields default, unknown fields ignored) so
+//! a partial or stale record still reads; that leniency is boundary
+//! robustness, not a compatibility contract.
 //!
 //! # Write protocol
 //!

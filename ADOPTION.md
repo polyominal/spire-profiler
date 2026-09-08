@@ -204,7 +204,7 @@ commands, symbols, and untracked paths stay raw backticks.
 - [x] Trim `docs/gdextension.md` to the build.md standard (generic Godot
       mechanics go; the verified empirical findings stay).
 - [x] Trim `docs/verify.md` to the build.md standard (light pass).
-- [ ] Apply soft module-doc budgets: about 50 lines for ordinary modules and 90
+- [x] Apply soft module-doc budgets: about 50 lines for ordinary modules and 90
       lines for canonical schema, state, and safety owners.
 - [-] Deduplicate the unsafe-quarantine policy.
 - [-] Split generic GDExtension mechanics from empirical environment guidance.
@@ -313,6 +313,21 @@ snapshots unless a concrete replacement is stronger.
   the limit (exit 1 with a named error).
 
 ## Session log
+
+### 2026-09-08: module-doc budgets applied
+
+Stage 2, module-doc budgets item. The inventory found 76 files with module
+docs and only 6 over budget, so one implementer/reviewer pair did the whole
+item: data.rs 98 to 88 (treated as canonical at 90: it owns the attribution
+model per the fact-ownership table), gdext.rs 101 to 90, persistence.rs 97
+to 90, run_history.rs 70 to 50, ledger.rs 59 to 48, theme.rs 59 to 47.
+Cuts targeted facts verifiably owned by other module docs; the reviewer
+confirmed each against the owner with quoted lines, verified budgets,
+rustdoc, and pin actuals (ratchet now 41 files, 137 dashes), and found the
+theme.rs trim strictly stronger (its pixel numbers were already carried by
+named constants with const asserts). One non-blocking nit left as is
+(run_history's settings trio generalized; the invariant survives). Gates
+run: `cargo xtask smoke` (331/331, density 11.2%).
 
 ### 2026-09-08: subagent-pair practice persisted
 

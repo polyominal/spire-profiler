@@ -4,70 +4,50 @@
 //!
 //! # Screen wiring
 //!
-//! The game's `NRunHistory` screen shows one `RunHistory` at a time. The
-//! shim postfixes its `DisplayRun` to forward the displayed identity (seed,
-//! `StartTime`, and profile) and to attach the panel; it PREFIXES
-//! `OnSubmenuOpened` with a clear (the body's initial `DisplayRun` runs
-//! inside the original method, so a postfix clear would blank the
-//! just-selected view), and it postfixes the screen's close with another
-//! clear, filtered to `NRunHistory` so a submenu closing on top never
-//! blanks a still-displayed run.
-//!
-//! This module maps the identity onto the cached store and hands the panel
-//! a structured view in-process; no match is a typed [`RunSelection::Empty`],
-//! never a crash. The panel renders the selected view as the shared
-//! two-section chart (its chrome-less build) under a title/header/meta
-//! band, or the empty-state notice when the selection is Empty.
+//! The shim postfixes the `NRunHistory` screen's `DisplayRun` to forward
+//! the displayed identity (seed, `StartTime`, profile), PREFIXES
+//! `OnSubmenuOpened` with a clear (a postfix would blank the just-selected
+//! view, whose initial `DisplayRun` runs inside the original method), and
+//! postfixes the close with a clear filtered to `NRunHistory` so a submenu
+//! closing on top never blanks a still-displayed run.
 //!
 //! # The join key
 //!
 //! The game's run id IS `StartTime` (Unix seconds): its history store
 //! names one file per run `{StartTime}.run`, and a resumed run keeps the
-//! ORIGINAL run's start. The shim reads the same `RunManager._startTime`
-//! field and forwards it; the core stamps it verbatim as the record's
-//! `started_at`. Matching is exact equality on seed + time, nothing else:
+//! ORIGINAL start. The shim forwards the same `RunManager._startTime`,
+//! the core stamps it verbatim as `started_at`, and matching is exact
+//! equality on seed + time, nothing else:
 //!
 //! 1. Same seed AND `started_at == start_time` — the only runs.jsonl match. Both values are
-//!    identical by provenance (the seed comes from RunRngSet.StringSeed on both sides), so equality
-//!    can never pair the wrong run and any fuzz could. The seed disambiguates the same-second
-//!    collision the game's own `{StartTime}.run` storage loses to. When the shim's reflection read
-//!    fails it sends 0 and the core falls back to its clock; such a record selects Empty — matching
-//!    never guesses.
-//! 2. Combats fallback: a run with seed-stamped combats but no runs.jsonl entry (save & quit, a
-//!    crash, or a build whose close hook never fired) selects a synthesized view instead of the
-//!    empty state. The seed-matching combats group by run seq, and the group whose earliest combat
-//!    start is closest to the displayed `StartTime` within [`COMBAT_GROUP_WINDOW_SECS`] (±300 s)
-//!    wins. The window is unavoidable — a combat's timestamp is its own start, never the run's —
-//!    but only ever picks among same-seed replays. The view's result reads "Unfinished": victory is
-//!    unknown, never a false "Defeat".
+//!    identical by provenance (the seed is RunRngSet.StringSeed on both sides), so equality never
+//!    pairs the wrong run; the seed disambiguates the same-second collision the game's file naming
+//!    loses to. A failed reflection read sends 0, the core stamps its own clock, and such a record
+//!    selects Empty: matching never guesses.
+//! 2. Combats fallback: seed-stamped combats with no runs.jsonl entry (save & quit, a crash, an
+//!    unfired close hook) select a synthesized view instead of the empty state. Same-seed combats
+//!    group by run seq; the group whose earliest combat start is closest to the displayed
+//!    `StartTime` within [`COMBAT_GROUP_WINDOW_SECS`] wins. The window is unavoidable — a combat's
+//!    timestamp is its own start, never the run's — but only ever picks among same-seed replays.
+//!    The result reads "Unfinished": victory is unknown, never a false "Defeat".
 //! 3. Neither entry nor combats: [`RunSelection::Empty`].
 //!
 //! The profile id pre-filters the `runs.jsonl` match when one is known
-//! (≥ 0) — the game's screen is per-profile; combats carry no profile,
-//! so the fallback matches on seed alone.
+//! (≥ 0); combats carry no profile, so the fallback matches on seed alone.
 //!
 //! # The run close lifecycle
 //!
 //! * Close on `RunManager.OnEnded` — victory, all-dead defeat, and abandon all funnel through it,
-//!   so the record closes for every finished run regardless of upload preferences, the full-screen
-//!   setting, or Steam mode.
+//!   so every finished run closes its record regardless of upload or display settings.
 //! * Suspend on save & exit: `RunManager.CleanUp` forwards `spire_profiler_run_suspended`, so a
-//!   suspended run writes no record and the next continue no longer closes a spurious defeat. A
-//!   combat interrupted by save+quit is never persisted.
+//!   suspended run writes no record and the next continue closes no spurious defeat. A combat
+//!   interrupted by save+quit is never persisted.
 //! * Suspend on disconnect: the host-quit path (`RunManager.LocalPlayerDisconnected`) suspends
-//!   instead of closing — the reason cannot distinguish save&quit from quit-without-save, and a
-//!   resume rejoins the same run id by seed.
-//! * Runs that still never closed select the synthesized "Unfinished" view.
+//!   instead of closing (the reason cannot distinguish save&quit from quit-without-save).
 //!
-//! # The store behind the view
-//!
-//! The cache parses `runs.jsonl` and the whole combat store once per
-//! data-dir path pair per process; selections then match in memory. A
-//! combat or run written mid-session invalidates the cache, so the next
-//! selection re-reads. The view's roll-ups recompute from the combat store
-//! every time — never stored aggregates — TEAM-merged so two players'
-//! same-id cards fold into one row, with per-player roll-ups beside them
-//! for the panel's avatar toggle.
+//! The cache parses `runs.jsonl` and the combat store once per data-dir
+//! path pair per process, invalidated by any mid-session combat or run
+//! write.
 
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};

@@ -1,41 +1,30 @@
 //! The game-native theme: the panels' typefaces, chrome plate, scrollbar
 //! sprites, and tab sprites, loaded at runtime out of the shipped PCK by
-//! `res://` path. Nothing is bundled with the mod.
+//! `res://` path. Nothing is bundled with the mod. Colors live in
+//! [`crate::ui::palette`]; text shadows follow the game's offsets.
 //!
 //! # Fonts
 //!
 //! The game sets no project-wide theme or font: every label picks a
 //! FontVariation (a letter-tracking wrapper over the TTFs in
 //! `res://fonts/`) plus an explicit pixel size, and font oversampling is
-//! off project-wide, so loaded variations rasterize like native text.
-//! The panels run the native scale: 32px Kreon Bold gs2 headers/numbers,
-//! 24px Kreon Regular gs1 body text, 22px tooltip text. Where the game
+//! off project-wide, so loaded variations rasterize like native text. The
+//! panels run the native scale (the `SIZE_*` constants). Where the game
 //! uses Kreon Bold gs1 (24px lead-ins, tab labels), the panels draw the
 //! gs2 face: the 1px tracking delta is not worth a third font asset.
-//!
-//! # Palette
-//!
-//! The colors are verbatim game colors from `StsColors.cs` or shipped
-//! scenes, and live in [`crate::ui::palette`]. The two chart sections run
-//! distinct temperature families — warm hues for damage (harm), cool for
-//! defense (protection) — so a bar's leading segment names its section.
-//! [`crate::ui::palette::slot_color`] is the single resolution point:
-//! bars, legend chips, and tooltip values all call it, so no two views
-//! can drift. Text shadows follow the game's offsets.
 //!
 //! # Metrics
 //!
 //! UI lives in the game's fixed 1920×1080 virtual canvas space
 //! (`stretch/mode = canvas_items`, aspect expand): hard-coded pixel
 //! offsets scale and letterbox exactly like native UI, so no DPI
-//! handling. The plate is the game's hover-tip nine-patch (margins
-//! pinned from `hover_tip.tscn`: L55/T43/R91/B32, tiled), its shadow
-//! 8px down-right at 25% black. [`content_box`] is the single
-//! content-area computation: the plate body (box minus the shadow inset)
-//! further inset by the content padding L22/T16/R37/B20 — the bottom line
-//! lands 28 above the outer box, B20 plus the shadow inset — minus the
-//! 32px scrollbar gutter while the bar shows. The right pad is asymmetric on
-//! purpose — the plate's right nine-patch slice is 91px against 55px
+//! handling. The plate is the game's hover-tip nine-patch (margins pinned
+//! from `hover_tip.tscn`, tiled), its shadow 8px down-right at 25% black.
+//! [`content_box`] is the single content-area computation: the plate body
+//! (box minus the shadow inset) minus the content padding minus the 32px
+//! scrollbar gutter while the bar shows; the bottom line lands 28 above
+//! the outer box, B20 plus the shadow inset. The right pad is asymmetric
+//! on purpose: the plate's right nine-patch slice is 91px against 55px
 //! left, and the scene compensates with the wider right margin. In the
 //! flat fallback the insets reduce to the pre-plate 12px geometry.
 //!
@@ -54,9 +43,8 @@
 //! Every asset is an independent tri-state: a failed load warns once per
 //! asset — never an ERROR, the headless gate fails on those — and only
 //! that element degrades (failed font → theme default, failed chrome →
-//! flat rects, failed scrollbar → none, wheel still works). A missing
-//! asset never disables a panel. The one-shot `theme assets: N/M loaded`
-//! line aids real-play diagnosis.
+//! flat rects, failed scrollbar → none, wheel still works). The one-shot
+//! `theme assets: N/M loaded` line aids real-play diagnosis.
 
 use std::cell::Cell;
 
