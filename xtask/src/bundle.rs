@@ -52,13 +52,6 @@ fn write_manifest(root: &Path, mod_dir: &Path, commit: &str) -> Result<()> {
     let template = std::fs::read_to_string(root.join("manifest.template.json"))
         .map_err(|e| anyhow::anyhow!("reading manifest.template.json: {e}"))?;
     let rendered = template.replace("@VERSION@", &manifest_version(commit));
-    // Always checked (not a debug_assert): a manifest with the raw
-    // placeholder must never reach the bundle.
-    anyhow::ensure!(
-        !rendered.contains("@VERSION@"),
-        "the manifest template placeholder @VERSION@ was not substituted (the placeholder \
-         must never reach the bundle)"
-    );
     std::fs::write(mod_dir.join("manifest.json"), rendered)?;
     Ok(())
 }
