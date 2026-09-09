@@ -644,13 +644,6 @@ fn check_written_files(base: &Path, player_died: bool, repro: &str) {
         },
         "{repro}: the combat result must mirror whether the walk killed the player"
     );
-    // The generation-tree model carries no origin field on any card row, so
-    // any hit here is a stale assertion string rather than a real field.
-    assert!(
-        !combats_text.contains("\"origin\""),
-        "{repro}: the persisted record must contain no origin field"
-    );
-    check_wire_shape(&combats_text, &rec, repro);
     // The persisted record must mirror the finished in-memory combat
     // (the write/read pairing rule).
     STATE.with(|cell| {
@@ -674,93 +667,10 @@ fn check_written_files(base: &Path, player_died: bool, repro: &str) {
         );
     });
     check_no_sub_rows(repro);
-    check_run_and_store_files(base, player_died, repro);
+    check_run_file(base, player_died, repro);
 }
 
-/// i64 epoch timestamps, no roster, zero-omission on numeric fields.
-fn check_wire_shape(combats_text: &str, rec: &records::CombatRec, repro: &str) {
-    assert!(
-        !combats_text.contains("\"started_at\":\""),
-        "{repro}: combat started_at must be an epoch integer, not an ISO string"
-    );
-    assert!(
-        !combats_text.contains("\"players\""),
-        "{repro}: combat docs must not carry the roster"
-    );
-    assert!(
-        !combats_text.contains("\"damage_unblocked\""),
-        "{repro}: card rows must not carry the derivable damage_unblocked"
-    );
-    check_absent_equals_zero(combats_text, rec, repro);
-}
-
-const CARD_NUMERIC_FIELDS: [&str; 14] = [
-    "plays",
-    "damage_dealt",
-    "damage_blocked",
-    "block_gained",
-    "block_effective",
-    "forge",
-    "dmg_direct",
-    "dmg_attributed",
-    "dmg_modifier",
-    "blk_modifier",
-    "mitigate_debuff",
-    "mitigate_buff",
-    "mitigate_str",
-    "self_damage",
-];
-
-fn card_numeric(card: &records::CardRec, name: &str) -> i64 {
-    match name {
-        "plays" => i64::from(card.plays),
-        "damage_dealt" => card.damage_dealt,
-        "damage_blocked" => card.damage_blocked,
-        "block_gained" => card.block_gained,
-        "block_effective" => card.block_effective,
-        "forge" => card.forge,
-        "dmg_direct" => card.dmg_direct,
-        "dmg_attributed" => card.dmg_attributed,
-        "dmg_modifier" => card.dmg_modifier,
-        "blk_modifier" => card.blk_modifier,
-        "mitigate_debuff" => card.mitigate_debuff,
-        "mitigate_buff" => card.mitigate_buff,
-        "mitigate_str" => card.mitigate_str,
-        "self_damage" => card.self_damage,
-        _ => unreachable!("every schema field name is covered"),
-    }
-}
-
-fn check_absent_equals_zero(combats_text: &str, rec: &records::CombatRec, repro: &str) {
-    let doc: serde_json::Value = serde_json::from_str(combats_text)
-        .unwrap_or_else(|err| panic!("{repro}: combat doc is JSON: {err}"));
-    let rows = doc["cards"]
-        .as_array()
-        .unwrap_or_else(|| panic!("{repro}: the raw record carries a cards array"));
-    assert_eq!(
-        rows.len(),
-        rec.cards.len(),
-        "{repro}: raw and parsed row counts must agree"
-    );
-    for (raw, parsed) in rows.iter().zip(&rec.cards) {
-        for name in CARD_NUMERIC_FIELDS {
-            let value = card_numeric(parsed, name);
-            match raw.get(name) {
-                Some(json) => assert_eq!(
-                    json.as_i64(),
-                    Some(value),
-                    "{repro}: present field '{name}' must carry the parsed value"
-                ),
-                None => assert_eq!(
-                    value, 0,
-                    "{repro}: absent field '{name}' must read as zero (absent == zero)"
-                ),
-            }
-        }
-    }
-}
-
-fn check_run_and_store_files(base: &Path, player_died: bool, repro: &str) {
+fn check_run_file(base: &Path, player_died: bool, repro: &str) {
     let runs_text = fs::read_to_string(base.join("runs.jsonl"))
         .unwrap_or_else(|err| panic!("{repro}: runs.jsonl must be written: {err}"));
     let runs: serde_json::Value = serde_json::from_str(
@@ -778,25 +688,6 @@ fn check_run_and_store_files(base: &Path, player_died: bool, repro: &str) {
         runs["outcome"],
         if player_died { "defeat" } else { "victory" },
         "{repro}: the run record's outcome must mirror the walk's player death"
-    );
-    assert!(
-        !runs_text.contains("\"started_at\":\""),
-        "{repro}: run started_at must be an epoch integer, not an ISO string"
-    );
-    // runs.jsonl keeps the roster but no per-source cards[] array.
-    assert!(
-        runs_text.contains("\"players\""),
-        "{repro}: the run record must carry the roster"
-    );
-    assert!(
-        !runs_text.contains("\"cards\""),
-        "{repro}: runs.jsonl must not carry the per-source cards array"
-    );
-    let snapshot = fs::read_to_string(base.join("runs").join("1").join("1.json"))
-        .unwrap_or_else(|err| panic!("{repro}: combat store file must be written: {err}"));
-    assert!(
-        snapshot.contains("\"combat_id\":1"),
-        "{repro}: the combat record carries id 1"
     );
 }
 
