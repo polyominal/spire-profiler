@@ -83,7 +83,7 @@ pub(crate) fn enable_for_selftest() {
 }
 
 /// The class name must stay [`SpireProfilerPanel`].
-pub struct SpireProfilerPanel {
+pub(crate) struct SpireProfilerPanel {
     object: Object,
     children: panel_body::PanelChildren,
     rows: [UiRow; ui_model::MAX_UI_ROWS],

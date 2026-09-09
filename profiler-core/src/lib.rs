@@ -45,6 +45,7 @@
 //! stderr diagnostic, but diagnostics are never copied into the file.
 
 #![deny(unsafe_code)]
+#![deny(unreachable_pub)]
 // Module docs are spec documentation, so a broken intra-doc link is a doc
 // bug: fail the build rather than warn. Private links stay allowed — the
 // crate is not a public library and deliberately links `pub(crate)` items,
@@ -71,8 +72,8 @@ pub mod abi;
 pub mod data;
 pub mod engine;
 #[allow(unsafe_code)]
-pub mod registration;
-pub mod source_kind;
+mod registration;
+mod source_kind;
 pub mod ui;
 
 // The integration tests link the crate as a library (cfg(test) off), so the

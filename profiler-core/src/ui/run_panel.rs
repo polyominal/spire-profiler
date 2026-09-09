@@ -106,7 +106,7 @@ const INITIAL_BOX_H: f32 = 300.0;
 
 /// Instantiated lazily by the C# shim; the class name must stay exactly
 /// [`SpireProfilerRunPanel`].
-pub struct SpireProfilerRunPanel {
+pub(crate) struct SpireProfilerRunPanel {
     object: Object,
     children: panel_body::PanelChildren,
     view_fp: u64,

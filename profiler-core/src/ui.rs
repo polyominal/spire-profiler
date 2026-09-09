@@ -11,12 +11,12 @@
 
 pub mod chart_layout;
 pub mod palette;
-pub mod panel;
+pub(crate) mod panel;
 pub(crate) mod panel_body;
 pub mod panel_common;
 pub mod panel_replay;
 pub mod run_layout;
-pub mod run_panel;
+pub(crate) mod run_panel;
 pub mod scroll;
 pub mod snapshot;
 pub mod theme;
