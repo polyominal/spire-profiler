@@ -9,16 +9,21 @@ static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
 
 struct CountingAllocator;
 
-// SAFETY: all unsafe allocator operations forward to `System`.
+// SAFETY: System supplies allocation ownership and never calls this allocator.
+// The default zeroed/realloc methods use our alloc/dealloc, preserving that
+// origin. The only added work is a wrapping atomic increment, which neither
+// allocates nor unwinds and never controls pointer access or layout.
 unsafe impl GlobalAlloc for CountingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
-        // Safety: `layout` is allocator-valid by `GlobalAlloc`'s contract.
+        // SAFETY: GlobalAlloc's caller supplies a nonzero layout; forwarding
+        // it unchanged preserves System's allocation contract and result.
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        // Safety: `ptr` was allocated by `alloc` with this `layout`.
+        // SAFETY: the caller transfers a live allocation with its original
+        // layout; all allocation origins above come from System.
         unsafe { System.dealloc(ptr, layout) }
     }
 }
