@@ -33,17 +33,23 @@
 //!    Pointer-free exports are safe to call; pointer-reading exports require the caller to uphold
 //!    the C-string contract. Each decodes its arguments and delegates to [`events`] for the
 //!    recorded facts or [`crate::ui`] for panel interactions (toggle, scroll).
-//! 3. **Panic containment** — a Rust panic must never unwind across the C ABI into the game. Every
-//!    export runs through [`contain`], which catches a panicking core function, reports it through
-//!    [`crate::fail`] (stderr, touches no state), and swallows it. A panic escaping into the host
-//!    would crash the game; containment lets the core continue with whatever state the panic left
-//!    behind.
+//! 3. **Panic containment**: every export uses [`contain`] to catch Rust unwinding panics. Recovery
+//!    leaks panic payloads to avoid running their destructors and protects diagnostics with a
+//!    separate unwind guard. Aborts, including double panics during unwinding, cannot be caught.
 //!
 //! The other two relaxations quarantine different needs:
 //! [`crate::registration`] owns the per-panel instance casts the FFI
 //! callbacks route into, and [`crate::engine::gdext`] owns the raw engine
 //! pointers and interface-function resolution. Any future unsafe
 //! requirement belongs behind a safe helper in one of these three.
+//!
+//! # C-string contract
+//!
+//! Each pointer argument is null or valid for reads of initialized bytes
+//! through a terminating NUL in one allocation. This range, including the
+//! NUL, must be smaller than `isize::MAX` bytes and stay allocated and
+//! unmodified until the call returns, including during callbacks. Null and
+//! non-UTF-8 strings decode to "".
 
 use std::ffi::{CStr, c_char};
 use std::path::Path;
@@ -56,38 +62,49 @@ use crate::fail;
 /// UTF-8. Any other pointer violates the safety contract below.
 ///
 /// # Safety
-/// `ptr` must be null or a NUL-terminated C string valid for the call.
+/// `ptr` satisfies the [C-string contract](self#c-string-contract) until this call returns.
 unsafe fn with_c_str<T>(ptr: *const c_char, f: impl for<'a> FnOnce(&'a str) -> T) -> T {
     let s: &str = if ptr.is_null() {
         ""
     } else {
-        // Safety: the caller upholds the contract on `ptr` above.
+        // SAFETY: the non-null branch has initialized, readable bytes through
+        // NUL in one allocation smaller than isize::MAX. The caller keeps
+        // that allocation live and immutable through f, which scopes the borrow.
         unsafe { CStr::from_ptr(ptr) }.to_str().unwrap_or("")
     };
     f(s)
 }
 
-/// Catches any panic in `f` so nothing unwinds across the C ABI; the panic
-/// is logged through [`fail`] and `on_panic` is returned in its place.
-pub(crate) fn contain<T>(name: &str, on_panic: T, f: impl FnOnce() -> T) -> T {
+/// Returns `on_panic` after a caught Rust unwind, with best-effort diagnostics.
+/// Aborts and double panics during unwinding cannot be caught.
+pub(crate) fn contain<T: Copy>(name: &str, on_panic: T, f: impl FnOnce() -> T) -> T {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
         Ok(value) => value,
         Err(payload) => {
-            let detail = if let Some(msg) = payload.downcast_ref::<&str>() {
-                (*msg).to_owned()
-            } else if let Some(msg) = payload.downcast_ref::<String>() {
-                msg.clone()
-            } else {
-                "non-string panic payload".to_owned()
-            };
-            fail!("panic in {name}: {detail}");
+            // Payload destructors are untrusted. Suppress the original drop
+            // before diagnostics; a reporting panic's payload is forgotten too.
+            // Copy also prevents fallback destruction on the successful path.
+            let payload = std::mem::ManuallyDrop::new(payload);
+            let reported = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let detail = if let Some(msg) = payload.downcast_ref::<&str>() {
+                    *msg
+                } else if let Some(msg) = payload.downcast_ref::<String>() {
+                    msg.as_str()
+                } else {
+                    "non-string panic payload"
+                };
+                fail!("panic in {name}: {detail}");
+            }));
+            if let Err(payload) = reported {
+                std::mem::forget(payload);
+            }
             on_panic
         }
     }
 }
 
 /// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
+/// Pointer arguments satisfy the [C-string contract](self#c-string-contract).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_init(data_dir: *const c_char) {
     // SAFETY: pointer arguments satisfy this export's C contract.
@@ -117,7 +134,7 @@ pub extern "C" fn spire_profiler_set_run_meta(profile_id: i32) {
 /// failed; the identity stays unknown).
 ///
 /// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
+/// Pointer arguments satisfy the [C-string contract](self#c-string-contract).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_run_started(
     character_ids: *const c_char,
@@ -168,7 +185,7 @@ pub extern "C" fn spire_profiler_run_suspended() {
 /// `player_slot` is the owner slot — TEAM (4) for enemy-owned powers.
 ///
 /// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
+/// Pointer arguments satisfy the [C-string contract](self#c-string-contract).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_context_begin(
     source_id: *const c_char,
@@ -211,7 +228,7 @@ pub extern "C" fn spire_profiler_orb_context_begin(hash: i32, player_slot: i32) 
 }
 
 /// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
+/// Pointer arguments satisfy the [C-string contract](self#c-string-contract).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_potion_used(potion_id: *const c_char, player_slot: i32) {
     // SAFETY: pointer arguments satisfy this export's C contract.
@@ -225,7 +242,7 @@ pub unsafe extern "C" fn spire_profiler_potion_used(potion_id: *const c_char, pl
 }
 
 /// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
+/// Pointer arguments satisfy the [C-string contract](self#c-string-contract).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_potion_context_begin(
     potion_id: *const c_char,
@@ -252,7 +269,7 @@ pub extern "C" fn spire_profiler_block_pool_clear(player_slot: i32) {
 /// else 0.
 ///
 /// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
+/// Pointer arguments satisfy the [C-string contract](self#c-string-contract).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_power_applied(
     power_id: *const c_char,
@@ -272,7 +289,7 @@ pub unsafe extern "C" fn spire_profiler_power_applied(
 }
 
 /// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
+/// Pointer arguments satisfy the [C-string contract](self#c-string-contract).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_power_decreased(
     power_id: *const c_char,
@@ -308,7 +325,7 @@ pub extern "C" fn spire_profiler_doom_kills_completed() {
 }
 
 /// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
+/// Pointer arguments satisfy the [C-string contract](self#c-string-contract).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_osty_summoned(
     source_id: *const c_char,
@@ -346,7 +363,7 @@ pub extern "C" fn spire_profiler_player_died(player_slot: i32) {
 /// [`clamp_modifier_kind`](crate::data::state::clamp_modifier_kind).
 ///
 /// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
+/// Pointer arguments satisfy the [C-string contract](self#c-string-contract).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_damage_modifier_contribution(
     modifier_id: *const c_char,
@@ -368,7 +385,7 @@ pub unsafe extern "C" fn spire_profiler_damage_modifier_contribution(
 /// [`clamp_modifier_kind`](crate::data::state::clamp_modifier_kind).
 ///
 /// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
+/// Pointer arguments satisfy the [C-string contract](self#c-string-contract).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_block_modifier_contribution(
     modifier_id: *const c_char,
@@ -394,7 +411,7 @@ pub extern "C" fn spire_profiler_weak_mitigation(prevented: i32, dealer_hash: i3
 }
 
 /// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
+/// Pointer arguments satisfy the [C-string contract](self#c-string-contract).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_buff_mitigation(power_id: *const c_char, prevented: i32) {
     // SAFETY: pointer arguments satisfy this export's C contract.
@@ -415,7 +432,7 @@ pub extern "C" fn spire_profiler_enemy_hit_context(base_damage: i32, dealer_str:
 }
 
 /// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
+/// Pointer arguments satisfy the [C-string contract](self#c-string-contract).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_combat_started(
     encounter_id: *const c_char,
@@ -434,7 +451,7 @@ pub unsafe extern "C" fn spire_profiler_combat_started(
 }
 
 /// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
+/// Pointer arguments satisfy the [C-string contract](self#c-string-contract).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_card_play_started(
     card_id: *const c_char,
@@ -463,7 +480,7 @@ pub extern "C" fn spire_profiler_card_play_finished(player_slot: i32) {
 /// `player_slot` is the creator's slot; the later play keys its row there.
 ///
 /// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
+/// Pointer arguments satisfy the [C-string contract](self#c-string-contract).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_card_generated(
     card_hash: i32,
@@ -484,7 +501,7 @@ pub unsafe extern "C" fn spire_profiler_card_generated(
 /// `player_slot` is `ForgeCmd.Forge`'s player; the forge row keys at it.
 ///
 /// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
+/// Pointer arguments satisfy the [C-string contract](self#c-string-contract).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_forge(
     source_id: *const c_char,
@@ -506,7 +523,7 @@ pub unsafe extern "C" fn spire_profiler_forge(
 /// `osty_flag == 2`; `card_source_slot` is the explicit-card row key.
 ///
 /// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
+/// Pointer arguments satisfy the [C-string contract](self#c-string-contract).
 #[allow(clippy::too_many_arguments)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_damage_dealt(
@@ -548,7 +565,7 @@ pub unsafe extern "C" fn spire_profiler_damage_dealt(
 /// receiver's.
 ///
 /// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
+/// Pointer arguments satisfy the [C-string contract](self#c-string-contract).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_block_gained(
     amount: i32,
@@ -577,7 +594,7 @@ pub extern "C" fn spire_profiler_test_reset() {
 }
 
 /// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
+/// Pointer arguments satisfy the [C-string contract](self#c-string-contract).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_run_history_select(
     seed: *const c_char,
@@ -837,11 +854,40 @@ mod tests {
         }
     }
 
-    /// The containment helper must swallow a panic, never unwind into the host.
     #[test]
     fn containment_swallows_a_panicking_core_function() {
-        contain("spire_profiler_test_reset", (), || panic!("boom"));
-        contain("spire_profiler_test_reset", (), || panic!("str payload"));
+        assert_eq!(contain("str panic", -1, || panic!("boom")), -1);
+        assert_eq!(
+            contain("String panic", -2, || {
+                std::panic::panic_any(String::from("owned message"));
+            }),
+            -2
+        );
+    }
+
+    #[test]
+    fn containment_does_not_run_a_panicking_payload_destructor() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct PanickingPayload(Arc<AtomicBool>);
+
+        impl Drop for PanickingPayload {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Relaxed);
+                panic!("panic payload destructor ran");
+            }
+        }
+
+        let dropped = Arc::new(AtomicBool::new(false));
+        let result = contain("payload destructor", 17, || {
+            std::panic::panic_any(PanickingPayload(Arc::clone(&dropped)));
+        });
+        assert_eq!(result, 17);
+        assert!(
+            !dropped.load(Ordering::Relaxed),
+            "contain must retain the untrusted payload without running its destructor"
+        );
     }
 
     #[test]
