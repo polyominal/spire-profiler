@@ -64,6 +64,11 @@ mod tests {
         std::fs::write(repo.join(".git/index"), "invalid index")?;
         assert!(release_commit(&shell).is_err());
 
+        // A ceiling must be an ancestor, not the directory Git starts in.
+        let _ceiling = shell.push_env(
+            "GIT_CEILING_DIRECTORIES",
+            temp.path().join("..").canonicalize()?,
+        );
         shell.change_dir(temp.path());
         assert!(release_commit(&shell).is_err());
         assert_eq!(resolve_commit(&shell), "unknown");

@@ -71,11 +71,12 @@ impl LineScanner {
         }
     }
 
-    /// A trailing `//` needs no state.
     fn scan_code(&mut self, line: &str) {
         let mut rest = line;
         while !rest.is_empty() {
-            if let Some(body) = rest.strip_prefix("/*") {
+            if rest.starts_with("//") {
+                return;
+            } else if let Some(body) = rest.strip_prefix("/*") {
                 match body.find("*/") {
                     None => {
                         self.in_block_comment = true;
@@ -200,8 +201,10 @@ mod tests {
 
     #[test]
     fn trailing_comments_leave_the_line_code() {
-        let src = "let x = 1; // trailing\n// whole\n";
-        assert_eq!(count_lines(src), (1, 1));
+        for trailing in ["trailing", "\"", "r#\"", "/*", "*/"] {
+            let src = format!("let x = 1; // {trailing}\n// whole\nlet y = 2;\n");
+            assert_eq!(count_lines(&src), (1, 2), "trailing comment: {trailing}");
+        }
     }
 
     #[test]

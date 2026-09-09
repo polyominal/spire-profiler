@@ -253,10 +253,11 @@ mod tests {
              let s = \"{D}\";\n\
              let c = '{D}';\n\
              let t = \"// {D}\";\n\
-             let u = 1; // trailing {D}\n"
+             let u = 1; // trailing {D} \"\n\
+             // after trailing comment {D}\n"
         );
-        assert_eq!(comment_dashes(&src), 5);
-        assert_eq!(src.matches(EM_DASH).count(), 9);
+        assert_eq!(comment_dashes(&src), 6);
+        assert_eq!(src.matches(EM_DASH).count(), 10);
     }
 
     #[test]
