@@ -80,6 +80,11 @@ pub(crate) fn build_matrix(shell: &Shell, root: &Path) -> Result<Vec<(String, Pa
     let _zigbuild_zig_path = shell.push_env("CARGO_ZIGBUILD_ZIG_PATH", zig.as_path());
     ensure_targets(shell)?;
 
+    build_libraries(shell, root)
+}
+
+fn build_libraries(shell: &Shell, root: &Path) -> Result<Vec<(String, PathBuf)>> {
+    let target_dir = root.join("target");
     let mut libs = Vec::new();
     let mut zigbuild = Shell::cmd(shell, "cargo");
     zigbuild = zigbuild
@@ -87,14 +92,15 @@ pub(crate) fn build_matrix(shell: &Shell, root: &Path) -> Result<Vec<(String, Pa
         .arg("--release")
         .arg("--locked")
         .arg("--package")
-        .arg("profiler_core");
+        .arg("profiler_core")
+        .arg("--target-dir")
+        .arg(&target_dir);
     for row in MATRIX {
         zigbuild = zigbuild.arg("--target").arg(row.zigbuild_triple);
     }
     zigbuild.run()?;
     for row in MATRIX {
-        let artifact = root
-            .join("target")
+        let artifact = target_dir
             .join(row.dir_triple)
             .join("release")
             .join(row.cdylib);
@@ -149,6 +155,56 @@ fn installed_targets(shell: &Shell) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn native_artifacts_ignore_an_inherited_target_directory() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let shell = Shell::new()?;
+        let temp = shell.create_temp_dir()?;
+        let root = temp.path().join("workspace with spaces");
+        let bin = temp.path().join("bin");
+        std::fs::create_dir_all(&bin)?;
+        for row in MATRIX {
+            let dir = root.join("target").join(row.dir_triple).join("release");
+            std::fs::create_dir_all(&dir)?;
+            std::fs::write(dir.join(row.cdylib), "stale")?;
+        }
+        let cargo = bin.join("cargo");
+        std::fs::write(
+            &cargo,
+            r#"#!/bin/sh
+output_root=$CARGO_TARGET_DIR
+targets=
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --target-dir) shift; output_root=$1 ;;
+        --target) shift; targets="$targets $1" ;;
+    esac
+    shift
+done
+for target in $targets; do
+    target=${target%%.*}
+    case "$target" in
+        *apple*) library=libprofiler_core.dylib ;;
+        *linux*) library=libprofiler_core.so ;;
+        *windows*) library=profiler_core.dll ;;
+        *) exit 1 ;;
+    esac
+    /bin/mkdir -p "$output_root/$target/release" || exit 1
+    printf fresh > "$output_root/$target/release/$library" || exit 1
+done
+"#,
+        )?;
+        std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755))?;
+        let _path = shell.push_env("PATH", &bin);
+        let _target = shell.push_env("CARGO_TARGET_DIR", temp.path().join("elsewhere"));
+        for (_, artifact) in build_libraries(&shell, &root)? {
+            assert_eq!(std::fs::read_to_string(artifact)?, "fresh");
+        }
+        Ok(())
+    }
 
     /// A duplicate would silently shadow a library in the bundle or in
     /// Godot's lookup.

@@ -17,11 +17,14 @@ pub fn native_lib_selector() -> String {
     let mac_x64 = lib_for("macos", "x86_64");
     let mac_arm64 = lib_for("macos", "arm64");
     format!(
-        "OperatingSystem.IsWindows() ? \"{windows}\" : \
-         OperatingSystem.IsLinux() ? \"{linux}\" : \
-         RuntimeInformation.ProcessArchitecture == Architecture.X64 \
+        "OperatingSystem.IsWindows() && RuntimeInformation.ProcessArchitecture == Architecture.X64 \
+         ? \"{windows}\" : \
+         OperatingSystem.IsLinux() && RuntimeInformation.ProcessArchitecture == Architecture.X64 \
+         ? \"{linux}\" : \
+         OperatingSystem.IsMacOS() && RuntimeInformation.ProcessArchitecture == Architecture.X64 \
          ? \"{mac_x64}\" : \
-         OperatingSystem.IsMacOS() ? \"{mac_arm64}\" : \
+         OperatingSystem.IsMacOS() && RuntimeInformation.ProcessArchitecture == Architecture.Arm64 \
+         ? \"{mac_arm64}\" : \
          throw new PlatformNotSupportedException(\"spire-profiler ships no native library for \
          this platform\")"
     )
@@ -101,6 +104,36 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+
+    #[test]
+    fn native_selector_checks_both_platform_dimensions_before_loading() {
+        let selector = native_lib_selector();
+        let mut branches = selector.split(" : ");
+        for (os, arch, library) in [
+            ("Windows", "X64", "libprofiler_core.windows.x86_64.dll"),
+            ("Linux", "X64", "libprofiler_core.linux.x86_64.so"),
+            ("MacOS", "X64", "libprofiler_core.macos.x86_64.dylib"),
+            ("MacOS", "Arm64", "libprofiler_core.macos.arm64.dylib"),
+        ] {
+            assert_eq!(
+                branches.next(),
+                Some(
+                    format!(
+                        "OperatingSystem.Is{os}() && RuntimeInformation.ProcessArchitecture == \
+                         Architecture.{arch} ? \"{library}\""
+                    )
+                    .as_str()
+                )
+            );
+        }
+        assert!(
+            branches
+                .next()
+                .expect("the selector must reject every unmatched platform")
+                .starts_with("throw new PlatformNotSupportedException(")
+        );
+        assert_eq!(branches.next(), None);
+    }
 
     #[test]
     fn shim_substitution_replaces_all_placeholders() {
