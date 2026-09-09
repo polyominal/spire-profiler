@@ -24,7 +24,7 @@
 //! player identity.
 //!
 //! All living players share one play phase per round (the round ends when
-//! every player readies); turn setup is per player, and plays nest across
+//! every player readies); turn setup is per player, and plays nest within and across
 //! players (start(A) … start(B) … finish(B) … finish(A)) as a pausing play
 //! yields to queued actions. Death is per player; the combat and run
 //! continue until ALL players are dead, and combats always involve the
@@ -62,15 +62,10 @@
 //!   Osty-overflow row). `MAX_PLAYER_SLOTS == 5` is compile-time pinned, and wire slots clamp into
 //!   0..=4 via [`clamp_source_slot`]; a TEAM value never fabricates a player entry (that would
 //!   poison the team-defeat check).
-//! * Rows are `(slot, id, kind)` triples, looked up by `(slot, id)`: [`CardStat::player`] carries
-//!   the slot, and the resolution chains key each branch at the resolved source's slot — the
-//!   generator's recorded slot for a generated instance's play, the event's slot for an explicit
-//!   source (an ally block keys at the owning card's slot), the context entry's own slot for
-//!   contexts. Every table keyed by source id carries the slot dimension.
-//! * Per-slot transient state: [`State::per_player`] (bounded at MAX_PLAYER_SLOTS, sized on first
-//!   slot sight, cleared at the combat boundary) holds one instance of every transient the game
-//!   keeps per player. Because plays only nest across players, per-slot play stacks restore the
-//!   invariants a single global stack loses.
+//! * Row identity is `(slot, id, kind)`; sources keep the supplier's slot independently of the
+//!   physical owner or receiver of an effect.
+//! * Death flags stay with State; plays and source-bearing defensive pools live in its private
+//!   provenance owner.
 //! * Team semantics: combat totals (damage_received, plays, block_total, ...) are TEAM totals, and
 //!   the turn counter counts ROUNDS (the shim hooks the side-level boundary once per round,
 //!   matching the game's RoundNumber). combat_ended marks the record "defeat" iff every
@@ -119,8 +114,10 @@ const _: () = assert!(
 );
 const _: () = assert!(
     SourceKind::Osty as u8 == 4,
-    "SourceKind::Osty must be the last of the five kinds (discriminant 4)"
+    "SourceKind::Osty must retain discriminant 4"
 );
+
+const _: () = assert!(SourceKind::Unknown as u8 == 5);
 
 const _: () = assert!(
     caps::RUN_CARDS >= caps::COMBAT_CARDS,
@@ -138,12 +135,6 @@ const _: () = assert!(
     caps::MAX_PLAYER_SLOTS == TEAM_SLOT as usize + 1,
     "MAX_PLAYER_SLOTS must cover the TEAM slot as its highest value"
 );
-// One block_gained attaches every queued contrib to one chunk.
-const _: () = assert!(
-    caps::PENDING_BLOCK_CONTRIBS >= BlockEntry::MAX_MODS,
-    "the pending-block-contribs queue must hold at least one chunk's MAX_MODS breakdown"
-);
-
 const _: () = assert!(
     core::mem::size_of::<UiRow>() <= 4096,
     "UiRow must stay under 4096 bytes for the panel's frame-buffer memcpy"
@@ -168,14 +159,11 @@ const _: () = assert!(
 
 pub type SourceSlot = u8;
 
-/// The shim sends this value only for
-/// [`crate::data::events::context_begin`] (enemy-owned powers);
-/// the core keys the OSTY overflow row at it directly.
+/// Ownerless credited sources use TEAM; it never creates a real player.
 pub const TEAM_SLOT: SourceSlot = 4;
 
 thread_local! {
     static BAD_SLOT_LOGGED: Cell<bool> = const { Cell::new(false) };
-    static BAD_MODIFIER_KIND_LOGGED: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Unlike [`State::slot_index`] this never grows `per_player`: row-key-only
@@ -189,23 +177,6 @@ pub fn clamp_source_slot(slot: i32) -> SourceSlot {
         );
     }
     clamped
-}
-
-/// The modifier contributions' kind codes are the context enum's relic and
-/// power values (1 = Relic, 2 = Power); the shim sends nothing else. A
-/// modifier credit is never a card, so unknown codes clamp to Power.
-pub fn clamp_modifier_kind(kind: i32) -> SourceKind {
-    match kind {
-        1 => SourceKind::Relic,
-        2 => SourceKind::Power,
-        _ => {
-            crate::fail_once(
-                &BAD_MODIFIER_KIND_LOGGED,
-                format_args!("invalid modifier kind {kind}; clamping to power"),
-            );
-            SourceKind::Power
-        }
-    }
 }
 
 /// Lives here because it is state owned by [`State`]; [`ui_model`] stays the
@@ -227,9 +198,6 @@ impl PlayerFilter {
         }
     }
 }
-
-/// Applications to enemies record FIFO layers for turn-end decrements.
-pub const DURATION_DEBUFFS: [&str; 3] = ["VULNERABLE_POWER", "WEAK_POWER", "POISON_POWER"];
 
 /// Field names and widths define the combat-record JSON schema.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
@@ -307,6 +275,7 @@ pub enum CombatPhase {
 
 #[derive(Clone, Debug, Default)]
 pub struct Combat {
+    pub(crate) row_capacity_logged: bool,
     pub seq: u32,
     pub encounter_id: String,
     pub encounter_type: String,
@@ -471,249 +440,9 @@ pub struct EndedRun {
     pub ended_at: i64,
 }
 
-#[derive(Clone, Debug)]
-pub struct ContextEntry {
-    pub id: String,
-    pub kind: SourceKind,
-    /// The context branch keys its row here.
-    pub slot: SourceSlot,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct ContextStack {
-    frames: Vec<Option<ContextEntry>>,
-    // Rejected scopes unwind above a full stack. None freezes unwinding
-    // after counter overflow: a lost depth must never pop an outer source.
-    rejected_depth: Option<usize>,
-}
-
-impl Default for ContextStack {
-    fn default() -> Self {
-        Self {
-            frames: Vec::new(),
-            rejected_depth: Some(0),
-        }
-    }
-}
-
-impl ContextStack {
-    pub(crate) fn begin(
-        &mut self,
-        source_id: &str,
-        kind: SourceKind,
-        slot: SourceSlot,
-    ) -> Option<&ContextEntry> {
-        let rejected = self.rejected_depth?;
-        if self.frames.len() >= caps::CONTEXT_STACK {
-            self.rejected_depth = rejected.checked_add(1);
-            fail!("context stack overflow ({}) entries", caps::CONTEXT_STACK);
-            return None;
-        }
-        self.frames
-            .push((!source_id.is_empty()).then(|| ContextEntry {
-                id: source_id.to_owned(),
-                kind,
-                slot,
-            }));
-        self.frames.last().and_then(Option::as_ref)
-    }
-
-    pub(crate) fn end(&mut self) -> Option<ContextEntry> {
-        let rejected = self.rejected_depth.as_mut()?;
-        if *rejected > 0 {
-            debug_assert_eq!(
-                self.frames.len(),
-                caps::CONTEXT_STACK,
-                "rejected scopes must unwind above a full accepted stack"
-            );
-            *rejected -= 1;
-            return None;
-        }
-        self.frames.pop().flatten()
-    }
-
-    pub(crate) fn active(&self) -> Option<&ContextEntry> {
-        self.frames.iter().rev().find_map(Option::as_ref)
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct OrbSource {
-    pub hash: i32,
-    pub id: String,
-    pub kind: SourceKind,
-}
-
-#[derive(Clone, Debug)]
-pub struct BlockMod {
-    pub id: String,
-    pub kind: SourceKind,
-    /// The blk_modifier credit row keys at it.
-    pub player: SourceSlot,
-    pub original: i64,
-    pub consumed: i64,
-}
-
-/// Consumed FIFO when the player's block absorbs damage.
-#[derive(Clone, Debug)]
-pub struct BlockEntry {
-    pub id: String,
-    pub kind: SourceKind,
-    /// An ally block keys the credit row at the owning card's slot while
-    /// the chunk sits in the receiver's pool.
-    pub player: SourceSlot,
-    pub base_original: i64,
-    pub base_consumed: i64,
-    pub remaining: i64,
-    pub mods: Vec<BlockMod>,
-}
-
-impl BlockEntry {
-    pub const MAX_MODS: usize = 4;
-
-    pub fn total_original(&self) -> i64 {
-        self.base_original + self.mods.iter().map(|m| m.original).sum::<i64>()
-    }
-}
-
-/// The credit row keys at the applier's slot, so a cross-player modifier
-/// credits its own row.
-#[derive(Clone, Debug)]
-pub struct PendingContrib {
-    pub id: String,
-    pub kind: SourceKind,
-    pub player: SourceSlot,
-    pub amount: i64,
-}
-
-/// The in-flight play's attribution target: everything during the play
-/// credits this source.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ActivePlay {
-    pub id: String,
-    pub kind: SourceKind,
-    /// The generator's recorded slot, else the playing player's own.
-    pub row_slot: SourceSlot,
-    /// The played card's own id, which the chains treat as "the card
-    /// being played", not an override.
-    pub card_id: String,
-    /// True once an orb trigger fired during this play; only the first
-    /// trigger credits the channeling source.
-    pub orb_first_trigger_used: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PotionSource {
-    pub id: String,
-    pub kind: SourceKind,
-}
-
-#[derive(Clone, Debug)]
-pub enum Fallback {
-    /// Index into the global [`State::orb_sources`].
-    Orb(usize),
-    Potion(PotionSource),
-}
-
-/// Plays nest across slots, so each slot owns its transient combat state.
 #[derive(Clone, Debug, Default)]
 pub struct PlayerSlotState {
-    pub active_play: Option<ActivePlay>,
-    /// This slot's block pool (bounded at [`caps::BLOCK_POOL`] chunks).
-    pub block_pool: Vec<BlockEntry>,
-    pub pending_block_contribs: Vec<PendingContrib>,
-    /// Queued per-hit damage-modifier contributions, applied to the next
-    /// hit this slot's dealer lands.
-    pub pending_contribs: Vec<PendingContrib>,
-    pub fallback: Option<Fallback>,
-    /// This slot's Osty defensive HP stack; absorbed damage consumes LIFO.
-    pub osty_stack: Vec<OstyEntry>,
-    /// True once the slot's creature died; the team record is "defeat" iff
-    /// every participating slot's flag is set.
     pub died: bool,
-}
-
-/// Which source applied each power (and how much); proportional splits use
-/// the recorded amounts.
-#[derive(Clone, Debug)]
-pub struct PowerSourceEntry {
-    pub power_id: String,
-    pub source_id: String,
-    pub kind: SourceKind,
-    /// The applier's slot; part of the record's identity.
-    pub player: SourceSlot,
-    pub amount: i64,
-}
-
-#[derive(Clone, Debug)]
-pub struct GeneratedInstance {
-    pub hash: i32,
-    pub source_id: String,
-    pub kind: SourceKind,
-    /// The creator's slot; the instance's later play keys its row here.
-    pub player: SourceSlot,
-}
-
-/// One recorded Doom application on an enemy; kill damage (the enemy's
-/// current HP) attributes FIFO across the applications.
-#[derive(Clone, Debug)]
-pub struct DoomLayer {
-    pub creature_hash: i32,
-    pub source_id: String,
-    pub kind: SourceKind,
-    /// The applier's slot; the DoomKill credit row keys at it.
-    pub player: SourceSlot,
-    pub amount: i64,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct DoomTarget {
-    pub creature_hash: i32,
-    pub hp: i64,
-}
-
-/// Osty defensive HP pool: each Summon pushes an entry; absorbed damage
-/// consumes LIFO, crediting block_effective to the summoning sources.
-#[derive(Clone, Debug)]
-pub struct OstyEntry {
-    pub id: String,
-    pub kind: SourceKind,
-    /// The summoning source's row slot; the absorb credit keys at it.
-    pub player: SourceSlot,
-    pub remaining: i64,
-}
-
-/// Enemy Strength reductions, per creature. Prevented damage credits the
-/// reducer's mitigate_str; a positive delta consumes reductions LIFO.
-#[derive(Clone, Debug)]
-pub struct StrReduction {
-    pub creature_hash: i32,
-    pub source_id: String,
-    pub kind: SourceKind,
-    /// The reducer's row slot; the mitigation credit keys at it.
-    pub player: SourceSlot,
-    pub amount: i64,
-}
-
-/// FIFO debuff layers per (creature, power); turn-end decrements consume
-/// from the head, and poison tick damage splits by duration fraction.
-#[derive(Clone, Debug)]
-pub struct DebuffLayer {
-    pub creature_hash: i32,
-    pub power_id: String,
-    pub source_id: String,
-    pub kind: SourceKind,
-    /// The applier's slot; tick and mitigation credit rows key at it.
-    pub player: SourceSlot,
-    pub duration: i64,
-}
-
-/// One captured enemy→player hit: base damage and the dealer's Strength
-/// at ModifyDamage time, used to prorate str-reduction mitigation.
-#[derive(Clone, Copy, Debug)]
-pub struct EnemyHit {
-    pub base: i64,
-    pub str: i64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -727,6 +456,8 @@ pub struct State {
     /// max+1.
     pub next_combat_id: u32,
     pub current: Option<Combat>,
+    pub(super) source_transfers: super::source::SourceTransfers,
+    pub(super) provenance: super::source::Provenance,
     /// Run-level accumulator for the Run Summary tab, merged at combat
     /// write and cleared at run start; bounded at [`caps::RUN_CARDS`].
     pub run_cards: Vec<CardStat>,
@@ -741,28 +472,6 @@ pub struct State {
     /// Per-slot transient state; sized on first slot sight and cleared at
     /// the combat boundary.
     pub per_player: Vec<PlayerSlotState>,
-
-    pub(crate) context_stack: ContextStack,
-    /// Most recent attribution source, remembered across async gaps so
-    /// effects firing after a hook's pop still resolve to their cause.
-    pub last_source: Option<ContextEntry>,
-
-    /// Channeling source per orb hash; the orb fallback indexes this table.
-    pub orb_sources: Vec<OrbSource>,
-
-    pub power_sources: Vec<PowerSourceEntry>,
-
-    pub generated_instances: Vec<GeneratedInstance>,
-
-    pub doom_layers: Vec<DoomLayer>,
-    pub doom_targets: Vec<DoomTarget>,
-
-    pub str_reductions: Vec<StrReduction>,
-
-    /// A stale capture at worst mis-prorates one hit; it never accumulates.
-    pub enemy_hit: Option<EnemyHit>,
-
-    pub debuff_layers: Vec<DebuffLayer>,
 }
 
 impl State {
@@ -780,22 +489,34 @@ impl State {
         let index = self.slot_index(slot);
         &mut self.per_player[index]
     }
-
-    /// The slot whose play is currently attributing; the earlier slot
-    /// wins when plays interleave.
-    pub fn ambient_slot(&self) -> usize {
-        self.per_player
-            .iter()
-            .position(|slot| slot.active_play.is_some())
-            .unwrap_or(0)
-    }
 }
 
 pub mod caps {
-    /// Open hook frames, including empty sources; deeper scopes are counted
-    /// without storing sources so their ends preserve accepted outer frames.
-    pub const CONTEXT_STACK: usize = 32;
-    /// Channeling sources keyed by orb hash; a re-channel upserts and
+    /// Synchronous nested source copy/upload adapters, never suspended operations.
+    pub const SOURCE_TRANSFERS: usize = 16;
+    /// Distinct credited roots inherited by one effect.
+    pub const SOURCE_DESTINATIONS: usize = 128;
+    /// Simultaneously attached actual powers across players and enemies.
+    pub const POWER_INSTANCES: usize = 256;
+    /// Application layers retained by one attached power.
+    pub const POWER_GRANTS_PER_INSTANCE: usize = 64;
+    /// Live application layers, including one reserved Unknown per power.
+    pub const POWER_GRANTS_TOTAL: usize = 512;
+    /// Nested and replayed card frames on one physical player.
+    pub const ACTIVE_PLAYS_PER_SLOT: usize = 32;
+    /// Saved card, turn, and accumulated snapshots in the reviewed power family.
+    pub const TEMPORAL_POWER_PENDING: usize = 128;
+    /// Suspended live target calculations across independent commands.
+    pub const DAMAGE_CALCULATIONS: usize = 64;
+    /// The canonical damage target yields at most two redirected results.
+    pub const DAMAGE_RESULTS: usize = 2;
+    /// Actual modifying events, with supplier fanout inside each event.
+    pub const DAMAGE_MODIFIERS: usize = 64;
+    /// Distinct credited roots in a completed damage calculation.
+    pub const DAMAGE_DESTINATIONS: usize = 128;
+    /// Nested synchronous Doom command kickoffs.
+    pub const DOOM_BATCHES: usize = 16;
+    /// Channeling sources keyed by actual orb identity; a re-channel upserts and
     /// nothing leaves the table before the combat boundary.
     pub const ORB_SOURCES: usize = 32;
     /// The game's lobby cap; per-player state never needs a fifth PLAYER.
@@ -811,20 +532,10 @@ pub mod caps {
     /// applier per modifier event; that gain attaches the queue to one
     /// chunk (at most a chunk's `MAX_MODS` slices) and clears it.
     pub const PENDING_BLOCK_CONTRIBS: usize = 16;
-    /// One entry per (power, source, slot) applier trio: repeat
-    /// applications merge into an existing entry and the combat boundary
-    /// clears the table, so it holds one combat's distinct appliers per
-    /// power.
-    pub const POWER_SOURCES: usize = 128;
-    /// One entry per generated card instance hash, updated in place when
+    /// One entry per actual generated card identity, updated in place when
     /// the same instance regenerates and cleared only at the combat
     /// boundary, so it grows with one combat's distinct generated copies.
     pub const GENERATED_INSTANCES: usize = 64;
-    /// One layer per recorded Doom application on an enemy, drained FIFO
-    /// at that creature's Doom kill (depleted layers leave) and cleared at
-    /// the combat boundary, so it holds applications still awaiting a
-    /// kill.
-    pub const DOOM_LAYERS: usize = 64;
     /// One capture per living doomed creature in a single DoomKill batch;
     /// the postfix drains the whole table, so the cap sizes one kill
     /// batch, never a lifetime count.
@@ -833,23 +544,16 @@ pub mod caps {
     /// damage depletes it and cleared when the Osty dies, so it holds only
     /// summons with unabsorbed HP.
     pub const OSTY_STACK: usize = 32;
-    /// Modifier shares awaiting the dealer's next landed hit, one per
-    /// recorded applier per modifier event; the hit carves them out of its
-    /// damage and an unlanded one drops them, so the queue never spans
-    /// hits.
-    pub const PENDING_CONTRIBS: usize = 16;
     /// One entry per (creature, reducer source, slot) trio, merged on
     /// repeat and consumed LIFO when the enemy's Strength rises again, so
     /// it holds each creature's reductions still standing.
     pub const STR_REDUCTIONS: usize = 64;
-    /// One layer per duration-debuff application on an enemy (vulnerable,
-    /// weak, poison): turn-end decrements consume the layers FIFO and drop
-    /// depleted ones, and poison ticks split by duration fraction.
-    pub const DEBUFF_LAYERS: usize = 64;
     /// One combat's distinct (player, id, kind) rows: four slots' deck ids
     /// (upgraded variants included) plus the relic/power/potion catalogs —
     /// a few hundred in the worst real combat.
     pub const COMBAT_CARDS: usize = 512;
+    /// Every creditor slot retains an Unknown fallback inside each row table.
+    pub const UNKNOWN_ROWS: usize = MAX_PLAYER_SLOTS;
     /// One run's card-stat rows (the run accumulator, the history
     /// roll-ups): the same id space across every combat of the run, so
     /// strictly more rows than one combat.
@@ -859,80 +563,4 @@ pub mod caps {
 thread_local! {
     /// The process's profiler state, single-threaded by contract.
     pub static STATE: RefCell<State> = RefCell::new(State::default());
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn context_counter_exhaustion_freezes_unwinding_until_reset() {
-        crate::data::events::test_reset();
-        STATE.with(|cell| {
-            let contexts = &mut cell.borrow_mut().context_stack;
-            for _ in 0..caps::CONTEXT_STACK {
-                contexts.begin("OUTER", SourceKind::Relic, 0);
-            }
-            contexts.rejected_depth = Some(usize::MAX);
-            contexts.begin("REJECTED", SourceKind::Power, 0);
-            for _ in 0..caps::CONTEXT_STACK + 2 {
-                contexts.end();
-            }
-            contexts.begin("STILL_REJECTED", SourceKind::Power, 0);
-            assert_eq!(
-                contexts.active().map(|source| source.id.as_str()),
-                Some("OUTER")
-            );
-        });
-        crate::data::events::test_reset();
-        STATE.with(|cell| {
-            let contexts = &mut cell.borrow_mut().context_stack;
-            assert!(contexts.active().is_none());
-            contexts.begin("RECOVERED", SourceKind::Relic, 0);
-            assert_eq!(
-                contexts.end().map(|source| source.id),
-                Some("RECOVERED".to_owned())
-            );
-            assert!(contexts.active().is_none());
-        });
-    }
-
-    #[test]
-    fn from_c_clamps_every_input_to_a_catalogued_kind() {
-        assert_eq!(SourceKind::from_c(i32::MIN), SourceKind::Card);
-        assert_eq!(SourceKind::from_c(-1), SourceKind::Card);
-        assert_eq!(SourceKind::from_c(0), SourceKind::Card);
-        assert_eq!(SourceKind::from_c(1), SourceKind::Relic);
-        assert_eq!(SourceKind::from_c(2), SourceKind::Power);
-        // Potion and Osty kinds from the host clamp to Power (the shim only
-        // sends 0/1/2).
-        assert_eq!(SourceKind::from_c(3), SourceKind::Power);
-        assert_eq!(SourceKind::from_c(4), SourceKind::Power);
-        assert_eq!(SourceKind::from_c(i32::MAX), SourceKind::Power);
-    }
-
-    #[test]
-    fn modifier_kind_codes_map_power_and_relic_and_clamp_unknowns() {
-        assert_eq!(clamp_modifier_kind(1), SourceKind::Relic);
-        assert_eq!(clamp_modifier_kind(2), SourceKind::Power);
-        assert_eq!(clamp_modifier_kind(0), SourceKind::Power);
-        assert_eq!(clamp_modifier_kind(-1), SourceKind::Power);
-        assert_eq!(clamp_modifier_kind(i32::MAX), SourceKind::Power);
-    }
-
-    #[test]
-    fn from_c_maps_wire_codes_and_defaults_unknowns_to_defeat() {
-        assert_eq!(RunOutcome::from_c(0), RunOutcome::Victory);
-        assert_eq!(RunOutcome::from_c(1), RunOutcome::Defeat);
-        assert_eq!(RunOutcome::from_c(2), RunOutcome::Abandoned);
-        assert_eq!(RunOutcome::from_c(-1), RunOutcome::Defeat);
-        assert_eq!(RunOutcome::from_c(3), RunOutcome::Defeat);
-    }
-
-    #[test]
-    fn outcome_serde_reads_unknown_strings_as_defeat() {
-        let out: RunOutcome =
-            serde_json::from_str("\"bogus\"").expect("unknown outcome string decodes");
-        assert_eq!(out, RunOutcome::Defeat);
-    }
 }

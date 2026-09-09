@@ -8,15 +8,21 @@
   --all-features --locked -- --deny warnings`, `check-docs` (warning-free `cargo
   doc --document-private-items` and the comment-density budget), `cargo nextest
   run --workspace --locked --no-fail-fast`.
-- `cargo xtask headless-test` PASS: the game exits successfully, its
-  `[SpireProfiler] harmony patches applied; patched methods: N` marker reports
-  at least `MIN_PATCHES` patched Harmony methods (derived from the attribution
-  catalog plus the fixed class-level and orb groups; other mods can increase the
-  count), no unexpected `[SpireProfiler]` ERROR lines (skipped dynamic
-  catalog/orb patches included; panel-attach failures are deliberate failures,
-  never allowlisted), and the combat panel's parent, rows-child, and
-  overlay-child `draw` virtuals fire under the headless dummy renderer (draw
-  dispatch is covered, visual output is not).
+- `cargo xtask managed-test`: compile the shared production capture sources and
+  deterministic managed fixtures with the pinned .NET SDK against the installed,
+  version-checked game and Harmony assemblies. Each invocation retains an
+  isolated project and source/assembly hashes under `tmp/managed-tests/`. The
+  fixtures check capture, async scope restoration, and exact patch bridges; they
+  do not play the game.
+- `cargo xtask headless-test` first runs `managed-test`, then requires a
+  successful game exit, this mod's `OWN PATCHES` minimum and `CAPTURE VERIFIED`
+  marker with the exact producer/bridge inventory, no unexpected
+  `[SpireProfiler]` ERROR lines, and the combat panel's parent, rows-child, and
+  overlay-child `draw` virtuals under the headless dummy renderer. Capture
+  verification checks Harmony's exact patch methods and owner
+  `dev.spireprofiler`; other mods cannot supply that coverage. Patch or
+  panel-attach failures are never allowlisted. Draw dispatch is covered, visual
+  output is not.
 - Real-play validation is manual: the pipeline cannot play the game.
 - A game update adds one machine-local gate: `cargo xtask check-catalog` reads
   the decompiled tree (`tmp/sts2-decompiled`), so it stays out of smoke; what it

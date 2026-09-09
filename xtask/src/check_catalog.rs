@@ -19,10 +19,9 @@ use regex::Regex;
 
 use crate::{catalog, decompile, game_version, workspace_root};
 
-/// Effect statements the core tracks; the catalog exists to attribute them.
-/// Card generation counts: a generated card's plays credit its generator,
-/// so generation hooks are wrapped like any other effect. Block loss is
-/// absent on purpose: the shim never forwards it.
+/// Effect statements that require source review, including card generation
+/// because generated instances inherit their suppliers. Block loss is absent
+/// because it is not a recorded event.
 const TRACKED: &[(&str, &str)] = &[
     ("damage", r"CreatureCmd\.Damage|DamageCommand|DealDamage"),
     ("block", r"GainBlock"),

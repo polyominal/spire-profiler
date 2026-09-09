@@ -63,22 +63,29 @@ public static class SpireProfilerMod
     /// single player is a one-element list, so every slot resolves to 0.
     /// </summary>
     private static readonly List<Player> _runPlayers = new();
+    private static RunState _runState;
+    internal static object CurrentCombat => (_runState?.CurrentRoom as CombatRoom)?.CombatState;
 
-    /// <summary>
-    /// The player slot of a player: the index into the run's player list,
-    /// clamped 0..3 (the lobby max is 4). A null player, an empty registry
-    /// (no run active), or a player not in the run resolve to 0 — the
-    /// single-player degenerate case. Slot 4 names TEAM-scoped rows
-    /// (ProfilerNative.TeamSlot) and is never produced here: PlayerSlot
-    /// only ever answers for real players, the shim never invents a TEAM
-    /// tag. Pure plumbing: the shim never interprets a slot, the core owns
-    /// all per-slot state.
-    /// </summary>
     internal static int PlayerSlot(Player player)
     {
         if (player == null || _runPlayers.Count == 0) return 0;
         int index = _runPlayers.IndexOf(player);
         return index < 0 ? 0 : Math.Min(index, 3);
+    }
+
+    internal static uint PaperKraneSlots()
+    {
+        uint slots = 0;
+        for (int index = 0; index < Math.Min(_runPlayers.Count, 4); index++)
+            if (_runPlayers[index].GetRelic<PaperKrane>() != null) slots |= 1u << index;
+        return slots;
+    }
+
+    internal static int CreditorSlot(Player player)
+    {
+        if (player == null) return ProfilerNative.TeamSlot;
+        int index = _runPlayers.FindIndex(candidate => ReferenceEquals(candidate, player));
+        return index >= 0 && index < 4 ? index : ProfilerNative.TeamSlot;
     }
 
     /// <summary>
@@ -88,6 +95,8 @@ public static class SpireProfilerMod
     /// </summary>
     internal static void CaptureRunPlayers(RunState state)
     {
+        if (!CaptureRuntime.OnThread) return;
+        _runState = state;
         _runPlayers.Clear();
         if (state?.Players != null) _runPlayers.AddRange(state.Players);
     }
@@ -131,108 +140,6 @@ public static class SpireProfilerMod
         catch (Exception) { return -1; }
     }
 
-    /// Forwards one damage result to the native core. Shared by the
-    /// CombatHistory.DamageReceived postfix and the kill-blow capture
-    /// (Hook.AfterDamageGiven): the game skips DamageReceived for the hit
-    /// that ends the combat, so the same forwarding must be reachable from
-    /// both events without double-counting. Every player's hits are
-    /// forwarded (team-as-one-player), tagged with the dealer's, receiver's,
-    /// and card source's slots (0 when there is none) so damage rows key on
-    /// the source card's owner. The slots are plumbing for the core's
-    /// per-player state, never attribution logic here.
-    internal static void ForwardDamage(Creature receiver, Creature dealer, DamageResult result, CardModel cardSource)
-    {
-        bool toPlayer = receiver?.IsPlayer ?? false;
-        // Multiplayer boss depth: Osty deals damage through attack cards
-        // (dealer flag), and absorbs the player's damage (receiver flag).
-        int ostyFlag = 0;
-        int receiverSlot = 0;
-        try
-        {
-            if (dealer?.Monster is Osty) ostyFlag = ProfilerNative.OstyFlagDealt;
-            else if (receiver?.Monster is Osty) ostyFlag = ProfilerNative.OstyFlagAbsorbed;
-            // The receiver's slot follows the same shape as the flags:
-            // the receiver's own Player when the hit lands on a player,
-            // else the absorbing Osty's PetOwner (already the Player).
-            if (toPlayer) receiverSlot = SpireProfilerMod.PlayerSlot(receiver.Player);
-            else if (receiver?.Monster is Osty) receiverSlot = SpireProfilerMod.PlayerSlot(receiver.PetOwner);
-        }
-        catch (Exception ex2) { Log.Error($"[SpireProfiler] Osty detect: {ex2}"); }
-        // A non-player dealer (enemy, or an Osty dealing damage) has no slot.
-        int dealerSlot = (dealer?.IsPlayer ?? false) ? SpireProfilerMod.PlayerSlot(dealer.Player) : 0;
-        // The damage row's card source — the card that produced the hit —
-        // tags the row with its owner's slot (0 when the hit has no card
-        // source: orb ticks, poison, powers; the core resolves the ambient
-        // slot for those).
-        int cardSourceSlot = cardSource?.Owner != null ? SpireProfilerMod.PlayerSlot(cardSource.Owner) : 0;
-        ProfilerNative.OnDamageDealt(
-            result?.TotalDamage ?? 0,
-            result?.UnblockedDamage ?? 0,
-            result?.BlockedDamage ?? 0,
-            cardSource?.Id?.Entry ?? "",
-            toPlayer,
-            receiver?.GetHashCode() ?? 0,
-            ostyFlag,
-            dealer?.GetHashCode() ?? 0,
-            dealerSlot,
-            receiverSlot,
-            cardSourceSlot);
-        // Weak on the attacking enemy reduces the hit; forward the
-        // prevented amount (computed from the actual multiplier, so
-        // PaperKrane / Debilitate adjust it) for debuff-layer
-        // attribution in the core.
-        if ((receiver?.IsPlayer ?? false) && dealer != null && !dealer.IsPlayer
-            && (result?.TotalDamage ?? 0) > 0 && dealer.GetPower<WeakPower>() != null)
-        {
-            decimal weakMult = 0.75m;
-            if (receiver?.Player != null && receiver.Player.GetRelic<PaperKrane>() != null)
-                weakMult -= 0.15m;
-            if (dealer.GetPower<DebilitatePower>() != null)
-                weakMult = 1m - (1m - weakMult) * 2m;
-            if (weakMult < 0.1m) weakMult = 0.1m;
-            int prevented = (int)Math.Round(result.TotalDamage / weakMult - result.TotalDamage);
-            if (prevented > 0)
-                ProfilerNative.OnWeakMitigation(prevented, dealer.GetHashCode());
-        }
-    }
-
-    /// Pushes a relic/power source context for the duration of one hook
-    /// call. Returns the source id (used as the __state token) or "" when
-    /// there is nothing to attribute. The context carries its model's owner
-    /// slot so context rows key on the owning player.
-    internal static string TryBeginContext(AbstractModel model, int kind)
-    {
-        try
-        {
-            if (model == null) return "";
-            var id = model.Id?.Entry;
-            if (string.IsNullOrEmpty(id)) return "";
-            ProfilerNative.OnContextBegin(id, kind, ContextPlayerSlot(model));
-            return id;
-        }
-        catch (Exception ex) { Log.Error($"[SpireProfiler] context begin: {ex}"); return ""; }
-    }
-
-    /// The owner slot of a catalog model, derived here because the catalog
-    /// prefix only hands us AbstractModel: RelicModel.Owner is the owning
-    /// player; PowerModel.Owner is the creature the power sits ON, so a
-    /// player creature's power takes the player's slot and an enemy power
-    /// has no player owner → the TEAM slot (4) — enemy-power rows must not
-    /// claim a player slot.
-    internal static int ContextPlayerSlot(AbstractModel model)
-    {
-        if (model is RelicModel relic && relic.Owner != null) return SpireProfilerMod.PlayerSlot(relic.Owner);
-        if (model is PowerModel power && power.Owner?.Player != null) return SpireProfilerMod.PlayerSlot(power.Owner.Player);
-        return ProfilerNative.TeamSlot;
-    }
-
-    internal static void TryEndContext(string state)
-    {
-        if (string.IsNullOrEmpty(state)) return;
-        try { ProfilerNative.OnContextEnd(); }
-        catch (Exception ex) { Log.Error($"[SpireProfiler] context end: {ex}"); }
-    }
-
     public static void Initialize()
     {
         if (_initialized) return;
@@ -259,16 +166,12 @@ public static class SpireProfilerMod
 
             ProfilerNative.Load(Path.Combine(modDir, NativeLibraryName()));
             ProfilerNative.Init(dataDir);
+            CaptureRuntime.Initialize(new NativeAttributionBackend());
             Log.Info($"[SpireProfiler] native core loaded; mod dir: {modDir}; data dir: {dataDir}");
 
             var harmony = new Harmony("dev.spireprofiler");
             foreach (var type in typeof(SpireProfilerMod).Assembly.GetTypes())
             {
-                // Skip classes without a class-level HarmonyPatch target:
-                // helper patchers (AttributionPatcher/OrbPatcher) carry only
-                // method-level attributes and are applied manually below —
-                // auto-processing them throws "method null", which reads as
-                // a real patch failure in the logs.
                 if (!type.GetCustomAttributes(typeof(HarmonyPatch), false).Any()) continue;
                 try
                 {
@@ -279,14 +182,14 @@ public static class SpireProfilerMod
                     Log.Error($"[SpireProfiler] Harmony patch failed for {type.Name}: {ex.Message}");
                 }
             }
-            AttributionPatcher.PatchAll(harmony);
-            OrbPatcher.PatchAll(harmony);
-            Log.Info($"[SpireProfiler] harmony patches applied; patched methods: {Harmony.GetAllPatchedMethods().Count()}");
+            FlowCapture.Install(harmony, message => Log.Info($"[SpireProfiler] {message}"));
+            var ownedMethods = Harmony.GetAllPatchedMethods().Where(method => Harmony.GetPatchInfo(method)?.Owners.Contains(harmony.Id) == true).ToArray();
+            Log.Info($"[SpireProfiler] OWN PATCHES owner={harmony.Id} methods={ownedMethods.Length}");
             // Version-drift tripwire: these five gate the run lifecycle;
             // if a game update renames them, runs would silently go unrecorded.
             foreach (var name in new[] { "SetUpNewSingleplayer", "SetUpNewMultiplayer", "SetUpSavedSingleplayer", "SetUpSavedMultiplayer", "CleanUp" })
             {
-                if (!Harmony.GetAllPatchedMethods().Any(m => m.Name == name))
+                if (!ownedMethods.Any(m => m.DeclaringType == typeof(RunManager) && m.Name == name))
                     Log.Error($"[SpireProfiler] expected patch missing: RunManager.{name}");
             }
 
@@ -689,324 +592,293 @@ public static class SpireProfilerMod
 /// </summary>
 internal static class ProfilerNative
 {
-    private delegate void NativeVoid();
-    private delegate void NativeInit([MarshalAs(UnmanagedType.LPUTF8Str)] string dataDir);
-    private delegate void NativeCombatStarted([MarshalAs(UnmanagedType.LPUTF8Str)] string encounterId, [MarshalAs(UnmanagedType.LPUTF8Str)] string encounterType);
-    // Player slots (0..3, lobby order; 4 = TEAM) tag every per-slot export
-    // (always the trailing parameters), plus the roster's net-ids and the
-    // game's own StartTime (the run id) on run_started. Slots are plumbing
-    // for the core's per-slot state; they never change what is forwarded.
-    private delegate void NativeCardPlayStarted([MarshalAs(UnmanagedType.LPUTF8Str)] string cardId, int playIndex, int playCount, int cardHash, int playerSlot);
-    private delegate void NativeCardPlayFinished(int playerSlot);
-    private delegate void NativeDamageDealt(int total, int unblocked, int blocked, [MarshalAs(UnmanagedType.LPUTF8Str)] string cardSourceId, int toPlayer, int receiverHash, int ostyFlag, int dealerHash, int dealerSlot, int receiverSlot, int cardSourceSlot);
-    private delegate void NativeBlockGained(int amount, [MarshalAs(UnmanagedType.LPUTF8Str)] string cardId, int playerSlot, int sourceSlot);
-    private delegate void NativeRunStarted([MarshalAs(UnmanagedType.LPUTF8Str)] string characterIds, int ascension, [MarshalAs(UnmanagedType.LPUTF8Str)] string gameMode, [MarshalAs(UnmanagedType.LPUTF8Str)] string seed, int continued, [MarshalAs(UnmanagedType.LPUTF8Str)] string netIds, long startTime);
-    // The run terminal state: 0 = victory, 1 = defeat, 2 = abandoned (see
-    // PatchRunEnded's mapping).
-    private delegate void NativeRunEnded(int outcome);
-    private delegate void NativeContextBegin([MarshalAs(UnmanagedType.LPUTF8Str)] string sourceId, int kind, int playerSlot);
-    private delegate void NativeContextEnd();
-    private delegate void NativeTurnStarted();
-    private delegate void NativeOrbEvent(int hash, int playerSlot);
-    private delegate void NativePotionUsed([MarshalAs(UnmanagedType.LPUTF8Str)] string potionId, int playerSlot);
-    private delegate void NativePotionContextBegin([MarshalAs(UnmanagedType.LPUTF8Str)] string potionId, int playerSlot);
-    private delegate void NativeBlockPoolClear(int playerSlot);
-    private delegate void NativePanelToggle();
-    private delegate void NativePowerApplied([MarshalAs(UnmanagedType.LPUTF8Str)] string powerId, int amount, int creatureHash, int isPlayer, int playerSlot);
-    private delegate void NativePowerDecreased([MarshalAs(UnmanagedType.LPUTF8Str)] string powerId, int amount, int creatureHash, int isPlayer, int playerSlot);
-    private delegate void NativeModifierContribution([MarshalAs(UnmanagedType.LPUTF8Str)] string modifierId, int kind, int contribution, int playerSlot);
-    private delegate void NativeCardGenerated(int cardHash, [MarshalAs(UnmanagedType.LPUTF8Str)] string sourceId, int sourceKind, int playerSlot);
-    private delegate void NativeForge([MarshalAs(UnmanagedType.LPUTF8Str)] string sourceId, int kind, int amount, int playerSlot);
-    private delegate void NativeDoomTargetCapture(int creatureHash, int currentHp);
-    private delegate void NativeOstySummoned([MarshalAs(UnmanagedType.LPUTF8Str)] string sourceId, int kind, int hpAmount, int playerSlot);
-    private delegate void NativeWeakMitigation(int prevented, int dealerHash);
-    private delegate void NativeEnemyHitContext(int baseDamage, int dealerStr);
-    private delegate void NativeBuffMitigation([MarshalAs(UnmanagedType.LPUTF8Str)] string powerId, int prevented);
-    private delegate void NativeRunMeta(int profileId);
-    private delegate void NativeRunHistorySelect([MarshalAs(UnmanagedType.LPUTF8Str)] string seed, long startTime, int profile);
-    private delegate void NativeOstyKilled(int playerSlot);
-    private delegate void NativePlayerDied(int playerSlot);
-    // The scroll forward carries one gui_input event's raw fields: the
-    // panel id names whose signal fired (PanelCombat/PanelRun), the rest
-    // is the InputEventMouseButton button/pressed pair or the
-    // InputEventPanGesture delta.y — the core owns all translation.
-    private delegate void NativeScrollInput(int panel, int buttonIndex, int pressed, double panY);
+    internal const int TeamSlot = 4;
+    internal const int PanelCombat = 0;
+    internal const int PanelRun = 1;
 
-    public const int ContextKindRelic = 1;
-    public const int ContextKindPower = 2;
-    // Reserved slot naming rows whose source has no player owner (enemy
-    // power contexts; the core's caps::MAX_PLAYER_SLOTS = 5 keeps 0..4).
-    public const int TeamSlot = 4;
-    public const int OstyFlagDealt = 1;
-    public const int OstyFlagAbsorbed = 2;
-    // Panel ids for the scroll forward (spire_profiler_scroll_input).
-    public const int PanelCombat = 0;
-    public const int PanelRun = 1;
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void NativeInit([MarshalAs(UnmanagedType.LPUTF8Str)] string dataDir);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void NativeSelfTest();
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void NativeSetRunMeta(int profileId);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void NativeRunStarted([MarshalAs(UnmanagedType.LPUTF8Str)] string characterIds, int ascension, [MarshalAs(UnmanagedType.LPUTF8Str)] string gameMode, [MarshalAs(UnmanagedType.LPUTF8Str)] string seed, int continued, [MarshalAs(UnmanagedType.LPUTF8Str)] string netIds, long startTime);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void NativeRunEnded(int outcome);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void NativeRunSuspended();
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void NativeRunHistorySelect([MarshalAs(UnmanagedType.LPUTF8Str)] string seed, long startTime, int profile);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void NativeRunHistoryClear();
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void NativePanelToggle();
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void NativeScrollInput(int panel, int buttonIndex, int pressed, double panY);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate ulong NativeCombatStarted([MarshalAs(UnmanagedType.LPUTF8Str)] string encounterId, [MarshalAs(UnmanagedType.LPUTF8Str)] string encounterType);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NativeCombatEnded(ulong combatSeq);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NativeTurnStarted(ulong combatSeq);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NativeBlockPoolClear(ulong combatSeq, int playerSlot);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NativePlayerDied(ulong combatSeq, int playerSlot);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NativePotionUsed(ulong combatSeq);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate ulong NativeSourceCapture(ulong combatSeq, int captureKind, ulong instance, [MarshalAs(UnmanagedType.LPUTF8Str)] string sourceId, int sourceKind, int sourceSlot, int generationState);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NativeSourceCount(ulong transfer);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate ulong NativeSourceDestination(ulong transfer, int index);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate ulong NativeSourceWeight(ulong transfer, int index);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate ulong NativeSourceTransferBegin(ulong combatSeq);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NativeSourceTransferAdd(ulong transfer, ulong destination, ulong weight);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NativeSourceTransferSeal(ulong transfer);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NativeSourceTransferRelease(ulong transfer);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NativePowerAttached(ulong combatSeq, ulong powerInstance, [MarshalAs(UnmanagedType.LPUTF8Str)] string powerId, ulong ownerCreature, int ownerKind, int ownerSlot, int amount, ulong sourceTransfer);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NativePowerAmountChanged(ulong combatSeq, ulong powerInstance, [MarshalAs(UnmanagedType.LPUTF8Str)] string powerId, ulong ownerCreature, int ownerKind, int ownerSlot, int oldAmount, int newAmount, ulong sourceTransfer);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NativePowerRemoved(ulong combatSeq, ulong powerInstance);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NativePowerProvenanceInvalidate(ulong combatSeq, ulong powerInstance);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NativeCardGenerated(ulong combatSeq, ulong cardInstance, ulong sourceTransfer, int producerRole);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate ulong NativeCardPlayStarted(ulong combatSeq, ulong executionId, ulong cardInstance, [MarshalAs(UnmanagedType.LPUTF8Str)] string cardId, int playerSlot, int playIndex, int playCount, int generationState, ulong sourceTransfer);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NativeCardPlayFinished(ulong play);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NativeCardExecutionEnded(ulong combatSeq, ulong executionId);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NativeOrbChanneled(ulong combatSeq, ulong orbInstance, ulong sourceTransfer);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NativeOrbContextBegin(ulong combatSeq, ulong orbInstance, ulong play, int ownerSlot);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate ulong NativeDamageCalculationBegin(ulong combatSeq, ulong sourceTransfer, int producerRole, int segment, ulong originalTarget);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NativeDamageModifierContribution(ulong calculation, ulong sourceTransfer, int amount);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NativeDamageCalculationEnemyHit(ulong calculation, ulong dealerCreature, int baseDamage, int dealerStrength);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NativeDamageCalculationWeakSource(ulong calculation, ulong sourceTransfer);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NativeDamageResultAppend(ulong calculation, int total, int unblocked, int blocked, int resultKind, int receiverSlot, int weakPrevented);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NativeDamageCalculationCommit(ulong calculation);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NativeDamageCalculationAbort(ulong calculation);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NativeDamageUnattributed(ulong combatSeq, int total, int unblocked, int blocked, int resultKind, int receiverSlot, int weakPrevented);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NativeBuffMitigation(ulong combatSeq, ulong sourceTransfer, int prevented);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NativeBlockModifierContribution(ulong combatSeq, ulong sourceTransfer, int amount, int receiverSlot);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NativeBlockGained(ulong combatSeq, int amount, ulong sourceTransfer, int receiverSlot);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NativeForge(ulong combatSeq, ulong sourceTransfer, int amount);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NativeOstySummoned(ulong combatSeq, ulong sourceTransfer, int hpAmount, int ownerSlot);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NativeOstyKilled(ulong combatSeq, int ownerSlot, ulong play);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate ulong NativeDoomBatchBegin(ulong combatSeq);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NativeDoomTargetCapture(ulong batch, ulong creatureInstance, ulong doomPowerInstance, int currentHp);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NativeDoomKillsCompleted(ulong batch);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NativeDoomBatchAbort(ulong batch);
 
     private static NativeInit _init;
-    private static NativeCombatStarted _combatStarted;
-    private static NativeCardPlayStarted _cardPlayStarted;
-    private static NativeCardPlayFinished _cardPlayFinished;
-    private static NativeDamageDealt _damageDealt;
-    private static NativeBlockGained _blockGained;
-    private static NativeVoid _combatEnded;
-    private static NativeVoid _selfTest;
-    private static NativeRunStarted _runStarted;
-    private static NativeRunEnded _runEnded;
-    private static NativeVoid _runSuspended;
-    private static NativeContextBegin _contextBegin;
-    private static NativeContextEnd _contextEnd;
-    private static NativeTurnStarted _turnStarted;
-    private static NativeOrbEvent _orbChanneled;
-    private static NativeOrbEvent _orbContextBegin;
-    private static NativePotionUsed _potionUsed;
-    private static NativePotionContextBegin _potionContextBegin;
-    private static NativeBlockPoolClear _blockPoolClear;
-    private static NativePanelToggle _panelToggle;
-    private static NativePowerApplied _powerApplied;
-    private static NativePowerDecreased _powerDecreased;
-    private static NativeModifierContribution _modifierContribution;
-    private static NativeCardGenerated _cardGenerated;
+    private static NativeSelfTest _self_test;
+    private static NativeSetRunMeta _set_run_meta;
+    private static NativeRunStarted _run_started;
+    private static NativeRunEnded _run_ended;
+    private static NativeRunSuspended _run_suspended;
+    private static NativeRunHistorySelect _run_history_select;
+    private static NativeRunHistoryClear _run_history_clear;
+    private static NativePanelToggle _panel_toggle;
+    private static NativeScrollInput _scroll_input;
+    private static NativeCombatStarted _combat_started;
+    private static NativeCombatEnded _combat_ended;
+    private static NativeTurnStarted _turn_started;
+    private static NativeBlockPoolClear _block_pool_clear;
+    private static NativePlayerDied _player_died;
+    private static NativePotionUsed _potion_used;
+    private static NativeSourceCapture _source_capture;
+    private static NativeSourceCount _source_count;
+    private static NativeSourceDestination _source_destination;
+    private static NativeSourceWeight _source_weight;
+    private static NativeSourceTransferBegin _source_transfer_begin;
+    private static NativeSourceTransferAdd _source_transfer_add;
+    private static NativeSourceTransferSeal _source_transfer_seal;
+    private static NativeSourceTransferRelease _source_transfer_release;
+    private static NativePowerAttached _power_attached;
+    private static NativePowerAmountChanged _power_amount_changed;
+    private static NativePowerRemoved _power_removed;
+    private static NativePowerProvenanceInvalidate _power_provenance_invalidate;
+    private static NativeCardGenerated _card_generated;
+    private static NativeCardPlayStarted _card_play_started;
+    private static NativeCardPlayFinished _card_play_finished;
+    private static NativeCardExecutionEnded _card_execution_ended;
+    private static NativeOrbChanneled _orb_channeled;
+    private static NativeOrbContextBegin _orb_context_begin;
+    private static NativeDamageCalculationBegin _damage_calculation_begin;
+    private static NativeDamageModifierContribution _damage_modifier_contribution;
+    private static NativeDamageCalculationEnemyHit _damage_calculation_enemy_hit;
+    private static NativeDamageCalculationWeakSource _damage_calculation_weak_source;
+    private static NativeDamageResultAppend _damage_result_append;
+    private static NativeDamageCalculationCommit _damage_calculation_commit;
+    private static NativeDamageCalculationAbort _damage_calculation_abort;
+    private static NativeDamageUnattributed _damage_unattributed;
+    private static NativeBuffMitigation _buff_mitigation;
+    private static NativeBlockModifierContribution _block_modifier_contribution;
+    private static NativeBlockGained _block_gained;
     private static NativeForge _forge;
-    private static NativeDoomTargetCapture _doomTargetCapture;
-    private static NativeVoid _doomKillsCompleted;
-    private static NativeOstySummoned _ostySummoned;
-    private static NativeOstyKilled _ostyKilled;
-    private static NativeWeakMitigation _weakMitigation;
-    private static NativeEnemyHitContext _enemyHitContext;
-    private static NativeBuffMitigation _buffMitigation;
-    private static NativeModifierContribution _blockModifierContribution;
-    private static NativeRunMeta _runMeta;
-    private static NativeRunHistorySelect _runHistorySelect;
-    private static NativeVoid _runHistoryClear;
-    private static NativePlayerDied _playerDied;
-    private static NativeScrollInput _scrollInput;
+    private static NativeOstySummoned _osty_summoned;
+    private static NativeOstyKilled _osty_killed;
+    private static NativeDoomBatchBegin _doom_batch_begin;
+    private static NativeDoomTargetCapture _doom_target_capture;
+    private static NativeDoomKillsCompleted _doom_kills_completed;
+    private static NativeDoomBatchAbort _doom_batch_abort;
 
     private static T GetExport<T>(IntPtr lib, string name) where T : Delegate =>
         Marshal.GetDelegateForFunctionPointer<T>(NativeLibrary.GetExport(lib, name));
 
-    public static void Load(string libPath)
+    internal static void Load(string path)
     {
-        var lib = NativeLibrary.Load(libPath);
+        var lib = NativeLibrary.Load(path);
         _init = GetExport<NativeInit>(lib, "spire_profiler_init");
-        _combatStarted = GetExport<NativeCombatStarted>(lib, "spire_profiler_combat_started");
-        _cardPlayStarted = GetExport<NativeCardPlayStarted>(lib, "spire_profiler_card_play_started");
-        _cardPlayFinished = GetExport<NativeCardPlayFinished>(lib, "spire_profiler_card_play_finished");
-        _damageDealt = GetExport<NativeDamageDealt>(lib, "spire_profiler_damage_dealt");
-        _blockGained = GetExport<NativeBlockGained>(lib, "spire_profiler_block_gained");
-        _combatEnded = GetExport<NativeVoid>(lib, "spire_profiler_combat_ended");
-        _selfTest = GetExport<NativeVoid>(lib, "spire_profiler_self_test");
-        _runStarted = GetExport<NativeRunStarted>(lib, "spire_profiler_run_started");
-        _runEnded = GetExport<NativeRunEnded>(lib, "spire_profiler_run_ended");
-        _runSuspended = GetExport<NativeVoid>(lib, "spire_profiler_run_suspended");
-        _contextBegin = GetExport<NativeContextBegin>(lib, "spire_profiler_context_begin");
-        _contextEnd = GetExport<NativeContextEnd>(lib, "spire_profiler_context_end");
-        _turnStarted = GetExport<NativeTurnStarted>(lib, "spire_profiler_turn_started");
-        _orbChanneled = GetExport<NativeOrbEvent>(lib, "spire_profiler_orb_channeled");
-        _orbContextBegin = GetExport<NativeOrbEvent>(lib, "spire_profiler_orb_context_begin");
-        _potionUsed = GetExport<NativePotionUsed>(lib, "spire_profiler_potion_used");
-        _potionContextBegin = GetExport<NativePotionContextBegin>(lib, "spire_profiler_potion_context_begin");
-        _blockPoolClear = GetExport<NativeBlockPoolClear>(lib, "spire_profiler_block_pool_clear");
-        _panelToggle = GetExport<NativePanelToggle>(lib, "spire_profiler_panel_toggle");
-        _powerApplied = GetExport<NativePowerApplied>(lib, "spire_profiler_power_applied");
-        _powerDecreased = GetExport<NativePowerDecreased>(lib, "spire_profiler_power_decreased");
-        _modifierContribution = GetExport<NativeModifierContribution>(lib, "spire_profiler_damage_modifier_contribution");
-        _cardGenerated = GetExport<NativeCardGenerated>(lib, "spire_profiler_card_generated");
+        _self_test = GetExport<NativeSelfTest>(lib, "spire_profiler_self_test");
+        _set_run_meta = GetExport<NativeSetRunMeta>(lib, "spire_profiler_set_run_meta");
+        _run_started = GetExport<NativeRunStarted>(lib, "spire_profiler_run_started");
+        _run_ended = GetExport<NativeRunEnded>(lib, "spire_profiler_run_ended");
+        _run_suspended = GetExport<NativeRunSuspended>(lib, "spire_profiler_run_suspended");
+        _run_history_select = GetExport<NativeRunHistorySelect>(lib, "spire_profiler_run_history_select");
+        _run_history_clear = GetExport<NativeRunHistoryClear>(lib, "spire_profiler_run_history_clear");
+        _panel_toggle = GetExport<NativePanelToggle>(lib, "spire_profiler_panel_toggle");
+        _scroll_input = GetExport<NativeScrollInput>(lib, "spire_profiler_scroll_input");
+        _combat_started = GetExport<NativeCombatStarted>(lib, "spire_profiler_combat_started");
+        _combat_ended = GetExport<NativeCombatEnded>(lib, "spire_profiler_combat_ended");
+        _turn_started = GetExport<NativeTurnStarted>(lib, "spire_profiler_turn_started");
+        _block_pool_clear = GetExport<NativeBlockPoolClear>(lib, "spire_profiler_block_pool_clear");
+        _player_died = GetExport<NativePlayerDied>(lib, "spire_profiler_player_died");
+        _potion_used = GetExport<NativePotionUsed>(lib, "spire_profiler_potion_used");
+        _source_capture = GetExport<NativeSourceCapture>(lib, "spire_profiler_source_capture");
+        _source_count = GetExport<NativeSourceCount>(lib, "spire_profiler_source_count");
+        _source_destination = GetExport<NativeSourceDestination>(lib, "spire_profiler_source_destination");
+        _source_weight = GetExport<NativeSourceWeight>(lib, "spire_profiler_source_weight");
+        _source_transfer_begin = GetExport<NativeSourceTransferBegin>(lib, "spire_profiler_source_transfer_begin");
+        _source_transfer_add = GetExport<NativeSourceTransferAdd>(lib, "spire_profiler_source_transfer_add");
+        _source_transfer_seal = GetExport<NativeSourceTransferSeal>(lib, "spire_profiler_source_transfer_seal");
+        _source_transfer_release = GetExport<NativeSourceTransferRelease>(lib, "spire_profiler_source_transfer_release");
+        _power_attached = GetExport<NativePowerAttached>(lib, "spire_profiler_power_attached");
+        _power_amount_changed = GetExport<NativePowerAmountChanged>(lib, "spire_profiler_power_amount_changed");
+        _power_removed = GetExport<NativePowerRemoved>(lib, "spire_profiler_power_removed");
+        _power_provenance_invalidate = GetExport<NativePowerProvenanceInvalidate>(lib, "spire_profiler_power_provenance_invalidate");
+        _card_generated = GetExport<NativeCardGenerated>(lib, "spire_profiler_card_generated");
+        _card_play_started = GetExport<NativeCardPlayStarted>(lib, "spire_profiler_card_play_started");
+        _card_play_finished = GetExport<NativeCardPlayFinished>(lib, "spire_profiler_card_play_finished");
+        _card_execution_ended = GetExport<NativeCardExecutionEnded>(lib, "spire_profiler_card_execution_ended");
+        _orb_channeled = GetExport<NativeOrbChanneled>(lib, "spire_profiler_orb_channeled");
+        _orb_context_begin = GetExport<NativeOrbContextBegin>(lib, "spire_profiler_orb_context_begin");
+        _damage_calculation_begin = GetExport<NativeDamageCalculationBegin>(lib, "spire_profiler_damage_calculation_begin");
+        _damage_modifier_contribution = GetExport<NativeDamageModifierContribution>(lib, "spire_profiler_damage_modifier_contribution");
+        _damage_calculation_enemy_hit = GetExport<NativeDamageCalculationEnemyHit>(lib, "spire_profiler_damage_calculation_enemy_hit");
+        _damage_calculation_weak_source = GetExport<NativeDamageCalculationWeakSource>(lib, "spire_profiler_damage_calculation_weak_source");
+        _damage_result_append = GetExport<NativeDamageResultAppend>(lib, "spire_profiler_damage_result_append");
+        _damage_calculation_commit = GetExport<NativeDamageCalculationCommit>(lib, "spire_profiler_damage_calculation_commit");
+        _damage_calculation_abort = GetExport<NativeDamageCalculationAbort>(lib, "spire_profiler_damage_calculation_abort");
+        _damage_unattributed = GetExport<NativeDamageUnattributed>(lib, "spire_profiler_damage_unattributed");
+        _buff_mitigation = GetExport<NativeBuffMitigation>(lib, "spire_profiler_buff_mitigation");
+        _block_modifier_contribution = GetExport<NativeBlockModifierContribution>(lib, "spire_profiler_block_modifier_contribution");
+        _block_gained = GetExport<NativeBlockGained>(lib, "spire_profiler_block_gained");
         _forge = GetExport<NativeForge>(lib, "spire_profiler_forge");
-        _doomTargetCapture = GetExport<NativeDoomTargetCapture>(lib, "spire_profiler_doom_target_capture");
-        _doomKillsCompleted = GetExport<NativeVoid>(lib, "spire_profiler_doom_kills_completed");
-        _ostySummoned = GetExport<NativeOstySummoned>(lib, "spire_profiler_osty_summoned");
-        _ostyKilled = GetExport<NativeOstyKilled>(lib, "spire_profiler_osty_killed");
-        _weakMitigation = GetExport<NativeWeakMitigation>(lib, "spire_profiler_weak_mitigation");
-        _enemyHitContext = GetExport<NativeEnemyHitContext>(lib, "spire_profiler_enemy_hit_context");
-        _buffMitigation = GetExport<NativeBuffMitigation>(lib, "spire_profiler_buff_mitigation");
-        _blockModifierContribution = GetExport<NativeModifierContribution>(lib, "spire_profiler_block_modifier_contribution");
-        _runMeta = GetExport<NativeRunMeta>(lib, "spire_profiler_set_run_meta");
-        _runHistorySelect = GetExport<NativeRunHistorySelect>(lib, "spire_profiler_run_history_select");
-        _runHistoryClear = GetExport<NativeVoid>(lib, "spire_profiler_run_history_clear");
-        _playerDied = GetExport<NativePlayerDied>(lib, "spire_profiler_player_died");
-        _scrollInput = GetExport<NativeScrollInput>(lib, "spire_profiler_scroll_input");
+        _osty_summoned = GetExport<NativeOstySummoned>(lib, "spire_profiler_osty_summoned");
+        _osty_killed = GetExport<NativeOstyKilled>(lib, "spire_profiler_osty_killed");
+        _doom_batch_begin = GetExport<NativeDoomBatchBegin>(lib, "spire_profiler_doom_batch_begin");
+        _doom_target_capture = GetExport<NativeDoomTargetCapture>(lib, "spire_profiler_doom_target_capture");
+        _doom_kills_completed = GetExport<NativeDoomKillsCompleted>(lib, "spire_profiler_doom_kills_completed");
+        _doom_batch_abort = GetExport<NativeDoomBatchAbort>(lib, "spire_profiler_doom_batch_abort");
     }
 
-    public static void Init(string dataDir) => _init(dataDir);
-    public static void SelfTest() => _selfTest();
-    public static void OnCombatStarted(string encounterId, string encounterType) => _combatStarted(encounterId, encounterType);
-    public static void OnCardPlayStarted(string cardId, int playIndex, int playCount, int cardHash, int playerSlot) =>
-        _cardPlayStarted(cardId, playIndex, playCount, cardHash, playerSlot);
-    public static void OnCardPlayFinished(int playerSlot) => _cardPlayFinished(playerSlot);
-    public static void OnDamageDealt(int total, int unblocked, int blocked, string cardSourceId, bool toPlayer, int receiverHash, int ostyFlag, int dealerHash, int dealerSlot, int receiverSlot, int cardSourceSlot) =>
-        _damageDealt(total, unblocked, blocked, cardSourceId, toPlayer ? 1 : 0, receiverHash, ostyFlag, dealerHash, dealerSlot, receiverSlot, cardSourceSlot);
-    public static void OnBlockGained(int amount, string cardId, int playerSlot, int sourceSlot) => _blockGained(amount, cardId, playerSlot, sourceSlot);
-    public static void OnCombatEnded() => _combatEnded();
-    public static void OnRunStarted(string characterIds, int ascension, string gameMode, string seed, bool continued, string netIds, long startTime) =>
-        _runStarted(characterIds, ascension, gameMode, seed, continued ? 1 : 0, netIds, startTime);
-    public static void OnRunEnded(int outcome) => _runEnded(outcome);
-    public static void OnRunSuspended() => _runSuspended();
-    public static void OnContextBegin(string sourceId, int kind, int playerSlot) => _contextBegin(sourceId, kind, playerSlot);
-    public static void OnContextEnd() => _contextEnd();
-    public static void OnTurnStarted() => _turnStarted();
-    public static void OnOrbChanneled(int hash, int playerSlot) => _orbChanneled(hash, playerSlot);
-    public static void OnOrbContextBegin(int hash, int playerSlot) => _orbContextBegin(hash, playerSlot);
-    public static void OnPotionUsed(string potionId, int playerSlot) => _potionUsed(potionId, playerSlot);
-    public static void OnPotionContextBegin(string potionId, int playerSlot) => _potionContextBegin(potionId, playerSlot);
-    public static void OnBlockPoolClear(int playerSlot) => _blockPoolClear(playerSlot);
-    public static void OnPowerApplied(string powerId, int amount, int creatureHash, bool isPlayer, int playerSlot) => _powerApplied(powerId, amount, creatureHash, isPlayer ? 1 : 0, playerSlot);
-    public static void OnPowerDecreased(string powerId, int amount, int creatureHash, bool isPlayer, int playerSlot) => _powerDecreased(powerId, amount, creatureHash, isPlayer ? 1 : 0, playerSlot);
-    public static void OnDamageModifierContribution(string modifierId, int kind, int contribution, int playerSlot) => _modifierContribution(modifierId, kind, contribution, playerSlot);
-    public static void OnCardGenerated(int cardHash, string sourceId, int sourceKind, int playerSlot) => _cardGenerated(cardHash, sourceId, sourceKind, playerSlot);
-    public static void OnForge(string sourceId, int kind, int amount, int playerSlot) => _forge(sourceId, kind, amount, playerSlot);
-    public static void OnDoomTargetCapture(int creatureHash, int currentHp) => _doomTargetCapture(creatureHash, currentHp);
-    public static void OnDoomKillsCompleted() => _doomKillsCompleted();
-    public static void OnOstySummoned(string sourceId, int kind, int hpAmount, int playerSlot) => _ostySummoned(sourceId, kind, hpAmount, playerSlot);
-    public static void OnOstyKilled(int playerSlot) => _ostyKilled(playerSlot);
-    public static void OnWeakMitigation(int prevented, int dealerHash) => _weakMitigation(prevented, dealerHash);
-    public static void OnEnemyHitContext(int baseDamage, int dealerStr) => _enemyHitContext(baseDamage, dealerStr);
-    public static void OnBuffMitigation(string powerId, int prevented) => _buffMitigation(powerId, prevented);
-    public static void OnBlockModifierContribution(string modifierId, int kind, int contribution, int playerSlot) => _blockModifierContribution(modifierId, kind, contribution, playerSlot);
-    public static void OnSetRunMeta(int profileId) => _runMeta(profileId);
-    public static void OnPanelToggle() => _panelToggle();
-    public static void OnRunHistorySelect(string seed, long startTime, int profile) => _runHistorySelect(seed, startTime, profile);
-    public static void OnRunHistoryClear() => _runHistoryClear();
-    public static void OnPlayerDied(int playerSlot) => _playerDied(playerSlot);
-    public static void OnScrollInput(int panel, int buttonIndex, bool pressed, double panY) => _scrollInput(panel, buttonIndex, pressed ? 1 : 0, panY);
+    internal static void Init(string dataDir) => _init(dataDir);
+    internal static void SelfTest() => _self_test();
+    internal static void SetRunMeta(int profileId) => _set_run_meta(profileId);
+    internal static void RunStarted(string characterIds, int ascension, string gameMode, string seed, int continued, string netIds, long startTime) => _run_started(characterIds, ascension, gameMode, seed, continued, netIds, startTime);
+    internal static void RunEnded(int outcome) => _run_ended(outcome);
+    internal static void RunSuspended() => _run_suspended();
+    internal static void RunHistorySelect(string seed, long startTime, int profile) => _run_history_select(seed, startTime, profile);
+    internal static void RunHistoryClear() => _run_history_clear();
+    internal static void PanelToggle() => _panel_toggle();
+    internal static void ScrollInput(int panel, int buttonIndex, int pressed, double panY) => _scroll_input(panel, buttonIndex, pressed, panY);
+    internal static ulong CombatStarted(string encounterId, string encounterType) => _combat_started(encounterId, encounterType);
+    internal static int CombatEnded(ulong combatSeq) => _combat_ended(combatSeq);
+    internal static int TurnStarted(ulong combatSeq) => _turn_started(combatSeq);
+    internal static int BlockPoolClear(ulong combatSeq, int playerSlot) => _block_pool_clear(combatSeq, playerSlot);
+    internal static int PlayerDied(ulong combatSeq, int playerSlot) => _player_died(combatSeq, playerSlot);
+    internal static int PotionUsed(ulong combatSeq) => _potion_used(combatSeq);
+    internal static ulong SourceCapture(ulong combatSeq, int captureKind, ulong instance, string sourceId, int sourceKind, int sourceSlot, int generationState) => _source_capture(combatSeq, captureKind, instance, sourceId, sourceKind, sourceSlot, generationState);
+    internal static int SourceCount(ulong transfer) => _source_count(transfer);
+    internal static ulong SourceDestination(ulong transfer, int index) => _source_destination(transfer, index);
+    internal static ulong SourceWeight(ulong transfer, int index) => _source_weight(transfer, index);
+    internal static ulong SourceTransferBegin(ulong combatSeq) => _source_transfer_begin(combatSeq);
+    internal static int SourceTransferAdd(ulong transfer, ulong destination, ulong weight) => _source_transfer_add(transfer, destination, weight);
+    internal static int SourceTransferSeal(ulong transfer) => _source_transfer_seal(transfer);
+    internal static int SourceTransferRelease(ulong transfer) => _source_transfer_release(transfer);
+    internal static int PowerAttached(ulong combatSeq, ulong powerInstance, string powerId, ulong ownerCreature, int ownerKind, int ownerSlot, int amount, ulong sourceTransfer) => _power_attached(combatSeq, powerInstance, powerId, ownerCreature, ownerKind, ownerSlot, amount, sourceTransfer);
+    internal static int PowerAmountChanged(ulong combatSeq, ulong powerInstance, string powerId, ulong ownerCreature, int ownerKind, int ownerSlot, int oldAmount, int newAmount, ulong sourceTransfer) => _power_amount_changed(combatSeq, powerInstance, powerId, ownerCreature, ownerKind, ownerSlot, oldAmount, newAmount, sourceTransfer);
+    internal static int PowerRemoved(ulong combatSeq, ulong powerInstance) => _power_removed(combatSeq, powerInstance);
+    internal static int PowerProvenanceInvalidate(ulong combatSeq, ulong powerInstance) => _power_provenance_invalidate(combatSeq, powerInstance);
+    internal static int CardGenerated(ulong combatSeq, ulong cardInstance, ulong sourceTransfer, int producerRole) => _card_generated(combatSeq, cardInstance, sourceTransfer, producerRole);
+    internal static ulong CardPlayStarted(ulong combatSeq, ulong executionId, ulong cardInstance, string cardId, int playerSlot, int playIndex, int playCount, int generationState, ulong sourceTransfer) => _card_play_started(combatSeq, executionId, cardInstance, cardId, playerSlot, playIndex, playCount, generationState, sourceTransfer);
+    internal static int CardPlayFinished(ulong play) => _card_play_finished(play);
+    internal static int CardExecutionEnded(ulong combatSeq, ulong executionId) => _card_execution_ended(combatSeq, executionId);
+    internal static int OrbChanneled(ulong combatSeq, ulong orbInstance, ulong sourceTransfer) => _orb_channeled(combatSeq, orbInstance, sourceTransfer);
+    internal static int OrbContextBegin(ulong combatSeq, ulong orbInstance, ulong play, int ownerSlot) => _orb_context_begin(combatSeq, orbInstance, play, ownerSlot);
+    internal static ulong DamageCalculationBegin(ulong combatSeq, ulong sourceTransfer, int producerRole, int segment, ulong originalTarget) => _damage_calculation_begin(combatSeq, sourceTransfer, producerRole, segment, originalTarget);
+    internal static int DamageModifierContribution(ulong calculation, ulong sourceTransfer, int amount) => _damage_modifier_contribution(calculation, sourceTransfer, amount);
+    internal static int DamageCalculationEnemyHit(ulong calculation, ulong dealerCreature, int baseDamage, int dealerStrength) => _damage_calculation_enemy_hit(calculation, dealerCreature, baseDamage, dealerStrength);
+    internal static int DamageCalculationWeakSource(ulong calculation, ulong sourceTransfer) => _damage_calculation_weak_source(calculation, sourceTransfer);
+    internal static int DamageResultAppend(ulong calculation, int total, int unblocked, int blocked, int resultKind, int receiverSlot, int weakPrevented) => _damage_result_append(calculation, total, unblocked, blocked, resultKind, receiverSlot, weakPrevented);
+    internal static int DamageCalculationCommit(ulong calculation) => _damage_calculation_commit(calculation);
+    internal static int DamageCalculationAbort(ulong calculation) => _damage_calculation_abort(calculation);
+    internal static int DamageUnattributed(ulong combatSeq, int total, int unblocked, int blocked, int resultKind, int receiverSlot, int weakPrevented) => _damage_unattributed(combatSeq, total, unblocked, blocked, resultKind, receiverSlot, weakPrevented);
+    internal static int BuffMitigation(ulong combatSeq, ulong sourceTransfer, int prevented) => _buff_mitigation(combatSeq, sourceTransfer, prevented);
+    internal static int BlockModifierContribution(ulong combatSeq, ulong sourceTransfer, int amount, int receiverSlot) => _block_modifier_contribution(combatSeq, sourceTransfer, amount, receiverSlot);
+    internal static int BlockGained(ulong combatSeq, int amount, ulong sourceTransfer, int receiverSlot) => _block_gained(combatSeq, amount, sourceTransfer, receiverSlot);
+    internal static int Forge(ulong combatSeq, ulong sourceTransfer, int amount) => _forge(combatSeq, sourceTransfer, amount);
+    internal static int OstySummoned(ulong combatSeq, ulong sourceTransfer, int hpAmount, int ownerSlot) => _osty_summoned(combatSeq, sourceTransfer, hpAmount, ownerSlot);
+    internal static int OstyKilled(ulong combatSeq, int ownerSlot, ulong play) => _osty_killed(combatSeq, ownerSlot, play);
+    internal static ulong DoomBatchBegin(ulong combatSeq) => _doom_batch_begin(combatSeq);
+    internal static int DoomTargetCapture(ulong batch, ulong creatureInstance, ulong doomPowerInstance, int currentHp) => _doom_target_capture(batch, creatureInstance, doomPowerInstance, currentHp);
+    internal static int DoomKillsCompleted(ulong batch) => _doom_kills_completed(batch);
+    internal static int DoomBatchAbort(ulong batch) => _doom_batch_abort(batch);
+
+    internal static void OnSetRunMeta(int profile) { if (CaptureRuntime.OnThread) SetRunMeta(profile); }
+    internal static void OnRunStarted(string ids, int ascension, string mode, string seed, bool continued, string netIds, long startedAt)
+    { if (CaptureRuntime.OnThread) RunStarted(ids, ascension, mode, seed, continued ? 1 : 0, netIds, startedAt); }
+    internal static void OnRunEnded(int outcome) { if (CaptureRuntime.OnThread) RunEnded(outcome); }
+    internal static void OnRunSuspended() { if (CaptureRuntime.OnThread) RunSuspended(); }
+    internal static void OnRunHistorySelect(string seed, long startedAt, int profile) { if (CaptureRuntime.OnThread) RunHistorySelect(seed, startedAt, profile); }
+    internal static void OnRunHistoryClear() { if (CaptureRuntime.OnThread) RunHistoryClear(); }
+    internal static void OnPanelToggle() { if (CaptureRuntime.OnThread) PanelToggle(); }
+    internal static void OnScrollInput(int panel, int button, bool pressed, double pan) { if (CaptureRuntime.OnThread) ScrollInput(panel, button, pressed ? 1 : 0, pan); }
 }
 
-// ── Harmony patches ──────────────────────────────────────────────────────
-// Each postfix is a thin forwarder; keep them exception-free so a profiler
-// bug can never break the game's own logic.
-
-[HarmonyPatch(typeof(CombatHistory), nameof(CombatHistory.CardPlayStarted))]
-internal static class PatchCardPlayStarted
-{
-    [HarmonyPostfix]
-    private static void Postfix(CardPlay cardPlay)
-    {
-        try
-        {
-            // Every player's plays count (team-as-one-player); the slot
-            // (CardPlay.Player) keeps the core's per-slot play stacks apart
-            // so the interleaved plays of a co-op round stay balanced.
-            var card = cardPlay?.Card;
-            ProfilerNative.OnCardPlayStarted(
-                card?.Id?.Entry ?? "",
-                cardPlay?.PlayIndex ?? 0,
-                cardPlay?.PlayCount ?? 1,
-                card?.GetHashCode() ?? 0,
-                SpireProfilerMod.PlayerSlot(cardPlay?.Player));
-        }
-        catch (Exception ex) { Log.Error($"[SpireProfiler] CardPlayStarted: {ex}"); }
-    }
-}
-
-[HarmonyPatch(typeof(CombatHistory), nameof(CombatHistory.CardPlayFinished))]
-internal static class PatchCardPlayFinished
-{
-    [HarmonyPostfix]
-    private static void Postfix(CardPlay cardPlay)
-    {
-        try
-        {
-            // Every player's play finish is forwarded; the slot
-            // (CardPlay.Player) restores the play_depth bookkeeping balance
-            // — a remote play finishing during a local play's choice
-            // suspension pops the remote slot's stack, never the local one.
-            ProfilerNative.OnCardPlayFinished(SpireProfilerMod.PlayerSlot(cardPlay?.Player));
-        }
-        catch (Exception ex) { Log.Error($"[SpireProfiler] CardPlayFinished: {ex}"); }
-    }
-}
-
-[HarmonyPatch(typeof(CombatHistory), nameof(CombatHistory.DamageReceived))]
-internal static class PatchDamageReceived
-{
-    [HarmonyPostfix]
-    private static void Postfix(Creature receiver, Creature dealer, DamageResult result, CardModel cardSource)
-    {
-        try { SpireProfilerMod.ForwardDamage(receiver, dealer, result, cardSource); }
-        catch (Exception ex) { Log.Error($"[SpireProfiler] DamageReceived: {ex}"); }
-    }
-}
-
-[HarmonyPatch(typeof(Hook), nameof(Hook.AfterDamageGiven))]
-internal static class PatchKillBlowDamage
-{
-    [HarmonyPostfix]
-    private static void Postfix(Creature dealer, DamageResult results, Creature target, CardModel cardSource)
-    {
-        try
-        {
-            // CreatureCmd guards CombatHistory.DamageReceived with
-            // IsInProgress && !IsEnding, so the hit that kills the last
-            // enemy never fires it and would be lost entirely (damage +
-            // kill both missing). Hook.AfterDamageGiven is documented in
-            // the game source to fire from that same combat-ending hit.
-            // Forward only killing blows that DamageReceived did NOT
-            // record: non-final kills still fire DamageReceived normally,
-            // and IsEnding is a pure function of state (no alive primary
-            // enemies), so it is already true at postfix time.
-            if (results?.WasTargetKilled != true) return;
-            if (!CombatManager.Instance.IsEnding) return;
-            SpireProfilerMod.ForwardDamage(target, dealer, results, cardSource);
-        }
-        catch (Exception ex) { Log.Error($"[SpireProfiler] AfterDamageGiven: {ex}"); }
-    }
-}
-
-[HarmonyPatch(typeof(CombatHistory), nameof(CombatHistory.BlockGained))]
-internal static class PatchBlockGained
-{
-    [HarmonyPostfix]
-    private static void Postfix(Creature receiver, int amount, CardPlay cardPlay)
-    {
-        try
-        {
-            if (!(receiver?.IsPlayer ?? false)) return;
-            // cardPlay is non-null iff the gain was directly caused by a card
-            // play (CreatureCmd.GainBlock's documented contract, verified
-            // against the game source: relic/power procs like Anchor and
-            // DaughterOfTheWind pass null). Every player's gains are
-            // forwarded; the receiver slot (receiver.Player) keeps per-slot
-            // block pools keyed on who gained the block, so an ally block
-            // credits the ally's pool even though the card play that caused
-            // it belongs to another slot. The row's SOURCE slot is the card
-            // play's card owner when card-caused, else the receiver's own
-            // slot (procs have no card owner).
-            int sourceSlot = cardPlay?.Card?.Owner != null
-                ? SpireProfilerMod.PlayerSlot(cardPlay.Card.Owner)
-                : SpireProfilerMod.PlayerSlot(receiver.Player);
-            ProfilerNative.OnBlockGained(amount, cardPlay?.Card?.Id?.Entry ?? "", SpireProfilerMod.PlayerSlot(receiver.Player), sourceSlot);
-        }
-        catch (Exception ex) { Log.Error($"[SpireProfiler] BlockGained: {ex}"); }
-    }
-}
-
-[HarmonyPatch(typeof(CombatManager), nameof(CombatManager.SetUpCombat))]
-internal static class PatchSetUpCombat
-{
-    [HarmonyPostfix]
-    private static void Postfix(ICombatState state)
-    {
-        try
-        {
-            var encounter = state?.Encounter;
-            ProfilerNative.OnCombatStarted(
-                encounter?.Id?.Entry ?? "unknown",
-                (encounter?.RoomType.ToString() ?? "normal").ToLowerInvariant());
-        }
-        catch (Exception ex) { Log.Error($"[SpireProfiler] SetUpCombat: {ex}"); }
-    }
-}
-
-[HarmonyPatch(typeof(CombatRoom), nameof(CombatRoom.OnCombatEnded))]
-internal static class PatchCombatEnded
-{
-    [HarmonyPostfix]
-    private static void Postfix()
-    {
-        try { ProfilerNative.OnCombatEnded(); }
-        catch (Exception ex) { Log.Error($"[SpireProfiler] OnCombatEnded: {ex}"); }
-    }
-}
+// Run and UI lifecycle patches are installed alongside the capture layer.
 
 [HarmonyPatch(typeof(RunManager), nameof(RunManager.SetUpNewSingleplayer))]
 internal static class PatchRunStartSingleplayer
@@ -1064,6 +936,7 @@ internal static class RunStartPatches
 {
     internal static void NotifyRunStarted(RunState state, bool isResume)
     {
+        if (!CaptureRuntime.OnThread) return;
         // The game's run id IS its own StartTime: assigned in
         // RunManager.InitializeShared (UtcNow for a fresh run, the
         // original run's start for a resume), already set before these
@@ -1080,6 +953,7 @@ internal static class RunStartPatches
         // The slot registry must exist before the first combat event; run
         // start is the earliest event (and re-fires on resume, refilling
         // the same session-immutable player list).
+        CaptureRuntime.InvalidateEpoch();
         SpireProfilerMod.CaptureRunPlayers(state);
         ProfilerNative.OnSetRunMeta(SpireProfilerMod.CurrentProfileId());
         ProfilerNative.OnRunStarted(
@@ -1090,862 +964,6 @@ internal static class RunStartPatches
             isResume,
             SpireProfilerMod.NetIds(state),
             startTime);
-    }
-}
-
-// ── Attribution catalog patcher ─────────────────────────────────────────
-// Every relic/power hook listed in the attribution catalog is wrapped
-// in a source-context begin/end pair so damage and block produced outside
-// a card play can be attributed to the relic or power that caused them.
-// The prefix stores the pushed source id in __state so the postfix only
-// pops when the prefix actually pushed (nested hooks stay balanced).
-
-internal static class AttributionPatcher
-{
-    private const string RelicNamespace = "MegaCrit.Sts2.Core.Models.Relics";
-    private const string PowerNamespace = "MegaCrit.Sts2.Core.Models.Powers";
-
-    private static readonly (string, string)[] RelicEntries = new[]
-    {
-@RELIC_ENTRIES@    };
-
-    private static readonly (string, string)[] PowerEntries = new[]
-    {
-@POWER_ENTRIES@    };
-
-    [HarmonyPrefix]
-    private static void RelicPrefix(AbstractModel __instance, out string __state)
-    {
-        __state = SpireProfilerMod.TryBeginContext(__instance, ProfilerNative.ContextKindRelic);
-    }
-
-    [HarmonyPostfix]
-    private static void RelicPostfix(string __state)
-    {
-        SpireProfilerMod.TryEndContext(__state);
-    }
-
-    [HarmonyPrefix]
-    private static void PowerPrefix(AbstractModel __instance, out string __state)
-    {
-        __state = SpireProfilerMod.TryBeginContext(__instance, ProfilerNative.ContextKindPower);
-    }
-
-    [HarmonyPostfix]
-    private static void PowerPostfix(string __state)
-    {
-        SpireProfilerMod.TryEndContext(__state);
-    }
-
-    public static void PatchAll(Harmony harmony)
-    {
-        foreach (var (className, methodName) in RelicEntries) TryPatch(harmony, className, methodName, RelicNamespace, "RelicPrefix", "RelicPostfix");
-        foreach (var (className, methodName) in PowerEntries) TryPatch(harmony, className, methodName, PowerNamespace, "PowerPrefix", "PowerPostfix");
-    }
-
-    private static void TryPatch(Harmony harmony, string className, string methodName, string ns, string prefixName, string postfixName)
-    {
-        try
-        {
-            var fullName = className.IndexOf('.') >= 0 ? className : ns + "." + className;
-            var type = typeof(SpireProfilerMod).Assembly.GetType(fullName) ?? typeof(ModManager).Assembly.GetType(fullName);
-            if (type == null)
-            {
-                Log.Error($"[SpireProfiler] catalog: type not found: {fullName}");
-                return;
-            }
-            var method = AccessTools.Method(type, methodName);
-            if (method == null)
-            {
-                Log.Error($"[SpireProfiler] catalog: {type.Name}.{methodName} not found, skipping");
-                return;
-            }
-            var prefix = new HarmonyMethod(typeof(AttributionPatcher).GetMethod(prefixName, System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static));
-            var postfix = new HarmonyMethod(typeof(AttributionPatcher).GetMethod(postfixName, System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static));
-            harmony.Patch(method, prefix, postfix);
-        }
-        catch (Exception ex)
-        {
-            Log.Error($"[SpireProfiler] catalog: failed to patch {className}|{methodName}: {ex.Message}");
-        }
-    }
-}
-// ── Event-forwarding patches ────────────────────────────────────────────
-// Orb triggers are async, so they use prefix-only wrappers that set a
-// fallback source in the core (cleared when any other attribution source
-// appears) instead of push/pop contexts.
-[HarmonyPatch(typeof(Hook), nameof(Hook.AfterSideTurnStart))]
-internal static class PatchTurnStart
-{
-    [HarmonyPrefix]
-    private static void Prefix(CombatSide side)
-    {
-        try
-        {
-            // AfterPlayerTurnStart fires once PER PLAYER per round
-            // (CombatManager.SetupPlayerTurn) and would inflate the combat
-            // turn counter by the player count. AfterSideTurnStart fires
-            // once per side switch per round (CombatManager.StartTurn), so
-            // the player-side event is exactly the round boundary — the
-            // export means rounds, and extra turns
-            // (which re-run SetupPlayerTurn without advancing RoundNumber)
-            // don't count. A round is team-scoped, so no slot.
-            if (side != CombatSide.Player) return;
-            ProfilerNative.OnTurnStarted();
-        }
-        catch (Exception ex) { Log.Error($"[SpireProfiler] AfterSideTurnStart: {ex}"); }
-    }
-}
-[HarmonyPatch(typeof(CombatHistory), nameof(CombatHistory.OrbChanneled))]
-internal static class PatchOrbChanneled
-{
-    [HarmonyPostfix]
-    private static void Postfix(OrbModel orb)
-    {
-        try
-        {
-            // Orbs are per-player (PlayerCombatState.OrbQueue, OrbModel
-            // .Owner); every player's channels land in the team-merged
-            // orb-source table, tagged with the owning slot so the per-slot
-            // orb fallback only ever seizes its own slot's triggers.
-            if (orb == null) return;
-            ProfilerNative.OnOrbChanneled(orb.GetHashCode(), SpireProfilerMod.PlayerSlot(orb.Owner));
-        }
-        catch (Exception ex) { Log.Error($"[SpireProfiler] OrbChanneled: {ex}"); }
-    }
-}
-[HarmonyPatch(typeof(Hook), nameof(Hook.AfterBlockCleared))]
-internal static class PatchBlockPoolClear
-{
-    [HarmonyPrefix]
-    private static void Prefix(Creature creature)
-    {
-        try
-        {
-            // Block is per creature, and every player's block clears at
-            // their turn boundaries; the slot keeps the core's block pools
-            // per player so a remote player's clear can no longer wipe the
-            // local pool (block_effective attribution stays per player).
-            if ((creature?.IsPlayer ?? false))
-                ProfilerNative.OnBlockPoolClear(SpireProfilerMod.PlayerSlot(creature.Player));
-        }
-        catch (Exception ex) { Log.Error($"[SpireProfiler] AfterBlockCleared: {ex}"); }
-    }
-}
-/// <summary>
-/// Potion context: CombatHistory.PotionUsed fires only after the potion's
-/// OnUse completes (inside PotionModel.OnUseWrapper, verified against the
-/// v0.111.0 source) — too late for power attribution, because potions like
-/// FlexPotion apply their powers during OnUse. Prefix OnUseWrapper instead
-/// so the potion fallback exists before the effects run; the PotionUsed
-/// postfix below books the use (the counter plus a fresh fallback entry).
-/// </summary>
-[HarmonyPatch(typeof(PotionModel), nameof(PotionModel.OnUseWrapper))]
-internal static class PatchPotionContextBegin
-{
-    [HarmonyPrefix]
-    private static void Prefix(PotionModel __instance)
-    {
-        try
-        {
-            // Potions are per-player (PotionModel.Owner); every player's
-            // potions carry the owner's slot so the per-slot potion
-            // fallback never captures another player's effects.
-            if (__instance == null) return;
-            ProfilerNative.OnPotionContextBegin(__instance.Id?.Entry ?? "UNKNOWN_POTION", SpireProfilerMod.PlayerSlot(__instance.Owner));
-        }
-        catch (Exception ex) { Log.Error($"[SpireProfiler] PotionContextBegin: {ex}"); }
-    }
-}
-[HarmonyPatch(typeof(CombatHistory), nameof(CombatHistory.PotionUsed))]
-internal static class PatchPotionUsed
-{
-    [HarmonyPostfix]
-    private static void Postfix(PotionModel potion)
-    {
-        try
-        {
-            if (potion == null) return;
-            ProfilerNative.OnPotionUsed(potion.Id?.Entry ?? "UNKNOWN_POTION", SpireProfilerMod.PlayerSlot(potion.Owner));
-        }
-        catch (Exception ex) { Log.Error($"[SpireProfiler] PotionUsed: {ex}"); }
-    }
-}
-/// <summary>
-/// Card origins: when a card is generated for combat by the player (e.g.
-/// Creative AI, White Noise), record its instance hash so a later play of
-/// the generated card attributes to the generating source (resolved in
-/// the core from the active card / hook context).
-/// </summary>
-[HarmonyPatch(typeof(Hook), nameof(Hook.AfterCardGeneratedForCombat))]
-internal static class PatchCardGenerated
-{
-    [HarmonyPostfix]
-    private static void Postfix(CardModel card, Player creator)
-    {
-        try
-        {
-            // The hook carries the generating player explicitly
-            // (Hook.AfterCardGeneratedForCombat's creator, nullable — a
-            // null creator resolves to 0, the single-player degenerate
-            // case). The generated instance is tagged with the GENERATOR's
-            // slot so the core credits the generator's row when the copy is
-            // played — the generator's slot, never re-derived at play time
-            // (a generated card's Owner changes when the card transfers
-            // between players).
-            if (card == null) return;
-            // The source is resolved in the core from the active card / hook
-            // context; the hook itself carries no explicit source.
-            ProfilerNative.OnCardGenerated(card.GetHashCode(), "", 0, SpireProfilerMod.PlayerSlot(creator));
-        }
-        catch (Exception ex) { Log.Error($"[SpireProfiler] CardGenerated: {ex}"); }
-    }
-}
-
-/// <summary>
-/// Forge attribution: every ForgeCmd.Forge call (FurnacePower, Fencing
-/// Manual, etc.) records its source model; the core credits the source's
-/// ledger entry with the forge amount.
-/// </summary>
-[HarmonyPatch(typeof(ForgeCmd), nameof(ForgeCmd.Forge))]
-internal static class PatchForge
-{
-    [HarmonyPostfix]
-    private static void Postfix(decimal amount, Player player, AbstractModel source)
-    {
-        try
-        {
-            if (amount <= 0 || source == null) return;
-            // ForgeCmd.Forge carries the owning player explicitly; the
-            // forge row is tagged with that player's slot.
-            var sourceId = source.Id?.Entry ?? "";
-            if (string.IsNullOrEmpty(sourceId)) return;
-            int kind;
-            if (source is RelicModel) kind = ProfilerNative.ContextKindRelic;
-            else if (source is PowerModel) kind = ProfilerNative.ContextKindPower;
-            else kind = 0;
-            ProfilerNative.OnForge(sourceId, kind, (int)amount, SpireProfilerMod.PlayerSlot(player));
-        }
-        catch (Exception ex) { Log.Error($"[SpireProfiler] Forge: {ex}"); }
-    }
-}
-
-/// <summary>
-/// Doom kill attribution: capture each doomed creature's HP before
-/// DoomPower.DoomKill executes, attribute the HP as damage after. The
-/// prefix/postfix pair brackets only the call; attribution itself (FIFO
-/// doom layers per creature, active-context fallback) lives in the core.
-/// </summary>
-[HarmonyPatch(typeof(DoomPower), nameof(DoomPower.DoomKill))]
-internal static class PatchDoomKill
-{
-    [HarmonyPrefix]
-    private static void Prefix(IReadOnlyList<Creature> creatures)
-    {
-        try
-        {
-            if (creatures == null) return;
-            foreach (var creature in creatures)
-            {
-                if (creature == null || !creature.IsAlive) continue;
-                int hp = (int)creature.CurrentHp;
-                if (hp > 0) ProfilerNative.OnDoomTargetCapture(creature.GetHashCode(), hp);
-            }
-        }
-        catch (Exception ex) { Log.Error($"[SpireProfiler] DoomKill prefix: {ex}"); }
-    }
-
-    [HarmonyPostfix]
-    private static void Postfix()
-    {
-        try { ProfilerNative.OnDoomKillsCompleted(); }
-        catch (Exception ex) { Log.Error($"[SpireProfiler] DoomKill postfix: {ex}"); }
-    }
-}
-
-/// <summary>
-/// Osty summon tracking: record each OstyCmd.Summon's HP and source so
-/// absorbed damage can be attributed back to the summoning cards/relics.
-/// </summary>
-[HarmonyPatch(typeof(OstyCmd), nameof(OstyCmd.Summon))]
-internal static class PatchOstySummon
-{
-    [HarmonyPostfix]
-    private static void Postfix(Player summoner, decimal amount, AbstractModel source)
-    {
-        try
-        {
-            int hpAmount = (int)amount;
-            if (hpAmount <= 0) return;
-            // Osty is strictly per-player: OstyCmd.Summon carries the
-            // summoning player; every player's summons carry the summoner's
-            // slot so the core keeps one Osty stack per player.
-            string sourceId = "";
-            int kind = 0;
-            if (source is CardModel card)
-            {
-                sourceId = card.Id?.Entry ?? "";
-            }
-            else if (source is RelicModel relic)
-            {
-                sourceId = relic.Id?.Entry ?? "";
-                kind = ProfilerNative.ContextKindRelic;
-            }
-            else if (source is PowerModel power)
-            {
-                sourceId = power.Id?.Entry ?? "";
-                kind = ProfilerNative.ContextKindPower;
-            }
-            // With no model source, the core resolves the active card/context.
-            ProfilerNative.OnOstySummoned(sourceId, kind, hpAmount, SpireProfilerMod.PlayerSlot(summoner));
-        }
-        catch (Exception ex) { Log.Error($"[SpireProfiler] OstySummon: {ex}"); }
-    }
-}
-
-/// <summary>
-/// Deaths flow through both CreatureCmd.Kill overloads: the Osty branch
-/// clears the owner's unabsorbed-HP pool when the pet dies (sacrifice
-/// card, combat death), and the player branch flags the slot's death for
-/// the core's team-result label. Damage kills reach the game's Kill
-/// through the IReadOnlyCollection overload (CreatureCmd.Damage collects
-/// the killed creatures and kills them in one batch), while direct kills
-/// (DoomKill, SetCurrentHp, the abandon force-kill) go through the
-/// single-creature overload — so BOTH
-/// overloads are patched with the same prefix. The single-creature
-/// overload delegates to the collection one, so a direct kill fires the
-/// prefix twice; the core treats player_died idempotently and a cleared
-/// Osty stack clears again as a no-op.
-/// </summary>
-[HarmonyPatch]
-internal static class PatchCreatureKilled
-{
-    [HarmonyPatch(typeof(CreatureCmd), nameof(CreatureCmd.Kill), new Type[] { typeof(Creature), typeof(bool) })]
-    [HarmonyPrefix]
-    private static void KillPrefix(Creature creature)
-    {
-        try { ForwardKill(creature); }
-        catch (Exception ex) { Log.Error($"[SpireProfiler] CreatureKill: {ex}"); }
-    }
-
-    [HarmonyPatch(typeof(CreatureCmd), nameof(CreatureCmd.Kill), new Type[] { typeof(IReadOnlyCollection<Creature>), typeof(bool) })]
-    [HarmonyPrefix]
-    private static void KillManyPrefix(IReadOnlyCollection<Creature> creatures)
-    {
-        try
-        {
-            if (creatures == null) return;
-            foreach (var creature in creatures) ForwardKill(creature);
-        }
-        catch (Exception ex) { Log.Error($"[SpireProfiler] CreatureKillMany: {ex}"); }
-    }
-
-    private static void ForwardKill(Creature creature)
-    {
-        if (creature == null) return;
-        // No locality filter — the patch fires on every peer for the whole
-        // team's creatures. The Osty's slot is its single-assignment
-        // PetOwner (already the Player); the dying player's slot is
-        // creature.Player.
-        if (creature.Monster is Osty)
-            ProfilerNative.OnOstyKilled(SpireProfilerMod.PlayerSlot(creature.PetOwner));
-        else if (creature.IsPlayer)
-            ProfilerNative.OnPlayerDied(SpireProfilerMod.PlayerSlot(creature.Player));
-    }
-}
-
-/// <summary>
-/// Power application recording: SetAmount deltas attribute to the active
-/// source (positive) or are forwarded as decreases with the player flag
-/// (negative — the flag lets the core treat a player Strength decrease as
-/// a temporary-power expiry consuming the source table FIFO, while an
-/// enemy Strength decrease stays a recorded reduction).
-/// </summary>
-[HarmonyPatch(typeof(PowerModel), nameof(PowerModel.SetAmount))]
-internal static class PatchPowerApply
-{
-    [HarmonyPrefix]
-    private static void Prefix(PowerModel __instance, out int __state)
-    {
-        __state = 0;
-        try { __state = __instance?.Amount ?? 0; }
-        catch (Exception ex) { Log.Error($"[SpireProfiler] PowerApply prefix: {ex}"); }
-    }
-    [HarmonyPostfix]
-    private static void Postfix(PowerModel __instance, int amount, int __state)
-    {
-        try
-        {
-            if (__instance == null || amount == __state) return;
-            var powerId = __instance.Id?.Entry;
-            if (string.IsNullOrEmpty(powerId)) return;
-            var owner = __instance.Owner;
-            if (owner == null) return;
-            // The owner is the creature the power sits ON. Every player's
-            // and enemy's applications land in the team-merged power-source
-            // table, tagged with the owning player's slot when the owner is
-            // a player creature, else 0 (enemy powers have no player owner
-            // — the applier still resolves through the core's ambient
-            // per-slot state).
-            int creatureHash = owner.GetHashCode();
-            bool isPlayer = owner.IsPlayer;
-            int playerSlot = owner.IsPlayer ? SpireProfilerMod.PlayerSlot(owner.Player) : 0;
-            if (amount > __state)
-                ProfilerNative.OnPowerApplied(powerId, amount - __state, creatureHash, isPlayer, playerSlot);
-            else
-                ProfilerNative.OnPowerDecreased(powerId, __state - amount, creatureHash, isPlayer, playerSlot);
-        }
-        catch (Exception ex) { Log.Error($"[SpireProfiler] PowerApply postfix: {ex}"); }
-    }
-}
-/// <summary>
-/// Damage decomposition: re-runs each modifier's additive/multiplicative
-/// contribution on the player->enemy hit and forwards it to the core,
-/// which
-/// attributes the share to the power's/relic's appliers (the card that
-/// played Demon Form keeps the Strength bonus).
-/// </summary>
-[HarmonyPatch(typeof(Hook), nameof(Hook.ModifyDamage))]
-internal static class PatchModifyDamage
-{
-    [HarmonyPrefix]
-    private static void Prefix(decimal damage, Creature target, Creature dealer, out decimal __state)
-    {
-        __state = damage;
-        // Enemy→player hits: capture the base damage and the dealer's
-        // current Strength so the core can prorate Strength-reduction
-        // mitigation when the hit lands. (ModifyDamage also fires for
-        // intent recalcs; the core consumes the capture on the next real
-        // hit, so a stale value never accumulates phantom mitigation.)
-        // This capture is deliberately LOCAL: it feeds the local player's
-        // mitigation math only, so it keeps the one locality check left in
-        // the shim (IsLocalPlayer) rather than being slot-tagged.
-        try
-        {
-            if (dealer == null || dealer.IsPlayer || target == null || !target.IsPlayer) return;
-            if (!SpireProfilerMod.IsLocalPlayer(target.Player)) return;
-            var str = dealer.GetPower<StrengthPower>();
-            ProfilerNative.OnEnemyHitContext((int)damage, (int)(str?.Amount ?? 0));
-        }
-        catch (Exception ex) { Log.Error($"[SpireProfiler] ModifyDamage prefix: {ex}"); }
-    }
-    [HarmonyPostfix]
-    private static void Postfix(decimal __result, decimal __state,
-        Creature target, Creature dealer, ValueProp props, CardModel cardSource,
-        IEnumerable<AbstractModel> modifiers, CardPreviewMode previewMode)
-    {
-        try
-        {
-            if (previewMode != CardPreviewMode.None) return;
-            if (dealer == null || !dealer.IsPlayer || target == null || target.IsPlayer) return;
-            if (!props.HasFlag(ValueProp.Move) || props.HasFlag(ValueProp.Unpowered)) return;
-            decimal totalBonus = __result - __state;
-            if (totalBonus <= 0 || modifiers == null) return;
-            // Every player's hit contributes (team-as-one-player); the
-            // dealer's slot keeps the core's pending contribs per slot so
-            // one player's queued modifiers can't attach to another
-            // player's next hit.
-            int dealerSlot = SpireProfilerMod.PlayerSlot(dealer.Player);
-            Action<string, int, int> contribute =
-                (id, kind, value) => ProfilerNative.OnDamageModifierContribution(id, kind, value, dealerSlot);
-            // The game applies the attacking card's enchantment before the
-            // listener modifiers (Hook.ModifyDamage, hook-type flags are All
-            // on every live call site), so the decomposition starts from the
-            // post-enchantment value. The enchantment's own bonus is not a
-            // modifier-list entry and stays with the attacking card.
-            decimal start = __state;
-            var enchantment = cardSource?.Enchantment;
-            if (enchantment != null)
-            {
-                start += enchantment.EnchantDamageAdditive(start, props);
-                start *= enchantment.EnchantDamageMultiplicative(start, props);
-            }
-            ModifierDecomposition.ForwardContributions(
-                modifiers,
-                start,
-                __result,
-                (power, baseValue) => power.ModifyDamageAdditive(target, baseValue, props, dealer, cardSource, null),
-                (power, baseValue) => power.ModifyDamageMultiplicative(target, baseValue, props, dealer, cardSource, null),
-                (relic, baseValue) => relic.ModifyDamageAdditive(target, baseValue, props, dealer, cardSource, null),
-                (relic, baseValue) => relic.ModifyDamageMultiplicative(target, baseValue, props, dealer, cardSource, null),
-                isDamage: true,
-                contribute: contribute,
-                // VulnerablePower's multiplicative step is a COMPOSITE of the
-                // nested ModifyVulnerableMultiplier hooks (PaperPhrog,
-                // CrueltyPower, DebilitatePower) — none of them override
-                // ModifyDamage*, so they never appear in `modifiers`.
-                // Intercept the step so each nested contributor (e.g.
-                // Cruelty's damage scaling) gets its own share of the
-                // marginal instead of it all going to Vulnerable's appliers.
-                interceptMultiplicative: (power, multiplier, runningBefore) =>
-                    power is VulnerablePower vulnerable &&
-                    VulnerableDecomposition.Forward(
-                        vulnerable, target, dealer, props, cardSource, runningBefore, multiplier, contribute));
-        }
-        catch (Exception ex) { Log.Error($"[SpireProfiler] ModifyDamage: {ex}"); }
-    }
-}
-/// <summary>
-/// Block decomposition: mirrors PatchModifyDamage for Hook.ModifyBlock —
-/// each modifier's (Dexterity etc.) contribution to a block gain is
-/// forwarded so the core can attach it to the block-pool chunk and credit
-/// it only when the block actually absorbs damage.
-/// </summary>
-[HarmonyPatch(typeof(Hook), nameof(Hook.ModifyBlock))]
-internal static class PatchModifyBlock
-{
-    [HarmonyPrefix]
-    private static void Prefix(decimal block, out decimal __state)
-    {
-        __state = block;
-    }
-    [HarmonyPostfix]
-    private static void Postfix(decimal __result, decimal __state,
-        Creature target, ValueProp props, CardModel cardSource, CardPlay cardPlay,
-        IEnumerable<AbstractModel> modifiers)
-    {
-        try
-        {
-            if (target == null || !target.IsPlayer) return;
-            decimal totalBonus = __result - __state;
-            if (totalBonus <= 0 || modifiers == null) return;
-            // Every player's block modifiers contribute; the target's slot
-            // keeps pending block contribs with the right player's block
-            // pool.
-            int targetSlot = SpireProfilerMod.PlayerSlot(target.Player);
-            // Mirror Hook.ModifyBlock's enchantment pre-step so the
-            // decomposition starts from the post-enchantment value (the
-            // enchantment's own bonus stays with the blocking card).
-            decimal start = __state;
-            var enchantment = cardSource?.Enchantment;
-            if (enchantment != null)
-            {
-                start += enchantment.EnchantBlockAdditive(start);
-                start *= enchantment.EnchantBlockMultiplicative(start);
-            }
-            ModifierDecomposition.ForwardContributions(
-                modifiers,
-                start,
-                __result,
-                (power, baseValue) => power.ModifyBlockAdditive(target, baseValue, props, cardSource, cardPlay),
-                (power, baseValue) => power.ModifyBlockMultiplicative(target, baseValue, props, cardSource, cardPlay),
-                (relic, baseValue) => relic.ModifyBlockAdditive(target, baseValue, props, cardSource, cardPlay),
-                (relic, baseValue) => relic.ModifyBlockMultiplicative(target, baseValue, props, cardSource, cardPlay),
-                isDamage: false,
-                contribute: (id, kind, value) => ProfilerNative.OnBlockModifierContribution(id, kind, value, targetSlot));
-        }
-        catch (Exception ex) { Log.Error($"[SpireProfiler] ModifyBlock: {ex}"); }
-    }
-}
-
-/// Shared modifier-decomposition loop for the ModifyDamage/ModifyBlock
-/// postfixes. Re-runs the game's own resolution (Hook.ModifyDamage /
-/// ModifyBlock apply every listener's additive in order, then every
-/// multiplicative in order, over the post-enchantment start value the
-/// caller passes as `baseValue`) and credits each step with its STEP
-/// MARGINAL — the amount the game's running value actually grew when the
-/// step fired: an additive owns its raw delta, a multiplicative m owns
-/// runningBefore·(m−1). The shares sum exactly to the bonus the listed
-/// modifiers produced, so simultaneous multiplicative bonuses no longer
-/// over-credit one another the way the old per-modifier result−result/m
-/// formula did (each share is also strictly smaller for all but the last
-/// step). Sub-1 multipliers (Weak, Frail) reduce the running value and are
-/// deliberately never credited, but they still advance it so later
-/// marginals match the game. All shipped probes are amount-independent
-/// (verified against the decompiled models), so re-probing reproduces the
-/// game's deltas exactly; `result` only bounds marginals when a damage CAP
-/// clamped the final value below the re-run running value.
-/// The probes and callback are injected because the two hooks differ only
-/// in probe method names (ModifyDamage*/ModifyBlock*), the probe arguments
-/// (damage passes the dealer and a trailing null cardPlay), the additive
-/// semantics (damage forwards |additive| — a negative additive still
-/// contributes, e.g. Strength-loss mitigation; block forwards positive
-/// additive only), and the export name. `interceptMultiplicative` (damage
-/// only) lets the caller take over a power's multiplicative step — the
-/// Vulnerable composite — and receives the probed multiplier and the
-/// running value before the step; returning true skips the generic credit.
-/// No shipped model overrides both the additive and the multiplicative
-/// probe, so routing each list entry to exactly one of them is safe.
-/// Plain helper class — no class-level [HarmonyPatch], so the auto-patch
-/// loop skips it.
-internal static class ModifierDecomposition
-{
-    internal static void ForwardContributions(
-        IEnumerable<AbstractModel> modifiers,
-        decimal baseValue,
-        decimal result,
-        Func<PowerModel, decimal, decimal> powerAdditive,
-        Func<PowerModel, decimal, decimal> powerMultiplicative,
-        Func<RelicModel, decimal, decimal> relicAdditive,
-        Func<RelicModel, decimal, decimal> relicMultiplicative,
-        bool isDamage,
-        Action<string, int, int> contribute,
-        Func<PowerModel, decimal, decimal, bool> interceptMultiplicative = null)
-    {
-        // Pass 1: additive shares in the game's application order. `running`
-        // tracks the game's own value so pass 2 starts from the same
-        // post-additive base the game multiplied.
-        decimal running = baseValue;
-        var multiplicatives = new List<(AbstractModel Model, string Id, int Kind)>();
-        foreach (var mod in modifiers)
-        {
-            string id;
-            int kind;
-            decimal additive;
-            if (mod is PowerModel power)
-            {
-                id = power.Id?.Entry;
-                kind = ProfilerNative.ContextKindPower;
-                additive = powerAdditive(power, running);
-            }
-            else if (mod is RelicModel relic)
-            {
-                id = relic.Id?.Entry;
-                kind = ProfilerNative.ContextKindRelic;
-                additive = relicAdditive(relic, running);
-            }
-            else
-            {
-                continue;
-            }
-            if (string.IsNullOrEmpty(id)) continue;
-            running += additive;
-            if (isDamage ? additive != 0m : additive > 0m)
-            {
-                contribute(id, kind, isDamage ? Math.Abs((int)additive) : (int)additive);
-                continue;
-            }
-            multiplicatives.Add((mod, id, kind));
-        }
-        // Pass 2: multiplicative step marginals in the game's application
-        // order. running advances by every listed multiplier — including
-        // uncredited sub-1 steps — so each marginal is computed at the value
-        // the game actually had when the step fired.
-        foreach (var (mod, id, kind) in multiplicatives)
-        {
-            decimal multiplier = mod is PowerModel power
-                ? powerMultiplicative(power, running)
-                : relicMultiplicative((RelicModel)mod, running);
-            decimal runningBefore = running;
-            running *= multiplier;
-            if (multiplier <= 1m) continue;
-            if (mod is PowerModel p &&
-                interceptMultiplicative != null &&
-                interceptMultiplicative(p, multiplier, runningBefore > result ? result : runningBefore))
-            {
-                continue;
-            }
-            int contribution = (int)((runningBefore > result ? result : runningBefore) * (multiplier - 1m));
-            if (contribution > 0)
-                contribute(id, kind, contribution);
-        }
-    }
-}
-
-/// Vulnerable decomposition: VulnerablePower.ModifyDamageMultiplicative folds
-/// the nested ModifyVulnerableMultiplier hooks (PaperPhrog, CrueltyPower,
-/// DebilitatePower) into the single multiplier it returns, so the generic
-/// modifier loop can only see — and credit — the composite. This helper
-/// re-runs the game's own composition (the body of
-/// VulnerablePower.ModifyDamageMultiplicative: same contributor order, same
-/// public probes, all side-effect-free) and splits the step marginal
-/// linearly in multiplier space: the composite step added
-/// runningBefore·(M−1) to the damage, and a nested step that added `delta`
-/// to the multiplier owns runningBefore·delta of it. The parts sum to the
-/// step marginal the generic path would have forwarded (up to int
-/// truncation), so Vulnerable's appliers keep exactly the base share and
-/// e.g. Cruelty's scaling is no longer folded into it. If the re-run does
-/// not reproduce the probed composite (the game changed the composition),
-/// fall back to crediting the whole marginal to Vulnerable — a stale mirror
-/// must never drop the bonus.
-/// Plain helper class — no class-level [HarmonyPatch], so the auto-patch
-/// loop skips it.
-internal static class VulnerableDecomposition
-{
-    internal static bool Forward(
-        VulnerablePower vulnerable,
-        Creature target,
-        Creature dealer,
-        ValueProp props,
-        CardModel cardSource,
-        decimal runningBefore,
-        decimal composite,
-        Action<string, int, int> contribute)
-    {
-        var vulnerableId = vulnerable.Id?.Entry;
-        if (string.IsNullOrEmpty(vulnerableId)) return false;
-        if (composite <= 1m) return true;
-
-        // The pre-decomposition behavior: the whole step marginal to
-        // Vulnerable's appliers.
-        void Fallback()
-        {
-            int contribution = (int)(runningBefore * (composite - 1m));
-            if (contribution > 0)
-                contribute(vulnerableId, ProfilerNative.ContextKindPower, contribution);
-        }
-
-        // "DamageIncrease" is VulnerablePower's private DynamicVars key for
-        // the 1.5x base multiplier; the mismatch fallback covers a rename.
-        if (!vulnerable.DynamicVars.TryGetValue("DamageIncrease", out var damageIncrease))
-        {
-            Fallback();
-            return true;
-        }
-        decimal running = damageIncrease.BaseValue;
-        decimal vulnerableDelta = running - 1m;
-        var parts = new List<(string Id, int Kind, decimal Delta)>();
-
-        // The probes below mirror VulnerablePower.ModifyDamageMultiplicative
-        // step for step, in the game's own order: PaperPhrog (dealer's
-        // relic), CrueltyPower (dealer or its pet owner), DebilitatePower
-        // (target).
-        var paperPhrog = dealer.Player?.GetRelic<PaperPhrog>();
-        if (paperPhrog?.Id?.Entry is string phrogId)
-        {
-            decimal after = paperPhrog.ModifyVulnerableMultiplier(target, running, props, dealer, cardSource);
-            if (after != running) { parts.Add((phrogId, ProfilerNative.ContextKindRelic, after - running)); running = after; }
-        }
-        var cruelty = dealer.GetPower<CrueltyPower>() ?? dealer.PetOwner?.Creature.GetPower<CrueltyPower>();
-        if (cruelty?.Id?.Entry is string crueltyId)
-        {
-            decimal after = cruelty.ModifyVulnerableMultiplier(target, running, props, dealer, cardSource);
-            if (after != running) { parts.Add((crueltyId, ProfilerNative.ContextKindPower, after - running)); running = after; }
-        }
-        var debilitate = target.GetPower<DebilitatePower>();
-        if (debilitate?.Id?.Entry is string debilitateId)
-        {
-            decimal after = debilitate.ModifyVulnerableMultiplier(target, running, props, dealer, cardSource);
-            if (after != running) { parts.Add((debilitateId, ProfilerNative.ContextKindPower, after - running)); running = after; }
-        }
-
-        if (running != composite || vulnerableDelta < 0m)
-        {
-            Fallback();
-            return true;
-        }
-        int vulnerableContribution = (int)(runningBefore * vulnerableDelta);
-        if (vulnerableContribution > 0)
-            contribute(vulnerableId, ProfilerNative.ContextKindPower, vulnerableContribution);
-        foreach (var (id, kind, delta) in parts)
-        {
-            int contribution = (int)(runningBefore * delta);
-            if (contribution > 0)
-                contribute(id, kind, contribution);
-        }
-        return true;
-    }
-}
-
-/// <summary>
-/// Buff mitigation: Buffer/Intangible/HardenedShell reduce HP loss through
-/// their ModifyHpLost* overrides; the prevented delta forwards to the core,
-/// which credits the buff's appliers.
-/// </summary>
-[HarmonyPatch]
-internal static class PatchBuffMitigation
-{
-    [HarmonyPatch(typeof(BufferPower), nameof(BufferPower.ModifyHpLostAfterOstyLate))]
-    [HarmonyPrefix]
-    private static void BufferPrefix(decimal amount, out decimal __state) { __state = amount; }
-    [HarmonyPatch(typeof(BufferPower), nameof(BufferPower.ModifyHpLostAfterOstyLate))]
-    [HarmonyPostfix]
-    private static void BufferPostfix(decimal __result, decimal __state, Creature target)
-    {
-        try
-        {
-            // Buff mitigation counts for every player (the spec keeps the
-            // mitigation events slotless).
-            if (__state > 0 && __result == 0 && target.IsPlayer)
-                ProfilerNative.OnBuffMitigation("BUFFER_POWER", (int)__state);
-        }
-        catch (Exception ex) { Log.Error($"[SpireProfiler] Buffer mitigation: {ex}"); }
-    }
-    [HarmonyPatch(typeof(IntangiblePower), nameof(IntangiblePower.ModifyHpLostAfterOsty))]
-    [HarmonyPrefix]
-    private static void IntangiblePrefix(decimal amount, out decimal __state) { __state = amount; }
-    [HarmonyPatch(typeof(IntangiblePower), nameof(IntangiblePower.ModifyHpLostAfterOsty))]
-    [HarmonyPostfix]
-    private static void IntangiblePostfix(decimal __result, decimal __state, Creature target)
-    {
-        try
-        {
-            if (__state > __result && __result >= 0 && target.IsPlayer)
-                ProfilerNative.OnBuffMitigation("INTANGIBLE_POWER", (int)(__state - __result));
-        }
-        catch (Exception ex) { Log.Error($"[SpireProfiler] Intangible mitigation: {ex}"); }
-    }
-    [HarmonyPatch(typeof(HardenedShellPower), nameof(HardenedShellPower.ModifyHpLostBeforeOstyLate))]
-    [HarmonyPrefix]
-    private static void HardenedShellPrefix(decimal amount, out decimal __state) { __state = amount; }
-    [HarmonyPatch(typeof(HardenedShellPower), nameof(HardenedShellPower.ModifyHpLostBeforeOstyLate))]
-    [HarmonyPostfix]
-    private static void HardenedShellPostfix(decimal __result, decimal __state, Creature target)
-    {
-        try
-        {
-            if (__state > __result && __result >= 0 && target.IsPlayer)
-                ProfilerNative.OnBuffMitigation("HARDENED_SHELL_POWER", (int)(__state - __result));
-        }
-        catch (Exception ex) { Log.Error($"[SpireProfiler] HardenedShell mitigation: {ex}"); }
-    }
-}
-/// <summary>
-/// Wraps orb passive/evoke trigger entries with prefix-only fallback-source
-/// activation. Orb damage carries no card source, so the channeling source
-/// (recorded by PatchOrbChanneled) must be reactivated when the orb acts.
-/// </summary>
-internal static class OrbPatcher
-{
-    [HarmonyPrefix]
-    private static void OrbInstancePrefix(OrbModel __instance)
-    {
-        try
-        {
-            // Every player's orb triggers activate their own slot's orb
-            // fallback (the owner's slot, like PatchOrbChanneled).
-            if (__instance == null) return;
-            ProfilerNative.OnOrbContextBegin(__instance.GetHashCode(), SpireProfilerMod.PlayerSlot(__instance.Owner));
-        }
-        catch (Exception ex) { Log.Error($"[SpireProfiler] orb prefix: {ex}"); }
-    }
-    [HarmonyPrefix]
-    private static void OrbCmdPassivePrefix(OrbModel orb)
-    {
-        try
-        {
-            if (orb == null) return;
-            ProfilerNative.OnOrbContextBegin(orb.GetHashCode(), SpireProfilerMod.PlayerSlot(orb.Owner));
-        }
-        catch (Exception ex) { Log.Error($"[SpireProfiler] OrbCmd.Passive prefix: {ex}"); }
-    }
-    public static void PatchAll(Harmony harmony)
-    {
-        var instancePrefix = new HarmonyMethod(typeof(OrbPatcher).GetMethod("OrbInstancePrefix", BindingFlags.NonPublic | BindingFlags.Static));
-        var cmdPrefix = new HarmonyMethod(typeof(OrbPatcher).GetMethod("OrbCmdPassivePrefix", BindingFlags.NonPublic | BindingFlags.Static));
-        TryPatch(harmony, typeof(OrbCmd), "Passive", cmdPrefix);
-        var turnEndOrbs = new[] { typeof(LightningOrb), typeof(FrostOrb), typeof(DarkOrb), typeof(GlassOrb) };
-        foreach (var t in turnEndOrbs) TryPatch(harmony, t, "BeforeTurnEndOrbTrigger", instancePrefix);
-        TryPatch(harmony, typeof(PlasmaOrb), "AfterTurnStartOrbTrigger", instancePrefix);
-        var evokers = new[] { typeof(LightningOrb), typeof(FrostOrb), typeof(DarkOrb), typeof(GlassOrb), typeof(PlasmaOrb) };
-        foreach (var t in evokers) TryPatch(harmony, t, "Evoke", instancePrefix);
-    }
-    private static void TryPatch(Harmony harmony, Type type, string methodName, HarmonyMethod prefix)
-    {
-        try
-        {
-            var method = AccessTools.Method(type, methodName);
-            if (method == null)
-            {
-                Log.Error($"[SpireProfiler] orb: {type.Name}.{methodName} not found, skipping");
-                return;
-            }
-            harmony.Patch(method, prefix, null);
-        }
-        catch (Exception ex)
-        {
-            Log.Error($"[SpireProfiler] orb: failed {type.Name}.{methodName}: {ex.Message}");
-        }
     }
 }
 
@@ -2050,6 +1068,7 @@ internal static class PatchRunEnded
             int outcome = isVictory
                 ? 0
                 : (__instance != null && __instance.IsAbandoned ? 2 : 1);
+            CaptureRuntime.InvalidateEpoch();
             ProfilerNative.OnRunEnded(outcome);
             Log.Info($"[SpireProfiler] run ended, outcome={outcome}");
         }
@@ -2077,7 +1096,9 @@ internal static class PatchRunSuspend
     {
         try
         {
+            CaptureRuntime.InvalidateEpoch();
             ProfilerNative.OnRunSuspended();
+            SpireProfilerMod.CaptureRunPlayers(null);
             Log.Info("[SpireProfiler] run suspended (save & quit); no record written");
         }
         catch (Exception ex) { Log.Error($"[SpireProfiler] RunManager.CleanUp: {ex}"); }
@@ -2108,9 +1129,66 @@ internal static class PatchRunDisconnected
             var runManager = RunManager.Instance;
             if (info.GetReason() == NetError.QuitGameOver) return;
             if (runManager == null || runManager.IsAbandoned) return;
+            CaptureRuntime.InvalidateEpoch();
             ProfilerNative.OnRunSuspended();
+            SpireProfilerMod.CaptureRunPlayers(null);
             Log.Info("[SpireProfiler] run suspended after multiplayer disconnect; no record written");
         }
         catch (Exception ex) { Log.Error($"[SpireProfiler] RunDisconnected: {ex}"); }
     }
+}
+
+internal sealed class NativeAttributionBackend : GameAttributionBackend
+{
+    internal override object CurrentCombat => SpireProfilerMod.CurrentCombat;
+    internal override ulong Capture(ulong epoch, CaptureKind kind, ulong instance, string id, int sourceKind, int slot, GenerationState generation)
+        => ProfilerNative.SourceCapture(epoch, (int)kind, instance, id, sourceKind, slot, (int)generation);
+    internal override int SourceCount(ulong transfer) => ProfilerNative.SourceCount(transfer);
+    internal override ulong SourceDestination(ulong transfer, int index) => ProfilerNative.SourceDestination(transfer, index);
+    internal override ulong SourceWeight(ulong transfer, int index) => ProfilerNative.SourceWeight(transfer, index);
+    internal override ulong TransferBegin(ulong epoch) => ProfilerNative.SourceTransferBegin(epoch);
+    internal override int TransferAdd(ulong transfer, ulong destination, ulong weight) => ProfilerNative.SourceTransferAdd(transfer, destination, weight);
+    internal override int TransferSeal(ulong transfer) => ProfilerNative.SourceTransferSeal(transfer);
+    internal override int TransferRelease(ulong transfer) => ProfilerNative.SourceTransferRelease(transfer);
+    internal override int PowerAttached(CaptureEpoch epoch, ulong identity, ulong owner, PowerObservation observed, ulong source)
+        => ProfilerNative.PowerAttached(epoch.Sequence, identity, observed.Id, owner, observed.OwnerKind, observed.OwnerSlot, observed.Amount, source);
+    internal override int PowerChanged(CaptureEpoch epoch, ulong identity, ulong owner, PowerObservation observed, int before, ulong source)
+        => ProfilerNative.PowerAmountChanged(epoch.Sequence, identity, observed.Id, owner, observed.OwnerKind, observed.OwnerSlot, before, observed.Amount, source);
+    internal override int PowerRemoved(ulong epoch, ulong identity) => ProfilerNative.PowerRemoved(epoch, identity);
+    internal override int PowerInvalidate(ulong epoch, ulong identity) => ProfilerNative.PowerProvenanceInvalidate(epoch, identity);
+    internal override int CardGenerated(ulong epoch, ulong identity, ulong source, ProducerRole role) => ProfilerNative.CardGenerated(epoch, identity, source, (int)role);
+    internal override ulong PlayStarted(ulong epoch, ulong execution, ulong card, string id, int slot, int index, int count, GenerationState generation, ulong source)
+        => ProfilerNative.CardPlayStarted(epoch, execution, card, id, slot, index, count, (int)generation, source);
+    internal override int PlayFinished(ulong play) => ProfilerNative.CardPlayFinished(play);
+    internal override int ExecutionEnded(ulong epoch, ulong execution) => ProfilerNative.CardExecutionEnded(epoch, execution);
+    internal override int OrbBegin(ulong epoch, ulong orb, ulong play, int ownerSlot) => ProfilerNative.OrbContextBegin(epoch, orb, play, ownerSlot);
+    internal override int OrbChanneled(ulong epoch, ulong orb, ulong source) => ProfilerNative.OrbChanneled(epoch, orb, source);
+    internal override ulong DamageBegin(ulong epoch, ulong source, ProducerRole role, DamageSegment segment, ulong target)
+        => ProfilerNative.DamageCalculationBegin(epoch, source, (int)role, (int)segment, target);
+    internal override int DamageModifier(ulong calculation, ulong source, int amount) => ProfilerNative.DamageModifierContribution(calculation, source, amount);
+    internal override int DamageEnemyHit(ulong calculation, ulong dealer, int baseDamage, int strength) => ProfilerNative.DamageCalculationEnemyHit(calculation, dealer, baseDamage, strength);
+    internal override int DamageWeak(ulong calculation, ulong source) => ProfilerNative.DamageCalculationWeakSource(calculation, source);
+    internal override int DamageAppend(ulong calculation, ResultPacket packet)
+        => ProfilerNative.DamageResultAppend(calculation, packet.Total, packet.Unblocked, packet.Blocked, (int)packet.Kind, packet.ReceiverSlot, packet.WeakPrevented);
+    internal override int DamageCommit(ulong calculation) => ProfilerNative.DamageCalculationCommit(calculation);
+    internal override int DamageAbort(ulong calculation) => ProfilerNative.DamageCalculationAbort(calculation);
+    internal override int DamageFallback(ulong epoch, ResultPacket packet)
+        => ProfilerNative.DamageUnattributed(epoch, packet.Total, packet.Unblocked, packet.Blocked, (int)packet.Kind, packet.ReceiverSlot, packet.WeakPrevented);
+    internal override int BlockGained(ulong epoch, int amount, ulong source, int slot) => ProfilerNative.BlockGained(epoch, amount, source, slot);
+    internal override int BlockModifier(ulong epoch, ulong source, int amount, int slot) => ProfilerNative.BlockModifierContribution(epoch, source, amount, slot);
+    internal override int Forge(ulong epoch, ulong source, int amount) => ProfilerNative.Forge(epoch, source, amount);
+    internal override int OstySummoned(ulong epoch, ulong source, int hp, int slot) => ProfilerNative.OstySummoned(epoch, source, hp, slot);
+    internal override int OstyKilled(ulong epoch, int slot, ulong play) => ProfilerNative.OstyKilled(epoch, slot, play);
+    internal override int BuffMitigation(ulong epoch, ulong source, int prevented) => ProfilerNative.BuffMitigation(epoch, source, prevented);
+    internal override ulong DoomBegin(ulong epoch) => ProfilerNative.DoomBatchBegin(epoch);
+    internal override int DoomTarget(ulong batch, ulong creature, ulong power, int hp) => ProfilerNative.DoomTargetCapture(batch, creature, power, hp);
+    internal override int DoomComplete(ulong batch) => ProfilerNative.DoomKillsCompleted(batch);
+    internal override int DoomAbort(ulong batch) => ProfilerNative.DoomBatchAbort(batch);
+    internal override int TurnStarted(ulong epoch) => ProfilerNative.TurnStarted(epoch);
+    internal override int BlockCleared(ulong epoch, int slot) => ProfilerNative.BlockPoolClear(epoch, slot);
+    internal override int PlayerDied(ulong epoch, int slot) => ProfilerNative.PlayerDied(epoch, slot);
+    internal override int PotionUsed(ulong epoch) => ProfilerNative.PotionUsed(epoch);
+    internal override ulong CombatStarted(string encounter, string type) => ProfilerNative.CombatStarted(encounter, type);
+    internal override int CombatEnded(ulong epoch) => ProfilerNative.CombatEnded(epoch);
+    internal override void Diagnostic(string category, Exception error) => Log.Error($"[SpireProfiler] attribution {category}: {error?.Message}");
 }

@@ -4,8 +4,45 @@ use super::*;
 use crate::data::state::RunOutcome;
 use crate::ui::snapshot;
 
-/// The host verifies the bridge without a real fight.
-#[allow(clippy::too_many_lines)] // a scripted end-to-end event sequence
+struct Script {
+    epoch: u64,
+    leases: Vec<u64>,
+}
+
+impl Script {
+    fn source(&mut self, instance: u64, id: &str, kind: i32, generation: i32) -> u64 {
+        let capture = if kind == 0 { 1 } else { 4 };
+        let transfer = source_capture(self.epoch, capture, instance, id, kind, 0, generation);
+        self.leases.push(transfer);
+        transfer
+    }
+
+    fn play(&self, instance: u64, id: &str, generation: i32, source: u64) -> u64 {
+        card_play_started(
+            self.epoch, instance, instance, id, 0, 0, 1, generation, source,
+        )
+    }
+
+    fn hit(&self, source: u64, role: i32, segment: i32, total: i32, blocked: i32) {
+        let calculation = damage_calculation_begin(self.epoch, source, role, segment, 999);
+        if damage_result_append(calculation, total, total - blocked, blocked, 0, 4, 0) != 1
+            || damage_calculation_commit(calculation) != 1
+        {
+            damage_calculation_abort(calculation);
+            damage_unattributed(self.epoch, total, total - blocked, blocked, 0, 4, 0);
+        }
+    }
+}
+
+impl Drop for Script {
+    fn drop(&mut self) {
+        for transfer in &self.leases {
+            source_transfer_release(*transfer);
+        }
+    }
+}
+
+#[allow(clippy::too_many_lines)]
 pub fn self_test() {
     if !STATE.with(|cell| cell.borrow().initialized) {
         return;
@@ -20,73 +57,50 @@ pub fn self_test() {
         "",
         1_786_579_200,
     );
-    combat_started("SELF_TEST", "test");
-    // The off-by-default F8 state would hide the panel and skip `_draw`.
+    let epoch = combat_started("SELF_TEST", "test");
     crate::ui::panel::enable_for_selftest();
-    // The context pops before the async OrbChanneled fires, so the channel
-    // must fall back to last_source.
-    context_begin("CRACKED_CORE", 1, 0);
-    context_end();
-    orb_channeled(1002, 0);
-    turn_started();
-    // The orb's turn-end tick attributes to ZAP.
-    card_play_started("ZAP", 0, 1, 0, 0);
-    orb_channeled(1001, 0);
-    card_play_finished(0);
-    orb_context_begin(1001, 0);
-    damage_dealt(DamageDealt {
-        total: 3,
-        unblocked: 3,
-        ..DamageDealt::default()
-    });
-    // New turn: the boundary clears every slot's fallbacks.
-    turn_started();
-    // DEFEND gains block; the enemy's next hit is absorbed by it.
-    card_play_started("DEFEND", 0, 1, 0, 0);
-    block_gained(5, "DEFEND", 0, 0);
-    card_play_finished(0);
-    damage_dealt(DamageDealt {
-        total: 8,
-        unblocked: 3,
-        blocked: 5,
-        to_player: 1,
-        ..DamageDealt::default()
-    });
-    // Potion use becomes a fallback source.
-    potion_used("FIRE_POTION", 0);
-    card_play_started("BASH", 0, 1, 0, 0);
-    damage_dealt(DamageDealt {
-        total: 6,
-        unblocked: 3,
-        blocked: 3,
-        ..DamageDealt::default()
-    });
-    card_play_finished(0);
-    // The SHIV's later play credits the generator, not a SHIV row.
-    card_play_started("CLOAK_AND_DAGGER", 0, 1, 0, 0);
-    card_generated(5001, "", 0, 0);
-    card_play_finished(0);
-    // The first trigger credits the CHANNELING source, the second the card.
-    card_play_started("DUALCAST", 0, 1, 0, 0);
-    orb_context_begin(1002, 0);
-    damage_dealt(DamageDealt {
-        total: 8,
-        blocked: 8,
-        ..DamageDealt::default()
-    });
-    orb_context_begin(1002, 0);
-    damage_dealt(DamageDealt {
-        total: 8,
-        blocked: 8,
-        ..DamageDealt::default()
-    });
-    card_play_finished(0);
-    card_play_started("SHIV", 0, 1, 5001, 0);
-    card_play_finished(0);
-    // FurnacePower forges 2 damage onto Sovereign Blade.
-    forge("FURNACE_POWER", 2, 2, 0);
-    combat_ended();
-    // Wire code 0 = victory; the headless gate greps "(victory)".
+    let mut script = Script {
+        epoch,
+        leases: Vec::new(),
+    };
+    let cracked = script.source(0, "CRACKED_CORE", 1, 0);
+    orb_channeled(epoch, 1002, cracked);
+    turn_started(epoch);
+    let zap = script.source(101, "ZAP", 0, 0);
+    let play = script.play(101, "ZAP", 0, zap);
+    orb_channeled(epoch, 1001, zap);
+    card_play_finished(play);
+    orb_context_begin(epoch, 1001, 0, 0);
+    script.hit(zap, 5, 1, 3, 0);
+    turn_started(epoch);
+    let defend = script.source(102, "DEFEND", 0, 0);
+    let play = script.play(102, "DEFEND", 0, defend);
+    block_gained(epoch, 5, defend, 0);
+    card_play_finished(play);
+    damage_unattributed(epoch, 8, 3, 5, 1, 0, 0);
+    potion_used(epoch);
+    let bash = script.source(103, "BASH", 0, 0);
+    let play = script.play(103, "BASH", 0, bash);
+    script.hit(bash, 1, 0, 6, 3);
+    card_play_finished(play);
+    let cloak = script.source(104, "CLOAK_AND_DAGGER", 0, 0);
+    let play = script.play(104, "CLOAK_AND_DAGGER", 0, cloak);
+    card_generated(epoch, 5001, cloak, 1);
+    card_play_finished(play);
+    let dualcast = script.source(105, "DUALCAST", 0, 0);
+    let play = script.play(105, "DUALCAST", 0, dualcast);
+    orb_context_begin(epoch, 1002, play, 0);
+    script.hit(cracked, 5, 1, 8, 8);
+    orb_context_begin(epoch, 1002, play, 0);
+    script.hit(dualcast, 5, 0, 8, 8);
+    card_play_finished(play);
+    let shiv = script.source(5001, "SHIV", 0, 1);
+    let play = script.play(5001, "SHIV", 1, shiv);
+    card_play_finished(play);
+    let furnace = script.source(106, "FURNACE", 0, 0);
+    forge(epoch, furnace, 2);
+    drop(script);
+    combat_ended(epoch);
     run_ended(RunOutcome::Victory);
     snapshot::chart_self_test();
 }

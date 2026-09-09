@@ -1,32 +1,15 @@
-//! Attribution catalog: relic and power hooks selected for a source-context
-//! wrap. Hand-curated, never generated: inclusion is a per-body judgment
-//! call that weighs the tracked effect against the game's more explicit
-//! attribution sources. Re-verify after every game update:
-//! `cargo xtask decompile`, then `cargo xtask check-catalog`. Both a stale
-//! catalog entry and an unreviewed candidate hook fail the check.
+//! Hand-reviewed relic/power effect bodies and explicit helpers used to
+//! detect game drift. Runtime producer coverage is broader than this catalog;
+//! catalog membership records a body-level review, not an attribution fallback.
+//! New candidates and stale reviewed entries fail `check-catalog` until their
+//! decompiled bodies are reviewed against the pinned game.
 //!
-//! Hooks whose ONLY effect is an untracked metric (card draw, energy,
-//! stars, healing) are absent. Entries whose hook ALSO produces damage,
-//! block, mitigation, or forge stay, including ones named after an
-//! untracked resource (LightningRodPower/SpinnerPower channel orbs,
-//! GalacticDust/ChildOfTheStarsPower gain block, BlackHolePower deals
-//! damage, MiniRegent applies Strength, SpeedsterPower deals damage on
-//! non-hand draws, BoundPhylactery summons Osty).
-//!
-//! Hooks whose only effects are flags, counters, status text, or flash are
-//! absent too: an inert context outranks the orb/potion fallbacks while
-//! live, so a bookkeeping-only wrap can steal an unrelated async effect's
-//! attribution. Their real effects live in unwrapped modifiers (PenNib's
-//! ModifyDamageMultiplicative, BurstPower's ModifyCardPlayCount, ...).
-//!
-//! One entry wraps a non-hook method because the tracked effect lives in it
-//! (RollingBoulderPower's Godot-signal damage helper); [`NON_HOOK_ENTRIES`]
-//! keeps such exceptions deliberate. [`REVIEWED_CANDIDATES`] is the reviewed
-//! half of check-catalog's report: an uncatalogued effect hook absent from
-//! it is new and needs a catalog decision, while an entry absent from the
-//! report is stale and must be deleted.
+//! Mixed hooks remain relevant even when named for untracked metrics: a draw
+//! can trigger damage and an energy reset can channel an orb. The reviewed
+//! candidate baseline distinguishes expected findings from newly changed code.
+//! Direct helpers such as RollingBoulderPower.DoDamage remain explicit because
+//! they can execute without a surrounding hook invocation.
 
-/// Relic hooks wrapped in a source-context begin/end pair.
 pub const RELICS: [(&str, &str); 85] = [
     ("ScreamingFlagon", "BeforeSideTurnEnd"),
     ("StoneCalendar", "BeforeSideTurnEnd"),
@@ -115,8 +98,8 @@ pub const RELICS: [(&str, &str); 85] = [
     ("BurningSticks", "AfterCardExhausted"),
 ];
 
-/// Power hooks wrapped in a source-context begin/end pair.
-pub const POWERS: [(&str, &str); 64] = [
+/// Reviewed power hooks that produce tracked effects.
+pub const POWERS: [(&str, &str); 65] = [
     ("RagePower", "AfterCardPlayed"),
     ("FlameBarrierPower", "AfterDamageReceived"),
     ("FeelNoPainPower", "AfterCardExhausted"),
@@ -179,6 +162,7 @@ pub const POWERS: [(&str, &str); 64] = [
     ("RollingBoulderPower", "AfterPlayerTurnStart"),
     ("RollingBoulderPower", "DoDamage"),
     ("SpeedsterPower", "AfterCardDrawn"),
+    ("CacophonyPower", "AfterCardDrawn"),
     ("SerpentFormPower", "AfterCardPlayed"),
     ("TrashToTreasurePower", "AfterCardGeneratedForCombat"),
 ];
@@ -187,11 +171,10 @@ pub const POWERS: [(&str, &str); 64] = [
 pub const NON_HOOK_ENTRIES: [(&str, &str, &str); 1] =
     [("Powers", "RollingBoulderPower", "DoDamage")];
 
-/// Uncatalogued hooks reviewed and deliberately left out of the catalog.
-pub const REVIEWED_CANDIDATES: [(&str, &str, &str); 75] = [
+/// Other effect candidates whose bodies have been reviewed.
+pub const REVIEWED_CANDIDATES: [(&str, &str, &str); 74] = [
     ("Powers", "BeaconOfHopePower", "AfterBlockGained"),
     ("Powers", "BiasedCognitionPower", "AfterSideTurnStart"),
-    ("Powers", "CacophonyPower", "AfterCardDrawn"),
     ("Powers", "CalamityPower", "AfterCardPlayed"),
     ("Powers", "ConcoctPower", "AfterDamageGiven"),
     ("Powers", "ConstrictPower", "AfterSideTurnEnd"),

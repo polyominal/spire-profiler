@@ -74,7 +74,7 @@ pub fn run_started(
         let Some(seq) = resumed.or_else(|| {
             crate::data::run_history::next_run_id(&state.runs_path_full, &state.runs_dir_full)
         }) else {
-            state.current = None;
+            state.discard_combat();
             fail!("run IDs exhausted; run not started");
             return None;
         };
@@ -197,7 +197,7 @@ pub fn run_suspended() {
         // A save+quit mid-combat discards that combat.
         // otherwise the restart's combat_started would flush it as
         // "interrupted".
-        state.current = None;
+        state.discard_combat();
         // Without a combat there is no avatar row, so a selected filter
         // would strand the run tab with no way back to All.
         state.player_filter = state::PlayerFilter::All;

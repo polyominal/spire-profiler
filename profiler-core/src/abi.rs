@@ -28,11 +28,11 @@
 //! 1. **C pointer reads** — [`with_c_str`] dereferences a NUL-terminated string pointer supplied by
 //!    the host. Null maps to "", and so does a valid C string whose bytes are not UTF-8; any other
 //!    pointer violates the unsafe export contract (the matched-pair shim never forms one).
-//! 2. **`no_mangle` exports**: the 39 `spire_profiler_*` functions (38 bound by the shim and one
-//!    test-only reset export) carry `#[unsafe(no_mangle)]` so their symbols exist for the host.
-//!    Pointer-free exports are safe to call; pointer-reading exports require the caller to uphold
-//!    the C-string contract. Each decodes its arguments and delegates to [`events`] for the
-//!    recorded facts or [`crate::ui`] for panel interactions (toggle, scroll).
+//! 2. **`no_mangle` exports**: the `spire_profiler_*` functions carry `#[unsafe(no_mangle)]` so
+//!    their symbols exist for the host. Pointer-free exports are safe to call; pointer-reading
+//!    exports require the caller to uphold the C-string contract. Each decodes its arguments and
+//!    delegates to [`events`] for the recorded facts or [`crate::ui`] for panel interactions
+//!    (toggle, scroll).
 //! 3. **Panic containment** — a Rust panic must never unwind across the C ABI into the game. Every
 //!    export runs through [`contain`], which catches a panicking core function, reports it through
 //!    [`crate::fail`] (stderr, touches no state), and swallows it. A panic escaping into the host
@@ -50,44 +50,59 @@ use std::path::Path;
 
 use crate::data::events;
 use crate::data::state::RunOutcome;
-use crate::fail;
 
 /// Null yields "", and so does a valid C string whose bytes are not
 /// UTF-8. Any other pointer violates the safety contract below.
 ///
 /// # Safety
-/// `ptr` must be null or a NUL-terminated C string valid for the call.
+/// Non-null `ptr` points to initialized readable bytes through a terminating
+/// NUL, within one allocation and less than `isize::MAX` bytes from `ptr`.
+/// That range remains readable and unmodified until `f` returns.
 unsafe fn with_c_str<T>(ptr: *const c_char, f: impl for<'a> FnOnce(&'a str) -> T) -> T {
     let s: &str = if ptr.is_null() {
         ""
     } else {
-        // Safety: the caller upholds the contract on `ptr` above.
+        // SAFETY: the non-null branch and caller's readable, single-allocation,
+        // bounded, unmodified range satisfy CStr::from_ptr through f's return.
+        // The higher-ranked callback cannot return a borrow of these bytes.
         unsafe { CStr::from_ptr(ptr) }.to_str().unwrap_or("")
     };
     f(s)
 }
 
-/// Catches any panic in `f` so nothing unwinds across the C ABI; the panic
-/// is logged through [`fail`] and `on_panic` is returned in its place.
-pub(crate) fn contain<T>(name: &str, on_panic: T, f: impl FnOnce() -> T) -> T {
+std::thread_local! {
+    static PANIC_REPORTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Returns `on_panic` after an unwinding Rust panic. Payload destructors
+/// are suppressed because they can panic; aborting panics remain unrecoverable.
+pub(crate) fn contain<T: Copy>(name: &str, on_panic: T, f: impl FnOnce() -> T) -> T {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
         Ok(value) => value,
         Err(payload) => {
-            let detail = if let Some(msg) = payload.downcast_ref::<&str>() {
-                (*msg).to_owned()
-            } else if let Some(msg) = payload.downcast_ref::<String>() {
-                msg.clone()
-            } else {
-                "non-string panic payload".to_owned()
-            };
-            fail!("panic in {name}: {detail}");
+            let payload = std::mem::ManuallyDrop::new(payload);
+            let logged = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let detail = if let Some(msg) = payload.downcast_ref::<&str>() {
+                    *msg
+                } else if let Some(msg) = payload.downcast_ref::<String>() {
+                    msg.as_str()
+                } else {
+                    "non-string panic payload"
+                };
+                crate::fail_once(&PANIC_REPORTED, format_args!("panic in {name}: {detail}"));
+            }));
+            if let Err(payload) = logged {
+                std::mem::forget(payload);
+            }
             on_panic
         }
     }
 }
 
 /// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
+/// Non-null pointers cover initialized readable bytes through a terminating NUL
+/// in one allocation, with a total range shorter than `isize::MAX` bytes. Each
+/// range remains readable and unmodified throughout this call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_init(data_dir: *const c_char) {
     // SAFETY: pointer arguments satisfy this export's C contract.
@@ -117,7 +132,9 @@ pub extern "C" fn spire_profiler_set_run_meta(profile_id: i32) {
 /// failed; the identity stays unknown).
 ///
 /// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
+/// Non-null pointers cover initialized readable bytes through a terminating NUL
+/// in one allocation, with a total range shorter than `isize::MAX` bytes. Each
+/// range remains readable and unmodified throughout this call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_run_started(
     character_ids: *const c_char,
@@ -165,419 +182,15 @@ pub extern "C" fn spire_profiler_run_suspended() {
     contain("spire_profiler_run_suspended", (), events::run_suspended);
 }
 
-/// `player_slot` is the owner slot — TEAM (4) for enemy-owned powers.
-///
-/// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn spire_profiler_context_begin(
-    source_id: *const c_char,
-    kind: i32,
-    player_slot: i32,
-) {
-    // SAFETY: pointer arguments satisfy this export's C contract.
-    unsafe {
-        with_c_str(source_id, |source_id| {
-            contain("spire_profiler_context_begin", (), || {
-                events::context_begin(source_id, kind, player_slot);
-            });
-        })
-    };
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn spire_profiler_context_end() {
-    contain("spire_profiler_context_end", (), events::context_end);
-}
-
-/// Re-hooked at the side-level boundary, so the counter counts rounds.
-#[unsafe(no_mangle)]
-pub extern "C" fn spire_profiler_turn_started() {
-    contain("spire_profiler_turn_started", (), events::turn_started);
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn spire_profiler_orb_channeled(hash: i32, player_slot: i32) {
-    contain("spire_profiler_orb_channeled", (), || {
-        events::orb_channeled(hash, player_slot)
-    });
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn spire_profiler_orb_context_begin(hash: i32, player_slot: i32) {
-    contain("spire_profiler_orb_context_begin", (), || {
-        events::orb_context_begin(hash, player_slot);
-    });
-}
-
-/// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn spire_profiler_potion_used(potion_id: *const c_char, player_slot: i32) {
-    // SAFETY: pointer arguments satisfy this export's C contract.
-    unsafe {
-        with_c_str(potion_id, |potion_id| {
-            contain("spire_profiler_potion_used", (), || {
-                events::potion_used(potion_id, player_slot)
-            });
-        })
-    };
-}
-
-/// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn spire_profiler_potion_context_begin(
-    potion_id: *const c_char,
-    player_slot: i32,
-) {
-    // SAFETY: pointer arguments satisfy this export's C contract.
-    unsafe {
-        with_c_str(potion_id, |potion_id| {
-            contain("spire_profiler_potion_context_begin", (), || {
-                events::potion_context_begin(potion_id, player_slot)
-            });
-        })
-    };
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn spire_profiler_block_pool_clear(player_slot: i32) {
-    contain("spire_profiler_block_pool_clear", (), || {
-        events::block_pool_clear(player_slot)
-    });
-}
-
-/// `player_slot` is the owner's slot when the power sits on a player,
-/// else 0.
-///
-/// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn spire_profiler_power_applied(
-    power_id: *const c_char,
-    amount: i32,
-    creature_hash: i32,
-    is_player: i32,
-    player_slot: i32,
-) {
-    // SAFETY: pointer arguments satisfy this export's C contract.
-    unsafe {
-        with_c_str(power_id, |power_id| {
-            contain("spire_profiler_power_applied", (), || {
-                events::power_applied(power_id, amount, creature_hash, is_player, player_slot);
-            });
-        })
-    };
-}
-
-/// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn spire_profiler_power_decreased(
-    power_id: *const c_char,
-    amount: i32,
-    creature_hash: i32,
-    is_player: i32,
-    player_slot: i32,
-) {
-    // SAFETY: pointer arguments satisfy this export's C contract.
-    unsafe {
-        with_c_str(power_id, |power_id| {
-            contain("spire_profiler_power_decreased", (), || {
-                events::power_decreased(power_id, amount, creature_hash, is_player, player_slot);
-            });
-        })
-    };
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn spire_profiler_doom_target_capture(creature_hash: i32, current_hp: i32) {
-    contain("spire_profiler_doom_target_capture", (), || {
-        events::doom_target_capture(creature_hash, current_hp);
-    });
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn spire_profiler_doom_kills_completed() {
-    contain(
-        "spire_profiler_doom_kills_completed",
-        (),
-        events::doom_kills_completed,
-    );
-}
-
-/// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn spire_profiler_osty_summoned(
-    source_id: *const c_char,
-    source_kind: i32,
-    hp_amount: i32,
-    player_slot: i32,
-) {
-    // SAFETY: pointer arguments satisfy this export's C contract.
-    unsafe {
-        with_c_str(source_id, |source_id| {
-            contain("spire_profiler_osty_summoned", (), || {
-                events::osty_summoned(source_id, source_kind, hp_amount, player_slot);
-            });
-        })
-    };
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn spire_profiler_osty_killed(player_slot: i32) {
-    contain("spire_profiler_osty_killed", (), || {
-        events::osty_killed(player_slot)
-    });
-}
-
-/// The Kill patch fires this on every player death path; damage-kills
-/// double-fire idempotently.
-#[unsafe(no_mangle)]
-pub extern "C" fn spire_profiler_player_died(player_slot: i32) {
-    contain("spire_profiler_player_died", (), || {
-        events::player_died(player_slot)
-    });
-}
-
-/// `kind` is a modifier wire code; decoded by
-/// [`clamp_modifier_kind`](crate::data::state::clamp_modifier_kind).
-///
-/// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn spire_profiler_damage_modifier_contribution(
-    modifier_id: *const c_char,
-    kind: i32,
-    contribution: i32,
-    player_slot: i32,
-) {
-    // SAFETY: pointer arguments satisfy this export's C contract.
-    unsafe {
-        with_c_str(modifier_id, |modifier_id| {
-            contain("spire_profiler_damage_modifier_contribution", (), || {
-                events::damage_modifier_contribution(modifier_id, kind, contribution, player_slot);
-            });
-        })
-    };
-}
-
-/// `kind` is a modifier wire code; decoded by
-/// [`clamp_modifier_kind`](crate::data::state::clamp_modifier_kind).
-///
-/// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn spire_profiler_block_modifier_contribution(
-    modifier_id: *const c_char,
-    kind: i32,
-    contribution: i32,
-    player_slot: i32,
-) {
-    // SAFETY: pointer arguments satisfy this export's C contract.
-    unsafe {
-        with_c_str(modifier_id, |modifier_id| {
-            contain("spire_profiler_block_modifier_contribution", (), || {
-                events::block_modifier_contribution(modifier_id, kind, contribution, player_slot);
-            });
-        })
-    };
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn spire_profiler_weak_mitigation(prevented: i32, dealer_hash: i32) {
-    contain("spire_profiler_weak_mitigation", (), || {
-        events::weak_mitigation(prevented, dealer_hash);
-    });
-}
-
-/// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn spire_profiler_buff_mitigation(power_id: *const c_char, prevented: i32) {
-    // SAFETY: pointer arguments satisfy this export's C contract.
-    unsafe {
-        with_c_str(power_id, |power_id| {
-            contain("spire_profiler_buff_mitigation", (), || {
-                events::buff_mitigation(power_id, prevented);
-            });
-        })
-    };
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn spire_profiler_enemy_hit_context(base_damage: i32, dealer_str: i32) {
-    contain("spire_profiler_enemy_hit_context", (), || {
-        events::enemy_hit_context(base_damage, dealer_str);
-    });
-}
-
-/// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn spire_profiler_combat_started(
-    encounter_id: *const c_char,
-    encounter_type: *const c_char,
-) {
-    // SAFETY: pointer arguments satisfy this export's C contract.
-    unsafe {
-        with_c_str(encounter_id, |encounter_id| {
-            with_c_str(encounter_type, |encounter_type| {
-                contain("spire_profiler_combat_started", (), || {
-                    events::combat_started(encounter_id, encounter_type);
-                });
-            });
-        })
-    };
-}
-
-/// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn spire_profiler_card_play_started(
-    card_id: *const c_char,
-    play_index: i32,
-    play_count: i32,
-    card_hash: i32,
-    player_slot: i32,
-) {
-    // SAFETY: pointer arguments satisfy this export's C contract.
-    unsafe {
-        with_c_str(card_id, |card_id| {
-            contain("spire_profiler_card_play_started", (), || {
-                events::card_play_started(card_id, play_index, play_count, card_hash, player_slot);
-            });
-        })
-    };
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn spire_profiler_card_play_finished(player_slot: i32) {
-    contain("spire_profiler_card_play_finished", (), || {
-        events::card_play_finished(player_slot)
-    });
-}
-
-/// `player_slot` is the creator's slot; the later play keys its row there.
-///
-/// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn spire_profiler_card_generated(
-    card_hash: i32,
-    source_id: *const c_char,
-    source_kind: i32,
-    player_slot: i32,
-) {
-    // SAFETY: pointer arguments satisfy this export's C contract.
-    unsafe {
-        with_c_str(source_id, |source_id| {
-            contain("spire_profiler_card_generated", (), || {
-                events::card_generated(card_hash, source_id, source_kind, player_slot);
-            });
-        })
-    };
-}
-
-/// `player_slot` is `ForgeCmd.Forge`'s player; the forge row keys at it.
-///
-/// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn spire_profiler_forge(
-    source_id: *const c_char,
-    source_kind: i32,
-    amount: i32,
-    player_slot: i32,
-) {
-    // SAFETY: pointer arguments satisfy this export's C contract.
-    unsafe {
-        with_c_str(source_id, |source_id| {
-            contain("spire_profiler_forge", (), || {
-                events::forge(source_id, source_kind, amount, player_slot);
-            });
-        })
-    };
-}
-
-/// `receiver_slot` is the receiving player, or the Osty owner when
-/// `osty_flag == 2`; `card_source_slot` is the explicit-card row key.
-///
-/// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
-#[allow(clippy::too_many_arguments)]
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn spire_profiler_damage_dealt(
-    total: i32,
-    unblocked: i32,
-    blocked: i32,
-    card_source_id: *const c_char,
-    to_player: i32,
-    receiver_hash: i32,
-    osty_flag: i32,
-    dealer_hash: i32,
-    dealer_slot: i32,
-    receiver_slot: i32,
-    card_source_slot: i32,
-) {
-    // SAFETY: pointer arguments satisfy this export's C contract.
-    unsafe {
-        with_c_str(card_source_id, |card_source_id| {
-            contain("spire_profiler_damage_dealt", (), || {
-                events::damage_dealt(events::DamageDealt {
-                    total,
-                    unblocked,
-                    blocked,
-                    card_source_id,
-                    to_player,
-                    receiver_hash,
-                    osty_flag,
-                    dealer_hash,
-                    dealer_slot,
-                    receiver_slot,
-                    card_source_slot,
-                });
-            });
-        })
-    };
-}
-
-/// `source_slot` is the owner's slot for a card-play block, else the
-/// receiver's.
-///
-/// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn spire_profiler_block_gained(
-    amount: i32,
-    card_id: *const c_char,
-    player_slot: i32,
-    source_slot: i32,
-) {
-    // SAFETY: pointer arguments satisfy this export's C contract.
-    unsafe {
-        with_c_str(card_id, |card_id| {
-            contain("spire_profiler_block_gained", (), || {
-                events::block_gained(amount, card_id, player_slot, source_slot);
-            });
-        })
-    };
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn spire_profiler_combat_ended() {
-    contain("spire_profiler_combat_ended", (), events::combat_ended);
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn spire_profiler_test_reset() {
     contain("spire_profiler_test_reset", (), events::test_reset);
 }
 
 /// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
+/// Non-null pointers cover initialized readable bytes through a terminating NUL
+/// in one allocation, with a total range shorter than `isize::MAX` bytes. Each
+/// range remains readable and unmodified throughout this call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn spire_profiler_run_history_select(
     seed: *const c_char,
@@ -631,13 +244,537 @@ pub extern "C" fn spire_profiler_scroll_input(
     });
 }
 
+/// # Safety
+/// Non-null pointers cover initialized readable bytes through a terminating NUL
+/// in one allocation, with a total range shorter than `isize::MAX` bytes. Each
+/// range remains readable and unmodified throughout this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn spire_profiler_source_capture(
+    combat_seq: u64,
+    capture_kind: i32,
+    instance: u64,
+    source_id: *const c_char,
+    source_kind: i32,
+    source_slot: i32,
+    generation_state: i32,
+) -> u64 {
+    contain("spire_profiler_source_capture", 0, || {
+        // SAFETY: the export contract supplies each foreign borrow through callback return.
+        unsafe {
+            with_c_str(source_id, |source_id| {
+                events::source_capture(
+                    combat_seq,
+                    capture_kind,
+                    instance,
+                    source_id,
+                    source_kind,
+                    source_slot,
+                    generation_state,
+                )
+            })
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_source_count(transfer: u64) -> i32 {
+    contain("spire_profiler_source_count", -1, || {
+        events::source_count(transfer)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_source_destination(transfer: u64, index: i32) -> u64 {
+    contain("spire_profiler_source_destination", 0, || {
+        events::source_destination(transfer, index)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_source_weight(transfer: u64, index: i32) -> u64 {
+    contain("spire_profiler_source_weight", 0, || {
+        events::source_weight(transfer, index)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_source_transfer_begin(combat_seq: u64) -> u64 {
+    contain("spire_profiler_source_transfer_begin", 0, || {
+        events::source_transfer_begin(combat_seq)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_source_transfer_add(
+    transfer: u64,
+    destination: u64,
+    weight: u64,
+) -> i32 {
+    contain("spire_profiler_source_transfer_add", 0, || {
+        events::source_transfer_add(transfer, destination, weight)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_source_transfer_seal(transfer: u64) -> i32 {
+    contain("spire_profiler_source_transfer_seal", 0, || {
+        events::source_transfer_seal(transfer)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_source_transfer_release(transfer: u64) -> i32 {
+    contain("spire_profiler_source_transfer_release", 0, || {
+        events::source_transfer_release(transfer)
+    })
+}
+
+/// # Safety
+/// Non-null pointers cover initialized readable bytes through a terminating NUL
+/// in one allocation, with a total range shorter than `isize::MAX` bytes. Each
+/// range remains readable and unmodified throughout this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn spire_profiler_power_attached(
+    combat_seq: u64,
+    power_instance: u64,
+    power_id: *const c_char,
+    owner_creature: u64,
+    owner_kind: i32,
+    owner_slot: i32,
+    amount: i32,
+    source_transfer: u64,
+) -> i32 {
+    contain("spire_profiler_power_attached", 0, || {
+        // SAFETY: the export contract supplies each foreign borrow through callback return.
+        unsafe {
+            with_c_str(power_id, |power_id| {
+                events::power_attached(
+                    combat_seq,
+                    power_instance,
+                    power_id,
+                    owner_creature,
+                    owner_kind,
+                    owner_slot,
+                    amount,
+                    source_transfer,
+                )
+            })
+        }
+    })
+}
+
+/// # Safety
+/// Non-null pointers cover initialized readable bytes through a terminating NUL
+/// in one allocation, with a total range shorter than `isize::MAX` bytes. Each
+/// range remains readable and unmodified throughout this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn spire_profiler_power_amount_changed(
+    combat_seq: u64,
+    power_instance: u64,
+    power_id: *const c_char,
+    owner_creature: u64,
+    owner_kind: i32,
+    owner_slot: i32,
+    old_amount: i32,
+    new_amount: i32,
+    source_transfer: u64,
+) -> i32 {
+    contain("spire_profiler_power_amount_changed", 0, || {
+        // SAFETY: the export contract supplies each foreign borrow through callback return.
+        unsafe {
+            with_c_str(power_id, |power_id| {
+                events::power_amount_changed(
+                    combat_seq,
+                    power_instance,
+                    power_id,
+                    owner_creature,
+                    owner_kind,
+                    owner_slot,
+                    old_amount,
+                    new_amount,
+                    source_transfer,
+                )
+            })
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_power_removed(combat_seq: u64, power_instance: u64) -> i32 {
+    contain("spire_profiler_power_removed", 0, || {
+        events::power_removed(combat_seq, power_instance)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_power_provenance_invalidate(
+    combat_seq: u64,
+    power_instance: u64,
+) -> i32 {
+    contain("spire_profiler_power_provenance_invalidate", 0, || {
+        events::power_provenance_invalidate(combat_seq, power_instance)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_card_generated(
+    combat_seq: u64,
+    card_instance: u64,
+    source_transfer: u64,
+    producer_role: i32,
+) -> i32 {
+    contain("spire_profiler_card_generated", 0, || {
+        events::card_generated(combat_seq, card_instance, source_transfer, producer_role)
+    })
+}
+
+/// # Safety
+/// Non-null pointers cover initialized readable bytes through a terminating NUL
+/// in one allocation, with a total range shorter than `isize::MAX` bytes. Each
+/// range remains readable and unmodified throughout this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn spire_profiler_card_play_started(
+    combat_seq: u64,
+    execution_id: u64,
+    card_instance: u64,
+    card_id: *const c_char,
+    player_slot: i32,
+    play_index: i32,
+    play_count: i32,
+    generation_state: i32,
+    source_transfer: u64,
+) -> u64 {
+    contain("spire_profiler_card_play_started", 0, || {
+        // SAFETY: the export contract supplies each foreign borrow through callback return.
+        unsafe {
+            with_c_str(card_id, |card_id| {
+                events::card_play_started(
+                    combat_seq,
+                    execution_id,
+                    card_instance,
+                    card_id,
+                    player_slot,
+                    play_index,
+                    play_count,
+                    generation_state,
+                    source_transfer,
+                )
+            })
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_card_play_finished(play: u64) -> i32 {
+    contain("spire_profiler_card_play_finished", 0, || {
+        events::card_play_finished(play)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_card_execution_ended(combat_seq: u64, execution_id: u64) -> i32 {
+    contain("spire_profiler_card_execution_ended", 0, || {
+        events::card_execution_ended(combat_seq, execution_id)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_orb_channeled(
+    combat_seq: u64,
+    orb_instance: u64,
+    source_transfer: u64,
+) -> i32 {
+    contain("spire_profiler_orb_channeled", 0, || {
+        events::orb_channeled(combat_seq, orb_instance, source_transfer)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_orb_context_begin(
+    combat_seq: u64,
+    orb_instance: u64,
+    play: u64,
+    owner_slot: i32,
+) -> i32 {
+    contain("spire_profiler_orb_context_begin", 0, || {
+        events::orb_context_begin(combat_seq, orb_instance, play, owner_slot)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_damage_calculation_begin(
+    combat_seq: u64,
+    source_transfer: u64,
+    producer_role: i32,
+    segment: i32,
+    original_target: u64,
+) -> u64 {
+    contain("spire_profiler_damage_calculation_begin", 0, || {
+        events::damage_calculation_begin(
+            combat_seq,
+            source_transfer,
+            producer_role,
+            segment,
+            original_target,
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_damage_modifier_contribution(
+    calculation: u64,
+    source_transfer: u64,
+    amount: i32,
+) -> i32 {
+    contain("spire_profiler_damage_modifier_contribution", 0, || {
+        events::damage_modifier_contribution(calculation, source_transfer, amount)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_damage_calculation_enemy_hit(
+    calculation: u64,
+    dealer_creature: u64,
+    base_damage: i32,
+    dealer_strength: i32,
+) -> i32 {
+    contain("spire_profiler_damage_calculation_enemy_hit", 0, || {
+        events::damage_calculation_enemy_hit(
+            calculation,
+            dealer_creature,
+            base_damage,
+            dealer_strength,
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_damage_calculation_weak_source(
+    calculation: u64,
+    source_transfer: u64,
+) -> i32 {
+    contain("spire_profiler_damage_calculation_weak_source", 0, || {
+        events::damage_calculation_weak_source(calculation, source_transfer)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_damage_result_append(
+    calculation: u64,
+    total: i32,
+    unblocked: i32,
+    blocked: i32,
+    result_kind: i32,
+    receiver_slot: i32,
+    weak_prevented: i32,
+) -> i32 {
+    contain("spire_profiler_damage_result_append", 0, || {
+        events::damage_result_append(
+            calculation,
+            total,
+            unblocked,
+            blocked,
+            result_kind,
+            receiver_slot,
+            weak_prevented,
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_damage_calculation_commit(calculation: u64) -> i32 {
+    contain("spire_profiler_damage_calculation_commit", 0, || {
+        events::damage_calculation_commit(calculation)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_damage_calculation_abort(calculation: u64) -> i32 {
+    contain("spire_profiler_damage_calculation_abort", 0, || {
+        events::damage_calculation_abort(calculation)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_damage_unattributed(
+    combat_seq: u64,
+    total: i32,
+    unblocked: i32,
+    blocked: i32,
+    result_kind: i32,
+    receiver_slot: i32,
+    weak_prevented: i32,
+) -> i32 {
+    contain("spire_profiler_damage_unattributed", 0, || {
+        events::damage_unattributed(
+            combat_seq,
+            total,
+            unblocked,
+            blocked,
+            result_kind,
+            receiver_slot,
+            weak_prevented,
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_buff_mitigation(
+    combat_seq: u64,
+    source_transfer: u64,
+    prevented: i32,
+) -> i32 {
+    contain("spire_profiler_buff_mitigation", 0, || {
+        events::buff_mitigation(combat_seq, source_transfer, prevented)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_block_modifier_contribution(
+    combat_seq: u64,
+    source_transfer: u64,
+    amount: i32,
+    receiver_slot: i32,
+) -> i32 {
+    contain("spire_profiler_block_modifier_contribution", 0, || {
+        events::block_modifier_contribution(combat_seq, source_transfer, amount, receiver_slot)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_block_gained(
+    combat_seq: u64,
+    amount: i32,
+    source_transfer: u64,
+    receiver_slot: i32,
+) -> i32 {
+    contain("spire_profiler_block_gained", 0, || {
+        events::block_gained(combat_seq, amount, source_transfer, receiver_slot)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_forge(combat_seq: u64, source_transfer: u64, amount: i32) -> i32 {
+    contain("spire_profiler_forge", 0, || {
+        events::forge(combat_seq, source_transfer, amount)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_osty_summoned(
+    combat_seq: u64,
+    source_transfer: u64,
+    hp_amount: i32,
+    owner_slot: i32,
+) -> i32 {
+    contain("spire_profiler_osty_summoned", 0, || {
+        events::osty_summoned(combat_seq, source_transfer, hp_amount, owner_slot)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_osty_killed(combat_seq: u64, owner_slot: i32, play: u64) -> i32 {
+    contain("spire_profiler_osty_killed", 0, || {
+        events::osty_killed(combat_seq, owner_slot, play)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_doom_batch_begin(combat_seq: u64) -> u64 {
+    contain("spire_profiler_doom_batch_begin", 0, || {
+        events::doom_batch_begin(combat_seq)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_doom_target_capture(
+    batch: u64,
+    creature_instance: u64,
+    doom_power_instance: u64,
+    current_hp: i32,
+) -> i32 {
+    contain("spire_profiler_doom_target_capture", 0, || {
+        events::doom_target_capture(batch, creature_instance, doom_power_instance, current_hp)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_doom_kills_completed(batch: u64) -> i32 {
+    contain("spire_profiler_doom_kills_completed", 0, || {
+        events::doom_kills_completed(batch)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_doom_batch_abort(batch: u64) -> i32 {
+    contain("spire_profiler_doom_batch_abort", 0, || {
+        events::doom_batch_abort(batch)
+    })
+}
+
+/// # Safety
+/// Non-null pointers cover initialized readable bytes through a terminating NUL
+/// in one allocation, with a total range shorter than `isize::MAX` bytes. Each
+/// range remains readable and unmodified throughout this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn spire_profiler_combat_started(
+    encounter_id: *const c_char,
+    encounter_type: *const c_char,
+) -> u64 {
+    contain("spire_profiler_combat_started", 0, || {
+        // SAFETY: the export contract supplies each foreign borrow through callback return.
+        unsafe {
+            with_c_str(encounter_id, |encounter_id| {
+                with_c_str(encounter_type, |encounter_type| {
+                    events::combat_started(encounter_id, encounter_type)
+                })
+            })
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_combat_ended(combat_seq: u64) -> i32 {
+    contain("spire_profiler_combat_ended", 0, || {
+        events::combat_ended(combat_seq)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_turn_started(combat_seq: u64) -> i32 {
+    contain("spire_profiler_turn_started", 0, || {
+        events::turn_started(combat_seq)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_block_pool_clear(combat_seq: u64, player_slot: i32) -> i32 {
+    contain("spire_profiler_block_pool_clear", 0, || {
+        events::block_pool_clear(combat_seq, player_slot)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_player_died(combat_seq: u64, player_slot: i32) -> i32 {
+    contain("spire_profiler_player_died", 0, || {
+        events::player_died(combat_seq, player_slot)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_potion_used(combat_seq: u64) -> i32 {
+    contain("spire_profiler_potion_used", 0, || {
+        events::potion_used(combat_seq)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::CString;
     use std::fs;
 
     use super::*;
-    use crate::data::state::{STATE, SourceKind, caps};
+    use crate::data::state::STATE;
 
     fn unique_dir(label: &str) -> (std::path::PathBuf, CString) {
         let dir = crate::test_util::unique_dir(label);
@@ -649,120 +786,6 @@ mod tests {
         (dir, c_dir)
     }
 
-    fn assert_context_credit(id: &str, kind: SourceKind, slot: u8) {
-        let before = STATE.with(|cell| {
-            cell.borrow()
-                .current
-                .as_ref()
-                .expect("test combat is active")
-                .cards
-                .iter()
-                .find(|row| row.id == id && row.kind == kind && row.player == slot)
-                .map(|row| (row.damage_dealt, row.block_gained))
-                .unwrap_or_default()
-        });
-        // SAFETY: string literals are valid C strings for the duration of each call.
-        unsafe {
-            spire_profiler_damage_dealt(7, 7, 0, c"".as_ptr(), 0, 0, 0, 0, 0, 0, 0);
-            spire_profiler_block_gained(11, c"".as_ptr(), 0, 0);
-        }
-        STATE.with(|cell| {
-            let state = cell.borrow();
-            let row = state
-                .current
-                .as_ref()
-                .expect("test combat is active")
-                .cards
-                .iter()
-                .find(|row| row.id == id && row.kind == kind && row.player == slot)
-                .unwrap_or_else(|| panic!("missing {id} ({kind:?}) in slot {slot}"));
-            assert_eq!(
-                (row.damage_dealt, row.block_gained),
-                (before.0 + 7, before.1 + 11),
-                "{id}"
-            );
-        });
-    }
-
-    #[test]
-    fn empty_context_exports_preserve_outer_sources_and_named_descendants() {
-        let (_base, c_base) = unique_dir("spire-profiler-abi-context-empty");
-        // SAFETY: pointers are null or live, NUL-terminated C strings; 0xff tests UTF-8 rejection.
-        unsafe {
-            spire_profiler_test_reset();
-            spire_profiler_init(c_base.as_ptr());
-            spire_profiler_combat_started(c"CONTEXT".as_ptr(), c"test".as_ptr());
-            spire_profiler_context_begin(c"OUTER_A".as_ptr(), 1, 1);
-            spire_profiler_context_begin(c"OUTER_B".as_ptr(), 2, 2);
-            for empty in [std::ptr::null(), c"".as_ptr(), c"\xff".as_ptr()] {
-                spire_profiler_context_begin(empty, 1, 0);
-                spire_profiler_context_begin(empty, 1, 0);
-                assert_context_credit("OUTER_B", SourceKind::Power, 2);
-                spire_profiler_context_begin(c"CHILD".as_ptr(), 1, 3);
-                assert_context_credit("CHILD", SourceKind::Relic, 3);
-                spire_profiler_context_end();
-                assert_context_credit("OUTER_B", SourceKind::Power, 2);
-                spire_profiler_context_end();
-                assert_context_credit("OUTER_B", SourceKind::Power, 2);
-                spire_profiler_context_end();
-                assert_context_credit("OUTER_B", SourceKind::Power, 2);
-            }
-            spire_profiler_context_end();
-            assert_context_credit("OUTER_A", SourceKind::Relic, 1);
-            spire_profiler_context_end();
-            spire_profiler_context_end();
-            assert_context_credit("CHILD", SourceKind::Relic, 3);
-        }
-    }
-
-    #[test]
-    fn overflowing_context_exports_unwind_across_turn_and_combat_boundaries() {
-        let (_base, c_base) = unique_dir("spire-profiler-abi-context-overflow");
-        // SAFETY: every pointer refers to a live, NUL-terminated C string.
-        unsafe {
-            spire_profiler_test_reset();
-            spire_profiler_init(c_base.as_ptr());
-            let sources: Vec<_> = (0..caps::CONTEXT_STACK)
-                .map(|i| CString::new(format!("SOURCE_{i}")).expect("numeric IDs contain no NUL"))
-                .collect();
-            for source in &sources {
-                spire_profiler_context_begin(source.as_ptr(), 1, 1);
-            }
-            for source in [
-                c"REJECTED".as_ptr(),
-                c"".as_ptr(),
-                c"REJECTED_CHILD".as_ptr(),
-            ] {
-                spire_profiler_context_begin(source, 2, 2);
-            }
-            spire_profiler_combat_started(c"CONTEXT".as_ptr(), c"test".as_ptr());
-            spire_profiler_turn_started();
-            let innermost = sources
-                .last()
-                .expect("context cap is nonzero")
-                .to_str()
-                .expect("numeric IDs are UTF-8");
-            for _ in 0..3 {
-                assert_context_credit(innermost, SourceKind::Relic, 1);
-                spire_profiler_context_end();
-            }
-            for source in sources.iter().rev() {
-                assert_context_credit(
-                    source.to_str().expect("numeric IDs are UTF-8"),
-                    SourceKind::Relic,
-                    1,
-                );
-                spire_profiler_context_end();
-            }
-            spire_profiler_context_end();
-            spire_profiler_context_begin(c"RECOVERED".as_ptr(), 2, 2);
-            assert_context_credit("RECOVERED", SourceKind::Power, 2);
-            spire_profiler_context_end();
-            assert_context_credit("RECOVERED", SourceKind::Power, 2);
-        }
-    }
-
-    /// The exported surface drives the whole pipeline end to end.
     #[test]
     fn exported_surface_runs_the_self_test_pipeline() {
         let (base, c_base) = unique_dir("spire-profiler-abi-test");
@@ -802,46 +825,64 @@ mod tests {
     }
 
     #[test]
-    fn null_string_arguments_are_treated_as_empty() {
-        let (_base, c_base) = unique_dir("spire-profiler-abi-null");
-        // SAFETY: pointers are null or live, NUL-terminated C strings; 0xff tests UTF-8 rejection.
-        unsafe {
-            spire_profiler_test_reset();
-            spire_profiler_init(c_base.as_ptr());
-            spire_profiler_combat_started(std::ptr::null(), std::ptr::null());
-            STATE.with(|cell| {
-                let state = cell.borrow();
-                let combat = state.current.as_ref().expect("test combat is active");
-                assert_eq!(
-                    (combat.encounter_id.as_str(), combat.encounter_type.as_str()),
-                    ("", "")
-                );
-            });
-            spire_profiler_potion_context_begin(c"FALLBACK".as_ptr(), 0);
-            for (empty, uses) in [
-                (std::ptr::null(), 1),
-                (c"".as_ptr(), 2),
-                (c"\xff".as_ptr(), 3),
-            ] {
-                spire_profiler_potion_used(empty, 0);
-                STATE.with(|cell| {
-                    let state = cell.borrow();
-                    let combat = state.current.as_ref().expect("test combat is active");
-                    assert_eq!(combat.potions_used, uses);
-                });
-                assert_context_credit("FALLBACK", SourceKind::Potion, 0);
-                spire_profiler_potion_context_begin(empty, 0);
-                assert_context_credit("FALLBACK", SourceKind::Potion, 0);
-            }
-            spire_profiler_combat_ended();
-        }
-    }
-
-    /// The containment helper must swallow a panic, never unwind into the host.
-    #[test]
     fn containment_swallows_a_panicking_core_function() {
         contain("spire_profiler_test_reset", (), || panic!("boom"));
         contain("spire_profiler_test_reset", (), || panic!("str payload"));
+    }
+
+    #[test]
+    fn containment_does_not_drop_an_adversarial_panic_payload() {
+        struct PanickingDrop;
+        impl Drop for PanickingDrop {
+            fn drop(&mut self) {
+                panic!("payload destructor escaped containment");
+            }
+        }
+        assert_eq!(
+            contain("panic_payload", 17, || std::panic::panic_any(PanickingDrop)),
+            17
+        );
+        assert_eq!(contain("success", 17, || 23), 23);
+    }
+
+    #[test]
+    fn transfer_exports_contain_reentrant_state_borrows_and_reject_stale_epochs() {
+        events::test_reset();
+        STATE.with(|cell| {
+            cell.borrow_mut().current = Some(crate::data::state::Combat {
+                seq: 9,
+                ..Default::default()
+            });
+        });
+        let transfer = spire_profiler_source_transfer_begin(9);
+        let destination = (9_u64 << 32) | (4 << 3) | 1;
+        assert_eq!(
+            spire_profiler_source_transfer_add(transfer, destination, 3),
+            1
+        );
+        assert_eq!(spire_profiler_source_transfer_seal(transfer), 1);
+        assert_eq!(spire_profiler_source_count(transfer), 1);
+        STATE.with(|cell| {
+            let _guard = cell.borrow_mut();
+            assert_eq!(spire_profiler_source_count(transfer), -1);
+            assert_eq!(spire_profiler_source_weight(transfer, 0), 0);
+            assert_eq!(spire_profiler_source_destination(transfer, 0), 0);
+            assert_eq!(spire_profiler_source_transfer_begin(9), 0);
+            assert_eq!(spire_profiler_source_transfer_release(transfer), 0);
+        });
+        assert_eq!(spire_profiler_source_count(transfer), 1);
+        assert_eq!(spire_profiler_source_weight(transfer, 0), 1);
+        assert_eq!(spire_profiler_source_destination(transfer, 0), destination);
+        STATE.with(|cell| {
+            cell.borrow_mut()
+                .current
+                .as_mut()
+                .expect("fixture combat exists")
+                .seq = 10;
+        });
+        assert_eq!(spire_profiler_source_count(transfer), -1);
+        assert_eq!(spire_profiler_source_transfer_release(transfer), 0);
+        events::test_reset();
     }
 
     #[test]
@@ -879,8 +920,6 @@ mod tests {
         assert_eq!(crate::ui::run_panel::take_queued_scroll(), -12.5);
     }
 
-    /// F8 changes observable state: the run panel's flag, else the combat
-    /// toggle.
     #[test]
     fn panel_toggle_export_flips_panel_state_by_run_context() {
         let (_base, c_base) = unique_dir("spire-profiler-abi-toggle");
@@ -940,7 +979,6 @@ mod tests {
         assert_eq!(crate::ui::run_panel::take_queued_scroll(), 0.0);
     }
 
-    /// Select/clear drive the whole matching pipeline end to end.
     #[test]
     fn run_history_select_and_clear_exports_drive_the_selection() {
         let (base, c_base) = unique_dir("spire-profiler-abi-run-history");
@@ -968,5 +1006,35 @@ mod tests {
 
         spire_profiler_run_history_clear();
         assert!(crate::data::run_history::selected_view().is_none());
+    }
+
+    #[test]
+    fn null_and_malformed_strings_become_unknown_without_retaining_foreign_bytes() {
+        let (_base, c_base) = unique_dir("spire-profiler-abi-strings");
+        // SAFETY: fixture buffers include readable NUL bytes and remain immutable during each call.
+        unsafe {
+            spire_profiler_test_reset();
+            spire_profiler_init(c_base.as_ptr());
+            let epoch = spire_profiler_combat_started(std::ptr::null(), c"\xff".as_ptr());
+            assert_ne!(epoch, 0);
+            for pointer in [std::ptr::null(), c"".as_ptr(), c"\xff".as_ptr()] {
+                let source = spire_profiler_source_capture(epoch, 1, 1, pointer, 0, 0, 0);
+                assert_eq!(spire_profiler_source_count(source), 1);
+                assert_eq!(
+                    spire_profiler_source_destination(source, 0),
+                    (epoch << 32) | (4 << 3) | 1
+                );
+                assert_eq!(spire_profiler_source_transfer_release(source), 1);
+            }
+            STATE.with(|cell| {
+                let state = cell.borrow();
+                let combat = state.current.as_ref().expect("fixture combat exists");
+                assert_eq!(
+                    (combat.encounter_id.as_str(), combat.encounter_type.as_str()),
+                    ("", "")
+                );
+            });
+            assert_eq!(spire_profiler_combat_ended(epoch), 1);
+        }
     }
 }

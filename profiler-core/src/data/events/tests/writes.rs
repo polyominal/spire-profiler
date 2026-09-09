@@ -3,6 +3,7 @@ use std::fs;
 use super::*;
 use crate::data::run_history;
 use crate::data::state::{CombatResult, RunOutcome};
+use crate::test_util::{SourceFixture, combat_epoch};
 
 const CACHE_RECORD: &str = r#"{"run_id":99,"seed":"CACHE","started_at":3000,"profile":2}"#;
 
@@ -62,8 +63,8 @@ fn exercise_combat_write_failure(stage: &str, interrupted: bool) {
     set_run_meta(2);
     run_started("IRONCLAD", 0, "Standard", "ACTIVE", 0, "", 1000);
     combat_started("FAILED", "test");
-    turn_started();
-    block_gained(5, "DEFEND", 0, 0);
+    turn_started(combat_epoch());
+    SourceFixture::card("DEFEND", 0).block(5, 0);
     assert!(!run_history::select("CACHE", 3000, 2));
     fs::write(base.join("runs.jsonl"), CACHE_RECORD).unwrap();
     let blocker = base.join(match stage {
@@ -84,8 +85,8 @@ fn exercise_combat_write_failure(stage: &str, interrupted: bool) {
     if interrupted {
         combat_started("RECOVERY", "test");
     } else {
-        combat_ended();
-        combat_ended();
+        combat_ended(combat_epoch());
+        combat_ended(combat_epoch());
     }
     STATE.with(|cell| {
         let state = cell.borrow();
@@ -111,13 +112,13 @@ fn exercise_combat_write_failure(stage: &str, interrupted: bool) {
     }
     assert!(!base.join("runs/1/1.json.tmp").exists());
     if !interrupted {
-        combat_ended();
+        combat_ended(combat_epoch());
         combat_started("RECOVERY", "test");
     }
-    turn_started();
-    block_gained(7, "DEFEND", 0, 0);
-    combat_ended();
-    combat_ended();
+    turn_started(combat_epoch());
+    SourceFixture::card("DEFEND", 0).block(7, 0);
+    combat_ended(combat_epoch());
+    combat_ended(combat_epoch());
     STATE.with(|cell| {
         let state = cell.borrow();
         assert_eq!((state.run_combats, state.run_turns), (2, 2));
@@ -146,7 +147,7 @@ fn failed_run_writes_close_once_and_recover() {
         run_started("IRONCLAD", 0, "Standard", "ACTIVE", 0, "", 1000);
         if stage != "empty" {
             combat_started("SAVED", "test");
-            combat_ended();
+            combat_ended(combat_epoch());
         }
         assert!(!run_history::select("CACHE", 3000, 2));
         let old = if stage == "unreadable" {
@@ -173,7 +174,7 @@ fn failed_run_writes_close_once_and_recover() {
         assert_eq!(read_test_file(&base, "runs.jsonl"), CACHE_RECORD);
         run_started("DEFECT", 0, "Standard", "RECOVERY", 0, "", 2000);
         combat_started("RECOVERY", "test");
-        combat_ended();
+        combat_ended(combat_epoch());
         assert!(run_history::select("RECOVERY", 2000, 2));
         assert_eq!(run_history::selected_view().unwrap().outcome, None);
         run_ended(RunOutcome::Victory);

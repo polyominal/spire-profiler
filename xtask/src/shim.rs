@@ -1,13 +1,68 @@
-//! Generation of the C# host sources from the committed template and the
-//! attribution catalog. The template's C# semantics are never edited here;
-//! only data (the catalog, the native lib selector) is injected.
+//! Generate the C# host and compile the same attribution sources in the
+//! shipped mod and managed fixture runner. Only the native library selector
+//! is substituted into the host template.
 
 use std::path::Path;
 
-use crate::catalog;
+use anyhow::{Context, Result};
+
 use crate::cross::MATRIX;
+use crate::{sha256_file, workspace_root};
 
 pub const SHIM_TEMPLATE: &str = include_str!("../../shim/shim.cs.template");
+
+const ATTRIBUTION_SOURCES: [&str; 8] = [
+    "attribution/SourceSnapshot.cs",
+    "attribution/FlowCapture.cs",
+    "attribution/ProvenanceCapture.cs",
+    "attribution/DamageCapture.cs",
+    "attribution/TemporalPowerCapture.cs",
+    "attribution/PlayCapture.cs",
+    "attribution/CommandCapture.cs",
+    "attribution/DoomCapture.cs",
+];
+
+#[derive(Clone, Copy)]
+pub enum ProjectKind {
+    Mod,
+    Tests,
+}
+
+impl ProjectKind {
+    fn sources(self) -> impl Iterator<Item = &'static str> {
+        let fixtures: &[&str] = match self {
+            Self::Mod => &[],
+            Self::Tests => &["tests/Program.cs", "tests/Fixtures.cs"],
+        };
+        ATTRIBUTION_SOURCES
+            .into_iter()
+            .chain(fixtures.iter().copied())
+    }
+}
+
+pub fn write_sources(destination: &Path, kind: ProjectKind) -> Result<()> {
+    std::fs::create_dir_all(destination)?;
+    let template = destination.join("shim.cs");
+    write_if_changed(&template, &build_shim_cs())?;
+    let mut digests = format!("{}  shim.cs\n", sha256_file(&template)?);
+    for source in kind.sources() {
+        let input = workspace_root().join("shim").join(source);
+        let contents = std::fs::read_to_string(&input)
+            .with_context(|| format!("reading managed source {}", input.display()))?;
+        let output = destination.join(source);
+        std::fs::create_dir_all(output.parent().expect("managed sources have a parent"))?;
+        write_if_changed(&output, &contents)?;
+        digests.push_str(&format!("{}  {source}\n", sha256_file(&output)?));
+    }
+    write_if_changed(&destination.join("source-digests.txt"), &digests)
+}
+
+pub fn write_if_changed(path: &Path, contents: &str) -> Result<()> {
+    match std::fs::read_to_string(path) {
+        Ok(existing) if existing == contents => Ok(()),
+        _ => Ok(std::fs::write(path, contents)?),
+    }
+}
 
 /// The four bundle file names come from the build matrix; any other
 /// platform throws instead of loading a mismatched library.
@@ -37,43 +92,57 @@ fn lib_for(os: &str, arch: &str) -> &'static str {
 }
 
 pub fn build_shim_cs() -> String {
-    build_shim_cs_with(&catalog::RELICS, &catalog::POWERS)
+    SHIM_TEMPLATE.replace("@NATIVE_LIB_SELECTOR@", &native_lib_selector())
 }
 
-pub fn build_shim_cs_with(relics: &[(&str, &str)], powers: &[(&str, &str)]) -> String {
-    SHIM_TEMPLATE
-        .replace("@RELIC_ENTRIES@", &catalog_literal(relics))
-        .replace("@POWER_ENTRIES@", &catalog_literal(powers))
-        .replace("@NATIVE_LIB_SELECTOR@", &native_lib_selector())
-}
-
-fn catalog_literal(entries: &[(&str, &str)]) -> String {
-    let mut output = String::new();
-    for (class_name, method_name) in entries {
-        output.push_str("        (\"");
-        output.push_str(class_name);
-        output.push_str("\", \"");
-        output.push_str(method_name);
-        output.push_str("\"),\n");
+pub fn build_csproj(
+    sts2_dll: &Path,
+    harmony_dll: &Path,
+    godot_sharp_dll: &Path,
+    kind: ProjectKind,
+) -> String {
+    let (assembly, test_properties, dependencies) = match kind {
+        ProjectKind::Mod => ("SpireProfiler", "", "false"),
+        ProjectKind::Tests => (
+            "SpireProfiler.ManagedTests",
+            "    <OutputType>Exe</OutputType>\n",
+            "true",
+        ),
+    };
+    let mut sources = String::new();
+    for source in kind.sources() {
+        sources.push_str(&format!("    <Compile Include=\"{source}\" />\n"));
     }
-    output
-}
-
-pub fn build_csproj(sts2_dll: &Path, harmony_dll: &Path, godot_sharp_dll: &Path) -> String {
+    let mut references = String::new();
+    for (name, path) in [
+        ("sts2", sts2_dll),
+        ("0Harmony", harmony_dll),
+        ("GodotSharp", godot_sharp_dll),
+    ] {
+        let path = path
+            .to_string_lossy()
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('\"', "&quot;")
+            .replace('\'', "&apos;");
+        references.push_str(&format!(
+            "    <Reference Include=\"{name}\"><HintPath>{path}</HintPath><Private>false</Private></Reference>\n"
+        ));
+    }
     format!(
         r#"<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net9.0</TargetFramework>
-    <AssemblyName>SpireProfiler</AssemblyName>
+    <AssemblyName>{assembly}</AssemblyName>
     <RootNamespace>SpireProfiler</RootNamespace>
-    <Nullable>disable</Nullable>
+{test_properties}    <Nullable>disable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
     <OutputPath>bin/</OutputPath>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
     <!-- The game scans every *.json under mods/ as a mod manifest. -->
-    <GenerateDependencyFile>false</GenerateDependencyFile>
-    <!-- Only the generated shim.cs is compiled. -->
+    <GenerateDependencyFile>{dependencies}</GenerateDependencyFile>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
     <EnableDefaultEmbeddedResourceItems>false</EnableDefaultEmbeddedResourceItems>
     <DebugType>none</DebugType>
@@ -82,81 +151,32 @@ pub fn build_csproj(sts2_dll: &Path, harmony_dll: &Path, godot_sharp_dll: &Path)
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="shim.cs" />
-  </ItemGroup>
+{sources}  </ItemGroup>
   <ItemGroup>
-    <Reference Include="sts2"><HintPath>{}</HintPath><Private>false</Private></Reference>
-    <Reference Include="0Harmony"><HintPath>{}</HintPath><Private>false</Private></Reference>
-    <Reference Include="GodotSharp"><HintPath>{}</HintPath><Private>false</Private></Reference>
-  </ItemGroup>
+{references}  </ItemGroup>
 </Project>
 "#,
-        sts2_dll.display(),
-        harmony_dll.display(),
-        godot_sharp_dll.display(),
     )
 }
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use super::*;
 
     #[test]
     fn shim_substitution_replaces_all_placeholders() {
-        let output = build_shim_cs_with(
-            &[("RelicA", "AfterHook"), ("RelicB", "BeforeHook")],
-            &[("PowerC", "OnTrigger")],
-        );
-        assert!(output.contains(
-            "        (\"RelicA\", \"AfterHook\"),\n        (\"RelicB\", \"BeforeHook\"),\n    };"
-        ));
-        assert!(output.contains("        (\"PowerC\", \"OnTrigger\"),\n    };"));
-        assert!(!output.contains("@RELIC_ENTRIES@"));
-        assert!(!output.contains("@POWER_ENTRIES@"));
+        let output = build_shim_cs();
+        for row in MATRIX {
+            assert!(
+                output.contains(row.bundle_name),
+                "missing shipped library {}",
+                row.bundle_name
+            );
+        }
         assert!(!output.contains("@NATIVE_LIB_SELECTOR@"));
         assert!(
             output.contains("PlatformNotSupportedException"),
             "the selector must fail loudly on platforms the bundle does not ship"
         );
-    }
-
-    #[test]
-    fn csproj_matches_the_exact_format() {
-        let output = build_csproj(
-            &PathBuf::from("/STS2/sts2.dll"),
-            &PathBuf::from("/STS2/0Harmony.dll"),
-            &PathBuf::from("/STS2/GodotSharp.dll"),
-        );
-        let expected = r#"<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
-    <AssemblyName>SpireProfiler</AssemblyName>
-    <RootNamespace>SpireProfiler</RootNamespace>
-    <Nullable>disable</Nullable>
-    <ImplicitUsings>disable</ImplicitUsings>
-    <OutputPath>bin/</OutputPath>
-    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
-    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
-    <!-- The game scans every *.json under mods/ as a mod manifest. -->
-    <GenerateDependencyFile>false</GenerateDependencyFile>
-    <!-- Only the generated shim.cs is compiled. -->
-    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
-    <EnableDefaultEmbeddedResourceItems>false</EnableDefaultEmbeddedResourceItems>
-    <DebugType>none</DebugType>
-    <DebugSymbols>false</DebugSymbols>
-    <Deterministic>true</Deterministic>
-  </PropertyGroup>
-  <ItemGroup>
-    <Compile Include="shim.cs" />
-  </ItemGroup>
-  <ItemGroup>
-    <Reference Include="sts2"><HintPath>/STS2/sts2.dll</HintPath><Private>false</Private></Reference>
-    <Reference Include="0Harmony"><HintPath>/STS2/0Harmony.dll</HintPath><Private>false</Private></Reference>
-    <Reference Include="GodotSharp"><HintPath>/STS2/GodotSharp.dll</HintPath><Private>false</Private></Reference>
-  </ItemGroup>
-</Project>
-"#;
-        assert_eq!(output, expected);
     }
 }

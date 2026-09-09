@@ -13,7 +13,7 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::{Result, bail};
 use xshell::Shell;
 
-use crate::{catalog, discover, install, workspace_root};
+use crate::{discover, install, managed, workspace_root};
 
 const BOOT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
@@ -27,15 +27,71 @@ const GAME_ARGS: [&str; 6] = [
     "1800",
 ];
 
-/// Every dynamic target is unique. Harmony counts all mods' patched methods,
-/// so the catalog and the two fixed shim groups set a minimum.
-const CLASS_LEVEL_PATCHES: usize = 34;
-const ORB_PATCHES: usize = 11;
-const MIN_PATCHES: u64 =
-    (CLASS_LEVEL_PATCHES + ORB_PATCHES + catalog::RELICS.len() + catalog::POWERS.len()) as u64;
-const PATCH_COUNT_MARKER: &str = "[SpireProfiler] harmony patches applied; patched methods: ";
+// The managed gate pins this definition inventory to the verified game.
+const CAPTURE_PRODUCERS: u64 = 1726;
+const CAPTURE_TARGETS: u64 = 1776;
+const CAPTURE_PATCHES: u64 = 3547;
+// Run lifecycle and history UI patches are outside the capture installer.
+const FIXED_OWNER_PATCHES: u64 = 10;
+const MIN_PATCHES: u64 = CAPTURE_TARGETS + FIXED_OWNER_PATCHES;
+const PATCH_COUNT_MARKER: &str = "[SpireProfiler] OWN PATCHES owner=dev.spireprofiler methods=";
+const CAPTURE_MARKER: &str = "[SpireProfiler] CAPTURE VERIFIED owner=dev.spireprofiler ";
+
+struct CaptureReport {
+    targets: u64,
+    patches: u64,
+    producers: u64,
+    damage_bridges: u64,
+    temporal_bridges: u64,
+}
+
+impl CaptureReport {
+    fn parse(line: &str) -> Option<Self> {
+        let (_, tail) = line.split_once(CAPTURE_MARKER)?;
+        let mut fields = tail.split_whitespace();
+        let targets = fields.next()?.strip_prefix("targets=")?.parse().ok()?;
+        let patches = fields.next()?.strip_prefix("patches=")?.parse().ok()?;
+        let producers = fields.next()?.strip_prefix("producers=")?.parse().ok()?;
+        let damage_bridges = fields
+            .next()?
+            .strip_prefix("damage_bridges=")?
+            .parse()
+            .ok()?;
+        let temporal_bridges = fields
+            .next()?
+            .strip_prefix("temporal_bridges=")?
+            .parse()
+            .ok()?;
+        Some(Self {
+            targets,
+            patches,
+            producers,
+            damage_bridges,
+            temporal_bridges,
+        })
+    }
+
+    fn check(output: &str, owned_methods: Option<u64>, failures: &mut Vec<String>) {
+        let verified = output.lines().filter_map(Self::parse).any(|report| {
+            report.targets == CAPTURE_TARGETS
+                && report.patches == CAPTURE_PATCHES
+                && report.producers == CAPTURE_PRODUCERS
+                && report.damage_bridges == 4
+                && report.temporal_bridges == 16
+                && owned_methods.is_none_or(|owned| owned >= report.targets)
+        });
+        if verified {
+            println!("[ok] owned capture targets and exact bridge inventory verified");
+        } else {
+            let failure = "owned capture verification marker missing or inconsistent";
+            eprintln!("headless-test: ERROR: {failure}");
+            failures.push(failure.to_owned());
+        }
+    }
+}
 
 pub fn headless_test(shell: &Shell) -> Result<()> {
+    managed::run(shell)?;
     let game = install::install_mod(shell)?;
 
     let log_dir = game_log_dir(game.platform)?;
@@ -74,7 +130,8 @@ fn assemble_verdict(output: &str, exit_status: ExitStatus) -> Verdict {
         eprintln!("headless-test: ERROR: {failure}");
         failures.push(failure);
     }
-    check_patch_count(output, &mut failures);
+    let owned_methods = check_patch_count(output, &mut failures);
+    CaptureReport::check(output, owned_methods, &mut failures);
     check_gate_markers(output, &mut failures);
     check_unexpected_errors(output, &mut failures);
     Verdict { failures }
@@ -96,10 +153,9 @@ impl Verdict {
     }
 }
 
-/// Deduped by max: only this mod's marker line is parsed, but additional
-/// mods can patch more methods during the same boot.
-fn check_patch_count(output: &str, failures: &mut Vec<String>) {
-    match output
+/// Both log streams can contain the same marker; counts include this owner only.
+fn check_patch_count(output: &str, failures: &mut Vec<String>) -> Option<u64> {
+    let count = output
         .match_indices(PATCH_COUNT_MARKER)
         .filter_map(|(index, _)| {
             let digits: String = output[index + PATCH_COUNT_MARKER.len()..]
@@ -108,12 +164,10 @@ fn check_patch_count(output: &str, failures: &mut Vec<String>) {
                 .collect();
             digits.parse::<u64>().ok()
         })
-        .max()
-    {
+        .max();
+    match count {
         Some(patch_count) if patch_count >= MIN_PATCHES => {
-            println!(
-                "[ok] harmony patches applied; patched methods: {patch_count} (>= {MIN_PATCHES})"
-            );
+            println!("[ok] owned Harmony methods: {patch_count} (>= {MIN_PATCHES})");
         }
         Some(patch_count) => {
             eprintln!("headless-test: ERROR: patched methods: {patch_count} (< {MIN_PATCHES})");
@@ -124,6 +178,7 @@ fn check_patch_count(output: &str, failures: &mut Vec<String>) {
             failures.push("patch-count marker not found".to_owned());
         }
     }
+    count
 }
 
 /// The shim's load/attach markers and the registration line prove the
@@ -429,7 +484,7 @@ mod tests {
 
     fn complete_boot_output() -> String {
         format!(
-            "[SpireProfiler] harmony patches applied; patched methods: {MIN_PATCHES}\n{}",
+            "{PATCH_COUNT_MARKER}{MIN_PATCHES}\n{CAPTURE_MARKER}targets={CAPTURE_TARGETS} patches={CAPTURE_PATCHES} producers={CAPTURE_PRODUCERS} damage_bridges=4 temporal_bridges=16\n{}",
             GATE_MARKERS.join("\n")
         )
     }
@@ -484,8 +539,8 @@ mod tests {
 
     #[test]
     fn patch_count_ignores_unrelated_matching_text() {
-        let unrelated = "[OtherMod] harmony patches applied; patched methods: 999999\n\
-                         [SpireProfiler] unrelated patched methods: 999999";
+        let unrelated = "[OtherMod] OWN PATCHES owner=dev.spireprofiler methods=999999\n\
+                         [SpireProfiler] OWN PATCHES owner=another.mod methods=999999";
         let mut failures = Vec::new();
         check_patch_count(unrelated, &mut failures);
         assert_eq!(failures, ["patch-count marker not found"]);
@@ -526,6 +581,41 @@ mod tests {
             &mut failures,
         );
         assert_eq!(failures, ["patch-count marker not found"]);
+    }
+
+    #[test]
+    fn capture_verdict_requires_owned_consistent_complete_bridges() {
+        let valid = complete_boot_output();
+        for corrupt in [
+            valid.replace(
+                CAPTURE_MARKER,
+                "[OtherMod] CAPTURE VERIFIED owner=dev.spireprofiler ",
+            ),
+            valid.replace("damage_bridges=4", "damage_bridges=3"),
+            valid.replace("temporal_bridges=16", "temporal_bridges=15"),
+            valid.replace(&format!("patches={CAPTURE_PATCHES}"), "patches=1"),
+            valid.replace(&format!("producers={CAPTURE_PRODUCERS}"), "producers=0"),
+            valid.replace(
+                &format!("targets={CAPTURE_TARGETS}"),
+                "targets=18446744073709551616",
+            ),
+        ] {
+            let mut failures = Vec::new();
+            CaptureReport::check(&corrupt, Some(MIN_PATCHES), &mut failures);
+            assert_eq!(
+                failures,
+                ["owned capture verification marker missing or inconsistent"]
+            );
+        }
+        let mut failures = Vec::new();
+        CaptureReport::check(&valid, Some(CAPTURE_TARGETS - 1), &mut failures);
+        assert!(
+            !failures.is_empty(),
+            "capture targets must be among owned methods"
+        );
+        failures.clear();
+        CaptureReport::check(&valid, Some(MIN_PATCHES), &mut failures);
+        assert!(failures.is_empty());
     }
 
     #[test]

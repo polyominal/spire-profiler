@@ -31,6 +31,10 @@
 //! `damage_unblocked`: `blocked + unblocked == dealt` is sim-pinned, so
 //! readers derive it.
 //!
+//! Source kinds encode Card=0, Relic=1, Power=2, Potion=3, Osty=4, and
+//! Unknown=5. Unknown rows use `UNATTRIBUTED` with an explicit creditor slot;
+//! their reserved capacity preserves totals when ordinary rows cannot fit.
+//!
 //! Combat record:
 //!
 //! ```text
@@ -115,7 +119,7 @@ pub(crate) use combats::{load_combat_docs_from, max_combat_id, parse_combat_docs
 pub(crate) use io::read_file;
 pub use io::{ensure_data_dir, write_file};
 pub(crate) use log::{append_log, bind_log_path, event_log, reset_log_sink};
-pub(crate) use runs::{CardStatKey, upsert_card_stat};
+pub(crate) use runs::CardStatKey;
 pub use runs::{merge_into_run, rebuild_run_accumulator};
 pub use time::now_seconds;
 pub use writes::write_run_record;

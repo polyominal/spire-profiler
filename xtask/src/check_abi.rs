@@ -2,8 +2,9 @@
 //! GetExport binding must match its `extern "C" fn` parameters and return,
 //! compared as canonical classes (int / long / ulong / double / string / void).
 //! Returns support only scalars and void. Bound delegates accept whitespace and
-//! line-comment prefixes after a declaration boundary. Delegate attributes,
-//! trailing block comments, directives, and extra modifiers are unsupported.
+//! line-comment prefixes after a declaration boundary. The exact Cdecl delegate
+//! attribute is supported; other delegate attributes, trailing block comments,
+//! directives, and extra modifiers are rejected.
 //! Parameter attributes remain supported. The
 //! check runs inside build and fails it on mismatch. Only *bound* exports
 //! are checked; test-only exports are ignored. The scanners are deliberately
@@ -357,8 +358,17 @@ fn scan_delegates(
             .ok_or_else(|| format!("{name}: unsupported C# return type '{return_type}'"))?;
         // Only recognized declaration boundaries prove that no attached attribute remains.
         let mut prefix = template[..found].trim_end_matches(WHITESPACE);
+        let mut has_cdecl = false;
         loop {
             let line = prefix.rsplit(['\r', '\n']).next().unwrap_or_default();
+            if !has_cdecl
+                && line.trim_matches(WHITESPACE)
+                    == "[UnmanagedFunctionPointer(CallingConvention.Cdecl)]"
+            {
+                prefix = prefix[..prefix.len() - line.len()].trim_end_matches(WHITESPACE);
+                has_cdecl = true;
+                continue;
+            }
             let unclassified = line.trim_start_matches(WHITESPACE).starts_with('#')
                 || prefix.ends_with(']')
                 || prefix.ends_with("*/");
@@ -369,7 +379,7 @@ fn scan_delegates(
             if unclassified || (!prefix.is_empty() && !prefix.ends_with([';', '{', '}'])) {
                 return Err(format!(
                     "{name}: unsupported delegate prefix; expected a declaration boundary, \
-                     whitespace, or line comments"
+                     whitespace, line comments, or the exact Cdecl attribute"
                 ));
             }
             break;
@@ -599,7 +609,10 @@ internal static class ProfilerNative
             "[return: MarshalAs(UnmanagedType.I4)]",
             "[ return \n : MarshalAs(UnmanagedType.I4)]",
             "[return: MarshalAs(UnmanagedType.I4)]\n[UnmanagedFunctionPointer(CallingConvention.Cdecl)]",
-            "[UnmanagedFunctionPointer(CallingConvention.Cdecl)]",
+            "[UnmanagedFunctionPointer(CallingConvention.StdCall)]",
+            "[UnmanagedFunctionPointer(CallingConvention.Cdecl, CharSet = CharSet.Ansi)]",
+            "[UnmanagedFunctionPointer(CallingConvention.Cdecl)]\n[UnmanagedFunctionPointer(CallingConvention.Cdecl)]",
+            "[UnmanagedFunctionPointer(CallingConvention.Cdecl)]\n[return: MarshalAs(UnmanagedType.I4)]",
             "[return /* native result */: MarshalAs(UnmanagedType.I4)]",
             "[return: MarshalAs(UnmanagedType.I4)] // native result; documented",
             "[return: MarshalAs(UnmanagedType.I4)] /* native result { documented */",
@@ -617,9 +630,29 @@ internal static class ProfilerNative
                 errors,
                 [
                     "NativeValue: unsupported delegate prefix; expected a declaration boundary, \
-                 whitespace, or line comments"
+                 whitespace, line comments, or the exact Cdecl attribute"
                 ]
             );
+        }
+    }
+
+    #[test]
+    fn exact_cdecl_annotation_preserves_scalar_and_utf8_checks() {
+        for newline in ["\n", "\r", "\r\n"] {
+            let template = GOOD_TMPL.replace(
+                "private delegate",
+                "// native ABI\n[UnmanagedFunctionPointer(CallingConvention.Cdecl)]\n// signature\nprivate delegate",
+            ).replace('\n', newline);
+            assert_eq!(compare(GOOD_RUST, "abi.rs", &template), Ok(2));
+            let bad_return = template.replace("delegate void NativeFoo", "delegate long NativeFoo");
+            assert!(compare(GOOD_RUST, "abi.rs", &bad_return).is_err());
+            let bad_string = template.replace("LPUTF8Str", "LPStr");
+            assert!(compare(GOOD_RUST, "abi.rs", &bad_string).is_err());
+            let hidden_return = template.replace(
+                "[UnmanagedFunctionPointer(CallingConvention.Cdecl)]",
+                "[return: MarshalAs(UnmanagedType.I4)]\n[UnmanagedFunctionPointer(CallingConvention.Cdecl)]",
+            ).replace('\n', newline);
+            assert!(compare(GOOD_RUST, "abi.rs", &hidden_return).is_err());
         }
     }
 
@@ -646,7 +679,7 @@ internal static class ProfilerNative
                     errors,
                     [
                         "NativeValue: unsupported delegate prefix; expected a declaration boundary, \
-                     whitespace, or line comments"
+                     whitespace, line comments, or the exact Cdecl attribute"
                     ]
                 );
             }

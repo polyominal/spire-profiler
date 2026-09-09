@@ -129,7 +129,7 @@ pub(crate) fn card_stat_from_rec(rec: &records::CardRec) -> CardStat {
     CardStat {
         id: rec.id.clone(),
         kind: rec.kind,
-        player: rec.player,
+        player: crate::data::state::clamp_source_slot(i32::from(rec.player)),
         plays: rec.plays,
         damage_dealt: rec.damage_dealt,
         damage_blocked: rec.damage_blocked,

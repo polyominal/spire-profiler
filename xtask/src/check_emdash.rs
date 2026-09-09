@@ -26,19 +26,13 @@ const EM_DASH: char = '\u{2014}';
 /// Hand-curated ceilings, one per file with a nonzero count. A pin only
 /// descends: reword instead of raising, and delete the entry at zero.
 const PINS: &[(&str, usize)] = &[
-    ("profiler-core/src/abi.rs", 9),
-    ("profiler-core/src/data.rs", 4),
-    ("profiler-core/src/data/events/card.rs", 2),
-    ("profiler-core/src/data/events/potion.rs", 2),
+    ("profiler-core/src/abi.rs", 8),
     ("profiler-core/src/data/events/run.rs", 1),
-    ("profiler-core/src/data/events/tests/card.rs", 2),
-    ("profiler-core/src/data/events/tests/orb_potion.rs", 1),
-    ("profiler-core/src/data/ledger.rs", 4),
     ("profiler-core/src/data/persistence.rs", 6),
     ("profiler-core/src/data/persistence/time.rs", 1),
     ("profiler-core/src/data/run_history.rs", 1),
     ("profiler-core/src/data/run_history/tests.rs", 1),
-    ("profiler-core/src/data/state.rs", 6),
+    ("profiler-core/src/data/state.rs", 5),
     ("profiler-core/src/engine.rs", 4),
     ("profiler-core/src/engine/gdext.rs", 12),
     ("profiler-core/src/engine/object.rs", 2),

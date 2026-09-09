@@ -4,14 +4,10 @@
 
 use super::*;
 use crate::data::records::{CardRec, CombatRec};
-use crate::data::state::CardStat;
-use crate::test_util::{combat_ids, unique_dir};
+use crate::test_util::{SourceFixture, combat_epoch, combat_ids, unique_dir};
 
-mod card;
-mod combat;
+mod boundary;
 mod ids;
-mod orb_potion;
-mod power;
 mod run;
 mod self_test;
 mod writes;
@@ -60,26 +56,12 @@ fn read_combat(base: &Path) -> (CombatRec, serde_json::Value) {
     (combat, doc)
 }
 
-fn assert_no_card(combat: &CombatRec, id: &str) {
-    assert!(
-        combat.cards.iter().all(|card| card.id != id),
-        "no ledger row for {id}"
-    );
-}
-
 fn card_row<'a>(combat: &'a CombatRec, id: &str) -> &'a CardRec {
     combat
         .cards
         .iter()
         .find(|card| card.id == id)
         .unwrap_or_else(|| panic!("no card row for {id} in the self-test combat"))
-}
-
-fn current_rows() -> Vec<CardStat> {
-    STATE.with(|cell| {
-        let st = cell.borrow();
-        st.current.as_ref().expect("combat exists").cards.clone()
-    })
 }
 
 fn current_play_counters() -> (u32, u32, u32) {

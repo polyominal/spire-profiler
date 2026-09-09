@@ -98,7 +98,7 @@ pub(crate) fn kind_prefix(kind: SourceKind) -> Option<KindPrefix> {
             color: COL_OSTY,
             text: "[O] ",
         }),
-        SourceKind::Card | SourceKind::Power => None,
+        SourceKind::Card | SourceKind::Power | SourceKind::Unknown => None,
     }
 }
 

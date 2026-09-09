@@ -44,7 +44,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::data::persistence::{
-    CardStatKey, card_stat_from_rec, load_combat_docs_from, parse_combat_docs, upsert_card_stat,
+    CardStatKey, card_stat_from_rec, load_combat_docs_from, parse_combat_docs,
 };
 use crate::data::records::{CombatRec, PlayerRec};
 use crate::data::state::{CardStat, CombatResult, PlayerFilter, RunOutcome, STATE, TEAM_SLOT};
@@ -323,11 +323,12 @@ fn roll_up_cards(combats: &[CombatRec], entry: &RunEntry) -> Vec<CardStat> {
         if !entry.contains(combat) {
             continue;
         }
-        for rec in &combat.cards {
+        let rows = combat.cards.iter().map(|rec| {
             let mut row = card_stat_from_rec(rec);
             row.player = TEAM_SLOT;
-            upsert_card_stat(&mut rollup, &row, CardStatKey::TeamMerged);
-        }
+            row
+        });
+        CardStat::merge_rows(&mut rollup, rows, CardStatKey::TeamMerged);
     }
     rollup
 }
@@ -339,13 +340,12 @@ fn roll_up_cards_for_slot(combats: &[CombatRec], entry: &RunEntry, slot: u8) -> 
         if !entry.contains(combat) {
             continue;
         }
-        for rec in &combat.cards {
-            let src = card_stat_from_rec(rec);
-            if src.player != slot {
-                continue;
-            }
-            upsert_card_stat(&mut rollup, &src, CardStatKey::TeamMerged);
-        }
+        let rows = combat
+            .cards
+            .iter()
+            .map(card_stat_from_rec)
+            .filter(|row| row.player == slot);
+        CardStat::merge_rows(&mut rollup, rows, CardStatKey::TeamMerged);
     }
     rollup
 }

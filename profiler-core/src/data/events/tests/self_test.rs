@@ -60,9 +60,9 @@ fn assert_self_test_combat(combat: &CombatRec, combat_json: &serde_json::Value) 
     assert!(combat.cards.iter().all(|c| c.id != "FIRE_POTION"));
     assert!(combat.cards.iter().all(|c| c.id != "SHIV"));
     assert_no_key(combat_json, "origin");
-    let furnace = card_row(combat, "FURNACE_POWER");
-    assert_eq!((furnace.kind, furnace.plays), (SourceKind::Power, 0));
-    assert_eq!(card_json(combat_json, "FURNACE_POWER")["forge"], 2);
+    let furnace = card_row(combat, "FURNACE");
+    assert_eq!((furnace.kind, furnace.plays), (SourceKind::Card, 0));
+    assert_eq!(card_json(combat_json, "FURNACE")["forge"], 2);
 }
 
 #[test]
@@ -95,18 +95,15 @@ fn self_test_pipeline_writes_combat_and_run_files() {
 #[test]
 fn combat_tab_rows_and_footer_render_generator_and_forge() {
     combat_fixture("UI_TEST");
-    card_play_started("INFERNAL_BLADE", 0, 1, 0, 0);
-    card_generated(9001, "", 0, 0);
-    card_play_finished(0);
-    card_play_started("PILLAGE", 0, 1, 9001, 0);
-    damage_dealt(DamageDealt {
-        total: 6,
-        unblocked: 6,
-        ..DamageDealt::default()
-    });
-    card_play_finished(0);
-    forge("FURNACE_POWER", 2, 2, 0);
-
+    let blade = SourceFixture::card("INFERNAL_BLADE", 0);
+    let play = blade.play();
+    blade.generate(9001);
+    blade.finish(play);
+    let generated = SourceFixture::generated("PILLAGE", 0, 9001);
+    let play = generated.play();
+    generated.deal(6, 0);
+    generated.finish(play);
+    SourceFixture::card("FURNACE", 0).forge(2);
     let mut rows = [UiRow::default(); crate::ui::ui_model::MAX_UI_ROWS];
     let count = crate::ui::snapshot::ui_snapshot_rows(UiTab::Combat, &mut rows);
     assert_eq!(count, 1);
@@ -114,7 +111,7 @@ fn combat_tab_rows_and_footer_render_generator_and_forge() {
     assert_eq!(rows[0].name_str(), "INFERNAL_BLADE");
     let footer = crate::ui::snapshot::ui_footer_text(UiTab::Combat);
     assert!(footer.contains("forge 2"));
-    combat_ended();
+    combat_ended(combat_epoch());
 }
 
 #[test]
@@ -132,69 +129,48 @@ fn chart_rows_payload_sections_ordering_self_rows() {
 fn seed_rows_combat_one() {
     run_started("IRONCLAD", 0, "Standard", "SEED_ROWS", 0, "", 0);
     combat_started("ROWS_TEST", "test");
-    turn_started();
-
-    card_play_started("ANGER", 0, 1, 0, 0);
-    damage_dealt(DamageDealt {
-        total: 6,
-        unblocked: 6,
-        ..DamageDealt::default()
+    let epoch = combat_epoch();
+    turn_started(epoch);
+    let anger = SourceFixture::card("ANGER", 0);
+    for _ in 0..2 {
+        let play = anger.play();
+        anger.deal(6, 0);
+        anger.finish(play);
+    }
+    anger.generate(9001);
+    let generated = SourceFixture::generated("ANGER", 0, 9001);
+    let play = generated.play();
+    generated.deal(6, 0);
+    generated.finish(play);
+    let inflame = SourceFixture::card("INFLAME", 0);
+    let play = inflame.play();
+    inflame.with_transfer(|source| {
+        assert_eq!(
+            power_attached(epoch, 222, "STRENGTH_POWER", 100, 0, 0, 2, source),
+            1
+        )
     });
-    card_generated(9001, "", 0, 0);
-    card_play_finished(0);
-    card_play_started("ANGER", 1, 2, 0, 0);
-    damage_dealt(DamageDealt {
-        total: 6,
-        unblocked: 6,
-        ..DamageDealt::default()
-    });
-    card_play_finished(0);
-    card_play_started("ANGER", 0, 1, 9001, 0);
-    damage_dealt(DamageDealt {
-        total: 6,
-        unblocked: 6,
-        ..DamageDealt::default()
-    });
-    card_play_finished(0);
-    card_play_started("INFLAME", 0, 1, 0, 0);
-    power_applied("STRENGTH_POWER", 2, 0, 1, 0);
-    card_play_finished(0);
-    card_play_started("BASH", 0, 1, 0, 0);
-    damage_modifier_contribution("STRENGTH_POWER", 2, 2, 0);
-    damage_dealt(DamageDealt {
-        total: 10,
-        unblocked: 10,
-        ..DamageDealt::default()
-    });
-    card_play_finished(0);
-    card_play_started("CRIMSON_MANTLE", 0, 1, 0, 0);
-    block_gained(10, "CRIMSON_MANTLE", 0, 0);
-    damage_dealt(DamageDealt {
-        total: 3,
-        unblocked: 3,
-        to_player: 1,
-        receiver_hash: 999,
-        dealer_hash: 999,
-        ..DamageDealt::default()
-    });
-    card_play_finished(0);
-    damage_dealt(DamageDealt {
-        total: 10,
-        blocked: 10,
-        to_player: 1,
-        receiver_hash: 999,
-        dealer_hash: 42,
-        ..DamageDealt::default()
-    });
-    card_generated(7001, "GHOST_RELIC", 1, 0);
-    card_play_started("SHIV", 0, 1, 7001, 0);
-    damage_dealt(DamageDealt {
-        total: 2,
-        unblocked: 2,
-        ..DamageDealt::default()
-    });
-    card_play_finished(0);
-    combat_ended();
+    inflame.finish(play);
+    let bash = SourceFixture::card("BASH", 0);
+    let play = bash.play();
+    let calculation =
+        bash.with_transfer(|source| damage_calculation_begin(epoch, source, 1, 0, 999));
+    SourceFixture::power(222).contribution(calculation, 2);
+    assert_eq!(damage_result_append(calculation, 10, 10, 0, 0, 4, 0), 1);
+    assert_eq!(damage_calculation_commit(calculation), 1);
+    bash.finish(play);
+    let crimson = SourceFixture::card("CRIMSON_MANTLE", 0);
+    let play = crimson.play();
+    crimson.block(10, 0);
+    crimson.hit(3, 0, 2, 0);
+    crimson.finish(play);
+    damage_unattributed(epoch, 10, 0, 10, 1, 0, 0);
+    SourceFixture::relic("GHOST_RELIC", 0).generate(7001);
+    let generated = SourceFixture::generated("SHIV", 0, 7001);
+    let play = generated.play();
+    generated.deal(2, 0);
+    generated.finish(play);
+    combat_ended(epoch);
 }
 
 fn assert_combat_tab_rows() {
@@ -238,16 +214,13 @@ fn assert_combat_tab_rows() {
 
 fn seed_rows_combat_two() {
     combat_started("ROWS_TEST_2", "test");
-    turn_started();
-    turn_started();
-    card_play_started("ANGER", 0, 1, 0, 0);
-    damage_dealt(DamageDealt {
-        total: 10,
-        unblocked: 10,
-        ..DamageDealt::default()
-    });
-    card_play_finished(0);
-    combat_ended();
+    turn_started(combat_epoch());
+    turn_started(combat_epoch());
+    let anger = SourceFixture::card("ANGER", 0);
+    let play = anger.play();
+    anger.deal(10, 0);
+    anger.finish(play);
+    combat_ended(combat_epoch());
 }
 
 fn assert_run_tab_rows() {
@@ -319,7 +292,7 @@ fn panel_filter_toggle_selects_and_deselects_players() {
     );
     panel_filter_toggle(0);
     assert_eq!(STATE.with(|s| s.borrow().player_filter), PlayerFilter::All);
-    combat_ended();
+    combat_ended(combat_epoch());
     run_ended(RunOutcome::Victory);
 
     // A stale slot from a previous run never survives a run start.
@@ -338,6 +311,6 @@ fn panel_filter_toggle_selects_and_deselects_players() {
     );
     panel_filter_toggle(0);
     assert_eq!(STATE.with(|s| s.borrow().player_filter), PlayerFilter::All);
-    combat_ended();
+    combat_ended(combat_epoch());
     run_ended(RunOutcome::Victory);
 }

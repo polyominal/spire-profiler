@@ -6,58 +6,28 @@
 //! `started_at` and run `ended_at` use the wall clock; assertions do not
 //! depend on their values, so persisted bytes may differ. The lifecycle
 //! walk fixes the original run-start identity and runs 20 scenarios x 40
-//! weighted events in fresh directories, re-checking ledger invariants
-//! (segment sums, sign constraints, combat totals, queue bounds)
-//! after every event, then parses the JSON back; the block-pool test does
-//! the same against an independent naive FIFO model.
-//!
-//! The walk models the shim, not an adversary: a queued damage-modifier
-//! contribution forces the next event to be an enemy hit covering the
-//! queued share, leaving its attribution route free (orb fallback or power
-//! context), so `ledger::apply_pending_contribs_in`'s carve stays exact on
-//! both routes.
+//! weighted events in fresh directories, checking complete row expectations
+//! and ledger invariants after every event before parsing persisted JSON.
+//! Supplier grants use a FIFO of individual units; defensive pools retain
+//! an independent outer FIFO/residue model and per-seat source prefixes.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::path::Path;
+use std::rc::Rc;
 
-use profiler_core::data::state::{
-    self, CombatResult, PendingContrib, RunOutcome, STATE, SourceKind,
-};
-use profiler_core::data::{events, ledger, records};
-use profiler_core::test_util::{combat_ids, unique_dir};
+use profiler_core::data::state::{self, CardStat, CombatResult, RunOutcome, STATE, SourceKind};
+use profiler_core::data::{events, records};
+use profiler_core::test_util::{SourceFixture, combat_epoch, combat_ids, unique_dir};
 
 const DEFAULT_SEED: u64 = 0x5EED_5EED_5EED_5EED;
 const SCENARIOS: u32 = 20;
 const EVENTS_PER_SCENARIO: u32 = 40;
+const BASE_SOURCES: usize = 6;
+// The pinned outer pool retains four actual modifier slices per gain.
+const MAX_BLOCK_MODIFIERS: usize = 4;
+const TOKEN_KIND_BITS: u32 = 3;
 
-const CARD_POOL: [&str; 8] = [
-    "STRIKE",
-    "DEFEND",
-    "BASH",
-    "ZAP",
-    "DUALCAST",
-    "BODYGUARD",
-    "INFLAME",
-    "NOT_YET",
-];
-const RELIC_POOL: [&str; 4] = [
-    "CRACKED_CORE",
-    "MERCURY_HOURGLASS",
-    "VAJRA",
-    "BOUND_PHYLACTERY",
-];
-const POWER_POOL: [&str; 6] = [
-    "STRENGTH_POWER",
-    "DEXTERITY_POWER",
-    "POISON_POWER",
-    "VULNERABLE_POWER",
-    "WEAK_POWER",
-    "DOOM_POWER",
-];
-const POTION_POOL: [&str; 3] = ["FIRE_POTION", "STRENGTH_POTION", "BLOCK_POTION"];
-
-/// splitmix64: determinism is the only quality that matters here.
 struct Rng(u64);
 
 impl Rng {
@@ -77,16 +47,8 @@ impl Rng {
         self.next_u64() % n
     }
 
-    fn range(&mut self, lo: i64, hi: i64) -> i64 {
-        lo + self.below((hi - lo + 1) as u64) as i64
-    }
-
     fn range_i32(&mut self, lo: i32, hi: i32) -> i32 {
-        self.range(i64::from(lo), i64::from(hi)) as i32
-    }
-
-    fn pick<'a>(&mut self, pool: &[&'a str]) -> &'a str {
-        pool[self.below(pool.len() as u64) as usize]
+        lo + self.below((i64::from(hi) - i64::from(lo) + 1) as u64) as i32
     }
 }
 
@@ -102,475 +64,1052 @@ fn sim_seed() -> u64 {
     }
 }
 
-fn check_invariants(repro: &str, step: u32) {
-    STATE.with(|cell| {
-        let st = cell.borrow();
-        if let Some(combat) = &st.current {
-            check_combat_totals(combat, repro, step);
-            check_card_invariants(combat, repro, step);
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct RowKey {
+    slot: u8,
+    id: String,
+    kind: u8,
+}
+
+type Roots = Vec<(RowKey, u64)>;
+
+impl RowKey {
+    fn from_card(card: &CardStat) -> Self {
+        Self {
+            slot: card.player,
+            id: card.id.clone(),
+            kind: card.kind as u8,
         }
-        for (slot, player) in st.per_player.iter().enumerate() {
-            if let Some(play) = &player.active_play {
-                assert!(
-                    play.row_slot <= state::TEAM_SLOT,
-                    "{repro} step {step}: slot {slot}: active play row slot out of the source-slot vocabulary"
-                );
+    }
+
+    fn unknown() -> Self {
+        Self {
+            slot: state::TEAM_SLOT,
+            id: "UNATTRIBUTED".to_owned(),
+            kind: SourceKind::Unknown as u8,
+        }
+    }
+
+    fn destination(token: u64) -> Self {
+        assert_eq!(
+            token >> 32,
+            combat_epoch(),
+            "source roots retain their combat epoch"
+        );
+        let index = ((token as u32) >> TOKEN_KIND_BITS) as usize;
+        match token & ((1 << TOKEN_KIND_BITS) - 1) {
+            0 => STATE.with(|cell| {
+                Self::from_card(
+                    &cell
+                        .borrow()
+                        .current
+                        .as_ref()
+                        .expect("source decoding follows a successful current-combat epoch check")
+                        .cards[index],
+                )
+            }),
+            1 => Self {
+                slot: index as u8,
+                ..Self::unknown()
+            },
+            _ => panic!("a source packet contains only destination tokens"),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Origin {
+    Ordinary,
+    Generated,
+    Relic,
+    Power,
+}
+
+struct SimSource {
+    actual: SourceFixture,
+    roots: Roots,
+    origin: Origin,
+    owner: i32,
+}
+
+impl SimSource {
+    fn card(id: &str, slot: i32) -> Rc<Self> {
+        Rc::new(Self {
+            actual: SourceFixture::card(id, slot),
+            roots: vec![(
+                RowKey {
+                    slot: slot as u8,
+                    id: id.to_owned(),
+                    kind: 0,
+                },
+                1,
+            )],
+            origin: Origin::Ordinary,
+            owner: slot,
+        })
+    }
+
+    fn relic(id: &str, slot: i32) -> Rc<Self> {
+        Rc::new(Self {
+            actual: SourceFixture::relic(id, slot),
+            roots: vec![(
+                RowKey {
+                    slot: slot as u8,
+                    id: id.to_owned(),
+                    kind: 1,
+                },
+                1,
+            )],
+            origin: Origin::Relic,
+            owner: slot,
+        })
+    }
+
+    fn power(power: &PowerModel) -> Rc<Self> {
+        let source = Rc::new(Self {
+            actual: SourceFixture::power(power.instance),
+            roots: if power.trusted && (power.id != "POISON_POWER" || !power.units.is_empty()) {
+                power.last.clone()
+            } else {
+                vec![(RowKey::unknown(), 1)]
+            },
+            origin: Origin::Power,
+            owner: 4,
+        });
+        source.verify();
+        source
+    }
+
+    fn verify(&self) {
+        self.actual.with_transfer(|transfer| {
+            let actual: Roots = (0..events::source_count(transfer))
+                .map(|index| {
+                    (
+                        RowKey::destination(events::source_destination(transfer, index)),
+                        events::source_weight(transfer, index),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                actual, self.roots,
+                "frozen suppliers match the independent grant model"
+            );
+        });
+    }
+}
+
+fn proportional_units(amount: u64, weights: &[u64]) -> Vec<u64> {
+    let total: u64 = weights.iter().sum();
+    let mut shares = vec![0; weights.len()];
+    if total == 0 {
+        return shares;
+    }
+    // Count individual credit thresholds inside each supplier's weighted interval.
+    for unit in 1..=amount {
+        let mut end = 0;
+        for (index, weight) in weights.iter().enumerate() {
+            end += weight;
+            if amount * end >= unit * total {
+                shares[index] += 1;
+                break;
             }
         }
-        check_queue_bounds(&st, repro, step);
-    });
+    }
+    shares
 }
 
-fn check_combat_totals(combat: &state::Combat, repro: &str, step: u32) {
-    // Only a source's own triggers increment a row; this identity catches
-    // leaked or double-counted plays.
-    let card_plays: u64 = combat.cards.iter().map(|card| u64::from(card.plays)).sum();
-    assert_eq!(
-        u64::from(combat.plays) + u64::from(combat.generation_triggers),
-        card_plays + u64::from(combat.generated_plays),
-        "{repro} step {step}: plays + generation triggers must equal per-card plays + generated plays"
-    );
-    assert!(
-        combat.block_total >= 0,
-        "{repro} step {step}: block_total must never go negative"
-    );
-    assert!(
-        combat.damage_received >= 0,
-        "{repro} step {step}: damage_received must never go negative"
-    );
+struct PowerModel {
+    id: &'static str,
+    instance: u64,
+    owner: (u64, i32, i32),
+    observed: i32,
+    units: VecDeque<RowKey>,
+    last: Roots,
+    trusted: bool,
 }
 
-fn check_card_invariants(combat: &state::Combat, repro: &str, step: u32) {
-    let mut seen: std::collections::HashSet<(u8, &str, SourceKind)> =
-        std::collections::HashSet::new();
-    for card in &combat.cards {
-        // Rows key on (player, id, kind); the key must be unique.
-        assert!(
-            card.player <= state::TEAM_SLOT,
-            "{repro} step {step}: card {id}: row slot must stay in the source-slot vocabulary",
-            id = card.id
+impl PowerModel {
+    fn new(id: &'static str, instance: u64, owner: (u64, i32, i32), source: &SimSource) -> Self {
+        assert_eq!(
+            source
+                .actual
+                .with_transfer(|transfer| events::power_attached(
+                    combat_epoch(),
+                    instance,
+                    id,
+                    owner.0,
+                    owner.1,
+                    owner.2,
+                    0,
+                    transfer
+                )),
+            1
         );
-        assert!(
-            seen.insert((card.player, &card.id, card.kind)),
-            "{repro} step {step}: card {id}: row key (player, id, kind) must be unique",
-            id = card.id
+        Self {
+            id,
+            instance,
+            owner,
+            observed: 0,
+            units: VecDeque::new(),
+            last: source.roots.clone(),
+            trusted: true,
+        }
+    }
+
+    fn invalidate(&mut self) {
+        assert_eq!(
+            events::power_provenance_invalidate(combat_epoch(), self.instance),
+            1
+        );
+        self.trusted = false;
+    }
+
+    fn change(&mut self, before: i32, after: i32, source: &SimSource) {
+        assert_eq!(
+            source.roots.len(),
+            1,
+            "grant units name individual suppliers"
         );
         assert_eq!(
-            card.damage_dealt,
-            card.dmg_direct + card.dmg_attributed + card.dmg_modifier,
-            "{repro} step {step}: card {id}: segment sum must equal damage_dealt",
-            id = card.id
+            source
+                .actual
+                .with_transfer(|transfer| events::power_amount_changed(
+                    combat_epoch(),
+                    self.instance,
+                    self.id,
+                    self.owner.0,
+                    self.owner.1,
+                    self.owner.2,
+                    before,
+                    after,
+                    transfer
+                )),
+            1
         );
-        // `dealt - blocked` may legitimately dip negative when a queued
-        // modifier share overlaps blocked damage.
-        assert!(
-            card.damage_dealt >= 0
-                && card.damage_blocked >= 0
-                && card.dmg_direct >= 0
-                && card.dmg_attributed >= 0
-                && card.dmg_modifier >= 0,
-            "{repro} step {step}: card {id}: damage fields must be non-negative",
-            id = card.id
-        );
-        assert!(
-            card.block_gained >= 0,
-            "{repro} step {step}: card {id}: block_gained must never go negative",
-            id = card.id
-        );
-        assert!(
-            card.blk_modifier >= 0,
-            "{repro} step {step}: card {id}: block modifier credits must be non-negative",
-            id = card.id
-        );
-        assert!(
-            card.mitigate_debuff >= 0 && card.mitigate_buff >= 0 && card.mitigate_str >= 0,
-            "{repro} step {step}: card {id}: mitigation credits must be non-negative",
-            id = card.id
-        );
-        assert!(
-            card.self_damage >= 0 && card.forge >= 0,
-            "{repro} step {step}: card {id}: self_damage and forge must be non-negative",
-            id = card.id
-        );
+        if !self.trusted || self.observed != before {
+            self.units = std::iter::repeat_n(RowKey::unknown(), before.max(0) as usize).collect();
+            self.last = vec![(RowKey::unknown(), 1)];
+        }
+        if after > before {
+            self.units.extend(std::iter::repeat_n(
+                source.roots[0].0.clone(),
+                (after - before) as usize,
+            ));
+        } else {
+            for _ in after..before {
+                self.units
+                    .pop_front()
+                    .expect("observed positive units cover FIFO expiry");
+            }
+        }
+        if !self.units.is_empty() {
+            let mut counts: Roots = Vec::new();
+            for key in &self.units {
+                if let Some((_, count)) = counts.iter_mut().find(|(root, _)| root == key) {
+                    *count += 1;
+                } else {
+                    counts.push((key.clone(), 1));
+                }
+            }
+            let smallest = counts
+                .iter()
+                .map(|(_, count)| *count)
+                .min()
+                .expect("a nonempty supplier-unit pool produces at least one positive count");
+            let divisor = (1..=smallest)
+                .rev()
+                .find(|divisor| {
+                    counts
+                        .iter()
+                        .all(|(_, count)| count.is_multiple_of(*divisor))
+                })
+                .expect("positive supplier counts always share the divisor one");
+            for (_, count) in &mut counts {
+                *count /= divisor;
+            }
+            self.last = counts;
+        }
+        self.observed = after;
+        self.trusted = true;
     }
 }
 
-fn check_queue_bounds(st: &state::State, repro: &str, step: u32) {
-    assert!(
-        st.orb_sources.len() <= state::caps::ORB_SOURCES,
-        "{repro} step {step}: orb source table overflow"
-    );
-    for (slot, player) in st.per_player.iter().enumerate() {
-        assert!(
-            player.block_pool.len() <= state::caps::BLOCK_POOL,
-            "{repro} step {step}: slot {slot}: block pool overflow"
-        );
-        assert!(
-            player.pending_block_contribs.len() <= state::caps::PENDING_BLOCK_CONTRIBS,
-            "{repro} step {step}: slot {slot}: pending block contrib queue overflow"
-        );
-        assert!(
-            player.pending_contribs.len() <= state::caps::PENDING_CONTRIBS,
-            "{repro} step {step}: slot {slot}: pending contrib queue overflow"
-        );
-        assert!(
-            player.osty_stack.len() <= state::caps::OSTY_STACK,
-            "{repro} step {step}: slot {slot}: osty stack overflow"
-        );
+struct NaivePrefix {
+    roots: Roots,
+    seats: Vec<u64>,
+}
+
+impl NaivePrefix {
+    fn new(roots: Roots) -> Self {
+        Self {
+            seats: vec![0; roots.len()],
+            roots,
+        }
     }
-    assert!(
-        st.power_sources.len() <= state::caps::POWER_SOURCES,
-        "{repro} step {step}: power source table overflow"
-    );
-    assert!(
-        st.generated_instances.len() <= state::caps::GENERATED_INSTANCES,
-        "{repro} step {step}: generated instance table overflow"
-    );
-    assert!(
-        st.doom_layers.len() <= state::caps::DOOM_LAYERS,
-        "{repro} step {step}: doom layer table overflow"
-    );
-    assert!(
-        st.doom_targets.len() <= state::caps::DOOM_TARGETS,
-        "{repro} step {step}: doom target table overflow"
-    );
-    assert!(
-        st.str_reductions.len() <= state::caps::STR_REDUCTIONS,
-        "{repro} step {step}: str reduction table overflow"
-    );
-    assert!(
-        st.debuff_layers.len() <= state::caps::DEBUFF_LAYERS,
-        "{repro} step {step}: debuff layer table overflow"
-    );
-    for entry in st.per_player.iter().flat_map(|slot| &slot.block_pool) {
-        assert!(
-            entry.mods.len() <= state::BlockEntry::MAX_MODS,
-            "{repro} step {step}: block chunk modifier breakdown overflow"
-        );
+
+    fn credit(&mut self, amount: u64) -> Roots {
+        let mut deltas = vec![0; self.roots.len()];
+        for _ in 0..amount {
+            let mut winner = 0;
+            for index in 1..self.roots.len() {
+                if self.roots[index].1 * (self.seats[winner] + 1)
+                    >= self.roots[winner].1 * (self.seats[index] + 1)
+                {
+                    winner = index;
+                }
+            }
+            self.seats[winner] += 1;
+            deltas[winner] += 1;
+        }
+        self.roots
+            .iter()
+            .zip(deltas)
+            .filter(|(_, amount)| *amount > 0)
+            .map(|((key, _), amount)| (key.clone(), amount))
+            .collect()
     }
 }
 
-/// A queued modifier contribution forces the next event to be an enemy
-/// hit covering the share.
-// A single linear dispatch; splitting it would bury the roll mapping.
-#[allow(clippy::too_many_lines)]
-fn drive_one_event(rng: &mut Rng, follow_up: &mut bool) {
-    let roll = rng.below(99);
-    match roll {
-        0..=15 => drive_card_play(rng, follow_up),
-        16..=27 => drive_damage(rng, follow_up),
-        28..=33 => drive_block_gained(rng),
-        34..=37 => {
-            events::damage_modifier_contribution(
-                rng.pick(&POWER_POOL),
-                rng.range_i32(0, 2),
-                rng.range_i32(1, 8),
-                0,
-            );
-            *follow_up = true;
+struct NaiveModifier {
+    source: NaivePrefix,
+    original: u64,
+}
+struct NaiveChunk {
+    base: NaivePrefix,
+    base_original: u64,
+    remaining: u64,
+    mods: Vec<NaiveModifier>,
+}
+#[derive(Default)]
+struct NaivePool {
+    chunks: Vec<NaiveChunk>,
+}
+
+impl NaivePool {
+    fn push(&mut self, source: Roots, base: u64, modifiers: Vec<(Roots, u64)>) {
+        if modifiers.is_empty()
+            && let Some(chunk) = self
+                .chunks
+                .iter_mut()
+                .find(|chunk| chunk.mods.is_empty() && chunk.base.roots == source)
+        {
+            chunk.remaining += base;
+            chunk.base_original += base;
+            return;
         }
-        38..=41 => events::block_modifier_contribution(
-            rng.pick(&POWER_POOL),
-            rng.range_i32(0, 2),
-            rng.range_i32(1, 8),
-            0,
-        ),
-        42..=47 => drive_power_applied(rng),
-        48..=50 => {
-            let power = if rng.below(2) == 0 {
-                "STRENGTH_POWER"
-            } else {
-                rng.pick(&POWER_POOL)
-            };
-            events::power_decreased(
-                power,
-                rng.range_i32(1, 5),
-                rng.next_u64() as i32,
-                rng.range_i32(0, 1),
-                rng.range_i32(0, 3),
-            );
+        if self.chunks.len() == state::caps::BLOCK_POOL {
+            return;
         }
-        51..=52 => {
-            // The shim's OnUseWrapper prefix precedes the effects and the
-            // PotionUsed postfix follows them; the walk drives both.
-            let potion = rng.pick(&POTION_POOL);
-            events::potion_context_begin(potion, 0);
-            events::potion_used(potion, 0);
-        }
-        53..=55 => events::orb_channeled(rng.range_i32(1, 999), 0),
-        56..=58 => events::orb_context_begin(rng.range_i32(1, 999), 0),
-        59..=61 => events::turn_started(),
-        62..=63 => events::context_begin(
-            rng.pick(&RELIC_POOL),
-            rng.range_i32(0, 5),
-            rng.range_i32(0, 4),
-        ),
-        64..=65 => events::context_end(),
-        66..=67 => events::doom_target_capture(rng.next_u64() as i32, rng.range_i32(1, 20)),
-        68 => events::doom_kills_completed(),
-        69..=70 => {
-            let source = if rng.below(3) == 0 {
-                rng.pick(&CARD_POOL)
-            } else {
-                ""
-            };
-            events::osty_summoned(source, rng.range_i32(0, 5), rng.range_i32(1, 10), 0);
-        }
-        71..=72 => {
-            // Absorb is signaled as damage_dealt with OstyFlagAbsorbed.
-            let absorbed = rng.range_i32(1, 10);
-            events::damage_dealt(events::DamageDealt {
-                total: absorbed,
-                unblocked: absorbed,
-                osty_flag: 2,
-                ..events::DamageDealt::default()
+        let mods: Vec<_> = modifiers
+            .into_iter()
+            .take(MAX_BLOCK_MODIFIERS)
+            .map(|(roots, original)| NaiveModifier {
+                source: NaivePrefix::new(roots),
+                original,
+            })
+            .collect();
+        let remaining = base + mods.iter().map(|modifier| modifier.original).sum::<u64>();
+        if remaining > 0 {
+            self.chunks.push(NaiveChunk {
+                base: NaivePrefix::new(source),
+                base_original: base,
+                remaining,
+                mods,
             });
         }
-        // osty_killed removes the summon's unabsorbed HP from the killer's
-        // credit.
-        73 => events::osty_killed(0),
-        74..=75 => events::forge(
-            if rng.below(2) == 0 {
-                rng.pick(&RELIC_POOL)
-            } else {
-                ""
-            },
-            rng.range_i32(0, 5),
-            rng.range_i32(1, 5),
-            rng.range_i32(0, 3),
-        ),
-        76..=77 => drive_card_generated(rng),
-        78..=79 => events::weak_mitigation(rng.range_i32(1, 8), rng.next_u64() as i32),
-        80..=81 => events::buff_mitigation(rng.pick(&POWER_POOL), rng.range_i32(1, 8)),
-        82..=83 => events::enemy_hit_context(rng.range_i32(1, 20), rng.range_i32(-8, 8)),
-        _ => events::block_pool_clear(0),
     }
-}
 
-fn drive_card_play(rng: &mut Rng, follow_up: &mut bool) {
-    let card_id = rng.pick(&CARD_POOL);
-    let card_hash = if rng.below(3) == 0 {
-        rng.range_i32(1, 60_000)
-    } else {
-        0
-    };
-    events::card_play_started(
-        card_id,
-        rng.range_i32(0, 2),
-        rng.range_i32(1, 3),
-        card_hash,
-        0,
-    );
-    for _ in 0..rng.below(4) {
-        drive_in_play_event(rng, follow_up);
-    }
-    events::card_play_finished(0);
-}
-
-fn drive_in_play_event(rng: &mut Rng, follow_up: &mut bool) {
-    match rng.below(5) {
-        0 | 1 => drive_damage(rng, follow_up),
-        2 => drive_block_gained(rng),
-        3 => drive_power_applied(rng),
-        _ => drive_card_generated(rng),
-    }
-}
-
-/// A follow-up stays an enemy hit covering the queued share, steered onto
-/// an attributed route half the time.
-#[allow(clippy::too_many_lines)]
-fn drive_damage(rng: &mut Rng, follow_up: &mut bool) {
-    let queued: i64 = STATE.with(|cell| {
-        cell.borrow()
-            .per_player
-            .iter()
-            .flat_map(|slot| &slot.pending_contribs)
-            .map(|p| p.amount)
-            .sum::<i64>()
-    });
-    let total = if *follow_up {
-        rng.range(1, 30).max(queued)
-    } else {
-        rng.range(1, 30)
-    };
-    let blocked = rng.range(0, total);
-    let unblocked = total - blocked;
-    let to_player = if *follow_up { 0 } else { rng.range_i32(0, 2) };
-    let osty_flag = if *follow_up {
-        0
-    } else {
-        match rng.below(10) {
-            0..=1 => 1,
-            2..=3 => 2,
-            _ => 0,
-        }
-    };
-    let card_source = if *follow_up {
-        // Half the follow-ups drop the explicit source and prepare a live
-        // orb fallback, so the hit resolves attributed and the segment
-        // carve in `apply_pending_contribs_in` must hold there.
-        if rng.below(2) == 0 {
-            events::context_begin(
-                rng.pick(&RELIC_POOL),
-                rng.range_i32(0, 2),
-                rng.range_i32(0, 4),
+    fn consume(&mut self, amount: u64) -> Vec<(RowKey, Field, i64)> {
+        let mut remaining = amount;
+        let mut credits = Vec::new();
+        while remaining > 0 && !self.chunks.is_empty() {
+            let chunk = &mut self.chunks[0];
+            let take = remaining.min(chunk.remaining);
+            let total = chunk.base_original
+                + chunk
+                    .mods
+                    .iter()
+                    .map(|modifier| modifier.original)
+                    .sum::<u64>();
+            let before = total - chunk.remaining;
+            let mut modifier_total = 0;
+            for modifier in &mut chunk.mods {
+                let delta = modifier.original * (before + take) / total
+                    - modifier.original * before / total;
+                modifier_total += delta;
+                credits.extend(
+                    modifier
+                        .source
+                        .credit(delta)
+                        .into_iter()
+                        .map(|(key, amount)| (key, Field::BlockModifier, amount as i64)),
+                );
+            }
+            // The base floor cancels against outer residue; only positive credits advance its
+            // prefix.
+            credits.extend(
+                chunk
+                    .base
+                    .credit(take.saturating_sub(modifier_total))
+                    .into_iter()
+                    .map(|(key, amount)| (key, Field::BlockEffective, amount as i64)),
             );
-            let hash = rng.range_i32(1, 999);
-            events::orb_channeled(hash, 0);
-            events::orb_context_begin(hash, 0);
-            events::context_end();
-            ""
-        } else {
-            rng.pick(&CARD_POOL)
+            chunk.remaining -= take;
+            remaining -= take;
+            if chunk.remaining == 0 {
+                self.chunks.remove(0);
+            }
         }
-    } else if rng.below(2) == 0 {
-        rng.pick(&CARD_POOL)
-    } else {
-        ""
-    };
-    *follow_up = false;
-    let card_source_slot = rng.range_i32(0, 4);
-    // A rare player kill drives the defeat record.
-    let player_killed = to_player != 0 && rng.below(8) == 0;
-    let receiver = if rng.below(4) == 0 {
-        0
-    } else {
-        rng.next_u64() as i32
-    };
-    let dealer = if rng.below(2) == 0 {
-        0
-    } else {
-        rng.next_u64() as i32
-    };
-    events::damage_dealt(events::DamageDealt {
-        total: total as i32,
-        unblocked: unblocked as i32,
-        blocked: blocked as i32,
-        card_source_id: card_source,
-        to_player,
-        receiver_hash: receiver,
-        osty_flag,
-        dealer_hash: dealer,
-        dealer_slot: 0,
-        receiver_slot: 0,
-        card_source_slot,
-    });
-    if player_killed {
-        // The shim's Kill patch double-fires for a player damage kill; the
-        // walk drives the same double-fire.
-        events::player_died(0);
+        credits
     }
 }
 
-fn drive_block_gained(rng: &mut Rng) {
-    let card_id = if rng.below(3) == 0 {
-        rng.pick(&CARD_POOL)
-    } else {
-        ""
-    };
-    events::block_gained(rng.range_i32(1, 25), card_id, 0, rng.range_i32(0, 4));
+struct NaiveSummon {
+    source: NaivePrefix,
+    remaining: u64,
 }
 
-fn drive_power_applied(rng: &mut Rng) {
-    let power = rng.pick(&POWER_POOL);
-    let creature = if rng.below(4) == 0 {
-        0
-    } else {
-        rng.next_u64() as i32
-    };
-    let is_player = rng.range_i32(0, 1);
-    let player_slot = if is_player != 0 {
-        rng.range_i32(0, 3)
-    } else {
-        0
-    };
-    events::power_applied(power, rng.range_i32(1, 5), creature, is_player, player_slot);
+#[derive(Clone, Copy)]
+enum Field {
+    BlockGained,
+    BlockEffective,
+    BlockModifier,
+    Buff,
+    SelfDamage,
+    Forge,
 }
 
-fn drive_card_generated(rng: &mut Rng) {
-    let source = if rng.below(3) == 0 {
-        rng.pick(&CARD_POOL)
-    } else {
-        ""
-    };
-    events::card_generated(
-        rng.range_i32(1, 60_000),
-        source,
-        rng.range_i32(0, 5),
-        rng.range_i32(0, 3),
-    );
+struct DamageShare {
+    key: RowKey,
+    segment: i32,
+    amount: u64,
+}
+
+impl DamageShare {
+    fn append(credits: &mut Vec<Self>, roots: &Roots, segment: i32, amount: u64) {
+        let weights: Vec<_> = roots.iter().map(|(_, weight)| *weight).collect();
+        for ((key, _), amount) in roots.iter().zip(proportional_units(amount, &weights)) {
+            if amount == 0 {
+                continue;
+            }
+            if let Some(credit) = credits
+                .iter_mut()
+                .find(|credit| credit.key == *key && credit.segment == segment)
+            {
+                credit.amount += amount;
+            } else {
+                credits.push(Self {
+                    key: key.clone(),
+                    segment,
+                    amount,
+                });
+            }
+        }
+    }
+}
+
+struct LedgerModel {
+    rows: BTreeMap<RowKey, CardStat>,
+    pools: Vec<NaivePool>,
+    osty: Vec<Vec<NaiveSummon>>,
+    players: Vec<bool>,
+    plays: u32,
+    generated_plays: u32,
+    generation_triggers: u32,
+    outgoing: i64,
+    blocked: i64,
+    received: i64,
+    block_total: i64,
+    turns: u32,
+    potions: u32,
+}
+
+impl LedgerModel {
+    fn new(sources: &[Rc<SimSource>]) -> Self {
+        let mut model = Self {
+            rows: BTreeMap::new(),
+            pools: (0..5).map(|_| NaivePool::default()).collect(),
+            osty: (0..5).map(|_| Vec::new()).collect(),
+            players: Vec::new(),
+            plays: 0,
+            generated_plays: 0,
+            generation_triggers: 0,
+            outgoing: 0,
+            blocked: 0,
+            received: 0,
+            block_total: 0,
+            turns: 0,
+            potions: 0,
+        };
+        for source in sources {
+            for (key, _) in &source.roots {
+                model.row(key);
+            }
+        }
+        model
+    }
+
+    fn row(&mut self, key: &RowKey) -> &mut CardStat {
+        self.rows.entry(key.clone()).or_insert_with(|| CardStat {
+            player: key.slot,
+            id: key.id.clone(),
+            kind: SourceKind::from(key.kind),
+            ..CardStat::default()
+        })
+    }
+
+    fn observe(&mut self, slot: i32) {
+        self.players
+            .resize(self.players.len().max(slot as usize + 1), false);
+    }
+
+    fn add(&mut self, key: &RowKey, field: Field, amount: i64) {
+        if amount == 0 {
+            return;
+        }
+        let row = self.row(key);
+        let value = match field {
+            Field::BlockGained => &mut row.block_gained,
+            Field::BlockEffective => &mut row.block_effective,
+            Field::BlockModifier => &mut row.blk_modifier,
+            Field::Buff => &mut row.mitigate_buff,
+            Field::SelfDamage => &mut row.self_damage,
+            Field::Forge => &mut row.forge,
+        };
+        *value += amount;
+    }
+
+    fn credit(&mut self, roots: &Roots, field: Field, amount: u64) {
+        let weights: Vec<_> = roots.iter().map(|(_, weight)| *weight).collect();
+        for ((key, _), amount) in roots.iter().zip(proportional_units(amount, &weights)) {
+            self.add(key, field, amount as i64);
+        }
+    }
+
+    fn damage(
+        &mut self,
+        source: &SimSource,
+        segment: i32,
+        modifiers: &[(Rc<SimSource>, u64)],
+        total: u64,
+        blocked: u64,
+    ) {
+        let weights: Vec<_> = modifiers.iter().map(|(_, amount)| *amount).collect();
+        let budget = total.min(weights.iter().sum());
+        let mut credits = Vec::new();
+        for ((source, _), amount) in modifiers.iter().zip(proportional_units(budget, &weights)) {
+            DamageShare::append(&mut credits, &source.roots, 2, amount);
+        }
+        DamageShare::append(&mut credits, &source.roots, segment, total - budget);
+        let weights: Vec<_> = credits.iter().map(|credit| credit.amount).collect();
+        for (credit, blocked) in credits.iter().zip(proportional_units(blocked, &weights)) {
+            let row = self.row(&credit.key);
+            row.damage_dealt += credit.amount as i64;
+            row.damage_blocked += blocked as i64;
+            match credit.segment {
+                0 => row.dmg_direct += credit.amount as i64,
+                1 => row.dmg_attributed += credit.amount as i64,
+                2 => row.dmg_modifier += credit.amount as i64,
+                _ => panic!("model damage uses only the three wire segments"),
+            }
+        }
+        self.outgoing += total as i64;
+        self.blocked += blocked as i64;
+    }
+
+    fn play(&mut self, source: &SimSource) -> u64 {
+        let play = source.actual.play();
+        assert_ne!(play, 0);
+        self.plays += 1;
+        self.observe(source.owner);
+        match source.origin {
+            Origin::Ordinary => self.row(&source.roots[0].0).plays += 1,
+            Origin::Generated => self.generated_plays += 1,
+            _ => panic!("only actual cards start a card play"),
+        }
+        play
+    }
+
+    fn generate(&mut self, source: &SimSource) {
+        for (key, _) in &source.roots {
+            if key.kind != SourceKind::Card as u8 {
+                self.row(key).plays += 1;
+                self.generation_triggers += 1;
+            }
+        }
+    }
+
+    fn gain(
+        &mut self,
+        source: &SimSource,
+        base: u64,
+        modifiers: &[(Rc<SimSource>, u64)],
+        receiver: i32,
+    ) {
+        for (modifier, amount) in modifiers {
+            assert_eq!(
+                modifier
+                    .actual
+                    .with_transfer(|transfer| events::block_modifier_contribution(
+                        combat_epoch(),
+                        transfer,
+                        *amount as i32,
+                        receiver
+                    )),
+                1
+            );
+        }
+        let total = base + modifiers.iter().map(|(_, amount)| amount).sum::<u64>();
+        source.actual.block(total as i32, receiver);
+        self.block_total += total as i64;
+        self.credit(&source.roots, Field::BlockGained, total);
+        if total > 0 {
+            self.observe(receiver);
+            self.pools[receiver as usize].push(
+                source.roots.clone(),
+                base,
+                modifiers
+                    .iter()
+                    .map(|(source, amount)| (source.roots.clone(), *amount))
+                    .collect(),
+            );
+        }
+    }
+
+    fn receive(&mut self, source: &SimSource, total: u64, blocked: u64, kind: i32, receiver: i32) {
+        source
+            .actual
+            .hit(total as i32, blocked as i32, kind, receiver);
+        self.observe(receiver);
+        if kind == 4 {
+            let mut remaining = total;
+            while remaining > 0 && !self.osty[receiver as usize].is_empty() {
+                let entry = self.osty[receiver as usize]
+                    .last_mut()
+                    .expect("the absorption loop runs only while an Osty grant remains");
+                let take = remaining.min(entry.remaining);
+                let credits = entry.source.credit(take);
+                entry.remaining -= take;
+                remaining -= take;
+                if entry.remaining == 0 {
+                    self.osty[receiver as usize].pop();
+                }
+                for (key, amount) in credits {
+                    self.add(&key, Field::BlockEffective, amount as i64);
+                }
+            }
+            let key = RowKey {
+                slot: state::TEAM_SLOT,
+                id: "OSTY".to_owned(),
+                kind: SourceKind::Osty as u8,
+            };
+            self.add(&key, Field::BlockEffective, remaining as i64);
+        } else {
+            self.received += total as i64;
+            for (key, field, amount) in self.pools[receiver as usize].consume(blocked) {
+                self.add(&key, field, amount);
+            }
+            if kind == 2 {
+                self.credit(&source.roots, Field::SelfDamage, total - blocked);
+            }
+        }
+    }
+
+    fn kill_osty(&mut self, source: &SimSource) {
+        let remaining: u64 = self.osty[source.owner as usize]
+            .iter()
+            .map(|entry| entry.remaining)
+            .sum();
+        let weights: Vec<_> = source.roots.iter().map(|(_, weight)| *weight).collect();
+        for ((key, _), amount) in source
+            .roots
+            .iter()
+            .zip(proportional_units(remaining, &weights))
+        {
+            self.add(key, Field::BlockEffective, -(amount as i64));
+        }
+        self.osty[source.owner as usize].clear();
+    }
+
+    fn check(&self, repro: &str, step: u32) {
+        STATE.with(|cell| {
+            let state = cell.borrow();
+            let combat = state
+                .current
+                .as_ref()
+                .expect("model events retain their active combat");
+            let actual: BTreeMap<_, _> = combat
+                .cards
+                .iter()
+                .map(|row| (RowKey::from_card(row), row.clone()))
+                .collect();
+            assert_eq!(
+                actual, self.rows,
+                "{repro} step {step}: complete credited rows"
+            );
+            assert_eq!(
+                (
+                    combat.plays,
+                    combat.generated_plays,
+                    combat.generation_triggers
+                ),
+                (self.plays, self.generated_plays, self.generation_triggers),
+                "{repro} step {step}: play counts"
+            );
+            assert_eq!(
+                (
+                    combat.damage_received,
+                    combat.block_total,
+                    combat.turns,
+                    combat.potions_used
+                ),
+                (self.received, self.block_total, self.turns, self.potions),
+                "{repro} step {step}: combat totals"
+            );
+            assert_eq!(
+                combat.cards.iter().map(|row| row.damage_dealt).sum::<i64>(),
+                self.outgoing,
+                "{repro} step {step}: actual outgoing damage"
+            );
+            assert_eq!(
+                combat
+                    .cards
+                    .iter()
+                    .map(|row| row.damage_blocked)
+                    .sum::<i64>(),
+                self.blocked,
+                "{repro} step {step}: actual blocked damage"
+            );
+            assert_eq!(
+                state
+                    .per_player
+                    .iter()
+                    .map(|player| player.died)
+                    .collect::<Vec<_>>(),
+                self.players,
+                "{repro} step {step}: physical player lifetimes"
+            );
+        });
+        check_invariants(repro, step);
+    }
+}
+
+struct Walk {
+    sources: Vec<Rc<SimSource>>,
+    power: PowerModel,
+    ledger: LedgerModel,
+    next_generated: u64,
+}
+
+impl Walk {
+    fn new() -> Self {
+        let sources = vec![
+            SimSource::card("STRIKE", 0),
+            SimSource::card("DEFEND", 1),
+            SimSource::card("INFLAME", 2),
+            SimSource::card("WHITE_NOISE", 0),
+            SimSource::relic("VAJRA", 1),
+            SimSource::relic("CRACKED_CORE", 2),
+        ];
+        let power = PowerModel::new("POISON_POWER", 100_001, (900, 1, 4), &sources[0]);
+        let ledger = LedgerModel::new(&sources);
+        Self {
+            sources,
+            power,
+            ledger,
+            next_generated: 200_001,
+        }
+    }
+
+    fn source(&self, rng: &mut Rng) -> Rc<SimSource> {
+        let index = rng.below(self.sources.len() as u64 + 1) as usize;
+        if index == self.sources.len() {
+            SimSource::power(&self.power)
+        } else {
+            Rc::clone(&self.sources[index])
+        }
+    }
+
+    fn card(&self, rng: &mut Rng) -> Rc<SimSource> {
+        let cards: Vec<_> = self
+            .sources
+            .iter()
+            .filter(|source| matches!(source.origin, Origin::Ordinary | Origin::Generated))
+            .collect();
+        Rc::clone(cards[rng.below(cards.len() as u64) as usize])
+    }
+
+    fn damage(&mut self, rng: &mut Rng, source: &Rc<SimSource>) {
+        let (role, segment) = match source.origin {
+            Origin::Ordinary | Origin::Generated => (1, 0),
+            Origin::Relic => (3, 0),
+            Origin::Power => (2, 1),
+        };
+        let total = rng.range_i32(0, 30);
+        let blocked = rng.range_i32(0, total);
+        let calculation = source.actual.with_transfer(|transfer| {
+            events::damage_calculation_begin(combat_epoch(), transfer, role, segment, 900)
+        });
+        assert_ne!(calculation, 0);
+        let mut modifiers = Vec::new();
+        for _ in 0..rng.below(4) {
+            let modifier = self.source(rng);
+            let amount = rng.range_i32(0, 8);
+            modifier.actual.contribution(calculation, amount);
+            modifiers.push((modifier, amount as u64));
+        }
+        assert_eq!(
+            events::damage_result_append(calculation, total, total - blocked, blocked, 0, 4, 0),
+            1
+        );
+        assert_eq!(events::damage_calculation_commit(calculation), 1);
+        self.ledger
+            .damage(source, segment, &modifiers, total as u64, blocked as u64);
+    }
+
+    fn block(&mut self, rng: &mut Rng, source: &Rc<SimSource>) {
+        let base = rng.range_i32(0, 25);
+        let receiver = rng.range_i32(0, 2);
+        let mut modifiers = Vec::new();
+        for _ in 0..rng.below(3) {
+            let modifier = self.source(rng);
+            let amount = rng.range_i32(1, 8);
+            modifiers.push((modifier, amount as u64));
+        }
+        self.ledger.gain(source, base as u64, &modifiers, receiver);
+    }
+
+    fn change_power(&mut self, rng: &mut Rng) {
+        if rng.below(6) == 0 {
+            self.power.invalidate();
+            return;
+        }
+        let source = &self.sources[rng.below(BASE_SOURCES as u64) as usize];
+        let before = if rng.below(5) == 0 {
+            rng.range_i32(0, 12)
+        } else {
+            self.power.observed
+        };
+        self.power.change(before, rng.range_i32(0, 12), source);
+    }
+
+    fn generate(&mut self, rng: &mut Rng) {
+        let source = self.source(rng);
+        let owner = rng.range_i32(0, 2);
+        source.actual.generate(self.next_generated);
+        self.ledger.generate(&source);
+        let generated = Rc::new(SimSource {
+            actual: SourceFixture::generated("GENERATED", owner, self.next_generated),
+            roots: source.roots.clone(),
+            origin: Origin::Generated,
+            owner,
+        });
+        generated.verify();
+        self.sources.push(generated);
+        self.next_generated += 1;
+    }
+
+    // A single linear dispatch keeps the seeded event weights visible.
+    #[allow(clippy::too_many_lines)]
+    fn event(&mut self, rng: &mut Rng) {
+        let source = self.source(rng);
+        let epoch = combat_epoch();
+        match rng.below(99) {
+            0..=15 => {
+                let card = self.card(rng);
+                let play = self.ledger.play(&card);
+                if rng.below(3) == 0 {
+                    self.generate(rng);
+                } else {
+                    self.damage(rng, &card);
+                }
+                card.actual.finish(play);
+            }
+            16..=33 => self.damage(rng, &source),
+            34..=43 => self.block(rng, &source),
+            44..=57 => self.change_power(rng),
+            58..=63 => self.generate(rng),
+            64..=73 => {
+                let total = rng.range_i32(0, 30);
+                let blocked = rng.range_i32(0, total);
+                let receiver = rng.range_i32(0, 2);
+                let kind = rng.range_i32(1, 2);
+                self.ledger
+                    .receive(&source, total as u64, blocked as u64, kind, receiver);
+            }
+            74..=77 => {
+                let amount = rng.range_i32(1, 8);
+                source.actual.forge(amount);
+                self.ledger
+                    .credit(&source.roots, Field::Forge, amount as u64);
+            }
+            78..=81 => {
+                let amount = rng.range_i32(1, 8);
+                assert_eq!(
+                    source
+                        .actual
+                        .with_transfer(|transfer| events::buff_mitigation(epoch, transfer, amount)),
+                    1
+                );
+                self.ledger
+                    .credit(&source.roots, Field::Buff, amount as u64);
+            }
+            82..=84 => {
+                assert_eq!(events::turn_started(epoch), 1);
+                self.ledger.turns += 1;
+            }
+            85..=87 => {
+                let slot = rng.range_i32(0, 2);
+                assert_eq!(events::block_pool_clear(epoch, slot), 1);
+                self.ledger.pools[slot as usize].chunks.clear();
+            }
+            88..=90 => {
+                let amount = rng.range_i32(1, 10);
+                let owner = rng.range_i32(0, 2);
+                let accepted = source.actual.with_transfer(|transfer| {
+                    events::osty_summoned(epoch, transfer, amount, owner)
+                });
+                if self.ledger.osty[owner as usize].len() == state::caps::OSTY_STACK {
+                    assert_eq!(accepted, 0);
+                } else {
+                    assert_eq!(accepted, 1);
+                    self.ledger.observe(owner);
+                    self.ledger.osty[owner as usize].push(NaiveSummon {
+                        source: NaivePrefix::new(source.roots.clone()),
+                        remaining: amount as u64,
+                    });
+                }
+            }
+            91..=93 => {
+                let amount = rng.range_i32(1, 10);
+                let owner = rng.range_i32(0, 2);
+                self.ledger.receive(&source, amount as u64, 0, 4, owner);
+            }
+            94 => {
+                let card = self.card(rng);
+                let play = self.ledger.play(&card);
+                assert_eq!(events::osty_killed(epoch, card.owner, play), 1);
+                self.ledger.kill_osty(&card);
+                card.actual.finish(play);
+            }
+            95..=96 => {
+                assert_eq!(events::potion_used(epoch), 1);
+                self.ledger.potions += 1;
+            }
+            _ => {
+                let slot = rng.range_i32(0, 2);
+                assert_eq!(events::player_died(epoch, slot), 1);
+                assert_eq!(events::player_died(epoch, slot), 1);
+                self.ledger.observe(slot);
+                self.ledger.players[slot as usize] = true;
+            }
+        }
+    }
+
+    fn check(&self, repro: &str, step: u32) {
+        SimSource::power(&self.power);
+        self.ledger.check(repro, step);
+    }
+}
+
+fn check_invariants(repro: &str, step: u32) {
+    STATE.with(|cell| {
+        let state = cell.borrow();
+        let combat = state
+            .current
+            .as_ref()
+            .expect("simulation events retain a combat");
+        let plays: u64 = combat.cards.iter().map(|card| u64::from(card.plays)).sum();
+        assert_eq!(
+            u64::from(combat.plays) + u64::from(combat.generation_triggers),
+            plays + u64::from(combat.generated_plays),
+            "{repro} step {step}: play conservation"
+        );
+        assert!(
+            combat.block_total >= 0 && combat.damage_received >= 0,
+            "{repro} step {step}: nonnegative combat totals"
+        );
+        assert!(
+            combat.cards.len() <= state::caps::COMBAT_CARDS,
+            "{repro} step {step}: row capacity"
+        );
+        assert!(
+            state.per_player.len() <= state::caps::MAX_PLAYER_SLOTS,
+            "{repro} step {step}: physical player capacity"
+        );
+        let mut seen = BTreeSet::new();
+        for card in &combat.cards {
+            assert!(
+                card.player <= state::TEAM_SLOT && seen.insert(RowKey::from_card(card)),
+                "{repro} step {step}: unique valid (slot, id, kind) row identity"
+            );
+            assert_eq!(
+                card.damage_dealt,
+                card.dmg_direct + card.dmg_attributed + card.dmg_modifier,
+                "{repro} step {step}: {} segment sum",
+                card.id
+            );
+            assert!(
+                card.damage_blocked >= 0 && card.damage_blocked <= card.damage_dealt,
+                "{repro} step {step}: {} blocked damage is covered by actual damage",
+                card.id
+            );
+            assert!(
+                card.dmg_direct >= 0 && card.dmg_attributed >= 0 && card.dmg_modifier >= 0,
+                "{repro} step {step}: {} nonnegative damage segments",
+                card.id
+            );
+            assert!(
+                card.block_gained >= 0
+                    && card.blk_modifier >= 0
+                    && card.mitigate_debuff >= 0
+                    && card.mitigate_buff >= 0
+                    && card.mitigate_str >= 0
+                    && card.self_damage >= 0
+                    && card.forge >= 0,
+                "{repro} step {step}: {} nonnegative positive-only metrics",
+                card.id
+            );
+        }
+    });
 }
 
 #[test]
-fn randomized_context_scopes_match_naive_attribution() {
+fn randomized_frozen_sources_match_naive_attribution() {
     let seed = sim_seed();
-    let repro = format!("SIM_SEED={seed} context scopes");
+    let repro = format!("SIM_SEED={seed} frozen sources");
     let mut rng = Rng::new(seed);
     events::test_reset();
-    events::init(&unique_dir("sim/context-scopes"));
-    events::combat_started("CONTEXT", "test");
-    // The naive model stores every logical scope, even those beyond the
-    // source-storage cap, and re-scans the accepted prefix for each event.
-    let mut scopes = Vec::new();
-    let mut last = None;
-    let mut expected = BTreeMap::new();
+    events::init(&unique_dir("sim/frozen-sources"));
+    events::combat_started("FROZEN_SOURCES", "test");
+    let mut walk = Walk::new();
+    let mut frozen = VecDeque::new();
     for step in 0..256 {
         if step == 20 {
-            events::turn_started();
-            last = None;
+            assert_eq!(events::turn_started(combat_epoch()), 1);
+            walk.ledger.turns += 1;
         }
         if step == 90 {
-            events::combat_started("NEXT_CONTEXT", "test");
-            last = None;
-            expected.clear();
+            let epoch = combat_epoch();
+            let pending = walk.sources[0]
+                .actual
+                .with_transfer(|source| events::damage_calculation_begin(epoch, source, 1, 0, 900));
+            assert_ne!(pending, 0);
+            events::combat_started("NEXT_SOURCES", "test");
+            assert_eq!(events::damage_calculation_abort(pending), 0);
+            assert_eq!(events::damage_unattributed(epoch, 1, 1, 0, 0, 4, 0), 0);
+            walk = Walk::new();
+            frozen.clear();
         }
-        if step < state::caps::CONTEXT_STACK as u32 + 4 || (step < 128 && rng.below(3) != 0) {
-            let source = if rng.below(3) == 0 {
-                ""
-            } else {
-                rng.pick(&RELIC_POOL)
-            };
-            if scopes.len() < state::caps::CONTEXT_STACK && !source.is_empty() {
-                last = Some(source);
-            }
-            scopes.push(source);
-            events::context_begin(source, 1, 0);
-        } else {
-            scopes.pop();
-            events::context_end();
+        frozen.push_back(SimSource::power(&walk.power));
+        if frozen.len() > 16 {
+            frozen.pop_front();
         }
-        let damage = rng.range_i32(1, 19);
-        let block = rng.range_i32(1, 23);
-        let source = scopes
-            .iter()
-            .take(state::caps::CONTEXT_STACK)
-            .rfind(|id| !id.is_empty())
-            .copied()
-            .or(last);
-        if let Some(source) = source {
-            let credit = expected.entry(source.to_owned()).or_insert((0_i64, 0_i64));
-            credit.0 += i64::from(damage);
-            credit.1 += i64::from(block);
-        }
-        events::damage_dealt(events::DamageDealt {
-            total: damage,
-            unblocked: damage,
-            ..Default::default()
-        });
-        events::block_gained(block, "", 0, 0);
-        STATE.with(|cell| {
-            let state = cell.borrow();
-            let actual: BTreeMap<_, _> = state
-                .current
-                .as_ref()
-                .unwrap_or_else(|| panic!("{repro} step {step}: missing combat"))
-                .cards
-                .iter()
-                .map(|row| (row.id.clone(), (row.damage_dealt, row.block_gained)))
-                .collect();
-            assert_eq!(actual, expected, "{repro} step {step}: context attribution");
-        });
-        check_invariants(&repro, step);
+        walk.change_power(&mut rng);
+        let source = Rc::clone(&frozen[rng.below(frozen.len() as u64) as usize]);
+        walk.damage(&mut rng, &source);
+        walk.block(&mut rng, &source);
+        walk.check(&repro, step);
     }
 }
 
@@ -594,18 +1133,14 @@ fn randomized_combat_lifecycle_invariants() {
             1_786_579_200,
         );
         events::combat_started("SIM_ENCOUNTER", "test");
-        let mut follow_up = false;
+        let mut walk = Walk::new();
         for step in 0..EVENTS_PER_SCENARIO {
-            drive_one_event(&mut rng, &mut follow_up);
-            check_invariants(&repro, step);
+            walk.event(&mut rng);
+            walk.check(&repro, step);
         }
-        events::combat_ended();
-        // The walk may have killed the player (drive_damage's rare to-player
-        // kill); the run result must mirror the combat record it closes.
-        let player_died = STATE.with(|cell| {
-            let st = cell.borrow();
-            !st.per_player.is_empty() && st.per_player.iter().all(|slot| slot.died)
-        });
+        assert_eq!(events::combat_ended(combat_epoch()), 1);
+        let player_died =
+            !walk.ledger.players.is_empty() && walk.ledger.players.iter().all(|died| *died);
         events::run_ended(if player_died {
             RunOutcome::Defeat
         } else {
@@ -709,287 +1244,74 @@ fn check_no_sub_rows(repro: &str) {
     }
 }
 
-#[derive(Debug)]
-struct NaiveChunk {
-    id: String,
-    kind: SourceKind,
-    base_original: i64,
-    base_consumed: i64,
-    remaining: i64,
-    mods: Vec<NaiveMod>,
-}
-
-fn push_chunk(id: &str, base: i64) {
-    STATE.with(|cell| {
-        ledger::block_pool_push_in(&mut cell.borrow_mut(), id, SourceKind::Card, base, 0, 0);
-    });
-}
-
-fn consume_chunk(amount: i64) -> i64 {
-    STATE.with(|cell| ledger::block_pool_consume_in(&mut cell.borrow_mut(), amount, 0))
-}
-
-#[derive(Debug)]
-struct NaiveMod {
-    id: String,
-    kind: SourceKind,
-    original: i64,
-    consumed: i64,
-}
-
-fn naive_push(
-    pool: &mut Vec<NaiveChunk>,
-    pending: &[(String, SourceKind, i64)],
-    id: &str,
-    kind: SourceKind,
-    base: i64,
-) {
-    if pending.is_empty()
-        && let Some(entry) = pool
-            .iter_mut()
-            .find(|e| e.mods.is_empty() && e.id == id && e.kind == kind)
-    {
-        entry.remaining += base;
-        entry.base_original += base;
-        return;
-    }
-    if pool.len() >= state::caps::BLOCK_POOL {
-        return;
-    }
-    let mut entry = NaiveChunk {
-        id: id.to_owned(),
-        kind,
-        base_original: base,
-        base_consumed: 0,
-        remaining: base,
-        mods: Vec::new(),
-    };
-    for (mod_id, mod_kind, amount) in pending.iter().take(state::BlockEntry::MAX_MODS) {
-        entry.mods.push(NaiveMod {
-            id: mod_id.clone(),
-            kind: *mod_kind,
-            original: *amount,
-            consumed: 0,
-        });
-        entry.remaining += amount;
-    }
-    if entry.remaining <= 0 {
-        return;
-    }
-    pool.push(entry);
-}
-
-fn naive_consume(
-    pool: &mut Vec<NaiveChunk>,
-    credits: &mut BTreeMap<String, (i64, i64)>,
-    blocked: i64,
-) -> i64 {
-    let mut remaining = blocked;
-    let mut credited = 0;
-    let mut i = 0;
-    while i < pool.len() && remaining > 0 {
-        let take = pool[i].remaining.min(remaining);
-        if take > 0 {
-            let total =
-                pool[i].base_original + pool[i].mods.iter().map(|m| m.original).sum::<i64>();
-            let consumed_after = (total - pool[i].remaining) + take;
-            let mut base_delta = if total > 0 {
-                (pool[i].base_original * consumed_after) / total - pool[i].base_consumed
-            } else {
-                0
-            };
-            let mut allocated = base_delta;
-            let mut mod_deltas = vec![0_i64; pool[i].mods.len()];
-            for (j, m) in pool[i].mods.iter().enumerate() {
-                mod_deltas[j] = if total > 0 {
-                    (m.original * consumed_after) / total - m.consumed
-                } else {
-                    0
-                };
-                allocated += mod_deltas[j];
-            }
-            base_delta += take - allocated;
-            if base_delta > 0 {
-                let entry = credits.entry(pool[i].id.clone()).or_insert((0, 0));
-                entry.0 += base_delta;
-                credited += base_delta;
-            }
-            for (j, m) in pool[i].mods.iter_mut().enumerate() {
-                m.consumed += mod_deltas[j];
-                if mod_deltas[j] > 0 {
-                    let entry = credits.entry(m.id.clone()).or_insert((0, 0));
-                    entry.1 += mod_deltas[j];
-                    credited += mod_deltas[j];
-                }
-            }
-            pool[i].base_consumed += base_delta;
-            pool[i].remaining -= take;
-            remaining -= take;
-        }
-        if pool[i].remaining <= 0 {
-            pool.remove(i);
-        } else {
-            i += 1;
-        }
-    }
-    credited
-}
-
-// One linear scenario walk; splitting it would scatter the model comparison.
-#[allow(clippy::too_many_lines)]
 #[test]
 fn block_pool_consume_matches_naive_model() {
-    const SOURCES: [&str; 5] = [
-        "DEFEND",
-        "ARMAMENTS",
-        "IRON_WAVE",
-        "BODYGUARD",
-        "CRIMSON_MANTLE",
-    ];
-    const MODIFIERS: [&str; 3] = ["DEXTERITY_POWER", "FOOTWORK", "TEMPORARY_DEXTERITY_POWER"];
-    const ROUNDS: u32 = 40;
-
     let base_seed = sim_seed();
-    let repro = format!("SIM_SEED={base_seed}");
+    let repro = format!("SIM_SEED={base_seed} block pool");
     let mut rng = Rng::new(base_seed ^ 0xB10C_3001_C0DE);
     let base = unique_dir("sim/blockpool");
     events::test_reset();
     events::init(&base);
     events::combat_started("BLOCKPOOL_SIM", "test");
-
-    let mut naive_pool: Vec<NaiveChunk> = Vec::new();
-    let mut naive_credits: BTreeMap<String, (i64, i64)> = BTreeMap::new();
-    let mut pending: Vec<(String, SourceKind, i64)> = Vec::new();
-
-    for _round in 0..ROUNDS {
+    let mut sources = vec![
+        SimSource::card("DEFEND", 0),
+        SimSource::card("ARMAMENTS", 1),
+        SimSource::card("IRON_WAVE", 2),
+        SimSource::card("BODYGUARD", 0),
+        SimSource::card("CRIMSON_MANTLE", 1),
+    ];
+    let modifiers = vec![
+        SimSource::card("FOOTWORK", 0),
+        SimSource::card("TEMPORARY_DEXTERITY", 2),
+        SimSource::relic("SMOOTH_STONE", 1),
+    ];
+    let mut first = PowerModel::new("DEXTERITY_POWER", 100_001, (1000, 0, 0), &modifiers[0]);
+    first.change(0, 2, &modifiers[0]);
+    first.change(2, 5, &modifiers[1]);
+    let mut second = PowerModel::new("DEXTERITY_POWER", 100_002, (1001, 0, 1), &modifiers[2]);
+    second.change(0, 1, &modifiers[2]);
+    second.change(1, 2, &modifiers[0]);
+    let all: Vec<_> = sources.iter().chain(&modifiers).cloned().collect();
+    let mut model = LedgerModel::new(&all);
+    let modifiers = [
+        Rc::clone(&modifiers[0]),
+        SimSource::power(&first),
+        SimSource::power(&second),
+    ];
+    sources.push(SimSource::power(&first));
+    let mut step = 0;
+    for _round in 0..40 {
         for _ in 0..rng.below(5) + 1 {
+            let mut pending = Vec::new();
             if rng.below(3) == 0 {
                 for _ in 0..rng.below(4) + 1 {
                     pending.push((
-                        rng.pick(&MODIFIERS).to_owned(),
-                        SourceKind::Power,
-                        rng.range(1, 10),
+                        Rc::clone(&modifiers[rng.below(modifiers.len() as u64) as usize]),
+                        rng.range_i32(1, 10) as u64,
                     ));
                 }
             }
-            let id = rng.pick(&SOURCES);
-            let base = rng.range(0, 25);
-            STATE.with(|cell| {
-                let mut st = cell.borrow_mut();
-                st.slot_state_mut(0).pending_block_contribs = pending
-                    .iter()
-                    .map(|(id, kind, amount)| PendingContrib {
-                        id: id.clone(),
-                        kind: *kind,
-                        player: 0,
-                        amount: *amount,
-                    })
-                    .collect();
-            });
-            push_chunk(id, base);
-            naive_push(&mut naive_pool, &pending, id, SourceKind::Card, base);
-            pending.clear();
+            let source = &sources[rng.below(sources.len() as u64) as usize];
+            model.gain(source, rng.range_i32(0, 25) as u64, &pending, 0);
+            model.check(&repro, step);
+            step += 1;
         }
         for _ in 0..rng.below(3) + 1 {
             let amount = if rng.below(4) == 0 {
-                rng.range(1, 500)
+                rng.range_i32(1, 500)
             } else {
-                rng.range(1, 30)
-            };
-            let credited = consume_chunk(amount);
-            let naive_credited = naive_consume(&mut naive_pool, &mut naive_credits, amount);
-            assert_eq!(
-                credited, naive_credited,
-                "{repro}: the pool's credited total must match the naive model"
-            );
-            compare_pool_and_credits(&naive_pool, &naive_credits, &repro);
+                rng.range_i32(1, 30)
+            } as u64;
+            model.receive(&sources[0], amount, amount, 1, 0);
+            model.check(&repro, step);
+            step += 1;
         }
     }
-    let credited = consume_chunk(10_000);
-    let naive_credited = naive_consume(&mut naive_pool, &mut naive_credits, 10_000);
-    assert_eq!(
-        credited, naive_credited,
-        "{repro}: the draining consume matches"
+    model.receive(&sources[0], 10_000, 10_000, 1, 0);
+    model.check(&repro, step);
+    assert!(
+        model.pools[0].chunks.is_empty(),
+        "{repro}: the final hit drains every modeled chunk"
     );
-    compare_pool_and_credits(&naive_pool, &naive_credits, &repro);
     let _ = fs::remove_dir_all(&base);
-}
-
-fn compare_pool_and_credits(
-    naive_pool: &[NaiveChunk],
-    naive_credits: &BTreeMap<String, (i64, i64)>,
-    repro: &str,
-) {
-    STATE.with(|cell| {
-        let st = cell.borrow();
-        let pool = &st.per_player[0].block_pool;
-        assert_eq!(
-            pool.len(),
-            naive_pool.len(),
-            "{repro}: the pool must hold the same chunks as the naive model"
-        );
-        for (real, naive) in pool.iter().zip(naive_pool) {
-            assert_eq!(real.id, naive.id, "{repro}: chunk sources must match");
-            assert_eq!(real.kind, naive.kind, "{repro}: chunk kinds must match");
-            assert_eq!(
-                real.remaining, naive.remaining,
-                "{repro}: chunk remaining must match"
-            );
-            assert_eq!(
-                real.base_original, naive.base_original,
-                "{repro}: chunk base_original must match"
-            );
-            assert_eq!(
-                real.base_consumed, naive.base_consumed,
-                "{repro}: chunk base_consumed must match"
-            );
-            assert_eq!(
-                real.mods.len(),
-                naive.mods.len(),
-                "{repro}: chunk modifier counts must match"
-            );
-            for (m, n) in real.mods.iter().zip(&naive.mods) {
-                assert_eq!(m.id, n.id, "{repro}: modifier sources must match");
-                assert_eq!(m.kind, n.kind, "{repro}: modifier kinds must match");
-                assert_eq!(
-                    m.original, n.original,
-                    "{repro}: modifier originals must match"
-                );
-                assert_eq!(
-                    m.consumed, n.consumed,
-                    "{repro}: modifier consumed must match"
-                );
-            }
-        }
-        let combat = st
-            .current
-            .as_ref()
-            .unwrap_or_else(|| panic!("{repro}: the block pool sim runs inside a combat"));
-        for (id, (base, modifier)) in naive_credits {
-            let card = combat
-                .cards
-                .iter()
-                .find(|card| card.id == *id)
-                .unwrap_or_else(|| {
-                    panic!("{repro}: credited source '{id}' must have a ledger entry")
-                });
-            assert_eq!(
-                card.block_effective, *base,
-                "{repro}: base credit for '{id}' must match the naive model"
-            );
-            assert_eq!(
-                card.blk_modifier, *modifier,
-                "{repro}: modifier credit for '{id}' must match the naive model"
-            );
-        }
-        // Every ledger entry in the combat came from a credit: no phantom
-        // or empty sources.
-        for card in &combat.cards {
-            assert!(
-                naive_credits.contains_key(&card.id),
-                "{repro}: card '{}' must have been credited something",
-                card.id
-            );
-        }
-    });
 }

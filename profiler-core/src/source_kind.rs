@@ -1,5 +1,5 @@
-//! The five ledger-row source kinds: the stored `kind: u8` decoded at the
-//! JSON boundary, and the C context code clamped at the ABI boundary.
+//! The ledger-row source kinds: the stored `kind: u8` decoded at the
+//! JSON boundary, and the C source code clamped at the ABI boundary.
 
 use std::cell::Cell;
 
@@ -15,6 +15,7 @@ pub enum SourceKind {
     Power = 2,
     Potion = 3,
     Osty = 4,
+    Unknown = 5,
 }
 
 std::thread_local! {
@@ -22,28 +23,30 @@ std::thread_local! {
 }
 
 impl SourceKind {
-    pub const ALL: [SourceKind; 5] = [
+    pub const ALL: [SourceKind; 6] = [
         SourceKind::Card,
         SourceKind::Relic,
         SourceKind::Power,
         SourceKind::Potion,
         SourceKind::Osty,
+        SourceKind::Unknown,
     ];
 
-    /// The shim sends only Card/Relic/Power context codes. Invalid values
-    /// clamp to Card (0) below zero or Power (2) above two, logged once.
     pub fn from_c(kind: i32) -> SourceKind {
-        let clamped = kind.clamp(0, SourceKind::Power as i32);
+        let clamped = kind.clamp(0, SourceKind::Unknown as i32);
         if clamped != kind {
             crate::fail_once(
                 &BAD_KIND_LOGGED,
-                format_args!("invalid context kind {kind}; clamping to {clamped}"),
+                format_args!("invalid source kind {kind}; clamping to {clamped}"),
             );
         }
         match clamped {
             0 => SourceKind::Card,
             1 => SourceKind::Relic,
-            _ => SourceKind::Power,
+            2 => SourceKind::Power,
+            3 => SourceKind::Potion,
+            4 => SourceKind::Osty,
+            _ => SourceKind::Unknown,
         }
     }
 
@@ -54,11 +57,11 @@ impl SourceKind {
             SourceKind::Power => "power",
             SourceKind::Potion => "potion",
             SourceKind::Osty => "osty",
+            SourceKind::Unknown => "unknown",
         }
     }
 }
 
-/// Unknown stored bytes read as Osty, matching the old parser tolerance.
 impl From<u8> for SourceKind {
     fn from(kind: u8) -> SourceKind {
         match kind {
@@ -66,7 +69,8 @@ impl From<u8> for SourceKind {
             1 => SourceKind::Relic,
             2 => SourceKind::Power,
             3 => SourceKind::Potion,
-            _ => SourceKind::Osty,
+            4 => SourceKind::Osty,
+            _ => SourceKind::Unknown,
         }
     }
 }

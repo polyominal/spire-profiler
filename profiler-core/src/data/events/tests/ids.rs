@@ -1,6 +1,7 @@
 use super::*;
 use crate::data::persistence::test_support::write_store_file;
 use crate::data::state::RunOutcome;
+use crate::test_util::{SourceFixture, combat_epoch};
 
 #[test]
 fn exhausted_combat_ids_preserve_records_and_clear_active_state() {
@@ -11,22 +12,29 @@ fn exhausted_combat_ids_preserve_records_and_clear_active_state() {
         test_reset();
         init(&base);
         run_started("IRONCLAD", 0, "Standard", "LAST", 0, "", 1000);
-        context_begin("OUTER", 1, 0);
-        combat_started("LAST", "test");
+        let epoch = combat_started("LAST", "test");
         assert_eq!(
             STATE.with(|s| s.borrow().current.as_ref().unwrap().seq),
             u32::MAX
         );
-        if written {
-            card_play_started("STRIKE", 0, 1, 0, 0);
-            block_gained(5, "STRIKE", 0, 0);
-            orb_channeled(1, 0);
-            card_generated(2, "STRIKE", 0, 0);
-            enemy_hit_context(6, 1);
-        }
+        let source = source_capture(epoch, 0, 0, "", 0, 4, 0);
+        assert_eq!(source_count(source), 1);
+        let calculation = damage_calculation_begin(epoch, source, 0, 1, 999);
+        assert_eq!(damage_calculation_enemy_hit(calculation, 42, 6, 1), 1);
+        let play = if written {
+            let card = SourceFixture::card("STRIKE", 0);
+            let play = card.play();
+            card.block(5, 0);
+            let channeled = card.with_transfer(|transfer| orb_channeled(epoch, 1, transfer));
+            assert_eq!(channeled, 1);
+            card.generate(2);
+            play
+        } else {
+            0
+        };
         if ending == "completed" {
-            card_play_finished(0);
-            combat_ended();
+            assert_eq!(card_play_finished(play), 1);
+            combat_ended(epoch);
         }
         let path = base.join(format!("runs/1/{}.json", u32::MAX));
         let mut persisted = None;
@@ -37,21 +45,14 @@ fn exhausted_combat_ids_preserve_records_and_clear_active_state() {
                 assert_eq!(state.next_combat_id, u32::MAX);
                 assert!(state.current.is_none());
                 assert!(state.per_player.is_empty());
-                assert!(state.last_source.is_none());
-                assert!(state.orb_sources.is_empty());
-                assert!(state.generated_instances.is_empty());
-                assert!(state.enemy_hit.is_none());
-                assert_eq!(state.context_stack.active().unwrap().id, "OUTER");
                 assert_eq!(state.run_combats, u32::from(written));
             });
-            card_play_finished(0);
-            damage_dealt(DamageDealt {
-                total: 9,
-                unblocked: 9,
-                ..DamageDealt::default()
-            });
-            block_gained(9, "STALE", 0, 0);
-            combat_ended();
+            assert_eq!(source_count(source), -1);
+            assert_eq!(card_play_finished(play), 0);
+            assert_eq!(damage_calculation_abort(calculation), 0);
+            assert_eq!(damage_unattributed(epoch, 9, 9, 0, 0, 4, 0), 0);
+            assert_eq!(block_gained(epoch, 9, 0, 0), 0);
+            combat_ended(epoch);
             let bytes = std::fs::read(&path).ok();
             if attempt == 0 {
                 persisted = bytes;
@@ -62,7 +63,6 @@ fn exhausted_combat_ids_preserve_records_and_clear_active_state() {
                 );
             }
         }
-        context_end();
         let mut expected = vec![(0, u32::MAX - 1)];
         if written {
             expected.push((1, u32::MAX));
@@ -83,8 +83,9 @@ fn exhausted_combat_ids_from_store_preserve_the_existing_file() {
     test_reset();
     init(&base);
     for _ in 0..3 {
-        combat_started("EXHAUSTED", "test");
-        combat_ended();
+        let epoch = combat_started("EXHAUSTED", "test");
+        assert_eq!(epoch, 0);
+        assert_eq!(combat_ended(epoch), 0);
         assert!(STATE.with(|s| s.borrow().current.is_none()));
     }
     assert_eq!(combat_ids(&base.join("runs")), vec![(0, u32::MAX)]);
@@ -103,13 +104,15 @@ fn exhausted_run_ids_close_previous_run_and_discard_stale_data() {
         init(&base);
         run_started("IRONCLAD", 0, "Standard", "PREVIOUS", 0, "", 1000);
         combat_started("SAVED", "test");
-        turn_started();
-        card_play_started("STRIKE", 0, 1, 0, 0);
-        card_play_finished(0);
-        combat_ended();
+        turn_started(combat_epoch());
+        let card = SourceFixture::card("STRIKE", 0);
+        card.finish(card.play());
+        combat_ended(combat_epoch());
         let saved = read_test_file(&base, "runs/1/1.json");
-        combat_started("STALE", "test");
-        card_play_started("STALE", 0, 1, 0, 0);
+        let stale_epoch = combat_started("STALE", "test");
+        let stale_play = SourceFixture::card("STALE", 0).play();
+        let stale_source = source_capture(stale_epoch, 0, 0, "", 0, 4, 0);
+        assert_eq!(source_count(stale_source), 1);
         panel_filter_toggle(0);
         let sentinel = format!(r#"{{"run_id":{},"seed":"RESERVED"}}"#, u32::MAX);
         let directory = base.join(format!("runs/{}", u32::MAX));
@@ -129,13 +132,10 @@ fn exhausted_run_ids_close_previous_run_and_discard_stale_data() {
                 assert_eq!((state.run_combats, state.run_turns), (0, 0));
                 assert_eq!(state.player_filter, PlayerFilter::All);
             });
-            card_play_finished(0);
-            damage_dealt(DamageDealt {
-                total: 9,
-                unblocked: 9,
-                ..DamageDealt::default()
-            });
-            combat_ended();
+            assert_eq!(source_count(stale_source), -1);
+            assert_eq!(card_play_finished(stale_play), 0);
+            assert_eq!(damage_unattributed(stale_epoch, 9, 9, 0, 0, 4, 0), 0);
+            combat_ended(stale_epoch);
             run_ended(RunOutcome::Victory);
         }
         assert_eq!(read_test_file(&base, "runs/1/1.json"), saved);
@@ -157,7 +157,7 @@ fn exhausted_run_ids_close_previous_run_and_discard_stale_data() {
         }
         assert!(!read_test_file(&base, "profiler.log").contains("started: DEFECT"));
         combat_started("OUTSIDE_RUN", "test");
-        combat_ended();
+        combat_ended(combat_epoch());
         let outside: serde_json::Value =
             serde_json::from_str(&read_test_file(&base, "runs/0/3.json")).unwrap();
         assert!(outside.get("run").is_none());
@@ -177,24 +177,24 @@ fn final_run_id_resumes_after_fresh_allocation_exhaustion() {
         u32::MAX
     );
     combat_started("LAST", "test");
-    turn_started();
-    card_play_started("STRIKE", 0, 1, 0, 0);
-    block_gained(5, "STRIKE", 0, 0);
-    card_play_finished(0);
-    combat_ended();
+    turn_started(combat_epoch());
+    let card = SourceFixture::card("STRIKE", 0);
+    let play = card.play();
+    card.block(5, 0);
+    card.finish(play);
+    combat_ended(combat_epoch());
     run_suspended();
     let saved = read_test_file(&base, &format!("runs/{}/1.json", u32::MAX));
     test_reset();
     init(&base);
     set_run_meta(2);
-    context_begin("OUTER", 1, 0);
     for continued in [0, 1] {
         run_started("DEFECT", 0, "Standard", "DIFFERENT", continued, "", 1000);
         assert!(STATE.with(|s| s.borrow().run_ctx.is_none()));
     }
     combat_started("OUTSIDE_RUN", "test");
-    block_gained(99, "", 0, 0);
-    combat_ended();
+    SourceFixture::relic("OUTER", 0).block(99, 0);
+    combat_ended(combat_epoch());
     run_started("IRONCLAD", 0, "Standard", "LAST", 1, "", 1000);
     STATE.with(|cell| {
         let state = cell.borrow();
@@ -203,9 +203,8 @@ fn final_run_id_resumes_after_fresh_allocation_exhaustion() {
         assert_eq!(state.run_cards.len(), 1);
         assert_eq!(state.run_cards[0].block_gained, 5);
     });
-    context_end();
     combat_started("RESUMED", "test");
-    combat_ended();
+    combat_ended(combat_epoch());
     run_ended(RunOutcome::Victory);
     assert_eq!(
         read_test_file(&base, &format!("runs/{}/1.json", u32::MAX)),
