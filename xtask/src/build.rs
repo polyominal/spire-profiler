@@ -53,7 +53,7 @@ pub fn build(shell: &Shell) -> Result<discover::GamePaths> {
 
 fn build_host_project(shell: &Shell, root: &Path, game: &discover::GamePaths) -> Result<PathBuf> {
     let gen_dir = root.join("target/xtask-gen");
-    refresh_gen_dir(&gen_dir)?;
+    std::fs::create_dir_all(&gen_dir)?;
     write_if_changed(&gen_dir.join("shim.cs"), &shim::build_shim_cs())?;
     write_if_changed(
         &gen_dir.join(CSPROJ_NAME),
@@ -63,25 +63,7 @@ fn build_host_project(shell: &Shell, root: &Path, game: &discover::GamePaths) ->
     Ok(gen_dir)
 }
 
-/// The refresh skips it so an unchanged csproj keeps its mtime; any other
-/// project file is removed — dotnet build refuses a dir with two.
 const CSPROJ_NAME: &str = "SpireProfiler.csproj";
-
-fn refresh_gen_dir(gen_dir: &Path) -> Result<()> {
-    std::fs::create_dir_all(gen_dir)?;
-    for entry in std::fs::read_dir(gen_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path
-            .extension()
-            .is_some_and(|extension| extension == "csproj")
-            && entry.file_name() != std::ffi::OsStr::new(CSPROJ_NAME)
-        {
-            std::fs::remove_file(&path)?;
-        }
-    }
-    Ok(())
-}
 
 /// Keeps mtime, so MSBuild treats the build as up to date.
 fn write_if_changed(path: &Path, content: &str) -> Result<()> {
@@ -106,7 +88,7 @@ fn run_dotnet_build(shell: &Shell, gen_dir: &Path) -> Result<()> {
     );
     cmd!(
         shell,
-        "{binary} build --configuration Release --nologo --verbosity quiet"
+        "{binary} build {CSPROJ_NAME} --configuration Release --nologo --verbosity quiet"
     )
     .run()?;
     Ok(())
