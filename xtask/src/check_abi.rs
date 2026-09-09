@@ -1,6 +1,10 @@
 //! ABI conformance between the generated C# shim and the Rust core: every
-//! GetExport binding must match its `extern "C" fn` parameter list,
-//! compared as canonical classes (int / long / ulong / double / string). The
+//! GetExport binding must match its `extern "C" fn` parameters and return,
+//! compared as canonical classes (int / long / ulong / double / string / void).
+//! Returns support only scalars and void. Bound delegates accept whitespace and
+//! line-comment prefixes after a declaration boundary. Delegate attributes,
+//! trailing block comments, directives, and extra modifiers are unsupported.
+//! Parameter attributes remain supported. The
 //! check runs inside build and fails it on mismatch. Only *bound* exports
 //! are checked; test-only exports are ignored. The scanners are deliberately
 //! simple (no regex) because the edge cases — nested parens in
@@ -17,8 +21,14 @@ use crate::workspace_root;
 
 const WHITESPACE: &[char] = &[' ', '\t', '\n', '\r', '\x0b', '\x0c'];
 
+#[derive(PartialEq, Eq)]
+struct Signature {
+    parameters: Vec<String>,
+    returns: &'static str,
+}
+
 struct RustExport {
-    classes: Vec<String>,
+    signature: Signature,
     source: String,
 }
 
@@ -52,13 +62,12 @@ pub fn run() -> Result<()> {
 
 /// One Err entry per mismatch, in binding order.
 fn compare(rust_source: &str, source_name: &str, template: &str) -> Result<usize, Vec<String>> {
-    let mut exports = HashMap::new();
-    scan_rust_exports(rust_source, source_name, &mut exports).map_err(|e| vec![e])?;
-
-    let mut delegates = HashMap::new();
-    scan_delegates(template, &mut delegates).map_err(|e| vec![e])?;
     let mut bindings = Vec::new();
     scan_bindings(template, &mut bindings).map_err(|e| vec![e])?;
+    let mut exports = HashMap::new();
+    scan_rust_exports(rust_source, source_name, &bindings, &mut exports).map_err(|e| vec![e])?;
+    let mut delegates = HashMap::new();
+    scan_delegates(template, &bindings, &mut delegates).map_err(|e| vec![e])?;
 
     let mut errors = Vec::new();
     if bindings.is_empty() {
@@ -67,15 +76,17 @@ fn compare(rust_source: &str, source_name: &str, template: &str) -> Result<usize
     for binding in &bindings {
         match exports.get(&binding.export_name) {
             Some(export) => match delegates.get(&binding.delegate) {
-                Some(classes) if *classes == export.classes => {}
-                Some(classes) => {
+                Some(signature) if *signature == export.signature => {}
+                Some(signature) => {
                     errors.push(format!(
-                        "{}: Rust({}) [{}] != C# {}({})",
+                        "{}: Rust({}) -> {} [{}] != C# {}({}) -> {}",
                         binding.export_name,
-                        export.classes.join(", "),
+                        export.signature.parameters.join(", "),
+                        export.signature.returns,
                         export.source,
                         binding.delegate,
-                        classes.join(", "),
+                        signature.parameters.join(", "),
+                        signature.returns,
                     ));
                 }
                 None => {
@@ -99,22 +110,26 @@ fn compare(rust_source: &str, source_name: &str, template: &str) -> Result<usize
     Ok(bindings.len())
 }
 
-/// Anything unlisted surfaces as `?<type>` and mismatches any export.
-fn map_rust_type(abi_type: &str) -> String {
+fn map_rust_type(abi_type: &str) -> Result<String, String> {
     match abi_type {
-        "i32" => "int".to_owned(),
-        "i64" => "long".to_owned(),
-        "u64" => "ulong".to_owned(),
-        "f64" => "double".to_owned(),
-        "*const c_char" => "string".to_owned(),
-        _ => format!("?{abi_type}"),
+        "i32" => Ok("int".to_owned()),
+        "i64" => Ok("long".to_owned()),
+        "u64" => Ok("ulong".to_owned()),
+        "f64" => Ok("double".to_owned()),
+        "*const c_char" => Ok("string".to_owned()),
+        _ => Err(format!("unsupported Rust parameter type '{abi_type}'")),
     }
 }
 
-fn map_cs_type(abi_type: &str) -> String {
+fn map_cs_type(abi_type: &str) -> Option<&'static str> {
     match abi_type {
-        "int" | "long" | "ulong" | "double" | "string" => abi_type.to_owned(),
-        _ => format!("?{abi_type}"),
+        "void" => Some("void"),
+        "int" => Some("int"),
+        "long" => Some("long"),
+        "ulong" => Some("ulong"),
+        "double" => Some("double"),
+        "string" => Some("string"),
+        _ => None,
     }
 }
 
@@ -162,7 +177,7 @@ fn rust_param_classes(raw: &str) -> Result<Vec<String>, String> {
             .find(':')
             .ok_or_else(|| format!("param '{part}' has no name/type ':' separator"))?;
         let param_type = part[colon + 1..].trim_matches(WHITESPACE);
-        classes.push(map_rust_type(param_type));
+        classes.push(map_rust_type(param_type)?);
     }
     Ok(classes)
 }
@@ -190,7 +205,12 @@ fn cs_param_classes(raw: &str) -> Result<Vec<String>, String> {
                  [MarshalAs(UnmanagedType.LPUTF8Str)] (the ABI requires UTF-8 marshaling)"
             ));
         }
-        classes.push(map_cs_type(cs_type));
+        classes.push(
+            map_cs_type(cs_type)
+                .filter(|class| *class != "void")
+                .ok_or_else(|| format!("unsupported C# parameter type '{cs_type}'"))?
+                .to_owned(),
+        );
     }
     Ok(classes)
 }
@@ -235,6 +255,7 @@ fn strip_attributes(text: &str) -> Result<&str, String> {
 fn scan_rust_exports(
     text: &str,
     source: &str,
+    bindings: &[Binding],
     exports: &mut HashMap<String, RustExport>,
 ) -> Result<(), String> {
     const NEEDLE: &str = "extern \"C\" fn ";
@@ -254,16 +275,53 @@ fn scan_rust_exports(
         {
             j += 1;
         }
-        if text[j..].starts_with('(') && is_profiler_name(name) {
-            let raw = extract_params(text, j)?;
+        if text[j..].starts_with('(') && bindings.iter().any(|binding| binding.export_name == name)
+        {
+            let raw = extract_params(text, j).map_err(|error| format!("{name}: {error}"))?;
+            let after_params = j + raw.len() + 2;
+            let tail = text[after_params..].trim_start_matches(WHITESPACE);
+            let returns = if tail.starts_with('{') {
+                "void"
+            } else if let Some(after_arrow) = tail.strip_prefix("->") {
+                let body_start = after_arrow
+                    .find('{')
+                    .ok_or_else(|| format!("{name}: Rust return type has no function body"))?;
+                let return_type = after_arrow[..body_start].trim_matches(WHITESPACE);
+                match return_type {
+                    "i32" => "int",
+                    "i64" => "long",
+                    "u64" => "ulong",
+                    "f64" => "double",
+                    unit if unit
+                        .strip_prefix('(')
+                        .and_then(|inner| inner.strip_suffix(')'))
+                        .is_some_and(|inner| inner.trim_matches(WHITESPACE).is_empty()) =>
+                    {
+                        "void"
+                    }
+                    _ => {
+                        return Err(format!(
+                            "{name}: unsupported Rust return type '{return_type}'"
+                        ));
+                    }
+                }
+            } else {
+                return Err(format!(
+                    "{name}: expected '{{' or '->' after Rust parameters"
+                ));
+            };
             exports.insert(
                 name.to_owned(),
                 RustExport {
-                    classes: rust_param_classes(raw.trim_matches(WHITESPACE))?,
+                    signature: Signature {
+                        parameters: rust_param_classes(raw.trim_matches(WHITESPACE))
+                            .map_err(|error| format!("{name}: {error}"))?,
+                        returns,
+                    },
                     source: source.to_owned(),
                 },
             );
-            pos = j + 1;
+            pos = after_params;
             continue;
         }
         pos = found + 1;
@@ -271,30 +329,68 @@ fn scan_rust_exports(
     Ok(())
 }
 
-/// The open paren must follow the name immediately.
 fn scan_delegates(
     template: &str,
-    delegates: &mut HashMap<String, Vec<String>>,
+    bindings: &[Binding],
+    delegates: &mut HashMap<String, Signature>,
 ) -> Result<(), String> {
-    const NEEDLE: &str = "private delegate void ";
+    const NEEDLE: &str = "private delegate ";
     let mut pos = 0;
     while let Some(found) = template[pos..].find(NEEDLE).map(|i| pos + i) {
-        let mut i = found + NEEDLE.len();
-        let name_start = i;
-        while template[i..].chars().next().is_some_and(is_word_char) {
-            i += 1;
-        }
-        let name = &template[name_start..i];
-        if template[i..].starts_with('(') {
-            let raw = extract_params(template, i)?;
-            delegates.insert(
-                name.to_owned(),
-                cs_param_classes(raw.trim_matches(WHITESPACE))?,
-            );
-            pos = i + 1;
+        let header_start = found + NEEDLE.len();
+        let open = template[header_start..]
+            .find('(')
+            .map(|index| header_start + index)
+            .ok_or_else(|| format!("delegate at template offset {found} has no parameters"))?;
+        let header = template[header_start..open].trim_matches(WHITESPACE);
+        let name = header
+            .split_ascii_whitespace()
+            .next_back()
+            .unwrap_or_default();
+        if !bindings.iter().any(|binding| binding.delegate == name) {
+            pos = found + NEEDLE.len();
             continue;
         }
-        pos = found + 1;
+        let return_type = header[..header.len() - name.len()].trim_matches(WHITESPACE);
+        let returns = map_cs_type(return_type)
+            .filter(|class| *class != "string")
+            .ok_or_else(|| format!("{name}: unsupported C# return type '{return_type}'"))?;
+        // Only recognized declaration boundaries prove that no attached attribute remains.
+        let mut prefix = template[..found].trim_end_matches(WHITESPACE);
+        loop {
+            let line = prefix.rsplit(['\r', '\n']).next().unwrap_or_default();
+            let unclassified = line.trim_start_matches(WHITESPACE).starts_with('#')
+                || prefix.ends_with(']')
+                || prefix.ends_with("*/");
+            if !unclassified && let Some(comment) = line.rfind("//") {
+                prefix = prefix[..prefix.len() - line.len() + comment].trim_end_matches(WHITESPACE);
+                continue;
+            }
+            if unclassified || (!prefix.is_empty() && !prefix.ends_with([';', '{', '}'])) {
+                return Err(format!(
+                    "{name}: unsupported delegate prefix; expected a declaration boundary, \
+                     whitespace, or line comments"
+                ));
+            }
+            break;
+        }
+        let raw = extract_params(template, open).map_err(|error| format!("{name}: {error}"))?;
+        let after_params = open + raw.len() + 2;
+        if !template[after_params..]
+            .trim_start_matches(WHITESPACE)
+            .starts_with(';')
+        {
+            return Err(format!("{name}: expected ';' after delegate parameters"));
+        }
+        delegates.insert(
+            name.to_owned(),
+            Signature {
+                parameters: cs_param_classes(raw.trim_matches(WHITESPACE))
+                    .map_err(|error| format!("{name}: {error}"))?,
+                returns,
+            },
+        );
+        pos = after_params;
     }
     Ok(())
 }
@@ -390,6 +486,212 @@ internal static class ProfilerNative
         assert_eq!(bindings, 2);
     }
 
+    fn compare_returns(rust_return: &str, cs_return: &str) -> Result<usize, Vec<String>> {
+        let rust = format!(
+            "pub extern \"C\" fn spire_profiler_value(value: i32) {rust_return} {{ todo!() }}"
+        );
+        let template = format!(
+            "private delegate {cs_return} NativeValue(int value);\n\
+             GetExport<NativeValue>(lib, \"spire_profiler_value\");"
+        );
+        compare(&rust, "abi.rs", &template)
+    }
+
+    #[test]
+    fn scalar_and_unit_returns_match() {
+        for (rust_return, cs_return) in [
+            ("", "void"),
+            ("-> ()", "void"),
+            ("-> ( \n )", "void"),
+            ("-> i32", "int"),
+            ("-> i64", "long"),
+            ("-> u64", "ulong"),
+            ("->\n f64", "double"),
+        ] {
+            assert_eq!(compare_returns(rust_return, cs_return), Ok(1));
+        }
+    }
+
+    #[test]
+    fn identical_parameters_with_different_returns_fail() {
+        for (rust_return, cs_return, expected_rust) in [
+            ("-> u64", "long", "ulong"),
+            ("-> u64", "void", "ulong"),
+            ("", "ulong", "void"),
+            ("-> i32", "double", "int"),
+        ] {
+            let errors = compare_returns(rust_return, cs_return)
+                .expect_err("a return mismatch must fail despite matching parameters");
+            assert_eq!(
+                errors,
+                [format!(
+                    "spire_profiler_value: Rust(int) -> {expected_rust} [abi.rs] \
+                     != C# NativeValue(int) -> {cs_return}"
+                )]
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_and_malformed_returns_fail_closed() {
+        for (rust_return, cs_return, diagnostic) in [
+            ("-> bool", "bool", "unsupported Rust return type 'bool'"),
+            (
+                "-> Custom",
+                "Custom",
+                "unsupported Rust return type 'Custom'",
+            ),
+            (
+                "-> *const c_char",
+                "string",
+                "unsupported Rust return type '*const c_char'",
+            ),
+            ("-> u64", "string", "unsupported C# return type 'string'"),
+            ("-> u64", "bool", "unsupported C# return type 'bool'"),
+            ("-> u64", "Custom", "unsupported C# return type 'Custom'"),
+            ("-> u64", "ulong[]", "unsupported C# return type 'ulong[]'"),
+            (
+                "-> u64",
+                "ref ulong",
+                "unsupported C# return type 'ref ulong'",
+            ),
+            ("-> u64", "", "unsupported C# return type ''"),
+            ("->", "void", "unsupported Rust return type ''"),
+            (
+                "-> () -> ()",
+                "void",
+                "unsupported Rust return type '() -> ()'",
+            ),
+            ("u64", "ulong", "expected '{' or '->' after Rust parameters"),
+        ] {
+            let errors = compare_returns(rust_return, cs_return)
+                .expect_err("unrecognized return syntax must never compare equal");
+            assert_eq!(errors.len(), 1);
+            assert!(
+                errors[0].contains(diagnostic),
+                "unexpected error: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn signatures_without_required_terminators_fail() {
+        let rust = "pub extern \"C\" fn spire_profiler_foo() -> u64";
+        let errors = compare(rust, "abi.rs", GOOD_TMPL)
+            .expect_err("a return type without a function body must fail");
+        assert_eq!(
+            errors,
+            ["spire_profiler_foo: Rust return type has no function body"]
+        );
+        let template = GOOD_TMPL.replace("double delta);", "double delta) extra;");
+        let errors = compare(GOOD_RUST, "abi.rs", &template)
+            .expect_err("a malformed delegate terminator must fail");
+        assert_eq!(
+            errors,
+            ["NativeBar: expected ';' after delegate parameters"]
+        );
+    }
+
+    #[test]
+    fn delegate_attributes_and_unclassified_prefixes_are_rejected() {
+        let rust = "pub extern \"C\" fn spire_profiler_value(value: i32) -> i64 { 0 }";
+        for prefix in [
+            "[return: MarshalAs(UnmanagedType.I4)]",
+            "[ return \n : MarshalAs(UnmanagedType.I4)]",
+            "[return: MarshalAs(UnmanagedType.I4)]\n[UnmanagedFunctionPointer(CallingConvention.Cdecl)]",
+            "[UnmanagedFunctionPointer(CallingConvention.Cdecl)]",
+            "[return /* native result */: MarshalAs(UnmanagedType.I4)]",
+            "[return: MarshalAs(UnmanagedType.I4)] // native result; documented",
+            "[return: MarshalAs(UnmanagedType.I4)] /* native result { documented */",
+            "/* native result { documented */",
+            "[return: MarshalAs(UnmanagedType.I4)] // native result // documented",
+            "[return: MarshalAs(UnmanagedType.I4)]\n// one comment\n// another comment",
+        ] {
+            let template = format!(
+                "{prefix}\nprivate delegate long NativeValue(int value);\n\
+                 GetExport<NativeValue>(lib, \"spire_profiler_value\");"
+            );
+            let errors = compare(rust, "abi.rs", &template)
+                .expect_err("unclassified prefixes can hide native return representation changes");
+            assert_eq!(
+                errors,
+                [
+                    "NativeValue: unsupported delegate prefix; expected a declaration boundary, \
+                 whitespace, or line comments"
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn directives_and_modifiers_cannot_hide_return_attributes() {
+        let rust = "pub extern \"C\" fn spire_profiler_value(value: i32) -> i64 { 0 }";
+        for newline in ["\n", "\r", "\r\n"] {
+            for (prefix, suffix) in [
+                ("new ", ""),
+                ("#pragma warning disable\n", ""),
+                ("#region native result ;\n", "\n#endregion"),
+                ("#region native result {\n", "\n#endregion"),
+                ("#region native result } // documented\n", "\n#endregion"),
+            ] {
+                let template = format!(
+                    "[return: MarshalAs(UnmanagedType.I4)]\n\
+                     {prefix}private delegate long NativeValue(int value);{suffix}\n\
+                     GetExport<NativeValue>(lib, \"spire_profiler_value\");"
+                )
+                .replace('\n', newline);
+                let errors = compare(rust, "abi.rs", &template)
+                    .expect_err("unclassified prefixes cannot prove absence of return attributes");
+                assert_eq!(
+                    errors,
+                    [
+                        "NativeValue: unsupported delegate prefix; expected a declaration boundary, \
+                     whitespace, or line comments"
+                    ]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn line_comments_before_bound_delegates_are_accepted() {
+        for newline in ["\n", "\r", "\r\n"] {
+            let template = GOOD_TMPL
+                .replace(
+                    "private delegate void NativeFoo",
+                    "// Native declaration; documented here\n// More documentation\n\
+                 private delegate void NativeFoo",
+                )
+                .replace('\n', newline);
+            assert_eq!(compare(GOOD_RUST, "abi.rs", &template), Ok(2));
+        }
+    }
+
+    #[test]
+    fn unsupported_unbound_signatures_are_ignored() {
+        let rust = format!(
+            "{GOOD_RUST}\n\
+             pub extern \"C\" fn spire_profiler_unused(value: Custom) -> Custom {{ value }}"
+        );
+        let template = format!(
+            "[return: MarshalAs(UnmanagedType.I4)] /* unbound attribute */\n\
+             private delegate Custom NativeUnused(Custom value);\n{GOOD_TMPL}"
+        );
+        assert_eq!(compare(&rust, "abi.rs", &template), Ok(2));
+    }
+
+    #[test]
+    fn identically_spelled_unsupported_parameters_do_not_match() {
+        let rust = GOOD_RUST.replace("amount: i32", "amount: Custom");
+        let template = GOOD_TMPL.replace("int amount", "Custom amount");
+        let errors = compare(&rust, "abi.rs", &template)
+            .expect_err("unknown parameter classes must not match by spelling");
+        assert!(errors[0].contains("unsupported Rust parameter type 'Custom'"));
+        let errors = compare(GOOD_RUST, "abi.rs", &template)
+            .expect_err("unknown C# parameter classes must fail explicitly");
+        assert!(errors[0].contains("unsupported C# parameter type 'Custom'"));
+    }
+
     /// Drifted delegate parameter order must fail with a side-by-side diff.
     #[test]
     fn shifted_parameter_list_fails_with_a_diff() {
@@ -397,14 +699,14 @@ internal static class ProfilerNative
             (
                 "int amount, [MarshalAs(UnmanagedType.LPUTF8Str)] string id, ulong hash",
                 "[MarshalAs(UnmanagedType.LPUTF8Str)] string id, int amount, ulong hash",
-                "spire_profiler_foo: Rust(int, string, ulong) [abi.rs] \
-                 != C# NativeFoo(string, int, ulong)",
+                "spire_profiler_foo: Rust(int, string, ulong) -> void [abi.rs] \
+                 != C# NativeFoo(string, int, ulong) -> void",
             ),
             (
                 "int amount, long started_at, double delta",
                 "long started_at, int amount, double delta",
-                "spire_profiler_bar: Rust(int, long, double) [abi.rs] \
-                 != C# NativeBar(long, int, double)",
+                "spire_profiler_bar: Rust(int, long, double) -> void [abi.rs] \
+                 != C# NativeBar(long, int, double) -> void",
             ),
         ] {
             let template = GOOD_TMPL.replace(original, shifted);
@@ -454,7 +756,10 @@ internal static class ProfilerNative
 
     #[test]
     fn unbalanced_params_are_a_scanner_error() {
-        let template = "private delegate void NativeFoo(int amount;\n";
+        let template = r#"
+private delegate void NativeFoo(int amount;
+GetExport<NativeFoo>(lib, "spire_profiler_foo");
+"#;
         let errors =
             compare(GOOD_RUST, "abi.rs", template).expect_err("unbalanced parens must fail");
         assert_eq!(errors.len(), 1);
