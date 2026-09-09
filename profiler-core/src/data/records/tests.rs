@@ -94,6 +94,16 @@ fn parse_combat_doc_ignores_unknown_fields_and_fills_defaults() {
 }
 
 #[test]
+fn parse_combat_doc_preserves_potion_and_osty_and_defaults_unknown_kinds_to_osty() {
+    let c = parse_combat_doc(r#"{"cards":[{"kind":3},{"kind":4},{"kind":255}]}"#)
+        .expect("stored Potion, Osty, and unknown kinds must remain readable");
+    assert_eq!(
+        c.cards.iter().map(|card| card.kind).collect::<Vec<_>>(),
+        [SourceKind::Potion, SourceKind::Osty, SourceKind::Osty]
+    );
+}
+
+#[test]
 fn parse_combat_doc_decodes_minimal_records() {
     let c = parse_combat_doc(r#"{"combat_id":2,"encounter_id":"B"}"#).expect("parses");
     assert_eq!(c.combat_id, 2);

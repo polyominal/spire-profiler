@@ -67,14 +67,6 @@ fn resolve_damage_source(
     })
 }
 
-/// Potion/osty (3/4) round-trip exactly, unlike `SourceKind::from_c`.
-#[test]
-fn from_u8_round_trips_all_kinds() {
-    for kind in SourceKind::ALL {
-        assert_eq!(SourceKind::from(kind as u8), kind);
-    }
-}
-
 #[test]
 fn consume_debuff_layers_consumes_fifo_and_removes_exhausted() {
     reset_state();
