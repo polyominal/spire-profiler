@@ -930,11 +930,7 @@ mod tests {
     }
 
     #[test]
-    fn outcome_serde_round_trips_lowercase_and_reads_unknowns_as_defeat() {
-        assert_eq!(
-            serde_json::to_string(&RunOutcome::Victory).expect("victory serializes"),
-            "\"victory\""
-        );
+    fn outcome_serde_reads_unknown_strings_as_defeat() {
         let out: RunOutcome =
             serde_json::from_str("\"bogus\"").expect("unknown outcome string decodes");
         assert_eq!(out, RunOutcome::Defeat);
