@@ -114,7 +114,7 @@ fn ensure_zigbuild(shell: &Shell) -> Result<()> {
     crate::ensure_cargo_tool(
         shell,
         &["cargo-zigbuild", "--version"],
-        &format!("cargo-zigbuild --version {ZIGBUILD_VERSION} --locked"),
+        "cargo-zigbuild",
         ZIGBUILD_VERSION,
     )
 }
