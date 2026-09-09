@@ -403,28 +403,6 @@ mod tests {
         });
     }
 
-    /// Compares every field explicitly, so a field added to [`CardStat`]
-    /// must be added to the merge and to this assertion.
-    fn assert_card_stat_eq(a: &CardStat, b: &CardStat) {
-        assert_eq!(a.id, b.id);
-        assert_eq!(a.kind, b.kind);
-        assert_eq!(a.player, b.player);
-        assert_eq!(a.plays, b.plays);
-        assert_eq!(a.damage_dealt, b.damage_dealt);
-        assert_eq!(a.damage_blocked, b.damage_blocked);
-        assert_eq!(a.block_gained, b.block_gained);
-        assert_eq!(a.block_effective, b.block_effective);
-        assert_eq!(a.forge, b.forge);
-        assert_eq!(a.dmg_direct, b.dmg_direct);
-        assert_eq!(a.dmg_attributed, b.dmg_attributed);
-        assert_eq!(a.dmg_modifier, b.dmg_modifier);
-        assert_eq!(a.blk_modifier, b.blk_modifier);
-        assert_eq!(a.mitigate_debuff, b.mitigate_debuff);
-        assert_eq!(a.mitigate_buff, b.mitigate_buff);
-        assert_eq!(a.mitigate_str, b.mitigate_str);
-        assert_eq!(a.self_damage, b.self_damage);
-    }
-
     #[test]
     fn rebuild_run_accumulator_matches_live_merge_field_by_field() {
         let dir = unique_dir("rebuild-accumulator-parity");
@@ -466,10 +444,7 @@ mod tests {
             let st = s.borrow();
             assert_eq!(st.run_turns, live_turns);
             assert_eq!(st.run_combats, live_combats);
-            assert_eq!(st.run_cards.len(), live_cards.len());
-            for (rebuilt, expected) in st.run_cards.iter().zip(&live_cards) {
-                assert_card_stat_eq(rebuilt, expected);
-            }
+            assert_eq!(st.run_cards, live_cards);
         });
     }
 
