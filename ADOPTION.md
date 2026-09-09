@@ -15,8 +15,8 @@ A sufficient continuation prompt is: “Continue ADOPTION.md from the next pendi
 
 ## Current checkpoint
 
-Checkpoint: direct Cargo tool-install arguments, based on clean HEAD `e9a1dfdc0a0633a045e4f74d5988f2bef89136ea` on 2026-09-09. Implementation, independent review (SHIP), source comparison, isolated command-observation probe, focused test, and smoke are complete. Ready for the human commit; stop before the explicit-csproj build trial.
-The user authorizes this bounded xtask simplification under the implementation/review workflow. All commits and PRs are human-owned. Stop and discuss substantive instruction ambiguities.
+Checkpoint: the read-only simplification audit is complete and integrated below as pending work, based on clean, human-committed HEAD `a2216f71ebdd57ee48344ea4ec62b03b3554bda4` on 2026-09-09. The direct Cargo tool-install argument change is committed; its completed review and verification evidence remain below. This handoff-only update passed independent review (SHIP), `cargo xtask fmt-md`, smoke (361/361 tests), relative-link validation, and `git diff --check`. The next source item is `build_run_json`'s debug JSON self-validation; all six listed source items remain unimplemented with validation pending.
+The user authorizes this handoff integration only; stop before source implementation. All commits and PRs are human-owned. Stop and discuss substantive instruction ambiguities.
 
 Completed work:
 
@@ -77,13 +77,19 @@ Do not extract `runs`: its 123-line production prefix is already navigable. Keep
 
 Both items are implemented. Keep C-call safety based on caller obligations: pointer-reading exports and GDExtension remain unsafe, while scalar exports are safe. The scanner verifies both declaration forms.
 
-## xtask simplification and optional CI
+## Core and xtask simplification, optional CI
 
-Proceed in this order, one bounded concern each:
+Proceed in this order, one bounded concern each: the first two remove internal representation round trips, while the last three remove adjacent self-checks.
 
-- [ ] In [build.rs](xtask/src/build.rs), test explicitly passing generated `SpireProfiler.csproj` to `dotnet build` with the pinned SDK before removing `refresh_gen_dir`'s ambiguity-repair scan. This is a source-backed hypothesis, not validated tool behavior. Preserve `write_if_changed`, `DOTNET_ROOT`, and build options.
+- [ ] In [records.rs](profiler-core/src/data/records.rs), delete `build_run_json`'s debug-only parse-and-compare block: it validates JSON just emitted from typed fields. Restrict `RunDocOwned` to `cfg(test)`. Preserve serialization, schema snapshots, and parser tests; verify existing record/parser coverage and unchanged snapshot bytes.
+- [ ] In [shim.rs](xtask/src/shim.rs) `catalog_literal` and the [shim template](shim/shim.cs.template) `AttributionPatcher`, generate C# tuple data instead of joining `class|method` and splitting it at runtime. Preserve the exact ordered pairs, namespace lookup, diagnostics, catch scope, and patch behavior. Adapt existing substitution tests, compare generated pairs, compile the generated C# with the pinned SDK, and run headless verification.
+- [ ] In [build.rs](xtask/src/build.rs), test explicitly passing generated `SpireProfiler.csproj` to `dotnet build` with the pinned SDK and an extra project present before removing `refresh_gen_dir`'s ambiguity-repair scan. This is a source-backed hypothesis, not validated tool behavior. Preserve directory creation, `write_if_changed`, environment settings including `DOTNET_ROOT`, and build options.
+- [ ] In [bundle.rs](xtask/src/bundle.rs), delete `write_manifest`'s post-replacement placeholder check: the actual replacement is the static game pin plus a Git abbreviation or `unknown`, none of which can contain `@VERSION@`. Preserve rendered bytes and read/write failure propagation; compare the normal-commit and `unknown` manifest output.
+- [ ] In [build.rs](xtask/src/build.rs), delete the post-copy scan and [bundle.rs](xtask/src/bundle.rs)'s `missing_gdextension_libraries` helper only because [cross.rs](xtask/src/cross.rs)'s build list and bundle copy destinations derive from the same `MATRIX`, and failed copies propagate. Verify that derivation and copy failure propagation; preserve release bundle validation.
+- [ ] In [dotnet.rs](xtask/src/dotnet.rs) and [zig.rs](xtask/src/zig.rs), delete the post-ensure `pick` helpers and use `binary_in`: successful `ensure_bootstrap_in` already ran the pinned executable. Verify cached pinned-tool resolution and retain all installer, version, hash, cache-refresh, and failure paths.
 
-Preserve release bundle/stamp/archive-byte/checksum/failure tests; add no transactional archive-set machinery.
+Keep external tool-output parsing, installer hashes, game-pin and provenance checks, ABI/headless gates, persistence validation, and release bundle/stamp/archive-byte/checksum/failure checks. Add no broader refactor, new abstraction, or transactional archive-set machinery.
+Exclude the [run-history test](profiler-core/src/data/run_history/tests.rs) `Value`-to-string-to-helper-to-`Value` fixture-interface rewrite: most callers use literal JSON, so the rewrite offers little simplification. Preserve real disk-loader coverage and the settled test decisions above.
 Long-option preference is already in AGENTS and release commands.
 Optional CI, only if useful: one Linux smoke job, no matrix, bootstrap-all, game prerequisites, retries, or publishing. Its absence never blocks branch completion.
 
