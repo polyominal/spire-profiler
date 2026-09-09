@@ -20,25 +20,12 @@ pub fn binary_in(dir: &Path) -> PathBuf {
     dir.join("zig")
 }
 
-pub fn pick(bootstrap_dir: &Path) -> Result<PathBuf> {
-    let bootstrapped = binary_in(bootstrap_dir);
-    if bootstrapped.is_file() {
-        Ok(bootstrapped)
-    } else {
-        Err(anyhow::anyhow!(
-            "no zig bootstrap at {}; run `cargo xtask install-tool` to bootstrap the pinned \
-             zig {ZIG_VERSION}",
-            bootstrap_dir.display()
-        ))
-    }
-}
-
 /// ALWAYS the bootstrap dir, never PATH; a wrong zig can never silently
 /// feed the build.
 pub fn resolve_zig(shell: &Shell) -> Result<PathBuf> {
     let dir = bootstrap_dir();
     ensure_bootstrap_in(shell, &dir)?;
-    let binary = pick(&dir)?;
+    let binary = binary_in(&dir);
     println!("zig: {} ({ZIG_VERSION}, bootstrapped)", binary.display());
     Ok(binary)
 }
