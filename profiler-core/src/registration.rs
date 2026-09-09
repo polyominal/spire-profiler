@@ -1,19 +1,16 @@
-//! Composition root for the engine registration: the one module that knows
-//! both the FFI's [`EngineClass`] shape and the concrete panel types, so the
-//! engine layer stays free of profiler-specific types. All instance casts
-//! concentrate here.
-//!
-//! The callbacks dispatch on the instance-state pointer `create` returned
-//! (`Box::into_raw` — never null), and the engine-side null guards live at
-//! the FFI boundary in [`crate::engine::gdext`]'s callbacks, so no defensive
-//! null checks are needed here.
+//! Composition root for engine registration and concrete panel dispatch.
+//! Instance pointers own boxed handles. Callbacks clone the handle before
+//! calling the engine: reentrant free can release the box while the active
+//! callback retains its state. Checked borrows reject nested mutation.
 
+use std::cell::RefCell;
 use std::ffi::c_void;
+use std::rc::Rc;
 
 use crate::engine::gdext::EngineClass;
 use crate::engine::object::Object;
 use crate::ui::panel::SpireProfilerPanel;
-use crate::ui::panel_body::{self, ChildRole, PanelBody};
+use crate::ui::panel_body::{self, PanelBody};
 use crate::ui::run_panel::SpireProfilerRunPanel;
 
 pub(crate) fn engine_classes() -> [EngineClass; 3] {
@@ -42,84 +39,87 @@ pub(crate) fn engine_classes() -> [EngineClass; 3] {
     ]
 }
 
-/// # Safety
-/// The engine passes a live `object`; the returned boxed state stays paired
-/// with this class's callbacks until free.
-unsafe fn panel_create(object: Object) -> *mut c_void {
-    let panel = Box::into_raw(Box::new(SpireProfilerPanel::new(object)));
-    // Safety: the boxed state address is stable until `panel_free`; the
-    // children validate their owner tokens before dispatching back here.
-    unsafe { (*panel).attach_children() };
-    panel.cast()
+struct PanelHandle<T>(Rc<RefCell<T>>);
+
+impl<T> PanelHandle<T> {
+    /// # Safety
+    /// `state` is this type's live boxed handle on its creation thread. Free
+    /// may reenter during `call`, but no callback uses the freed handle again.
+    unsafe fn dispatch(state: *mut c_void, call: impl FnOnce(&mut T)) {
+        // SAFETY: clone while the handle is live; no reference into its box
+        // survives `call`, which can trigger the engine's free callback.
+        let panel = unsafe { Rc::clone(&(*state.cast::<Self>()).0) };
+        let Ok(mut panel) = panel.try_borrow_mut() else {
+            crate::fail!("nested panel callback skipped");
+            return;
+        };
+        call(&mut panel);
+    }
+
+    /// # Safety
+    /// `state` is this type's boxed handle, freed once on its creation thread.
+    unsafe fn free(state: *mut c_void) {
+        // SAFETY: consumes the matching Box exactly once. Active dispatches
+        // own separate Rc handles and need no borrow of the boxed handle.
+        drop(unsafe { Box::from_raw(state.cast::<Self>()) });
+    }
 }
 
-/// The retained font storage is freed without destroying the engine Ref.
-///
+fn panel_create(object: Object) -> *mut c_void {
+    let panel = Rc::new(RefCell::new(SpireProfilerPanel::new(object)));
+    panel.borrow_mut().attach_children(Rc::downgrade(&panel));
+    Box::into_raw(Box::new(PanelHandle(panel))).cast()
+}
+
 /// # Safety
-/// `state` is the matching create pointer and has not been freed.
+/// `state` is the live combat-panel handle, freed once on its creation thread.
 unsafe fn panel_free(state: *mut c_void) {
-    // SAFETY: state is the create-owned pointer reconstructed exactly once.
-    drop(unsafe { Box::from_raw(state.cast::<SpireProfilerPanel>()) });
+    // SAFETY: the class table pairs this free with panel_create.
+    unsafe { PanelHandle::<SpireProfilerPanel>::free(state) };
 }
 
 /// # Safety
-/// `state` is the live matching create pointer.
+/// `state` is the live combat-panel handle on its creation thread.
 unsafe fn panel_draw(state: *mut c_void) {
-    // SAFETY: the engine runs this callback only while the object lives, so
-    // the create-owned box is not yet freed.
-    unsafe { (*state.cast::<SpireProfilerPanel>()).draw() };
+    // SAFETY: the class table pairs this dispatch with panel_create.
+    unsafe { PanelHandle::dispatch(state, SpireProfilerPanel::draw) };
 }
 
 /// # Safety
-/// `state` is the live matching create pointer.
+/// `state` is the live combat-panel handle on its creation thread.
 unsafe fn panel_refresh(state: *mut c_void) {
-    // SAFETY: the engine runs this callback only while the object lives, so
-    // the create-owned box is not yet freed.
-    unsafe { (*state.cast::<SpireProfilerPanel>()).refresh() };
+    // SAFETY: the class table pairs this dispatch with panel_create.
+    unsafe { PanelHandle::dispatch(state, SpireProfilerPanel::refresh) };
+}
+
+fn run_panel_create(object: Object) -> *mut c_void {
+    let panel = Rc::new(RefCell::new(SpireProfilerRunPanel::new(object)));
+    panel.borrow_mut().attach_children(Rc::downgrade(&panel));
+    Box::into_raw(Box::new(PanelHandle(panel))).cast()
 }
 
 /// # Safety
-/// The engine passes a live `object`; the returned boxed state stays paired
-/// with this class's callbacks until free.
-unsafe fn run_panel_create(object: Object) -> *mut c_void {
-    let panel = Box::into_raw(Box::new(SpireProfilerRunPanel::new(object)));
-    // Safety: the pointer names boxed run-panel state valid until
-    // `run_panel_free`; child callbacks validate their owner token first.
-    unsafe { (*panel).attach_children() };
-    panel.cast()
-}
-
-/// # Safety
-/// `state` is the matching create pointer and has not been freed.
+/// `state` is the live run-panel handle, freed once on its creation thread.
 unsafe fn run_panel_free(state: *mut c_void) {
-    // SAFETY: state is the create-owned pointer reconstructed exactly once.
-    drop(unsafe { Box::from_raw(state.cast::<SpireProfilerRunPanel>()) });
+    // SAFETY: the class table pairs this free with run_panel_create.
+    unsafe { PanelHandle::<SpireProfilerRunPanel>::free(state) };
 }
 
 /// # Safety
-/// `state` is the live matching create pointer.
+/// `state` is the live run-panel handle on its creation thread.
 unsafe fn run_panel_draw(state: *mut c_void) {
-    // SAFETY: the engine runs this callback only while the object lives, so
-    // the create-owned box is not yet freed.
-    unsafe { (*state.cast::<SpireProfilerRunPanel>()).draw() };
+    // SAFETY: the class table pairs this dispatch with run_panel_create.
+    unsafe { PanelHandle::dispatch(state, SpireProfilerRunPanel::draw) };
 }
 
 /// # Safety
-/// `state` is the live matching create pointer.
+/// `state` is the live run-panel handle on its creation thread.
 unsafe fn run_panel_refresh(state: *mut c_void) {
-    // SAFETY: the engine runs this callback only while the object lives, so
-    // the create-owned box is not yet freed.
-    unsafe { (*state.cast::<SpireProfilerRunPanel>()).refresh() };
+    // SAFETY: the class table pairs this dispatch with run_panel_create.
+    unsafe { PanelHandle::dispatch(state, SpireProfilerRunPanel::refresh) };
 }
 
-/// A child instantiated outside its panel (the class name is public
-/// ClassDB surface) stays valid but draws nothing — degrade, never a
-/// failed engine create.
-///
-/// # Safety
-/// The engine passes a live `object`; the returned boxed state stays paired
-/// with this class's callbacks until free.
-unsafe fn body_create(object: Object) -> *mut c_void {
+fn body_create(object: Object) -> *mut c_void {
     let target = panel_body::take_pending_child();
     if target.is_none() {
         crate::warn!("panel body instantiated outside its panel; drawing disabled");
@@ -128,38 +128,67 @@ unsafe fn body_create(object: Object) -> *mut c_void {
 }
 
 /// # Safety
-/// `state` is the matching create pointer and has not been freed.
+/// `state` is the live body-create pointer, freed once on its creation thread.
 unsafe fn body_free(state: *mut c_void) {
     // SAFETY: state is the create-owned pointer reconstructed exactly once.
     drop(unsafe { Box::from_raw(state.cast::<PanelBody>()) });
 }
 
 /// # Safety
-/// `state` is the live body-create pointer; the owner is generation-checked
-/// before it is dereferenced.
+/// `state` is the live body-create pointer on its creation thread.
 unsafe fn body_draw(state: *mut c_void) {
-    // SAFETY: state is the live body-create pointer.
-    let body = unsafe { &*state.cast::<PanelBody>() };
-    let Some(target) = body.live_target() else {
-        return;
+    // SAFETY: copy identity and clone the Weak target before engine calls can
+    // reenter body_free. No borrow into the body's allocation survives draw.
+    let (object, target) = unsafe {
+        let body = &*state.cast::<PanelBody>();
+        (body.object(), body.target())
     };
-    let object = body.object();
-    match (target.owner_ref(), target.role()) {
-        // SAFETY: the owner generation was checked before this dispatch.
-        (panel_body::OwnerRef::Combat(panel), ChildRole::Rows) => unsafe {
-            (*panel).draw_body(object)
-        },
-        // SAFETY: the owner generation was checked before this dispatch.
-        (panel_body::OwnerRef::Combat(panel), ChildRole::Overlay) => unsafe {
-            (*panel).draw_overlay(object)
-        },
-        // SAFETY: the owner generation was checked before this dispatch.
-        (panel_body::OwnerRef::Run(panel), ChildRole::Rows) => unsafe {
-            (*panel).draw_body(object)
-        },
-        // SAFETY: the owner generation was checked before this dispatch.
-        (panel_body::OwnerRef::Run(panel), ChildRole::Overlay) => unsafe {
-            (*panel).draw_overlay(object)
-        },
+    if let Some(target) = target {
+        target.draw(&object);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use super::*;
+
+    #[test]
+    fn nested_dispatch_is_skipped_and_free_waits_for_active_dispatch() {
+        struct Probe(Rc<Cell<bool>>, usize);
+        impl Drop for Probe {
+            fn drop(&mut self) {
+                self.0.set(true);
+            }
+        }
+        let dropped = Rc::new(Cell::new(false));
+        let panel = Rc::new(RefCell::new(Probe(Rc::clone(&dropped), 0)));
+        let weak = Rc::downgrade(&panel);
+        let handle = Box::into_raw(Box::new(PanelHandle(panel))).cast();
+        // SAFETY: handle is the matching live Box on this thread; nested
+        // dispatch precedes its single free, and no use follows the outer call.
+        unsafe {
+            PanelHandle::dispatch(handle, |probe: &mut Probe| {
+                probe.1 += 1;
+                PanelHandle::dispatch(handle, |_: &mut Probe| panic!("nested mutation"));
+                PanelHandle::<Probe>::free(handle);
+                assert!(
+                    !dropped.get(),
+                    "active callback keeps state alive after free"
+                );
+                assert!(weak.upgrade().is_some());
+                probe.1 += 1;
+                assert_eq!(probe.1, 2);
+            });
+        }
+        assert!(
+            dropped.get(),
+            "state is released when the active callback returns"
+        );
+        assert!(
+            weak.upgrade().is_none(),
+            "child owner expires after teardown"
+        );
     }
 }

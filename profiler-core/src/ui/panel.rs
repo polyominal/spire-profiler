@@ -173,10 +173,9 @@ impl SpireProfilerPanel {
         }
     }
 
-    /// Registration runs this once the boxed state address is stable.
-    pub(crate) fn attach_children(&mut self) {
+    pub(crate) fn attach_children(&mut self, owner: std::rc::Weak<std::cell::RefCell<Self>>) {
         self.children =
-            panel_body::PanelChildren::attach(self.object, panel_body::OwnerRef::Combat(self));
+            panel_body::PanelChildren::attach(self.object, panel_body::OwnerRef::Combat(owner));
     }
 
     /// Draws the pinned chrome — plate, tab strip, and header. Rows and
@@ -187,7 +186,6 @@ impl SpireProfilerPanel {
         }
         self.log_draw_start();
 
-        // Engine calls never borrow `&mut self`.
         if self.theme.resolve() {
             // Newly loaded/failed assets change the chrome.
             self.sig = None;

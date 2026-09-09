@@ -35,7 +35,8 @@
 //! [`variant_get_ptr_internal_getter`] after a [`variant_get_type`] tag
 //! check (the internal getter is undefined behavior on a type mismatch);
 //! every temporary Variant is [`variant_destroy`]ed on drop. Return slots
-//! start NIL, so a call failing before assignment drops a valid Variant.
+//! contain no engine value before the call; normal return establishes the
+//! initialized Variant even when method dispatch reports an error.
 //!
 //! # Where this module's unsafe lives
 //!
@@ -49,26 +50,23 @@
 //!    reborrowed in [`create_instance`]/[`refresh_call`]/[`free_instance`]/[`draw_virtual`], and
 //!    the [`Initialization`]/[`CallError`] out-params written in
 //!    [`gdextension_entry`]/[`refresh_call`].
-//! 2. **The export and C callbacks** — `extern "C"` functions whose pointers the engine stores and
-//!    calls back into; every one routes through [`crate::abi::contain`] so a panic never unwinds
-//!    into the engine. Each callback's panic label is computed just ahead of the boundary — a deref
-//!    of the same engine-supplied pointer the body trusts, plus a UTF-8 `expect` on the class's
-//!    `c"…"` name literal — and cannot panic by construction.
+//! 2. **The export and C callbacks**: `extern "C"` functions whose pointers the engine stores and
+//!    calls back into. Every callback enters [`crate::abi::contain`] with a constant label before
+//!    inspecting callback data, so ordinary unwinding panics are contained at the boundary.
 //! 3. **Function-pointer resolution** — `get_proc_address` returns an opaque pointer that
 //!    [`lookup`] reinterprets only as the pinned header's signature for that symbol.
 //!
 //! # Trusted engine-layout facts
 //!
-//! The facts below are properties of the pinned Godot 4.5.1 binary, which
-//! the header exposes only as opaque pointers; if a pin bump breaks one,
-//! [`Opaque`] storage or [`string_name_eq`] becomes unsound, so they belong
-//! on the manual re-verification list:
+//! The deployed engine must uphold these premises beyond the pinned
+//! Godot 4.5.1 header's opaque-pointer declarations. A game or engine update
+//! requires rechecking them; the header alone cannot establish them:
 //!
 //! * Variant, String, and StringName fit in [`OPAQUE_SIZE`] bytes with alignment ≤ 16.
 //! * StringName is one pointer to interned storage, so comparing the first 8 bytes of two live
 //!   names is name equality.
 //! * Internal-getter payloads match the [`read_payload`] reads: bool is one 0/1 byte, Vector2
-//!   `[f32; 2]`, Rect2/Color `[f32; 4]`, object a pointer.
+//!   `[f32; 2]`, Rect2 `[f32; 4]`.
 //! * The internal getter never writes through its Variant argument despite the mutable pointer
 //!   type, which is what [`read_payload`] hands out from `&Opaque`.
 //! * `get_proc_address` returns null for an unknown name and a function matching the
@@ -79,19 +77,25 @@
 //! * Variant from-type constructors copy out of the source pointer, so the source may be a stack
 //!   temporary or, for String, destroyed right after ([`string_variant`]); constructing an OBJECT
 //!   Variant takes the engine Ref that [`variant_destroy`] later releases ([`retained_object`]).
-//! * `variant_call` never writes through `p_self`: the receiver is read-only despite the mutable
-//!   pointer type, which is what [`RetainedVariant::ptr`] hands out from `&self`.
+//! * ObjectDB lookup, ID queries and value constructors do not dispatch callbacks. Foreign objects
+//!   cannot be destroyed concurrently with these engine-thread operations; a resolved pointer stays
+//!   live through the immediately following constructor or ID query. Engine method dispatch keeps
+//!   its receiver and arguments live until their last use.
 //! * The enum values transcribed from the pinned header match it: the `VT_*` Variant type tags,
 //!   `CALL_OK`, `INIT_LEVEL_SCENE`, `METHOD_FLAG_NORMAL`, and `MOUSE_BUTTON_LEFT`. Struct layouts
 //!   carry compile-time size pins; scalar values cannot, so a pin bump re-checks them by hand.
 //!
-//! The panel modules hold engine pointers only through the safe [`Object`]
-//! newtype (defined in [`crate::engine::object`]) and call its methods, so
-//! they never need their own unsafe.
+//! [`Object`] stores an engine id and resolves it before every use. It and
+//! engine Variants cannot move between threads; call paths also reject a
+//! thread other than the initialization thread. Retained resources keep an
+//! unreleased reference increment, not a borrowed Variant byte buffer.
 
 use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_char, c_int, c_void};
+use std::marker::PhantomData;
+use std::mem::MaybeUninit;
 use std::ptr;
+use std::rc::Rc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -119,7 +123,8 @@ type ConstTypePtr = *const c_void;
 
 pub(crate) const CALL_OK: c_int = 0;
 /// Header enum value 1; reported when the method name itself is unusable.
-pub(crate) const CALL_ERROR_INVALID_METHOD: c_int = 1;
+#[cfg(test)]
+const CALL_ERROR_INVALID_METHOD: c_int = 1;
 const INIT_LEVEL_SCENE: c_int = 2;
 const METHOD_FLAG_NORMAL: u32 = 1;
 pub(crate) const MOUSE_BUTTON_LEFT: i64 = 1;
@@ -136,9 +141,24 @@ pub(crate) const VT_OBJECT: c_int = 24;
 
 /// 64 bytes exceeds any engine opaque type in 4.5.1 (Variant 24,
 /// String/StringName 8); 16-byte alignment satisfies Variant's union.
+/// MaybeUninit admits foreign padding and inactive payload bytes.
 #[repr(C, align(16))]
-pub(crate) struct Opaque(pub(crate) [u8; OPAQUE_SIZE]);
-pub(crate) const OPAQUE_SIZE: usize = 64;
+struct Opaque(MaybeUninit<[u8; OPAQUE_SIZE]>);
+const OPAQUE_SIZE: usize = 64;
+
+impl Opaque {
+    fn new() -> Self {
+        Self(MaybeUninit::uninit())
+    }
+
+    fn ptr(&mut self) -> *mut c_void {
+        self.0.as_mut_ptr().cast()
+    }
+
+    fn const_ptr(&self) -> *const c_void {
+        self.0.as_ptr().cast()
+    }
+}
 
 // ── function-pointer types (resolved by name from get_proc_address) ─────────
 
@@ -193,8 +213,8 @@ struct Api {
         *mut CallError,
     ),
     variant_destroy: unsafe extern "C" fn(VariantPtr),
-    variant_new_nil: unsafe extern "C" fn(VariantPtr),
     variant_get_type: unsafe extern "C" fn(ConstVariantPtr) -> c_int,
+    variant_get_object_instance_id: unsafe extern "C" fn(ConstVariantPtr) -> ObjectId,
     variant_get_ptr_destructor: unsafe extern "C" fn(c_int) -> Option<PtrDestructorFn>,
     string_new_with_utf8_chars: unsafe extern "C" fn(StringPtr, *const c_char),
     string_name_new_with_utf8_chars: unsafe extern "C" fn(StringNamePtr, *const c_char),
@@ -236,8 +256,8 @@ impl Api {
                 variant_get_ptr_internal_getter: lookup(get, c"variant_get_ptr_internal_getter")?,
                 variant_call: lookup(get, c"variant_call")?,
                 variant_destroy: lookup(get, c"variant_destroy")?,
-                variant_new_nil: lookup(get, c"variant_new_nil")?,
                 variant_get_type: lookup(get, c"variant_get_type")?,
+                variant_get_object_instance_id: lookup(get, c"variant_get_object_instance_id")?,
                 variant_get_ptr_destructor: lookup(get, c"variant_get_ptr_destructor")?,
                 string_new_with_utf8_chars: lookup(get, c"string_new_with_utf8_chars")?,
                 string_name_new_with_utf8_chars: lookup(get, c"string_name_new_with_utf8_chars")?,
@@ -263,7 +283,7 @@ static STRING_DTOR: OnceLock<Option<PtrDestructorFn>> = OnceLock::new();
 
 /// Deprecated `classdb_construct_object`, not `2` — the latter would send
 /// NOTIFICATION_POSTINITIALIZE.
-pub(crate) fn classdb_construct_object(name: ConstStringNamePtr) -> ObjectPtr {
+fn classdb_construct_object(name: ConstStringNamePtr) -> ObjectPtr {
     // SAFETY: the API is resolved; every pointer argument is valid for this call.
     unsafe { (api().classdb_construct_object)(name) }
 }
@@ -324,23 +344,53 @@ fn variant_get_ptr_internal_getter(vtype: c_int) -> Option<InternalGetterFn> {
 }
 
 pub(crate) fn variant_call(
-    p_self: VariantPtr,
+    receiver: &mut Variant,
     method: ConstStringNamePtr,
-    args: *const ConstVariantPtr,
-    arg_count: GDExtensionInt,
-    ret: VariantPtr,
-    err: *mut CallError,
-) {
-    // SAFETY: the API is resolved; every pointer argument is valid for this call.
-    unsafe { (api().variant_call)(p_self, method, args, arg_count, ret, err) };
+    args: &[ConstVariantPtr],
+) -> (Variant, CallError) {
+    debug_assert!(
+        on_engine_thread(),
+        "Variant dispatch requires the initialization thread"
+    );
+    debug_assert!(
+        !method.is_null(),
+        "method lookup must succeed before engine dispatch"
+    );
+    let call = api().variant_call;
+    let mut storage = Box::new(Opaque::new());
+    let mut error = CallError {
+        error: CALL_OK,
+        argument: 0,
+        expected: 0,
+    };
+    let args_ptr = if args.is_empty() {
+        ptr::null()
+    } else {
+        args.as_ptr()
+    };
+    // SAFETY: receiver and arguments remain initialized for this call. The
+    // private aligned destination contains no engine value. The interface
+    // constructs its return Variant on every normal return, including errors;
+    // only then is storage given the destructor-owning Variant wrapper.
+    unsafe {
+        call(
+            receiver.ptr(),
+            method,
+            args_ptr,
+            args.len() as GDExtensionInt,
+            storage.ptr(),
+            &mut error,
+        )
+    };
+    (Variant::initialized(storage), error)
 }
 
-pub(crate) fn variant_destroy(p: VariantPtr) {
+fn variant_destroy(p: VariantPtr) {
     // SAFETY: the API is resolved; every pointer argument is valid for this call.
     unsafe { (api().variant_destroy)(p) };
 }
 
-pub(crate) fn variant_get_type(p: ConstVariantPtr) -> c_int {
+fn variant_get_type(p: ConstVariantPtr) -> c_int {
     // SAFETY: the API is resolved; every pointer argument is valid for this call.
     unsafe { (api().variant_get_type)(p) }
 }
@@ -476,24 +526,24 @@ const _: () = assert!(
 /// then resolved or failed (warned once, never retried).
 #[derive(Default)]
 struct SingletonCache {
-    ptr: ObjectPtr,
+    object: Option<Object>,
     failed: bool,
 }
 
 impl SingletonCache {
-    fn get(&mut self, name: ConstStringNamePtr, failure_warning: &str) -> Option<ObjectPtr> {
-        if self.ptr.is_null() && !self.failed {
-            self.ptr = global_get_singleton(name);
-            if self.ptr.is_null() {
+    fn get(&mut self, name: ConstStringNamePtr, failure_warning: &str) -> Option<Object> {
+        if !on_engine_thread() || name.is_null() {
+            return None;
+        }
+        if self.object.is_none() && !self.failed {
+            let raw = global_get_singleton(name);
+            self.object = (!raw.is_null()).then(|| Object::from_id(object_get_instance_id(raw)));
+            if self.object.is_none() {
                 self.failed = true;
                 warn!("{failure_warning}");
             }
         }
-        if self.ptr.is_null() {
-            None
-        } else {
-            Some(self.ptr)
-        }
+        self.object
     }
 }
 
@@ -574,11 +624,11 @@ impl Global {
             sn_draw_style_box: ptr::null_mut(),
             sn_draw_texture_rect: ptr::null_mut(),
             input: SingletonCache {
-                ptr: ptr::null_mut(),
+                object: None,
                 failed: false,
             },
             resource_loader: SingletonCache {
-                ptr: ptr::null_mut(),
+                object: None,
                 failed: false,
             },
             mouse_query_warned: false,
@@ -599,7 +649,7 @@ pub(crate) struct EngineClass {
     name: &'static CStr,
     /// The interned StringName, filled by [`init_string_names`].
     name_ptr: AtomicUsize,
-    create: unsafe fn(Object) -> *mut c_void,
+    create: fn(Object) -> *mut c_void,
     free: unsafe fn(*mut c_void),
     draw: unsafe fn(*mut c_void),
     refresh: Option<unsafe fn(*mut c_void)>,
@@ -608,7 +658,7 @@ pub(crate) struct EngineClass {
 impl EngineClass {
     pub(crate) const fn new(
         name: &'static CStr,
-        create: unsafe fn(Object) -> *mut c_void,
+        create: fn(Object) -> *mut c_void,
         free: unsafe fn(*mut c_void),
         draw: unsafe fn(*mut c_void),
         refresh: Option<unsafe fn(*mut c_void)>,
@@ -634,12 +684,23 @@ impl EngineClass {
 }
 
 pub(crate) fn object_id(object: Object) -> ObjectId {
-    object_get_instance_id(object.0)
+    object.id()
 }
 
 pub(crate) fn object_from_id(id: ObjectId) -> Option<Object> {
+    if !on_engine_thread() {
+        return None;
+    }
     let object = object_get_instance_from_id(id);
-    (!object.is_null()).then_some(Object(object))
+    (!object.is_null()).then_some(Object::from_id(id))
+}
+
+pub(crate) fn construct_object(class: ConstStringNamePtr) -> Option<Object> {
+    if !on_engine_thread() || class.is_null() {
+        return None;
+    }
+    let object = classdb_construct_object(class);
+    (!object.is_null()).then(|| Object::from_id(object_get_instance_id(object)))
 }
 
 /// The owning class plus its state pointer.
@@ -658,6 +719,9 @@ struct Instance {
 /// drifted onto a panel class would recurse through `attach_children`
 /// without terminating.
 pub(crate) fn instantiate_class(name: &CStr) -> Option<Object> {
+    if !on_engine_thread() {
+        return None;
+    }
     let classes = CLASSES.get()?;
     let class = classes
         .iter()
@@ -669,14 +733,14 @@ pub(crate) fn instantiate_class(name: &CStr) -> Option<Object> {
     if obj.is_null() {
         None
     } else {
-        Some(Object(obj))
+        Some(Object::from_id(object_get_instance_id(obj)))
     }
 }
 
 /// The storage `Box` is deliberately leaked: StringName is interned and
 /// engine-managed.
 fn make_string_name(name: &'static CStr) -> StringNamePtr {
-    let storage = Box::into_raw(Box::new(Opaque([0; OPAQUE_SIZE])));
+    let storage = Box::into_raw(Box::new(Opaque::new()));
     string_name_new_with_utf8_chars(storage.cast::<c_void>(), name.as_ptr());
     storage.cast::<c_void>()
 }
@@ -725,35 +789,56 @@ fn init_string_names() {
 }
 
 /// Complete variant whose `Drop` runs [`variant_destroy`].
-pub(crate) struct Variant(Box<Opaque>);
+pub(crate) struct Variant {
+    storage: Option<Box<Opaque>>,
+    _thread: PhantomData<Rc<()>>,
+}
 
 impl Variant {
-    /// A constructed NIL, so Drop stays valid even when [`variant_call`]
-    /// fails before assigning the return slot.
-    pub(crate) fn nil() -> Variant {
-        // Resolve before the wrapper exists: a failed resolve must unwind
-        // through contain, not abort while Drop resolves a second time.
-        let new_nil = api().variant_new_nil;
-        let mut v = Variant(Box::new(Opaque([0; OPAQUE_SIZE])));
-        // SAFETY: new_nil initializes the owned opaque storage as a valid NIL.
-        unsafe { new_nil(v.ptr()) };
-        v
+    fn initialized(storage: Box<Opaque>) -> Self {
+        Self {
+            storage: Some(storage),
+            _thread: PhantomData,
+        }
     }
 
-    /// Takes a reference, not a raw pointer, so a safe caller cannot smuggle
-    /// a dangling or wrongly typed value across the FFI; the engine
-    /// constructor resolves before the wrapper exists so a failed resolve
-    /// cannot drop never-constructed storage.
+    /// Only the fixed typed constructors pair tags with input layouts.
+    /// Unconstructed storage has no engine destructor during unwinding.
     fn from_typed<T>(vtype: c_int, value: &T) -> Variant {
+        debug_assert!(
+            on_engine_thread(),
+            "engine values are constructed on the initialization thread"
+        );
         let ctor = get_variant_from_type_constructor(vtype);
-        let mut v = Variant(Box::new(Opaque([0; OPAQUE_SIZE])));
-        // SAFETY: ctor matches vtype and value has that constructor's layout.
-        unsafe { ctor(v.ptr(), (value as *const T).cast::<c_void>().cast_mut()) };
-        v
+        let mut storage = Box::new(Opaque::new());
+        // SAFETY: this module pairs each tag with its pinned input layout.
+        // The constructor copies the live source without modifying/retaining
+        // it and initializes the exclusive, aligned destination. MaybeUninit
+        // allows the foreign value's padding bytes to remain uninitialized.
+        unsafe {
+            ctor(
+                storage.ptr(),
+                (value as *const T).cast::<c_void>().cast_mut(),
+            )
+        };
+        Self::initialized(storage)
     }
 
-    pub(crate) fn from_object(object: ObjectPtr) -> Variant {
-        Self::from_typed(VT_OBJECT, &object)
+    pub(crate) fn from_object(object: Object) -> Option<Variant> {
+        if !on_engine_thread() {
+            return None;
+        }
+        let ctor = get_variant_from_type_constructor(VT_OBJECT);
+        let mut storage = Box::new(Opaque::new());
+        let object = object_get_instance_from_id(object.id());
+        if object.is_null() {
+            return None;
+        }
+        // SAFETY: ObjectDB just resolved this id on the engine thread, with
+        // no intervening engine call. The constructor copies this ObjectPtr
+        // local into exclusive aligned storage and acquires the resource Ref.
+        unsafe { ctor(storage.ptr(), (&raw const object).cast_mut().cast()) };
+        Some(Self::initialized(storage))
     }
 
     pub(crate) fn from_bool(value: bool) -> Variant {
@@ -780,60 +865,86 @@ impl Variant {
         Self::from_typed(VT_COLOR, value)
     }
 
-    pub(crate) fn ptr(&mut self) -> VariantPtr {
-        self.0.0.as_mut_ptr().cast::<c_void>()
+    fn ptr(&mut self) -> VariantPtr {
+        self.storage
+            .as_mut()
+            .expect("a live Variant owns its initialized storage")
+            .ptr()
     }
 
     pub(crate) fn const_ptr(&self) -> ConstVariantPtr {
-        self.0.0.as_ptr().cast::<c_void>()
+        self.storage().const_ptr()
     }
 
-    pub(crate) fn storage(&self) -> &Opaque {
-        &self.0
+    fn storage(&self) -> &Opaque {
+        self.storage
+            .as_ref()
+            .expect("only into_retained removes Variant storage")
     }
 
-    /// Moves the storage to a retained slot; dropping the result never
-    /// destroys the engine Variant, which is exactly the object Ref.
-    pub(crate) fn into_retained(self) -> RetainedVariant {
-        let held = std::mem::ManuallyDrop::new(self);
-        // Safety: `held` is never dropped, so the Box leaves with exactly
-        // one owner.
-        RetainedVariant(unsafe { std::ptr::read(&held.0) })
+    pub(crate) fn object(&self) -> Option<Object> {
+        if !on_engine_thread() {
+            return None;
+        }
+        if variant_type(self.storage()) != VT_OBJECT {
+            return None;
+        }
+        // SAFETY: self owns an initialized OBJECT Variant. The interface
+        // reads its stored id without dereferencing the referenced object.
+        let id = unsafe { (api().variant_get_object_instance_id)(self.const_ptr()) };
+        (id != 0).then_some(Object::from_id(id))
+    }
+
+    pub(crate) fn rect2(&self) -> Option<[f32; 4]> {
+        if !on_engine_thread() {
+            return None;
+        }
+        read_payload(self.storage())
+    }
+
+    pub(crate) fn vector2(&self) -> Option<Vector2> {
+        if !on_engine_thread() {
+            return None;
+        }
+        let value = read_payload::<[f32; 2]>(self.storage())?;
+        Some(Vector2::new(value[0], value[1]))
+    }
+
+    /// The reference increment outlives its byte storage: skipping the engine
+    /// destructor deliberately pins the resource until process exit.
+    pub(crate) fn into_retained(mut self) -> Option<RetainedVariant> {
+        let object = self.object()?;
+        drop(self.storage.take());
+        Some(RetainedVariant { object })
     }
 }
 
 impl Drop for Variant {
     fn drop(&mut self) {
-        variant_destroy(self.ptr());
+        if let Some(mut storage) = self.storage.take() {
+            variant_destroy(storage.ptr());
+        }
     }
 }
 
-/// Drop skips [`variant_destroy`]: the engine's Ref keeps the Font alive.
-pub(crate) struct RetainedVariant(pub(crate) Box<Opaque>);
+/// A resource pinned by an intentionally unreleased engine reference.
+pub(crate) struct RetainedVariant {
+    object: Object,
+}
 
 impl RetainedVariant {
-    pub(crate) fn const_ptr(&self) -> ConstVariantPtr {
-        self.0.0.as_ptr().cast::<c_void>()
-    }
-
-    /// The mutable pointer [`variant_call`] wants; it never mutates `self`.
-    pub(crate) fn ptr(&self) -> VariantPtr {
-        self.0.0.as_ptr().cast_mut().cast::<c_void>()
+    pub(crate) fn object(&self) -> Object {
+        self.object
     }
 }
 
-/// Constructing the OBJECT Variant IS the reference; a nil Variant means
-/// "could not retain", never a dangling ref.
-pub(crate) fn retained_object(object: ObjectPtr) -> Option<RetainedVariant> {
-    let variant = Variant::from_object(object);
-    if variant_type(variant.storage()) != VT_OBJECT {
-        return None;
-    }
-    Some(variant.into_retained())
+/// Selected resource classes are RefCounted; retention omits their unref.
+pub(crate) fn retained_object(object: Object) -> Option<RetainedVariant> {
+    Variant::from_object(object)?.into_retained()
 }
 
-pub(crate) fn variant_type(variant: &Opaque) -> c_int {
-    variant_get_type(variant.0.as_ptr().cast::<c_void>())
+fn variant_type(variant: &Opaque) -> c_int {
+    variant_get_type(variant.const_ptr())
 }
 
 /// A payload type and its Variant tag, paired so safe callers cannot read
@@ -852,15 +963,6 @@ impl Payload for bool {
         // SAFETY: the tag/type pairing gives a non-null payload of this layout.
         let byte = unsafe { raw.cast::<u8>().read_unaligned() };
         (byte <= 1).then_some(byte != 0)
-    }
-}
-
-impl Payload for ObjectPtr {
-    const VARIANT_TYPE: c_int = VT_OBJECT;
-
-    fn read(raw: *mut c_void) -> Option<Self> {
-        // SAFETY: the tag/type pairing gives a non-null payload of this layout.
-        Some(unsafe { raw.cast::<ObjectPtr>().read_unaligned() })
     }
 }
 
@@ -890,28 +992,11 @@ fn read_payload<T: Payload>(variant: &Opaque) -> Option<T> {
     }
     let getter = variant_get_ptr_internal_getter(T::VARIANT_TYPE)?;
     // SAFETY: the Variant tag/type pairing is valid for this getter.
-    let raw = unsafe { getter(variant.0.as_ptr().cast_mut().cast::<c_void>()) };
+    let raw = unsafe { getter(variant.const_ptr().cast_mut()) };
     if raw.is_null() {
         return None;
     }
     T::read(raw)
-}
-
-pub(crate) fn read_bool(variant: &Opaque) -> Option<bool> {
-    read_payload(variant)
-}
-
-pub(crate) fn read_object(variant: &Opaque) -> Option<ObjectPtr> {
-    read_payload(variant)
-}
-
-pub(crate) fn read_rect2(variant: &Opaque) -> Option<[f32; 4]> {
-    read_payload(variant)
-}
-
-pub(crate) fn read_vector2(variant: &Opaque) -> Option<Vector2> {
-    let value = read_payload::<[f32; 2]>(variant)?;
-    Some(Vector2::new(value[0], value[1]))
 }
 
 std::thread_local! {
@@ -933,15 +1018,15 @@ pub(crate) fn string_variant(text: &str) -> Variant {
     }
     let text = &text[..end];
     let c = std::ffi::CString::new(text).expect("NUL-free after truncation");
-    let mut storage = Opaque([0; OPAQUE_SIZE]);
-    string_new_with_utf8_chars(storage.0.as_mut_ptr().cast::<c_void>(), c.as_ptr());
+    let mut storage = Opaque::new();
+    string_new_with_utf8_chars(storage.ptr(), c.as_ptr());
     let variant = Variant::from_typed(VT_STRING, &storage);
     let dtor = (*STRING_DTOR.get_or_init(|| variant_get_ptr_destructor(VT_STRING)))
         .expect("Godot 4.5 defines a ptr-destructor for the String variant type");
     // SAFETY: `storage` holds a live String from `string_new_with_utf8_chars`
     // and `dtor` is the VT_STRING ptr-destructor; destroyed in place once, the
     // inert stack bytes need no cleanup.
-    unsafe { dtor(storage.0.as_mut_ptr().cast::<c_void>()) };
+    unsafe { dtor(storage.ptr()) };
     variant
 }
 
@@ -976,7 +1061,7 @@ pub(crate) fn fail_call_failed(name: &'static str, method: ConstStringNamePtr) {
 }
 
 /// Resolved once; a failed resolve disables drag/tab clicks.
-fn input_singleton() -> Option<ObjectPtr> {
+fn input_singleton() -> Option<Object> {
     GLOBAL.with(|cell| {
         let mut g = cell.borrow_mut();
         let name = g.sn_input;
@@ -988,6 +1073,9 @@ fn input_singleton() -> Option<ObjectPtr> {
 /// Only the left button is polled (held across frames, so reliable);
 /// native input-event inspection hangs the engine fork.
 pub(crate) fn mouse_button_pressed(button: i64) -> bool {
+    if !on_engine_thread() {
+        return false;
+    }
     let method = GLOBAL.with(|g| g.borrow().sn_is_mouse_button_pressed);
     if method.is_null() {
         // Off the init thread the cached StringName is null and variant_call
@@ -997,20 +1085,16 @@ pub(crate) fn mouse_button_pressed(button: i64) -> bool {
     let Some(input) = input_singleton() else {
         return false;
     };
-    let mut obj_v = Variant::from_object(input);
     let button_v = Variant::from_int(button);
-    let mut ret = Variant::nil();
-    let mut err = CallError {
-        error: CALL_OK,
-        argument: 0,
-        expected: 0,
+    let Some(mut obj_v) = Variant::from_object(input) else {
+        return mouse_query_failed();
     };
     let args = [button_v.const_ptr()];
-    variant_call(obj_v.ptr(), method, args.as_ptr(), 1, ret.ptr(), &mut err);
+    let (ret, err) = variant_call(&mut obj_v, method, &args);
     if err.error != CALL_OK {
         return mouse_query_failed();
     }
-    read_bool(ret.storage()).unwrap_or(false)
+    read_payload::<bool>(ret.storage()).unwrap_or(false)
 }
 
 fn mouse_query_failed() -> bool {
@@ -1027,7 +1111,7 @@ fn mouse_query_failed() -> bool {
 }
 
 /// Resolved once; a failed resolve disables the theme.
-pub(crate) fn resource_loader_singleton() -> Option<ObjectPtr> {
+pub(crate) fn resource_loader_singleton() -> Option<Object> {
     GLOBAL.with(|cell| {
         let mut g = cell.borrow_mut();
         let name = g.sn_resource_loader;
@@ -1039,6 +1123,18 @@ pub(crate) fn resource_loader_singleton() -> Option<ObjectPtr> {
 }
 
 pub(crate) use crate::engine::object::Object;
+
+#[cfg(test)]
+#[path = "gdext_tests.rs"]
+mod tests;
+
+static ENGINE_THREAD: OnceLock<std::thread::ThreadId> = OnceLock::new();
+
+pub(crate) fn on_engine_thread() -> bool {
+    ENGINE_THREAD
+        .get()
+        .is_some_and(|id| *id == std::thread::current().id())
+}
 
 /// The symbol named in `spire_profiler.gdextension`.
 ///
@@ -1052,6 +1148,10 @@ pub unsafe extern "C" fn gdextension_entry(
     initialization: *mut Initialization,
 ) -> GDExtensionBool {
     contain("gdextension_entry", 0, || {
+        if ENGINE_THREAD.set(std::thread::current().id()).is_err() {
+            fail!("GDExtension entry called twice");
+            return 0;
+        }
         // SAFETY: the engine supplies a live resolver and this entry has valid arguments.
         let Some(resolved) = (unsafe { Api::resolve(get_proc_address) }) else {
             fail!("cannot resolve GDExtension interface");
@@ -1068,6 +1168,7 @@ pub unsafe extern "C" fn gdextension_entry(
         // Safety: the engine hands us a valid, writable Initialization.
         unsafe {
             (*initialization).minimum_initialization_level = INIT_LEVEL_SCENE;
+            (*initialization).userdata = ptr::null_mut();
             (*initialization).initialize = Some(on_initialize);
             (*initialization).deinitialize = Some(on_deinitialize);
         }
@@ -1079,6 +1180,10 @@ pub unsafe extern "C" fn gdextension_entry(
 /// The engine invokes its stored callback with valid userdata.
 unsafe extern "C" fn on_initialize(_userdata: *mut c_void, level: c_int) {
     contain("on_initialize", (), || {
+        if !on_engine_thread() {
+            fail!("on_initialize called outside the engine thread");
+            return;
+        }
         if level != INIT_LEVEL_SCENE {
             return;
         }
@@ -1099,6 +1204,10 @@ unsafe extern "C" fn on_initialize(_userdata: *mut c_void, level: c_int) {
 /// The engine invokes its stored callback with valid userdata.
 unsafe extern "C" fn on_deinitialize(_userdata: *mut c_void, level: c_int) {
     contain("on_deinitialize", (), || {
+        if !on_engine_thread() {
+            fail!("on_deinitialize called outside the engine thread");
+            return;
+        }
         if level != INIT_LEVEL_SCENE {
             return;
         }
@@ -1171,9 +1280,7 @@ fn register_class(
     classdb_register_extension_class_method(library, class_name, &method);
 }
 
-// ── generic class callbacks (instance lifecycle, virtual dispatch, refresh) ──
-// Every callback is class-agnostic: the concrete panel type lives in the
-// EngineClass callback table.
+// Callbacks check thread affinity before touching thread-confined handles.
 
 /// # Safety
 /// `class_userdata` points to a live `EngineClass` installed in `CLASSES`.
@@ -1181,64 +1288,62 @@ unsafe extern "C" fn create_instance(
     class_userdata: *mut c_void,
     _notify_postinitialize: GDExtensionBool,
 ) -> ObjectPtr {
-    // SAFETY: every caller passes a `&'static EngineClass` from the class
-    // table: the engine returns the registered class_userdata, and
-    // `instantiate_class` reads the same table.
-    let class = unsafe { &*class_userdata.cast::<EngineClass>() };
-    let label = class
-        .name
-        .to_str()
-        .expect("registered class names are UTF-8");
-    contain(&format!("{label} create_instance"), ptr::null_mut(), || {
+    contain("create_instance", ptr::null_mut(), || {
+        if !on_engine_thread() {
+            fail!("create_instance called outside the engine thread");
+            return ptr::null_mut();
+        }
+        // SAFETY: the engine or instantiate_class passes the registered
+        // static class table entry; it outlives every engine call below.
+        let class = unsafe { &*class_userdata.cast::<EngineClass>() };
         let control = GLOBAL.with(|g| g.borrow().sn_control);
         if control.is_null() {
-            fail!("{label} instantiated before Scene init on this thread");
+            fail!("panel instantiated before Scene init");
             return ptr::null_mut();
         }
         let obj = classdb_construct_object(control);
         if obj.is_null() {
             return ptr::null_mut();
         }
-        // A panic inside `create` is swallowed but leaks the constructed
-        // Control: the engine only learns of the instance through
-        // `object_set_instance`, which the panic skips. Accepted — a
-        // cleanup path would risk a double free.
-        // SAFETY: the class create callback accepts this live engine object.
-        let state = unsafe { (class.create)(Object(obj)) };
+        // A panic before object_set_instance leaks the constructed Control:
+        // engine ownership during failed creation does not permit safe retry.
+        let object = Object::from_id(object_get_instance_id(obj));
+        let state = (class.create)(object);
+        let obj = object_get_instance_from_id(object.id());
+        if obj.is_null() {
+            // SAFETY: create returned this matching owned handle on the engine
+            // thread; no binding exposed it to the engine's free callback.
+            unsafe { (class.free)(state) };
+            fail!("panel freed during creation; unbound state released");
+            return ptr::null_mut();
+        }
         let instance = Box::into_raw(Box::new(Instance { class, state })).cast::<c_void>();
         let class_name = class
             .name_ptr()
             .expect("the class name was interned at Scene init");
         object_set_instance(obj, class_name, instance);
-        obj
+        object_get_instance_from_id(object.id())
     })
 }
 
 /// # Safety
-/// `class_userdata` is the create-class pointer; non-null `instance` is its
-/// live `object_set_instance` pointer.
-unsafe extern "C" fn free_instance(class_userdata: *mut c_void, instance: ClassInstancePtr) {
-    // SAFETY: every caller passes a `&'static EngineClass` from the class
-    // table: the engine returns the registered class_userdata, and
-    // `instantiate_class` reads the same table.
-    let class = unsafe { &*class_userdata.cast::<EngineClass>() };
-    let label = class
-        .name
-        .to_str()
-        .expect("registered class names are UTF-8");
-    contain(&format!("{label} free_instance"), (), || {
+/// Non-null `instance` is an unreleased `Box<Instance>` pointer published by
+/// `create_instance`, freed once; no later callback may use it. Wrong-thread
+/// free leaves its handle leaked.
+unsafe extern "C" fn free_instance(_class_userdata: *mut c_void, instance: ClassInstancePtr) {
+    contain("free_instance", (), || {
+        if !on_engine_thread() {
+            fail!("free_instance called outside the engine thread; state leaked");
+            return;
+        }
         if instance.is_null() {
             return;
         }
-        // Safety: the engine passes back the object_set_instance pointer for
-        // this instance; the class's free drops the panel state.
+        // SAFETY: the engine returns the exact live Box pointer once. The
+        // other callbacks retain no reference into this header across calls.
         let header = unsafe { Box::from_raw(instance.cast::<Instance>()) };
-        // A panic inside `free` is swallowed: the state pointer is never
-        // freed. Accepted — the state drops only once, so a catch path would
-        // risk a double free.
-        // SAFETY: the Instance pairs each class with the state its own
-        // create boxed; free runs once per object, so this frees a live
-        // pointer exactly once.
+        // SAFETY: the header pairs the matching create/free and live state;
+        // the thread guard permits dropping its thread-confined Rc handles.
         unsafe { (header.class.free)(header.state) };
     });
 }
@@ -1251,6 +1356,10 @@ unsafe extern "C" fn get_virtual(
     _hash: u32,
 ) -> Option<ClassCallVirtualFn> {
     contain("get_virtual", None, || {
+        if !on_engine_thread() {
+            fail!("get_virtual called outside the engine thread");
+            return None;
+        }
         let draw = GLOBAL.with(|g| g.borrow().sn_draw);
         // SAFETY: both names are live engine storage or null.
         if unsafe { string_name_eq(name, draw) } {
@@ -1262,42 +1371,37 @@ unsafe extern "C" fn get_virtual(
 }
 
 /// # Safety
-/// Non-null `instance` is the live `object_set_instance` pointer for an
-/// `Instance`.
+/// Non-null `instance` is an unreleased `Box<Instance>` pointer published by
+/// `create_instance`, still live when this callback enters.
 unsafe extern "C" fn draw_virtual(
     instance: ClassInstancePtr,
     _args: *const ConstTypePtr,
     _ret: TypePtr,
 ) {
-    // Read the owning class before the boundary so the label names the panel.
-    let label = if instance.is_null() {
-        "panel"
-    } else {
-        // Safety: instance is the object_set_instance pointer for a live panel.
-        unsafe {
-            (*instance.cast::<Instance>())
-                .class
-                .name
-                .to_str()
-                .expect("registered class names are UTF-8")
+    contain("draw_virtual", (), || {
+        if !on_engine_thread() {
+            fail!("draw_virtual called outside the engine thread");
+            return;
         }
-    };
-    contain(&format!("{label} _draw"), (), || {
         if instance.is_null() {
             return;
         }
-        // SAFETY: `instance` is non-null (checked above) and the live
-        // `object_set_instance` pointer for an `Instance`.
-        let header = unsafe { &*instance.cast::<Instance>() };
-        // SAFETY: the Instance pairs each class with the state its own
-        // create boxed; the object lives, so the state is not yet freed.
-        unsafe { (header.class.draw)(header.state) };
+        // SAFETY: the live header is read before dispatch can reenter free;
+        // only copied function/state pointers survive the short borrow.
+        let (draw, state) = unsafe {
+            let header = &*instance.cast::<Instance>();
+            (header.class.draw, header.state)
+        };
+        // SAFETY: the class table pairs draw with this live state type.
+        unsafe { draw(state) };
     });
 }
 
 /// # Safety
-/// `method_userdata` points to a live `EngineClass`; non-null `instance` is
-/// its live instance pointer; `error_out`, if non-null, is writable.
+/// `method_userdata` points to the registered `EngineClass`; non-null
+/// `instance` is that class's unreleased `Box<Instance>` pointer published by
+/// `create_instance`, live at entry; `error_out`, if non-null, is writable
+/// for the call.
 unsafe extern "C" fn refresh_call(
     method_userdata: *mut c_void,
     instance: ClassInstancePtr,
@@ -1306,33 +1410,31 @@ unsafe extern "C" fn refresh_call(
     _ret: VariantPtr,
     error_out: *mut CallError,
 ) {
-    // SAFETY: method_userdata is the `&'static EngineClass` registered as
-    // the refresh method's userdata.
-    let class = unsafe { &*method_userdata.cast::<EngineClass>() };
-    let Some(refresh) = class.refresh else {
-        return;
-    };
-    let label = class
-        .name
-        .to_str()
-        .expect("registered class names are UTF-8");
-    if !error_out.is_null() {
-        // SAFETY: `error_out` is non-null and a writable engine out-param
-        // for the duration of this call.
-        unsafe {
-            (*error_out).error = CALL_OK;
-            (*error_out).argument = 0;
-            (*error_out).expected = 0;
+    contain("refresh_call", (), || {
+        if !error_out.is_null() {
+            // SAFETY: the non-null engine out-param is writable for this call.
+            unsafe {
+                error_out.write(CallError {
+                    error: CALL_OK,
+                    argument: 0,
+                    expected: 0,
+                })
+            };
         }
-    }
-    contain(&format!("{label} refresh"), (), || {
+        if !on_engine_thread() {
+            fail!("refresh_call called outside the engine thread");
+            return;
+        }
         if instance.is_null() {
             return;
         }
-        // Safety: instance is the object_set_instance pointer for a live panel.
-        let header = unsafe { &*instance.cast::<Instance>() };
-        // SAFETY: the Instance pairs each class with the state its own
-        // create boxed; the object lives, so the state is not yet freed.
-        unsafe { refresh(header.state) };
+        // SAFETY: the static method table entry outlives this callback.
+        let class = unsafe { &*method_userdata.cast::<EngineClass>() };
+        let Some(refresh) = class.refresh else { return };
+        // SAFETY: copy the live header's state pointer before dispatch can
+        // reenter free. No reference into the header survives dispatch.
+        let state = unsafe { (*instance.cast::<Instance>()).state };
+        // SAFETY: method_userdata and instance name the same registered class.
+        unsafe { refresh(state) };
     });
 }

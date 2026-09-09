@@ -184,10 +184,9 @@ impl SpireProfilerRunPanel {
         }
     }
 
-    /// Registration runs this once the boxed state address is stable.
-    pub(crate) fn attach_children(&mut self) {
+    pub(crate) fn attach_children(&mut self, owner: std::rc::Weak<std::cell::RefCell<Self>>) {
         self.children =
-            panel_body::PanelChildren::attach(self.object, panel_body::OwnerRef::Run(self));
+            panel_body::PanelChildren::attach(self.object, panel_body::OwnerRef::Run(owner));
     }
 
     /// A content change redraws every panel-owned canvas item.
