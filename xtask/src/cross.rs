@@ -85,7 +85,8 @@ pub(crate) fn build_matrix(shell: &Shell, root: &Path) -> Result<Vec<(String, Pa
     zigbuild = zigbuild
         .arg("zigbuild")
         .arg("--release")
-        .arg("-p")
+        .arg("--locked")
+        .arg("--package")
         .arg("profiler_core");
     for row in MATRIX {
         zigbuild = zigbuild.arg("--target").arg(row.zigbuild_triple);
@@ -113,7 +114,7 @@ fn ensure_zigbuild(shell: &Shell) -> Result<()> {
     crate::ensure_cargo_tool(
         shell,
         &["cargo-zigbuild", "--version"],
-        &format!("cargo-zigbuild --version {ZIGBUILD_VERSION} --locked"),
+        "cargo-zigbuild",
         ZIGBUILD_VERSION,
     )
 }

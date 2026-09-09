@@ -203,7 +203,7 @@ fn resolve_cause_in(
     let ambient = state.ambient_slot();
     if !source_id.is_empty() {
         Some((source_id.to_owned(), SourceKind::from_c(source_kind)))
-    } else if let Some(top) = state.context_stack.last().cloned() {
+    } else if let Some(top) = state.context_stack.active().cloned() {
         if top.kind == SourceKind::Power {
             // The causing "source" is the power itself; resolve it to the
             // source that applied the power (with that source's kind).

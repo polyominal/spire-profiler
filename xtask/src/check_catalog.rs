@@ -521,8 +521,11 @@ mod tests {
 
     #[test]
     fn hook_universe_accepts_non_task_return_types() {
-        let root = std::env::temp_dir().join("spire-catalog-hook-universe");
-        let models = root.join("models");
+        let shell = xshell::Shell::new().expect("cargo test runs with a working directory");
+        let temp = shell
+            .create_temp_dir()
+            .expect("the test model tree needs an isolated temporary directory");
+        let models = temp.path().join("models");
         std::fs::create_dir_all(&models).expect("creating the test model tree");
         for name in BASE_MODELS {
             std::fs::write(
@@ -534,20 +537,22 @@ mod tests {
 
         let universe = hook_universe(&models).expect("reading the test models");
         assert!(universe.contains("NewHook"));
-        std::fs::remove_dir_all(root).expect("removing the test model tree");
     }
 
     #[test]
     fn class_files_reject_namespace_drift() {
-        let root = std::env::temp_dir().join("spire-catalog-namespace");
-        std::fs::create_dir_all(&root).expect("creating the test class tree");
+        let shell = xshell::Shell::new().expect("cargo test runs with a working directory");
+        let temp = shell
+            .create_temp_dir()
+            .expect("the test class tree needs an isolated temporary directory");
+        let root = temp.path();
         std::fs::write(
             root.join("Moved.cs"),
             "namespace MegaCrit.Sts2.Core.Moved;\npublic sealed class Moved {}\n",
         )
         .expect("writing the test class");
 
-        let error = match class_files(&root, "MegaCrit.Sts2.Core.Models.Relics") {
+        let error = match class_files(root, "MegaCrit.Sts2.Core.Models.Relics") {
             Ok(files) => panic!("namespace drift passed with {} classes", files.len()),
             Err(error) => error,
         };
@@ -556,7 +561,6 @@ mod tests {
                 .to_string()
                 .contains("expected \"MegaCrit.Sts2.Core.Models.Relics\"")
         );
-        std::fs::remove_dir_all(root).expect("removing the test class tree");
     }
 
     #[test]
@@ -684,20 +688,22 @@ mod tests {
 
     #[test]
     fn class_files_reject_bodyless_declarations() {
-        let root = std::env::temp_dir().join("spire-catalog-bodyless");
-        std::fs::create_dir_all(&root).expect("creating the test class tree");
+        let shell = xshell::Shell::new().expect("cargo test runs with a working directory");
+        let temp = shell
+            .create_temp_dir()
+            .expect("the test class tree needs an isolated temporary directory");
+        let root = temp.path();
         std::fs::write(
             root.join("Empty.cs"),
             "namespace MegaCrit.Sts2.Core.Models.Relics;\npublic sealed class Empty\n{\n    public void Hook();\n}\n",
         )
         .expect("writing the test class");
 
-        let error = match class_files(&root, "MegaCrit.Sts2.Core.Models.Relics") {
+        let error = match class_files(root, "MegaCrit.Sts2.Core.Models.Relics") {
             Ok(files) => panic!("a bodyless declaration passed with {} classes", files.len()),
             Err(error) => error,
         };
         assert!(error.to_string().contains("no block body"));
-        std::fs::remove_dir_all(root).expect("removing the test class tree");
     }
 
     #[test]

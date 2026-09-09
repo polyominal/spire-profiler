@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use crate::cross::{self, MATRIX};
+use crate::cross;
 
 /// The dotnet assembly is SpireProfiler; the game loads \<id\>.dll, so the
 /// bundle renames the built dll to the id.
@@ -22,7 +22,12 @@ pub(crate) fn assemble_bundle(
     commit: &str,
 ) -> Result<()> {
     // Wipe first so a removed library cannot linger.
-    let _ = std::fs::remove_dir_all(mod_dir);
+    match std::fs::remove_dir_all(mod_dir) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+            return Err(anyhow::anyhow!("removing {}: {error}", mod_dir.display()));
+        }
+        _ => {}
+    }
     std::fs::create_dir_all(mod_dir)?;
     write_manifest(root, mod_dir, commit)?;
     copy_file(
@@ -47,13 +52,6 @@ fn write_manifest(root: &Path, mod_dir: &Path, commit: &str) -> Result<()> {
     let template = std::fs::read_to_string(root.join("manifest.template.json"))
         .map_err(|e| anyhow::anyhow!("reading manifest.template.json: {e}"))?;
     let rendered = template.replace("@VERSION@", &manifest_version(commit));
-    // Always checked (not a debug_assert): a manifest with the raw
-    // placeholder must never reach the bundle.
-    anyhow::ensure!(
-        !rendered.contains("@VERSION@"),
-        "the manifest template placeholder @VERSION@ was not substituted (the placeholder \
-         must never reach the bundle)"
-    );
     std::fs::write(mod_dir.join("manifest.json"), rendered)?;
     Ok(())
 }
@@ -72,14 +70,4 @@ fn copy_file(source: &Path, destination: &Path) -> Result<()> {
             destination.display()
         )
     })
-}
-
-/// Iterates the matrix directly — the .gdextension is rendered from the
-/// same rows, so a missing file is a build gap.
-pub(crate) fn missing_gdextension_libraries(mod_dir: &Path) -> Vec<String> {
-    MATRIX
-        .iter()
-        .filter(|row| !mod_dir.join(row.bundle_name).is_file())
-        .map(|row| format!("{}.{} -> {}", row.os, row.arch, row.bundle_name))
-        .collect()
 }

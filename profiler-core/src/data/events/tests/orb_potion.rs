@@ -2,7 +2,7 @@
 //! orb-source cap, and the fallback clearing rules.
 
 use super::*;
-use crate::data::state::OrbSource;
+use crate::data::state::{OrbSource, caps};
 use crate::source_kind::SourceKind;
 
 #[test]

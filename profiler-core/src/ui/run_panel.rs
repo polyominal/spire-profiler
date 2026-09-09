@@ -69,7 +69,11 @@ thread_local! {
     static QUEUED_SCROLL: Cell<f32> = const { Cell::new(0.0) };
 }
 
-pub(crate) fn queue_scroll(delta: f32) {
+pub(crate) fn queue_scroll(delta: f64) {
+    if !shown() {
+        take_queued_scroll();
+        return;
+    }
     QUEUED_SCROLL.with(|q| panel_common::queue_scroll(q, delta));
 }
 
@@ -82,13 +86,19 @@ pub(crate) fn run_manual_visible() -> bool {
     RUN_MANUAL_VISIBLE.with(|v| v.get())
 }
 
+fn shown() -> bool {
+    crate::data::run_history::screen_open() && run_manual_visible()
+}
+
 pub(crate) fn toggle_run_manual() {
     RUN_MANUAL_VISIBLE.with(|v| v.set(!v.get()));
+    take_queued_scroll();
 }
 
 /// Clears the flag: the click-away dismissal, and the screen-close reset.
 pub(crate) fn dismiss_run_manual() {
     RUN_MANUAL_VISIBLE.with(|v| v.set(false));
+    take_queued_scroll();
 }
 
 /// The placeholder `set_size` and the `box_size` field must agree.
@@ -96,7 +106,7 @@ const INITIAL_BOX_H: f32 = 300.0;
 
 /// Instantiated lazily by the C# shim; the class name must stay exactly
 /// [`SpireProfilerRunPanel`].
-pub struct SpireProfilerRunPanel {
+pub(crate) struct SpireProfilerRunPanel {
     object: Object,
     children: panel_body::PanelChildren,
     view_fp: u64,
@@ -111,8 +121,6 @@ pub struct SpireProfilerRunPanel {
     interaction: InteractionState,
     /// The rows child draws translated by this offset; its rect clips.
     scroll: f32,
-    /// Input arrives as events while the offset only moves per frame.
-    pending_scroll: f32,
     box_size: Vector2,
     /// Stored so the frame step can widen the Control without re-reading
     /// the engine. Parent-relative == viewport space here.
@@ -156,7 +164,6 @@ impl SpireProfilerRunPanel {
             detail: RowDetail::default(),
             interaction: InteractionState::default(),
             scroll: 0.0,
-            pending_scroll: 0.0,
             box_size,
             plate_pos: None,
             applied_frame: None,
@@ -400,10 +407,9 @@ impl SpireProfilerRunPanel {
     /// A `&RunSummaryView` cannot escape the thread-local RefCell, so the
     /// fingerprint token comes out of the borrow instead.
     pub(crate) fn refresh(&mut self) {
-        // Queued input must never linger past one frame.
-        self.pending_scroll += take_queued_scroll();
-        let open = crate::data::run_history::screen_open();
-        let visible = open && run_manual_visible();
+        // Frame-local ownership discards input on hidden or unplaced returns.
+        let scroll_delta = take_queued_scroll();
+        let visible = shown();
         self.object.set_visible(visible);
         if !visible {
             // A stale baked-in highlight must never survive a hide cycle.
@@ -441,7 +447,7 @@ impl SpireProfilerRunPanel {
         panel_common::wheel_scroll(
             self.children.objects(),
             &mut self.scroll,
-            &mut self.pending_scroll,
+            scroll_delta,
             plate_rect,
             mouse,
             self.layout.height,
@@ -559,21 +565,44 @@ mod tests {
 
     #[test]
     fn run_manual_visible_cycles() {
+        let data = crate::test_util::unique_dir("run-panel-scroll-toggle");
+        crate::data::persistence::test_support::init_state(&data);
+        crate::data::run_history::select("", 0, 1);
         RUN_MANUAL_VISIBLE.with(|v| v.set(false));
         assert!(!run_manual_visible());
         toggle_run_manual();
         assert!(run_manual_visible());
+        queue_scroll(60.0);
         toggle_run_manual();
         assert!(!run_manual_visible());
+        toggle_run_manual();
+        assert_eq!(take_queued_scroll(), 0.0);
+        queue_scroll(12.5);
+        assert_eq!(take_queued_scroll(), 12.5);
     }
 
     #[test]
     fn dismiss_run_manual_lands_on_hidden() {
+        let data = crate::test_util::unique_dir("run-panel-scroll-dismiss");
+        crate::data::persistence::test_support::init_state(&data);
+        crate::data::run_history::select("", 0, 1);
         RUN_MANUAL_VISIBLE.with(|v| v.set(true));
+        take_queued_scroll();
+        queue_scroll(60.0);
         dismiss_run_manual();
         assert!(!run_manual_visible());
+        assert_eq!(take_queued_scroll(), 0.0);
+        queue_scroll(15.0);
+        assert_eq!(take_queued_scroll(), 0.0);
         toggle_run_manual();
         assert!(run_manual_visible());
+        assert_eq!(take_queued_scroll(), 0.0);
+        queue_scroll(60.0);
+        crate::data::run_history::clear();
+        assert!(!shown());
+        queue_scroll(15.0);
+        crate::data::run_history::select("", 0, 1);
+        assert_eq!(take_queued_scroll(), 0.0);
         dismiss_run_manual();
         assert!(!run_manual_visible());
     }

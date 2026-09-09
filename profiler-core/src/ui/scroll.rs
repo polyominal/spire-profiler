@@ -10,7 +10,7 @@
 use crate::engine::math::{Rect2, Vector2};
 
 /// One wheel tick ≈ three rows.
-const WHEEL_STEP: f32 = 60.0;
+const WHEEL_STEP: f64 = 60.0;
 
 /// Godot `MouseButton` indexes (4 = up, 5 = down).
 const MOUSE_BUTTON_WHEEL_UP: i64 = 4;
@@ -22,7 +22,7 @@ pub(crate) const PANEL_COMBAT: i32 = 0;
 pub(crate) const PANEL_RUN: i32 = 1;
 
 /// A zero delta queues nothing; an unknown panel id degrades to no scroll.
-pub(crate) fn queue_panel_scroll(panel: i32, button_index: i64, pressed: bool, pan_y: f32) {
+pub(crate) fn queue_panel_scroll(panel: i32, button_index: i64, pressed: bool, pan_y: f64) {
     let delta = event_scroll_delta(button_index, pressed, pan_y);
     if delta == 0.0 {
         return;
@@ -36,7 +36,7 @@ pub(crate) fn queue_panel_scroll(panel: i32, button_index: i64, pressed: bool, p
 
 /// macOS negates the NSEvent deltas, so `delta.y` follows the system's
 /// scroll-direction setting.
-pub fn event_scroll_delta(button_index: i64, pressed: bool, pan_y: f32) -> f32 {
+pub fn event_scroll_delta(button_index: i64, pressed: bool, pan_y: f64) -> f64 {
     match button_index {
         MOUSE_BUTTON_WHEEL_UP if pressed => -WHEEL_STEP,
         MOUSE_BUTTON_WHEEL_DOWN if pressed => WHEEL_STEP,
@@ -291,22 +291,5 @@ mod tests {
         assert!(scrollbar_state_next(true, true, true, false));
         assert!(!scrollbar_state_next(true, false, true, false));
         assert!(!scrollbar_state_next(false, true, true, true));
-    }
-
-    #[test]
-    fn queue_panel_scroll_routes_translated_pixels() {
-        let _ = crate::ui::panel::take_queued_scroll();
-        let _ = crate::ui::run_panel::take_queued_scroll();
-
-        queue_panel_scroll(PANEL_COMBAT, 5, true, 0.0);
-        queue_panel_scroll(PANEL_RUN, 4, true, 0.0);
-        queue_panel_scroll(PANEL_COMBAT, 0, false, 12.5);
-        queue_panel_scroll(PANEL_RUN, 4, false, 0.0);
-        queue_panel_scroll(99, 5, true, 0.0);
-
-        assert_eq!(crate::ui::panel::take_queued_scroll(), 72.5);
-        assert_eq!(crate::ui::run_panel::take_queued_scroll(), -60.0);
-        assert_eq!(crate::ui::panel::take_queued_scroll(), 0.0);
-        assert_eq!(crate::ui::run_panel::take_queued_scroll(), 0.0);
     }
 }

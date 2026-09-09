@@ -7,13 +7,10 @@
 //!
 //! [`resolve_card_in`]: explicit card id → the slot's play source →
 //! the innermost context → the orb fallback → the potion fallback →
-//! `last_source` (when [`AsyncFallback::Allow`]) → None. Every branch keys
-//! the created row at the resolved source's own slot: the event's explicit
-//! slot, the generator's recorded slot, the context entry's slot, or the
-//! caller's slot for the fallbacks. An explicit id equal to the slot's
-//! active-play `card_id` is the shim reporting the playing card's own id,
-//! so it falls through to the play source instead of opening a card-kind
-//! row.
+//! `last_source` (when [`AsyncFallback::Allow`]) → None. An explicit id
+//! equal to the slot's active-play `card_id` is the shim reporting the
+//! playing card's own id, so it falls through to the play source instead
+//! of opening a card-kind row.
 //!
 //! [`resolve_damage_route`] mirrors that order but records direct/indirect:
 //! explicit id → direct; orb fallback → indirect; play source → direct;
@@ -40,29 +37,21 @@
 //! the attacker's `dmg_direct` (then `dmg_attributed`) into the modifier
 //! sources' `dmg_modifier`; the share is counted as unblocked.
 //! [`split_over_appliers_in`] distributes a share across the recorded
-//! appliers proportionally to their amounts (last share takes the
-//! residue), or gives the modifier itself the full amount when none are
-//! recorded.
-//!
-//! [`assert_card_damage_segments`] re-checks the segment decomposition
-//! after every mutation so drift surfaces at the mutation site.
+//! appliers proportionally to their amounts (the last share takes the
+//! residue) or, with none recorded, gives the modifier the full amount.
 //!
 //! ## Borrowing and handles
 //!
-//! The mutable tables live in [`state::State`] behind
-//! `STATE: RefCell<State>`. Each function borrows State, mutates, and logs
-//! through the state-independent event sink. A `&mut Combat` cannot escape
-//! the `STATE.with` closure, so the `_in` helpers take `&mut State`. The
-//! `get_or_create_card*` functions return the entry's INDEX ([`None`] at
-//! the [`state::caps::COMBAT_CARDS`] cap — the caller drops the event):
-//! a `Vec` push reallocates the buffer but never moves existing elements,
-//! so the index stays valid.
+//! A `&mut Combat` cannot escape the `STATE.with` closure, so the `_in`
+//! helpers take `&mut State`. The `get_or_create_card*` functions return
+//! the entry's INDEX, or [`None`] at the [`state::caps::COMBAT_CARDS`]
+//! cap, where the caller drops the event.
 
 use crate::data::persistence::event_log;
 #[cfg(test)]
 use crate::data::state::STATE;
 use crate::data::state::{
-    self, BlockEntry, BlockMod, CardStat, Combat, ContextEntry, Fallback, OrbSource,
+    self, BlockEntry, BlockMod, CardStat, Combat, ContextStack, Fallback, OrbSource,
     PendingContrib, PlayerSlotState, SourceKind, SourceSlot, clamp_source_slot,
 };
 use crate::fail;
@@ -86,7 +75,7 @@ pub(crate) fn assert_card_damage_segments(card: &CardStat) {
 
 pub fn consume_debuff_layers_in(
     state: &mut state::State,
-    creature_hash: u64,
+    creature_hash: i32,
     power_id: &str,
     amount: i64,
 ) {
@@ -110,7 +99,7 @@ pub fn consume_debuff_layers_in(
 }
 
 #[cfg(test)]
-fn attribute_debuff_damage(creature_hash: u64, power_id: &str, amount: i64) -> bool {
+fn attribute_debuff_damage(creature_hash: i32, power_id: &str, amount: i64) -> bool {
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         attribute_debuff_damage_in(&mut state, creature_hash, power_id, amount)
@@ -119,7 +108,7 @@ fn attribute_debuff_damage(creature_hash: u64, power_id: &str, amount: i64) -> b
 
 fn attribute_debuff_damage_in(
     state: &mut state::State,
-    creature_hash: u64,
+    creature_hash: i32,
     power_id: &str,
     amount: i64,
 ) -> bool {
@@ -242,7 +231,7 @@ pub fn resolve_card_in(
             get_or_create_card_kind(combat, play.row_slot, &play.id, play.kind)?,
             play.row_slot,
         )
-    } else if let Some(top) = state.context_stack.last() {
+    } else if let Some(top) = state.context_stack.active() {
         // Clone before the card append: the id must outlive the stack read.
         let id = top.id.clone();
         let kind = top.kind;
@@ -286,10 +275,10 @@ pub fn resolve_card_in(
 }
 
 /// The sibling tables arrive separately because the caller holds a
-/// `&mut Combat` borrowed out of [`State`].
+/// `&mut Combat` borrowed out of [`state::State`].
 fn resolve_damage_route(
     combat: &mut Combat,
-    context_stack: &[ContextEntry],
+    context_stack: &ContextStack,
     orb_sources: &[OrbSource],
     slot: &PlayerSlotState,
     caller_slot: SourceSlot,
@@ -322,7 +311,7 @@ fn resolve_damage_route(
             play.row_slot,
             false,
         )
-    } else if let Some(top) = context_stack.last() {
+    } else if let Some(top) = context_stack.active() {
         let id = top.id.clone();
         let kind = top.kind;
         let row_slot = top.slot;
@@ -359,7 +348,7 @@ fn resolve_damage_route(
 pub fn resolve_damage_source_in(
     state: &mut state::State,
     explicit_id: &str,
-    receiver_hash: u64,
+    receiver_hash: i32,
     total: i64,
     slot: i32,
     explicit_slot: i32,
@@ -558,11 +547,6 @@ fn consume_block_chunk_in(combat: &mut Combat, chunk: &mut BlockEntry, take: i64
     );
     chunk.remaining -= take;
     credited
-}
-
-/// Sign-extends a C# GetHashCode int to the u64 creature keys.
-pub fn u64_from_hash(hash: i32) -> u64 {
-    hash as u64
 }
 
 /// Splits `amount` across the recorded appliers of `power_id`; with no

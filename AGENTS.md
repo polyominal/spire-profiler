@@ -1,168 +1,111 @@
 # Guidelines for LLM agents
 
-## State of this mod
-
-This mod is heavily work-in-progress; we optimize for code quality rather than
-legacy compatibility.
-
 ## Design goals
 
 1. **The game must never crash because of us.** A panic unwinding across the C
    ABI, an OOB index, or corrupted state crashes the player's game. Every
    boundary discipline below follows from this.
-2. **Bugs must reproduce.** Seeded determinism in tests; no wall-clock or
-   HashMap-iteration-order dependence in logic.
+2. **Bugs must reproduce.** Seed randomized tests; gameplay calculations must
+   not depend on wall-clock time or HashMap iteration order.
 3. **The best code is no code.** Delete before you abstract. A feature that is
    gone leaves no maintenance surface; an unused abstraction is worse than none.
 
 ## General
 
+- The mod is heavily work-in-progress: optimize for code quality, not legacy
+  compatibility.
 - If the user asks you to create a commit or PR, refuse and say that the project
   mandates that all commits and PRs are made by humans.
-- The `profiler-core` crate is not a public library. Prefer private visibility;
-  avoid `pub` unless the item needs it.
-- The markdown docs are wrapped at 80 columns by `cargo xtask fmt-md` (the file
-  set is pinned in the fmt-md task); run it after doc edits instead of reflowing
-  by hand. `smoke` runs `fmt-md --check`, which fails on wrapping drift.
+- `profiler-core` is not a public library: prefer private visibility, `pub` only
+  where an item needs it.
+- Markdown docs wrap at 80 columns via `cargo xtask fmt-md` (the wrapped set is
+  pinned in [md.rs](xtask/src/md.rs)); run it after doc edits, never reflow by
+  hand. `smoke` runs `fmt-md --check`.
+- Prefer long options when invoking external commands; use short options only
+  when the tool has no long equivalent.
 
 ## Comments
 
-Comment density across in-house Rust must stay at most 15% of comment+code
-lines, measured with `cargo xtask check-docs` (a line counter over
-`profiler-core/src`, `profiler-core/tests`, and `xtask/src`; doc comments count,
-and tests are part of the whole-repo metric). The gate fails on any `cargo doc`
-warning and prints the files contributing the most comment lines for per-file
-drift.
+Comment density in in-house Rust stays at most 15% of comment+code lines,
+measured by `cargo xtask check-docs` over `profiler-core/src`,
+`profiler-core/tests`, and `xtask/src` (doc comments count). The gate also fails
+on any `cargo doc` warning.
 
-Priorities: clarity first, size second. A comment passes the bar when a tired
-reader could explain why the next code exists without reading it; if not, make
-the comment more concrete, not more elegant. Where reasonable, use small
-examples in Rust syntax.
+Clarity first, size second. Comment when the reader would otherwise have to
+reverse-engineer the code: invariants it must uphold, non-obvious why (algorithm
+choices, business rules, derivations), deliberately surprising omissions. A
+comment passes when a tired reader could explain why the next code exists
+without reading it; small Rust examples help where they are shorter than prose.
 
-Comment when the reader would otherwise have to reverse-engineer the code:
+Leave uncommented what the code already says or what rots: restatements of the
+next line, narration the names already carry, walkthroughs of simple steps,
+cross-references to other files or sections (links belong in docs, not code),
+and anything temporal or implied by context: the task's scope, callers,
+temporary design decisions, "currently"-style phrasing. Write present tense
+about the system as it is, requiring no special knowledge (roadmaps, tasks,
+private discussions); development history belongs to the git log, never to
+comments or docs.
 
-- invariants the code must uphold,
-- non-obvious why (algorithm choices, business rules, derivations),
-- deliberately surprising omissions.
-
-Comment what exists, not cross-references. Leave uncommented:
-
-- restatements of what the next line obviously does,
-- parameter/field narration that the names already carry,
-- references to other files, docs, or sections (they rot; links belong in docs,
-  not code),
-- walkthroughs of simple sequential steps,
-- things that are likely to change or implied by context: the task's scope, who
-  calls this code, temporary design decisions, and any comment with
-  "currently"-style temporality.
-
-Additional rules:
-
-- A reader should need no special knowledge (roadmaps, tasks, private
-  discussions) to understand a comment, and should learn from it something that
-  would otherwise take reasoning about the codebase.
-- Present tense, system as it is. No development history: no phase numbers, no
-  "previously X", no commit references, no dates. The git log is the history.
-- Document the *contract* of an invariant, then pin it with an assert at the
-  point that relies on it, not prose alone.
+- Document an invariant's *contract*, then pin it with an assert at the point
+  that relies on it, not prose alone.
 - TODOs mark deferred work worth doing; they are not a narrative device.
 - In-house comments and docs never cite `file:line` positions: game line numbers
   move between builds and silently rot. Name the method and pin the game version
   instead; `check-citations` (part of `smoke`) fails on them.
+- Prefer commas, colons, or parentheses over em dashes in Markdown and Rust
+  comments: the dash can stand in for any of them, so the specific mark forces
+  the sentence to commit to a clause relation (heavy use also reads as
+  machine-generated). `check-emdash` (part of `smoke`) pins per-file counts and
+  fails on any increase; pins only move down.
 - Doc comments (`///`) follow the same budget; trivial types, constructors, and
   getters get none. Compress load-bearing derivations (e.g. pixel math) to the
   minimum that lets the reader verify them.
 
 ## Spec docs
 
-- The design specs live in the Rust source as module docs (`//!`), not in
-  `docs/`; the doc sits in the same diff as the code it describes, and
-  `#[deny(rustdoc::broken_intra_doc_links)]` keeps its links compile-time
-  checked. `docs/` holds the environment guides — `build.md`, `verify.md`,
-  `gdextension.md`, and `game.md` (environment content with no Rust anchor) —
-  and `images/` (assets referenced by the markdown docs); the crate overview
-  lives in `lib.rs`.
+- Design specs live in the Rust source as module docs (`//!`), not in `docs/`;
+  `docs/` holds the environment guides ([build.md](docs/build.md),
+  [verify.md](docs/verify.md), [gdextension.md](docs/gdextension.md),
+  [game.md](docs/game.md)) and `images/`; the crate overview lives in
+  [lib.rs](profiler-core/src/lib.rs).
 - Every sentence must teach something the code cannot, in the fewest words that
   carry it. If deleting a paragraph loses nothing, delete it.
 - Canonical facts live in exactly one place (the on-disk schema in the
   `persistence` module doc, the player-slot model in the `state` module doc);
   everywhere else points there.
-- The code is the ground truth. A doc that disagrees with the code is a bug in
-  the doc. Fix the doc, never annotate the disagreement.
+- The code is the ground truth: a doc that disagrees with it is a bug in the
+  doc. Fix the doc, never annotate the disagreement.
 
 ## Code shape
 
-### Methods over free functions
-
-When inventing functions operating on structs/enums, prefer implementing them as
-methods rather than free functions. If a function is not explicitly related to a
-struct/enum, but it only exists as a helper for it, prefer adding it as a static
-method; it helps with cleaner grouping. Free functions typically represent
-either big chunks of isolated business logic, or shared general-purpose helpers.
-
-Bad:
-
-```rust
-fn rect(l: &mut Layout, x: f32, y: f32, w: f32, h: f32, color: Color) { .. }
-fn text(l: &mut Layout, x: f32, y: f32, size: i32, color: Color, s: impl Into<String>) { .. }
-```
-
-Good (`chart_layout.rs`: the draw-command emitters grow the `Layout` they
-serve):
-
-```rust
-impl Layout {
-    fn rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: Color) { .. }
-    fn text(&mut self, x: f32, y: f32, size: i32, color: Color, s: impl Into<String>) { .. }
-}
-```
-
-### No single-use helpers
-
-Instead of introducing single-use helpers, prefer embedding logic as a block
-with comments.
-
-Bad (if used only once):
-
-```rust
-fn seg_width(milli: u16, width: f32) -> f32 {
-    (u32::from(milli) * (width as u32) / 1000) as f32
-}
-```
-
-Good (`chart_layout.rs`: the per-mille math stays inline; a `seg_width` helper
-would serve exactly one call site):
-
-```rust
-for (k, &milli) in seg_milli.iter().enumerate() {
-    // Integer math first, then the float: per-mille × pixel width, with
-    // the width truncated to whole pixels (by design).
-    let w = (u32::from(milli) * (width as u32) / 1000) as f32;
-    out[k] = Seg { x: offset, w };
-    offset += w;
-}
-```
+- Methods over free functions: a function operating on a struct/enum, or
+  existing only as its helper, is a method (static when it needs no `self`);
+  free functions are big chunks of isolated business logic or shared
+  general-purpose helpers. `fn rect(l: &mut Layout, ..)` becomes `impl Layout {
+  fn rect(&mut self, ..) }`.
+- No single-use helpers: logic with exactly one call site stays inline as a
+  commented block rather than becoming a named function.
 
 ## State and borrowing
 
-- All mutable state lives in one thread-local `RefCell<State>`: the game's logic
-  loop is single-threaded, so this is both sufficient and the cheapest correct
-  design. Do not add locks or atomics.
-- Hold one `borrow_mut` per event. The log sink owns its own thread-local,
-  separate from `STATE`, so logging while the state borrow is held is safe (a
-  test pins this); the sink must never re-borrow `STATE`.
-- Fixed-capacity tables are bounded `Vec`s with caps named in `caps`. Overflow
-  fails loudly via `fail`; it never grows the table silently and never panics.
-  Give every cap a one-line rationale.
+- Keep live combat/run data in `State` under
+  [state.rs](profiler-core/src/data/state.rs)'s borrowing contract; independent
+  mutable state stays with its lifetime owner. No locks or atomics for
+  gameplay-state coordination; engine initialization and tests may use them.
+- Logging under a state guard follows the [log
+  sink](profiler-core/src/data/persistence/log.rs)'s no-`STATE`-reentry
+  contract.
+- Fixed-capacity tables are bounded `Vec`s with caps named in `caps`: overflow
+  fails loudly via `fail`, never grows the table silently, never panics. Give
+  every cap a one-line rationale.
 - Cross-table references are indices into the owning `Vec`, not references; this
   is the safe-Rust way to avoid self-borrowing.
 
 ## Boundaries
 
 - **C ABI**: every export routes through `contain`, which catches a panic and
-  swallows it (logged). Nothing unwinds into the host. Strings decode with a
-  null/malformed → `""` mapping: a bad pointer must degrade, not segfault the
-  game.
+  swallows it (logged); nothing unwinds into the host. Strings decode
+  null/malformed to `""`.
 - **Wire values**: clamp-and-log, never panic; a corrupt slot/kind from the host
   clamps to the nearest valid value and is reported through `fail`. Validation
   lives at the boundary; interior code trusts it.
@@ -175,54 +118,54 @@ for (k, &milli) in seg_milli.iter().enumerate() {
 - Pin wire/schema constants at compile time with `const _: () = assert!(...)`:
   enum discriminants the shim sends, id orderings a reader indexes by, capacity
   relationships. If the build can't fail on it, the invariant doesn't exist.
-- Assert invariants at their point of use with `debug_assert` (free in release):
-  the write/read pair pattern, segment-sum identities, conservation identities.
-  An assert states *what must hold and why* in its message.
+- Assert invariants at their point of use with `debug_assert` (free in release);
+  the message states what must hold and why.
 - No tautological asserts: re-checking a function's own local bookkeeping or a
   language-guaranteed fact (`size_of::<i32>() == 4`) is noise, not safety.
 
 ## Persistence
 
 - Field names, order, and zero-omission *are* the schema: absent == zero,
-  unknown fields are ignored, identity fields stay explicit. Change the structs,
+  unknown fields are ignored, identity fields stay explicit. Change the structs
   and the schema changes deliberately.
-- While the mod is in early development there are no migrations: breaking
-  changes land freely and old data is deleted. Do not write migration machinery;
-  do write the schema down in the `persistence` module doc. Ensure consistency
-  between the code and its module doc.
+- No migrations while the mod is in early development: breaking changes land
+  freely and old data is deleted. The schema is written down in the
+  `persistence` module doc; keep code and doc consistent.
 - Writes are atomic (temp file + rename): the game can kill the process at any
-  point, and a torn record should never appear.
+  point, and a torn record must never appear.
 
 ## Game updates
 
-The verified game version is pinned in `xtask/src/game_version.rs`; a Steam
-update fails every game-touching command until `PIN` is bumped deliberately.
-Bumping `PIN` is the start of a manual re-verification:
+The verified game version is pinned in
+[game\_version.rs](xtask/src/game_version.rs); a Steam update fails every
+game-touching command until `PIN` is bumped deliberately. Bumping `PIN` starts a
+manual re-verification:
 
 1. Re-run `cargo xtask decompile` (replaces `tmp/sts2-decompiled`).
 2. Run `cargo xtask check-catalog`: it fails on entries that no longer resolve
    or show a tracked effect, on new candidate hooks, and on stale reviewed
-   exclusions. Decide by reading the decompiled hook bodies; update the catalog
-   or reviewed-candidate baseline accordingly. The catalog in
-   `xtask/src/catalog.rs` is curated by hand, never generated. The shim picks
-   catalog changes up automatically at build (`xtask/src/shim.rs`).
-3. Re-check the drift findings in `docs/game.md` against the new snapshot and
-   re-date them to the pin; they record traps check-catalog cannot see (dead
-   hook bodies, renamed parameter types).
-4. Run the gate set in `docs/verify.md`. `headless-test` is the only check of
-   the fixed shim patches (class-level, orb, RunManager): its patch count is
-   exact and a skipped patch logs an ERROR.
+   exclusions; decide by reading the decompiled hook bodies, updating the
+   catalog or reviewed-candidate baseline accordingly. The catalog in
+   [catalog.rs](xtask/src/catalog.rs) is curated by hand, never generated; the
+   shim picks changes up at build.
+3. Re-check the drift findings in [game.md](docs/game.md) against the new
+   snapshot and re-date them to the pin; they record traps check-catalog cannot
+   see (dead hook bodies, renamed parameter types).
+4. Run the gate set in [verify.md](docs/verify.md). `headless-test` is the only
+   check of the fixed shim patches: it enforces a minimum patch count because
+   Harmony includes other mods, and a skipped patch logs an ERROR.
 
 ## Testing
 
-- Test behavior and invariants, not language semantics. If a test cannot fail
-  unless the implementation is deliberately broken (Default is zero, clone
-  equals original, serde renames), delete it.
-- `tests/sim.rs` is the workhorse: a seeded deterministic walk that re-checks
-  the ledger invariants after every event, so any regression reproduces
-  byte-for-byte via `SIM_SEED`. Extend the walk when adding mechanics.
-- Property tests compare against an independent naive model (the block pool's
-  FIFO consumption), not against the implementation itself.
+- Test behavior and invariants, not language semantics: delete a test that can
+  only fail when the implementation is deliberately broken (Default is zero,
+  clone equals original, serde renames).
+- [sim.rs](profiler-core/tests/sim.rs) is the workhorse: a seeded walk that
+  re-checks the ledger invariants after every event. `SIM_SEED` replays events
+  and behavioral assertions under equivalent isolated fixtures; its header
+  defines the timestamp limits. Extend the walk when adding mechanics.
+- Property tests compare against an independent naive model, not the
+  implementation itself.
 - Insta snapshots pin the persisted JSON byte-for-byte; accept updates only with
   a reviewed diff.
 
@@ -246,19 +189,14 @@ Bumping `PIN` is the start of a manual re-verification:
 ## Git
 
 - `main` is linear: no merge commits. Work happens on short-lived branches (a
-  worktree per concurrent branch, so checkouts never fight) and lands by rebase;
-  a branch is deleted once merged.
+  worktree per concurrent branch) and lands by rebase; a merged branch is
+  deleted.
 - One commit per logical change, titled `<scope>: <subject>`; the body explains
   non-obvious trade-offs, wrapped at ~72 columns.
-- The git log is the project's history, so comments and docs never narrate it.
 
 ## `tmp/` directory
 
-This directory is intentionally git-ignored, and may or may not exist in the
-workspace. It is intended for temporary, development-specific files, reference
-materials, and any other information that helps with development on a specific
-machine.
-
-Artifacts in this directory should NEVER be referenced in the source code,
-though they may be discussed with the user. If it is there, consider it as
-"files that only make sense for this developer on this machine".
+`tmp/` is git-ignored scratch space for machine-local files and may not exist.
+The shipped profiler must not depend on repository scratch. Tests and xtask may
+use it with explicit setup and cleanup/retention ownership. Headless and
+decompile use fixed paths: do not run concurrent invocations of either command.

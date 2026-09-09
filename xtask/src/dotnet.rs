@@ -23,25 +23,12 @@ pub fn binary_in(dir: &Path) -> PathBuf {
     dir.join("dotnet")
 }
 
-pub fn pick(bootstrap_dir: &Path) -> Result<PathBuf> {
-    let bootstrapped = binary_in(bootstrap_dir);
-    if bootstrapped.is_file() {
-        Ok(bootstrapped)
-    } else {
-        Err(anyhow::anyhow!(
-            "no .NET SDK bootstrap at {}; run `cargo xtask install-tool` to bootstrap the \
-             pinned SDK {DOTNET_VERSION}",
-            bootstrap_dir.display()
-        ))
-    }
-}
-
 /// ALWAYS the bootstrap dir, never PATH; a wrong SDK can never silently
 /// feed the build.
 pub fn resolve_dotnet(shell: &Shell) -> Result<PathBuf> {
     let dir = bootstrap_dir();
     ensure_bootstrap_in(shell, &dir)?;
-    let binary = pick(&dir)?;
+    let binary = binary_in(&dir);
 
     println!(
         "dotnet: {} ({DOTNET_VERSION}, bootstrapped)",
@@ -158,7 +145,11 @@ pub fn ensure_bootstrap_in(shell: &Shell, dir: &Path) -> Result<()> {
             ));
         }
     }
-    cmd!(shell, "tar -xzf {tarball} -C {dir}").run()?;
+    cmd!(
+        shell,
+        "tar --extract --gzip --file {tarball} --directory {dir}"
+    )
+    .run()?;
     let binary = binary_in(dir);
     let sdks = list_sdks_of(shell, dir, &binary).map_err(|e| {
         anyhow::anyhow!(

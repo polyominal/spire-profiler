@@ -17,27 +17,16 @@
 //! summary, both game-native), and persists the results as JSON under
 //! `<mod_data>/spire-profiler/`. The attribution model lives in
 //! [`data`]'s module doc, the on-disk schema in [`data::persistence`]'s,
-//! and the player-slot model in [`data::state`]'s.
-//!
-//! # Layers
-//!
-//!   * [`abi`] — the `spire_profiler_*` C export surface; one of the three unsafe relaxations of
-//!     the crate-root deny
-//!   * [`registration`] — the composition root for panel classes and instance casts; the second
-//!     relaxation
-//!   * [`data`] — combat facts and the persisted JSON model, engine-free
-//!   * [`engine`] — the hand-rolled GDExtension FFI (the third relaxation) and the local
-//!     Vector2/Rect2/Color stand-ins
-//!   * [`ui`] — the panels and their shared plumbing
+//! and live-state ownership and the player-slot model in [`data::state`]'s.
 //!
 //! # Standing contracts
 //!
 //! The game must never crash because of the mod: every export routes
 //! through [`crate::abi::contain`], which catches a panic and logs it,
-//! and wire values clamp-and-log instead of panicking. All game state lives in one
-//! thread-local `RefCell<State>` because the game's logic loop is
-//! single-threaded. Unsafe Rust is quarantined in the three modules above,
-//! each with its reason documented. Specs live in the module docs, not in
+//! and wire values clamp-and-log instead of panicking. Unsafe Rust is
+//! quarantined in exactly [`abi`], [`registration`], and [`engine::gdext`],
+//! each with its reason documented.
+//! Specs live in the module docs, not in
 //! `docs/`; environment content (building, verification, GDExtension
 //! interop, platform layout) lives in the `docs/` guides. A self-test entry point lets the
 //! host verify the bridge end-to-end under the headless gate.
@@ -56,12 +45,16 @@
 //! stderr diagnostic, but diagnostics are never copied into the file.
 
 #![deny(unsafe_code)]
+#![deny(unreachable_pub)]
 // Module docs are spec documentation, so a broken intra-doc link is a doc
 // bug: fail the build rather than warn. Private links stay allowed — the
 // crate is not a public library and deliberately links `pub(crate)` items,
 // which only resolve under `--document-private-items`.
 #![deny(rustdoc::broken_intra_doc_links)]
 #![allow(rustdoc::private_intra_doc_links)]
+// `emit` below is the single sanctioned console writer; the deny keeps every
+// other path off the player's terminal.
+#![deny(clippy::print_stdout, clippy::print_stderr)]
 
 use std::cell::Cell;
 use std::fmt;
@@ -79,8 +72,8 @@ pub mod abi;
 pub mod data;
 pub mod engine;
 #[allow(unsafe_code)]
-pub mod registration;
-pub mod source_kind;
+mod registration;
+mod source_kind;
 pub mod ui;
 
 // The integration tests link the crate as a library (cfg(test) off), so the

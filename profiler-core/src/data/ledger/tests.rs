@@ -3,7 +3,9 @@
 
 use super::*;
 use crate::data::persistence::{bind_log_path, reset_log_sink};
-use crate::data::state::{ActivePlay, DebuffLayer, Fallback, PotionSource, PowerSourceEntry, caps};
+use crate::data::state::{
+    ActivePlay, ContextEntry, DebuffLayer, Fallback, PotionSource, PowerSourceEntry, caps,
+};
 use crate::test_util::unique_dir;
 
 fn reset_state() {
@@ -48,7 +50,7 @@ fn consume_chunk(blocked: i64) -> i64 {
 
 fn resolve_damage_source(
     explicit_id: &str,
-    receiver_hash: u64,
+    receiver_hash: i32,
     total: i64,
     slot: i32,
     explicit_slot: i32,
@@ -63,22 +65,6 @@ fn resolve_damage_source(
             explicit_slot,
         )
     })
-}
-
-#[test]
-fn u64_from_hash_sign_extends() {
-    assert_eq!(u64_from_hash(0), 0);
-    assert_eq!(u64_from_hash(1), 1);
-    assert_eq!(u64_from_hash(-1), u64::MAX);
-    assert_eq!(u64_from_hash(i32::MIN), 0xFFFF_FFFF_8000_0000);
-}
-
-/// Potion/osty (3/4) round-trip exactly, unlike `SourceKind::from_c`.
-#[test]
-fn from_u8_round_trips_all_kinds() {
-    for kind in SourceKind::ALL {
-        assert_eq!(SourceKind::from(kind as u8), kind);
-    }
 }
 
 #[test]
@@ -170,11 +156,9 @@ fn resolve_card_priority_chain() {
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         state.current = Some(Combat::default());
-        state.context_stack.push(ContextEntry {
-            id: "CRACKED_CORE".to_owned(),
-            kind: SourceKind::Relic,
-            slot: 0,
-        });
+        state
+            .context_stack
+            .begin("CRACKED_CORE", SourceKind::Relic, 0);
         state.orb_sources.push(OrbSource {
             hash: 7,
             id: "ZAP".to_owned(),
@@ -208,7 +192,7 @@ fn resolve_card_priority_chain() {
     );
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
-        state.context_stack.pop();
+        state.context_stack.end();
         state.slot_state_mut(0).fallback = Some(Fallback::Orb(0));
     });
     assert_card(

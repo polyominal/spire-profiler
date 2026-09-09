@@ -1,11 +1,11 @@
 //! `cargo xtask headless-test`: install the mod, boot the game headless
-//! with the self-test flag, and gate on markers in the boot output. The C#
+//! with the self-test flag, and gate on successful exit and boot markers. The C#
 //! Log.Info markers land in the godot logs while the core's stderr
 //! markers only appear in process output, so both are combined.
 
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
@@ -27,12 +27,13 @@ const GAME_ARGS: [&str; 6] = [
     "1800",
 ];
 
-/// Every dynamic target is unique, so the catalog and the two fixed shim
-/// groups determine the runtime patch count exactly.
+/// Every dynamic target is unique. Harmony counts all mods' patched methods,
+/// so the catalog and the two fixed shim groups set a minimum.
 const CLASS_LEVEL_PATCHES: usize = 34;
 const ORB_PATCHES: usize = 11;
 const MIN_PATCHES: u64 =
     (CLASS_LEVEL_PATCHES + ORB_PATCHES + catalog::RELICS.len() + catalog::POWERS.len()) as u64;
+const PATCH_COUNT_MARKER: &str = "[SpireProfiler] harmony patches applied; patched methods: ";
 
 pub fn headless_test(shell: &Shell) -> Result<()> {
     let game = install::install_mod(shell)?;
@@ -47,7 +48,7 @@ pub fn headless_test(shell: &Shell) -> Result<()> {
     // Bounds which godot log belongs to this run: a stale log must never
     // satisfy the verdict.
     let boot_started = SystemTime::now();
-    let (game_out, boot_duration, exit_code) = run_game_captured(&game, &scratch_data_dir, root)?;
+    let (game_out, boot_duration, exit_status) = run_game_captured(&game, &scratch_data_dir, root)?;
     let newest_log = newest_boot_log(&log_dir, boot_started);
     if newest_log.is_none() {
         eprintln!("headless-test: warning: no godot*.log written during this boot");
@@ -55,12 +56,7 @@ pub fn headless_test(shell: &Shell) -> Result<()> {
 
     println!("--- headless-test verdict ---");
     println!("boot duration: {:.1} s", boot_duration.as_secs_f64());
-    println!(
-        "game exit code: {}",
-        exit_code
-            .map(|code| code.to_string())
-            .unwrap_or_else(|| "unknown".to_owned())
-    );
+    println!("game exit status: {exit_status}");
     if let Some((path, _)) = &newest_log {
         println!("game log: {}", path.display());
     }
@@ -68,11 +64,16 @@ pub fn headless_test(shell: &Shell) -> Result<()> {
     let log_text = newest_log.map(|(_, text)| text).unwrap_or_default();
     let combined = format!("{log_text}\n{game_out}");
 
-    assemble_verdict(&combined).report()
+    assemble_verdict(&combined, exit_status).report()
 }
 
-fn assemble_verdict(output: &str) -> Verdict {
+fn assemble_verdict(output: &str, exit_status: ExitStatus) -> Verdict {
     let mut failures = Vec::new();
+    if !exit_status.success() {
+        let failure = format!("game exited unsuccessfully: {exit_status}");
+        eprintln!("headless-test: ERROR: {failure}");
+        failures.push(failure);
+    }
     check_patch_count(output, &mut failures);
     check_gate_markers(output, &mut failures);
     check_unexpected_errors(output, &mut failures);
@@ -99,9 +100,9 @@ impl Verdict {
 /// mods can patch more methods during the same boot.
 fn check_patch_count(output: &str, failures: &mut Vec<String>) {
     match output
-        .match_indices("patched methods: ")
+        .match_indices(PATCH_COUNT_MARKER)
         .filter_map(|(index, _)| {
-            let digits: String = output[index + "patched methods: ".len()..]
+            let digits: String = output[index + PATCH_COUNT_MARKER.len()..]
                 .chars()
                 .take_while(|character| character.is_ascii_digit())
                 .collect();
@@ -119,10 +120,7 @@ fn check_patch_count(output: &str, failures: &mut Vec<String>) {
             failures.push(format!("patched methods: {patch_count} (< {MIN_PATCHES})"));
         }
         None => {
-            eprintln!(
-                "headless-test: ERROR: patch-count marker '[SpireProfiler] harmony patches \
-                 applied; patched methods: N' not found"
-            );
+            eprintln!("headless-test: ERROR: patch-count marker '{PATCH_COUNT_MARKER}N' not found");
             failures.push("patch-count marker not found".to_owned());
         }
     }
@@ -278,7 +276,7 @@ fn run_game_captured(
     game: &discover::GamePaths,
     scratch_data_dir: &Path,
     root: &Path,
-) -> Result<(String, Duration, Option<i32>)> {
+) -> Result<(String, Duration, ExitStatus)> {
     println!("booting the game headless (first boot may take 30-60s) ...");
     eprintln!(
         "headless-test: $ {} {}",
@@ -314,7 +312,6 @@ fn run_game_captured(
     ];
     let (receiver, pumps) = spawn_pumps(streams);
 
-    // Print and capture output as it arrives.
     let boot_start = Instant::now();
     let mut captured = String::new();
     let status = loop {
@@ -353,7 +350,7 @@ fn run_game_captured(
         captured.push_str(&line);
     }
 
-    Ok((captured, boot_start.elapsed(), status.code()))
+    Ok((captured, boot_start.elapsed(), status))
 }
 
 /// One pump thread per stream; lines (not bytes) keep interleaving sane.
@@ -426,7 +423,110 @@ fn is_unexpected_error(line: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::process::ExitStatusExt;
+
     use super::*;
+
+    fn complete_boot_output() -> String {
+        format!(
+            "[SpireProfiler] harmony patches applied; patched methods: {MIN_PATCHES}\n{}",
+            GATE_MARKERS.join("\n")
+        )
+    }
+
+    #[test]
+    fn verdict_requires_successful_exit_with_complete_markers() {
+        let output = complete_boot_output();
+        let success = ExitStatus::from_raw(0);
+        let failure = ExitStatus::from_raw(7 << 8);
+        assert!(assemble_verdict(&output, success).report().is_ok());
+        let verdict = assemble_verdict(&output, failure);
+        assert_eq!(
+            verdict.failures,
+            [format!("game exited unsuccessfully: {failure}")]
+        );
+        assert!(verdict.report().is_err());
+
+        let signal = ExitStatus::from_raw(libc::SIGTERM);
+        let verdict = assemble_verdict(&output, signal);
+        assert_eq!(
+            verdict.failures,
+            [format!("game exited unsuccessfully: {signal}")]
+        );
+        assert!(verdict.report().is_err());
+    }
+
+    #[test]
+    fn successful_exit_still_requires_markers_and_no_profiler_errors() {
+        let output = complete_boot_output();
+        let success = ExitStatus::from_raw(0);
+        let missing_count = output.replace(PATCH_COUNT_MARKER, "");
+        let verdict = assemble_verdict(&missing_count, success);
+        assert_eq!(verdict.failures, ["patch-count marker not found"]);
+        assert!(verdict.report().is_err());
+
+        let missing_marker = output.replace(GATE_MARKERS[0], "");
+        let verdict = assemble_verdict(&missing_marker, success);
+        assert_eq!(
+            verdict.failures,
+            [format!("missing marker: {}", GATE_MARKERS[0])]
+        );
+        assert!(verdict.report().is_err());
+
+        let with_error = format!("{output}\n[SpireProfiler] ERROR: patch failed");
+        let verdict = assemble_verdict(&with_error, success);
+        assert_eq!(
+            verdict.failures,
+            ["1 unexpected [SpireProfiler] error line(s)"]
+        );
+        assert!(verdict.report().is_err());
+    }
+
+    #[test]
+    fn patch_count_ignores_unrelated_matching_text() {
+        let unrelated = "[OtherMod] harmony patches applied; patched methods: 999999\n\
+                         [SpireProfiler] unrelated patched methods: 999999";
+        let mut failures = Vec::new();
+        check_patch_count(unrelated, &mut failures);
+        assert_eq!(failures, ["patch-count marker not found"]);
+
+        let insufficient = MIN_PATCHES - 1;
+        let output = format!("{unrelated}\n{PATCH_COUNT_MARKER}{insufficient}");
+        let mut failures = Vec::new();
+        check_patch_count(&output, &mut failures);
+        assert_eq!(
+            failures,
+            [format!("patched methods: {insufficient} (< {MIN_PATCHES})")]
+        );
+    }
+
+    #[test]
+    fn patch_count_uses_maximum_matching_count_and_accepts_other_mods() {
+        for (counts, passes) in [
+            (vec![MIN_PATCHES - 1], false),
+            (vec![MIN_PATCHES], true),
+            (vec![MIN_PATCHES + 1], true),
+            (vec![0, MIN_PATCHES, 0], true),
+            (vec![MIN_PATCHES, MIN_PATCHES], true),
+            (vec![0, MIN_PATCHES - 1, 0], false),
+        ] {
+            let output = counts
+                .iter()
+                .map(|count| format!("{PATCH_COUNT_MARKER}{count}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let mut failures = Vec::new();
+            check_patch_count(&output, &mut failures);
+            assert_eq!(failures.is_empty(), passes, "counts: {counts:?}");
+        }
+
+        let mut failures = Vec::new();
+        check_patch_count(
+            &format!("{PATCH_COUNT_MARKER}unknown\n{PATCH_COUNT_MARKER}18446744073709551616"),
+            &mut failures,
+        );
+        assert_eq!(failures, ["patch-count marker not found"]);
+    }
 
     #[test]
     fn wslenv_merge_appends_the_translation_flag() {

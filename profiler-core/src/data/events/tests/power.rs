@@ -20,51 +20,57 @@ fn forge_credits_the_named_source() {
 
 #[test]
 fn doom_kills_attribute_enemy_hp_to_the_doom_appliers() {
-    let base = combat_fixture("DOOM_TEST");
+    for doom_hash in [42, -1, i32::MIN] {
+        let base = combat_fixture("DOOM_TEST");
 
-    card_play_started("DEATHBRINGER", 0, 1, 0, 0);
-    power_applied("DOOM_POWER", 4, 42, 0, 0);
-    card_play_finished(0);
-    context_begin("COUNTDOWN_POWER", 2, 0);
-    power_applied("DOOM_POWER", 6, 42, 0, 0);
-    context_end();
+        card_play_started("DEATHBRINGER", 0, 1, 0, 0);
+        power_applied("DOOM_POWER", 4, doom_hash, 0, 0);
+        card_play_finished(0);
+        context_begin("COUNTDOWN_POWER", 2, 0);
+        power_applied("DOOM_POWER", 6, doom_hash, 0, 0);
+        context_end();
 
-    doom_target_capture(42, 10);
-    doom_kills_completed();
-    card_play_started("NEUROSURGE", 0, 1, 0, 0);
-    power_applied("DOOM_POWER", 5, 0, 1, 0);
-    card_play_finished(0);
-    // No layer and no context: falls back to the DOOM entry; the lingering
-    // last_source must NOT be consulted (AsyncFallback::Skip).
-    doom_target_capture(43, 7);
-    doom_kills_completed();
-    combat_ended();
+        doom_target_capture(doom_hash, 10);
+        doom_kills_completed();
+        card_play_started("NEUROSURGE", 0, 1, 0, 0);
+        power_applied("DOOM_POWER", 5, 0, 1, 0);
+        card_play_finished(0);
+        // No layer and no context: falls back to the DOOM entry; the lingering
+        // last_source must NOT be consulted (AsyncFallback::Skip).
+        doom_target_capture(43, 7);
+        doom_kills_completed();
+        combat_ended();
 
-    let (combat, _) = read_combat(&base);
-    let deathbringer = card_row(&combat, "DEATHBRINGER");
-    assert_eq!(
-        (
-            deathbringer.kind,
-            deathbringer.plays,
-            deathbringer.damage_dealt
-        ),
-        (SourceKind::Card, 1, 4)
-    );
-    let countdown = card_row(&combat, "COUNTDOWN_POWER");
-    assert_eq!(
-        (countdown.kind, countdown.plays, countdown.damage_dealt),
-        (SourceKind::Power, 0, 6)
-    );
-    let neuro = card_row(&combat, "NEUROSURGE");
-    assert_eq!(
-        (neuro.kind, neuro.plays, neuro.damage_dealt),
-        (SourceKind::Card, 1, 0)
-    );
-    let doom = card_row(&combat, "DOOM");
-    assert_eq!(
-        (doom.kind, doom.plays, doom.damage_dealt),
-        (SourceKind::Card, 0, 7)
-    );
+        let (combat, _) = read_combat(&base);
+        let deathbringer = card_row(&combat, "DEATHBRINGER");
+        assert_eq!(
+            (
+                deathbringer.kind,
+                deathbringer.plays,
+                deathbringer.damage_dealt
+            ),
+            (SourceKind::Card, 1, 4),
+            "doom hash {doom_hash}"
+        );
+        let countdown = card_row(&combat, "COUNTDOWN_POWER");
+        assert_eq!(
+            (countdown.kind, countdown.plays, countdown.damage_dealt),
+            (SourceKind::Power, 0, 6),
+            "doom hash {doom_hash}"
+        );
+        let neuro = card_row(&combat, "NEUROSURGE");
+        assert_eq!(
+            (neuro.kind, neuro.plays, neuro.damage_dealt),
+            (SourceKind::Card, 1, 0),
+            "doom hash {doom_hash}"
+        );
+        let doom = card_row(&combat, "DOOM");
+        assert_eq!(
+            (doom.kind, doom.plays, doom.damage_dealt),
+            (SourceKind::Card, 0, 7),
+            "doom hash {doom_hash}"
+        );
+    }
 }
 
 #[test]
@@ -123,31 +129,37 @@ fn debuff_layers_attribute_poison_ticks_to_appliers() {
     let base = combat_fixture("DEBUFF_TEST");
 
     card_play_started("BOUNCING_FLASK", 0, 1, 0, 0);
-    power_applied("POISON_POWER", 3, 42, 0, 0);
+    power_applied("POISON_POWER", 3, -1, 0, 0);
     card_play_finished(0);
     context_begin("NOXIOUS_FUMES_POWER", 2, 0);
-    power_applied("POISON_POWER", 2, 42, 0, 0);
+    power_applied("POISON_POWER", 2, -1, 0, 0);
     context_end();
 
     damage_dealt(DamageDealt {
         total: 5,
         unblocked: 5,
-        receiver_hash: 42,
+        receiver_hash: -1,
         ..DamageDealt::default()
     });
-    power_decreased("POISON_POWER", 1, 42, 0, 0);
+    power_decreased("POISON_POWER", 1, -1, 0, 0);
+    damage_dealt(DamageDealt {
+        total: 5,
+        unblocked: 5,
+        receiver_hash: -1,
+        ..DamageDealt::default()
+    });
     combat_ended();
 
     let (combat, _) = read_combat(&base);
     let flask = card_row(&combat, "BOUNCING_FLASK");
     assert_eq!(
         (flask.kind, flask.plays, flask.damage_dealt),
-        (SourceKind::Card, 1, 3)
+        (SourceKind::Card, 1, 5)
     );
     let noxious = card_row(&combat, "NOXIOUS_FUMES_POWER");
     assert_eq!(
         (noxious.kind, noxious.plays, noxious.damage_dealt),
-        (SourceKind::Power, 0, 2)
+        (SourceKind::Power, 0, 5)
     );
 }
 
@@ -156,12 +168,15 @@ fn weak_and_buff_mitigation_credit_their_appliers() {
     let base = combat_fixture("MITIGATION_TEST");
 
     card_play_started("MALAISE", 0, 1, 0, 0);
-    power_applied("WEAK_POWER", 2, 42, 0, 0);
+    power_applied("WEAK_POWER", 2, i32::MIN, 0, 0);
     card_play_finished(0);
     card_play_started("GO_FOR_THE_EYES", 0, 1, 0, 0);
-    power_applied("WEAK_POWER", 1, 42, 0, 0);
+    power_applied("WEAK_POWER", 1, i32::MIN, 0, 0);
     card_play_finished(0);
-    weak_mitigation(4, 42);
+    weak_mitigation(4, i32::MIN);
+    power_decreased("WEAK_POWER", 2, i32::MIN, 0, 0);
+    weak_mitigation(3, i32::MIN);
+    weak_mitigation(5, 43);
 
     card_play_started("BUFFER", 0, 1, 0, 0);
     power_applied("BUFFER_POWER", 1, 0, 1, 0);
@@ -174,6 +189,11 @@ fn weak_and_buff_mitigation_credit_their_appliers() {
 
     let (combat, doc) = read_combat(&base);
     assert_eq!(card_json(&doc, "MALAISE")["mitigate_debuff"], 4);
+    assert_eq!(card_json(&doc, "GO_FOR_THE_EYES")["mitigate_debuff"], 3);
+    assert_eq!(
+        combat.cards.iter().map(|c| c.mitigate_debuff).sum::<i64>(),
+        7
+    );
     let eyes = card_row(&combat, "GO_FOR_THE_EYES");
     assert_eq!(
         (eyes.kind, eyes.plays, eyes.damage_dealt),
@@ -190,10 +210,10 @@ fn strength_reduction_records_mitigates_and_reverts_lifo() {
     let base = combat_fixture("STRRED_TEST");
 
     card_play_started("PIERCING_WAIL", 0, 1, 0, 0);
-    power_decreased("STRENGTH_POWER", 8, 42, 0, 0);
+    power_decreased("STRENGTH_POWER", 8, i32::MIN, 0, 0);
     card_play_finished(0);
     card_play_started("MALAISE", 0, 1, 0, 0);
-    power_decreased("STRENGTH_POWER", 2, 42, 0, 0);
+    power_decreased("STRENGTH_POWER", 2, i32::MIN, 0, 0);
     card_play_finished(0);
 
     enemy_hit_context(10, -4);
@@ -201,19 +221,19 @@ fn strength_reduction_records_mitigates_and_reverts_lifo() {
         total: 6,
         unblocked: 6,
         to_player: 1,
-        receiver_hash: 999,
-        dealer_hash: 42,
+        receiver_hash: -1,
+        dealer_hash: i32::MIN,
         ..DamageDealt::default()
     });
 
-    power_applied("STRENGTH_POWER", 8, 42, 0, 0);
+    power_applied("STRENGTH_POWER", 8, i32::MIN, 0, 0);
     enemy_hit_context(10, 4);
     damage_dealt(DamageDealt {
         total: 14,
         unblocked: 14,
         to_player: 1,
-        receiver_hash: 999,
-        dealer_hash: 42,
+        receiver_hash: -1,
+        dealer_hash: i32::MIN,
         ..DamageDealt::default()
     });
 
@@ -306,8 +326,8 @@ fn power_appliers_record_their_slots() {
     assert_eq!(bash.damage_dealt, 6, "BASH keeps its base 6");
 }
 
-/// The modifier kind wire codes are their own enum: 0 = power, 1 = relic;
-/// anything else clamps to power. With no recorded appliers each share
+/// The modifier kind wire codes are 2 = Power, 1 = Relic;
+/// anything else clamps to Power. With no recorded appliers each share
 /// keeps the modifier's own kind.
 #[test]
 fn modifier_kind_codes_map_power_and_relic_and_clamp_unknowns() {

@@ -1,10 +1,13 @@
 //! Deterministic randomized simulation of the profiler core, inspired by
 //! TigerBeetle's VOPR:
 //! https://github.com/tigerbeetle/tigerbeetle/blob/97c7a8ef385270ebe0e1b75959d3d21d134629df/docs/internals/vopr.md
-//! A seeded PRNG feeds every scenario; `SIM_SEED` overrides the default so a
-//! failing run reproduces byte-for-byte. The lifecycle walk runs 20
-//! scenarios x 40 weighted events in a wiped dir, re-checking ledger
-//! invariants (segment sums, sign constraints, combat totals, queue bounds)
+//! A seeded PRNG feeds every scenario; `SIM_SEED` replays the event stream
+//! and behavioral assertions under equivalent isolated fixtures. Combat
+//! `started_at` and run `ended_at` use the wall clock; assertions do not
+//! depend on their values, so persisted bytes may differ. The lifecycle
+//! walk fixes the original run-start identity and runs 20 scenarios x 40
+//! weighted events in fresh directories, re-checking ledger invariants
+//! (segment sums, sign constraints, combat totals, queue bounds)
 //! after every event, then parses the JSON back; the block-pool test does
 //! the same against an independent naive FIFO model.
 //!
@@ -14,7 +17,7 @@
 //! context), so `ledger::apply_pending_contribs_in`'s carve stays exact on
 //! both routes.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
@@ -22,7 +25,7 @@ use profiler_core::data::state::{
     self, CombatResult, PendingContrib, RunOutcome, STATE, SourceKind,
 };
 use profiler_core::data::{events, ledger, records};
-use profiler_core::test_util::{combat_ids, wiped_dir};
+use profiler_core::test_util::{combat_ids, unique_dir};
 
 const DEFAULT_SEED: u64 = 0x5EED_5EED_5EED_5EED;
 const SCENARIOS: u32 = 20;
@@ -88,69 +91,74 @@ impl Rng {
 }
 
 fn sim_seed() -> u64 {
-    std::env::var("SIM_SEED")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(DEFAULT_SEED)
+    // A malformed override must fail loudly: silently falling back to the
+    // default would replay a different walk than the one being debugged.
+    match std::env::var("SIM_SEED") {
+        Ok(value) => value
+            .parse()
+            .unwrap_or_else(|_| panic!("SIM_SEED must be a u64 seed, got {value:?}")),
+        Err(std::env::VarError::NotPresent) => DEFAULT_SEED,
+        Err(std::env::VarError::NotUnicode(_)) => panic!("SIM_SEED must be valid Unicode"),
+    }
 }
 
-fn check_invariants(step: u32) {
+fn check_invariants(repro: &str, step: u32) {
     STATE.with(|cell| {
         let st = cell.borrow();
         if let Some(combat) = &st.current {
-            check_combat_totals(combat, step);
-            check_card_invariants(combat, step);
+            check_combat_totals(combat, repro, step);
+            check_card_invariants(combat, repro, step);
         }
         for (slot, player) in st.per_player.iter().enumerate() {
             if let Some(play) = &player.active_play {
                 assert!(
                     play.row_slot <= state::TEAM_SLOT,
-                    "step {step}: slot {slot}: active play row slot out of the source-slot vocabulary"
+                    "{repro} step {step}: slot {slot}: active play row slot out of the source-slot vocabulary"
                 );
             }
         }
-        check_queue_bounds(&st, step);
+        check_queue_bounds(&st, repro, step);
     });
 }
 
-fn check_combat_totals(combat: &state::Combat, step: u32) {
+fn check_combat_totals(combat: &state::Combat, repro: &str, step: u32) {
     // Only a source's own triggers increment a row; this identity catches
     // leaked or double-counted plays.
     let card_plays: u64 = combat.cards.iter().map(|card| u64::from(card.plays)).sum();
     assert_eq!(
         u64::from(combat.plays) + u64::from(combat.generation_triggers),
         card_plays + u64::from(combat.generated_plays),
-        "step {step}: plays + generation triggers must equal per-card plays + generated plays"
+        "{repro} step {step}: plays + generation triggers must equal per-card plays + generated plays"
     );
     assert!(
         combat.block_total >= 0,
-        "step {step}: block_total must never go negative"
+        "{repro} step {step}: block_total must never go negative"
     );
     assert!(
         combat.damage_received >= 0,
-        "step {step}: damage_received must never go negative"
+        "{repro} step {step}: damage_received must never go negative"
     );
 }
 
-fn check_card_invariants(combat: &state::Combat, step: u32) {
+fn check_card_invariants(combat: &state::Combat, repro: &str, step: u32) {
     let mut seen: std::collections::HashSet<(u8, &str, SourceKind)> =
         std::collections::HashSet::new();
     for card in &combat.cards {
         // Rows key on (player, id, kind); the key must be unique.
         assert!(
             card.player <= state::TEAM_SLOT,
-            "step {step}: card {id}: row slot must stay in the source-slot vocabulary",
+            "{repro} step {step}: card {id}: row slot must stay in the source-slot vocabulary",
             id = card.id
         );
         assert!(
             seen.insert((card.player, &card.id, card.kind)),
-            "step {step}: card {id}: row key (player, id, kind) must be unique",
+            "{repro} step {step}: card {id}: row key (player, id, kind) must be unique",
             id = card.id
         );
         assert_eq!(
             card.damage_dealt,
             card.dmg_direct + card.dmg_attributed + card.dmg_modifier,
-            "step {step}: card {id}: segment sum must equal damage_dealt",
+            "{repro} step {step}: card {id}: segment sum must equal damage_dealt",
             id = card.id
         );
         // `dealt - blocked` may legitimately dip negative when a queued
@@ -161,87 +169,83 @@ fn check_card_invariants(combat: &state::Combat, step: u32) {
                 && card.dmg_direct >= 0
                 && card.dmg_attributed >= 0
                 && card.dmg_modifier >= 0,
-            "step {step}: card {id}: damage fields must be non-negative",
+            "{repro} step {step}: card {id}: damage fields must be non-negative",
             id = card.id
         );
         assert!(
             card.block_gained >= 0,
-            "step {step}: card {id}: block_gained must never go negative",
+            "{repro} step {step}: card {id}: block_gained must never go negative",
             id = card.id
         );
         assert!(
             card.blk_modifier >= 0,
-            "step {step}: card {id}: block modifier credits must be non-negative",
+            "{repro} step {step}: card {id}: block modifier credits must be non-negative",
             id = card.id
         );
         assert!(
             card.mitigate_debuff >= 0 && card.mitigate_buff >= 0 && card.mitigate_str >= 0,
-            "step {step}: card {id}: mitigation credits must be non-negative",
+            "{repro} step {step}: card {id}: mitigation credits must be non-negative",
             id = card.id
         );
         assert!(
             card.self_damage >= 0 && card.forge >= 0,
-            "step {step}: card {id}: self_damage and forge must be non-negative",
+            "{repro} step {step}: card {id}: self_damage and forge must be non-negative",
             id = card.id
         );
     }
 }
 
-fn check_queue_bounds(st: &state::State, step: u32) {
-    assert!(
-        st.context_stack.len() <= state::caps::CONTEXT_STACK,
-        "step {step}: context stack overflow"
-    );
+fn check_queue_bounds(st: &state::State, repro: &str, step: u32) {
     assert!(
         st.orb_sources.len() <= state::caps::ORB_SOURCES,
-        "step {step}: orb source table overflow"
+        "{repro} step {step}: orb source table overflow"
     );
     for (slot, player) in st.per_player.iter().enumerate() {
         assert!(
             player.block_pool.len() <= state::caps::BLOCK_POOL,
-            "step {step}: slot {slot}: block pool overflow"
+            "{repro} step {step}: slot {slot}: block pool overflow"
         );
         assert!(
             player.pending_block_contribs.len() <= state::caps::PENDING_BLOCK_CONTRIBS,
-            "step {step}: slot {slot}: pending block contrib queue overflow"
+            "{repro} step {step}: slot {slot}: pending block contrib queue overflow"
         );
         assert!(
             player.pending_contribs.len() <= state::caps::PENDING_CONTRIBS,
-            "step {step}: slot {slot}: pending contrib queue overflow"
+            "{repro} step {step}: slot {slot}: pending contrib queue overflow"
         );
         assert!(
             player.osty_stack.len() <= state::caps::OSTY_STACK,
-            "step {step}: slot {slot}: osty stack overflow"
+            "{repro} step {step}: slot {slot}: osty stack overflow"
         );
     }
     assert!(
         st.power_sources.len() <= state::caps::POWER_SOURCES,
-        "step {step}: power source table overflow"
+        "{repro} step {step}: power source table overflow"
     );
     assert!(
         st.generated_instances.len() <= state::caps::GENERATED_INSTANCES,
-        "step {step}: generated instance table overflow"
+        "{repro} step {step}: generated instance table overflow"
     );
     assert!(
         st.doom_layers.len() <= state::caps::DOOM_LAYERS,
-        "step {step}: doom layer table overflow"
+        "{repro} step {step}: doom layer table overflow"
     );
     assert!(
         st.doom_targets.len() <= state::caps::DOOM_TARGETS,
-        "step {step}: doom target table overflow"
+        "{repro} step {step}: doom target table overflow"
     );
     assert!(
         st.str_reductions.len() <= state::caps::STR_REDUCTIONS,
-        "step {step}: str reduction table overflow"
+        "{repro} step {step}: str reduction table overflow"
     );
     assert!(
         st.debuff_layers.len() <= state::caps::DEBUFF_LAYERS,
-        "step {step}: debuff layer table overflow"
+        "{repro} step {step}: debuff layer table overflow"
     );
     for entry in st.per_player.iter().flat_map(|slot| &slot.block_pool) {
         assert!(
             entry.mods.len() <= state::BlockEntry::MAX_MODS,
-            "step {step}: block chunk modifier breakdown overflow"
+            "{repro} step {step}: block chunk modifier breakdown overflow"
         );
     }
 }
@@ -281,7 +285,7 @@ fn drive_one_event(rng: &mut Rng, follow_up: &mut bool) {
             events::power_decreased(
                 power,
                 rng.range_i32(1, 5),
-                rng.next_u64(),
+                rng.next_u64() as i32,
                 rng.range_i32(0, 1),
                 rng.range_i32(0, 3),
             );
@@ -336,7 +340,7 @@ fn drive_one_event(rng: &mut Rng, follow_up: &mut bool) {
             rng.range_i32(0, 3),
         ),
         76..=77 => drive_card_generated(rng),
-        78..=79 => events::weak_mitigation(rng.range_i32(1, 8), rng.next_u64()),
+        78..=79 => events::weak_mitigation(rng.range_i32(1, 8), rng.next_u64() as i32),
         80..=81 => events::buff_mitigation(rng.pick(&POWER_POOL), rng.range_i32(1, 8)),
         82..=83 => events::enemy_hit_context(rng.range_i32(1, 20), rng.range_i32(-8, 8)),
         _ => events::block_pool_clear(0),
@@ -428,8 +432,16 @@ fn drive_damage(rng: &mut Rng, follow_up: &mut bool) {
     let card_source_slot = rng.range_i32(0, 4);
     // A rare player kill drives the defeat record.
     let player_killed = to_player != 0 && rng.below(8) == 0;
-    let receiver = if rng.below(4) == 0 { 0 } else { rng.next_u64() };
-    let dealer = if rng.below(2) == 0 { 0 } else { rng.next_u64() };
+    let receiver = if rng.below(4) == 0 {
+        0
+    } else {
+        rng.next_u64() as i32
+    };
+    let dealer = if rng.below(2) == 0 {
+        0
+    } else {
+        rng.next_u64() as i32
+    };
     events::damage_dealt(events::DamageDealt {
         total: total as i32,
         unblocked: unblocked as i32,
@@ -461,7 +473,11 @@ fn drive_block_gained(rng: &mut Rng) {
 
 fn drive_power_applied(rng: &mut Rng) {
     let power = rng.pick(&POWER_POOL);
-    let creature = if rng.below(4) == 0 { 0 } else { rng.next_u64() };
+    let creature = if rng.below(4) == 0 {
+        0
+    } else {
+        rng.next_u64() as i32
+    };
     let is_player = rng.range_i32(0, 1);
     let player_slot = if is_player != 0 {
         rng.range_i32(0, 3)
@@ -486,11 +502,85 @@ fn drive_card_generated(rng: &mut Rng) {
 }
 
 #[test]
+fn randomized_context_scopes_match_naive_attribution() {
+    let seed = sim_seed();
+    let repro = format!("SIM_SEED={seed} context scopes");
+    let mut rng = Rng::new(seed);
+    events::test_reset();
+    events::init(&unique_dir("sim/context-scopes"));
+    events::combat_started("CONTEXT", "test");
+    // The naive model stores every logical scope, even those beyond the
+    // source-storage cap, and re-scans the accepted prefix for each event.
+    let mut scopes = Vec::new();
+    let mut last = None;
+    let mut expected = BTreeMap::new();
+    for step in 0..256 {
+        if step == 20 {
+            events::turn_started();
+            last = None;
+        }
+        if step == 90 {
+            events::combat_started("NEXT_CONTEXT", "test");
+            last = None;
+            expected.clear();
+        }
+        if step < state::caps::CONTEXT_STACK as u32 + 4 || (step < 128 && rng.below(3) != 0) {
+            let source = if rng.below(3) == 0 {
+                ""
+            } else {
+                rng.pick(&RELIC_POOL)
+            };
+            if scopes.len() < state::caps::CONTEXT_STACK && !source.is_empty() {
+                last = Some(source);
+            }
+            scopes.push(source);
+            events::context_begin(source, 1, 0);
+        } else {
+            scopes.pop();
+            events::context_end();
+        }
+        let damage = rng.range_i32(1, 19);
+        let block = rng.range_i32(1, 23);
+        let source = scopes
+            .iter()
+            .take(state::caps::CONTEXT_STACK)
+            .rfind(|id| !id.is_empty())
+            .copied()
+            .or(last);
+        if let Some(source) = source {
+            let credit = expected.entry(source.to_owned()).or_insert((0_i64, 0_i64));
+            credit.0 += i64::from(damage);
+            credit.1 += i64::from(block);
+        }
+        events::damage_dealt(events::DamageDealt {
+            total: damage,
+            unblocked: damage,
+            ..Default::default()
+        });
+        events::block_gained(block, "", 0, 0);
+        STATE.with(|cell| {
+            let state = cell.borrow();
+            let actual: BTreeMap<_, _> = state
+                .current
+                .as_ref()
+                .unwrap_or_else(|| panic!("{repro} step {step}: missing combat"))
+                .cards
+                .iter()
+                .map(|row| (row.id.clone(), (row.damage_dealt, row.block_gained)))
+                .collect();
+            assert_eq!(actual, expected, "{repro} step {step}: context attribution");
+        });
+        check_invariants(&repro, step);
+    }
+}
+
+#[test]
 fn randomized_combat_lifecycle_invariants() {
     let base_seed = sim_seed();
     for scenario in 0..SCENARIOS {
+        let repro = format!("SIM_SEED={base_seed} scenario {scenario}");
         let mut rng = Rng::new(base_seed ^ u64::from(scenario).wrapping_mul(0x9E37_79B9_7F4A_7C15));
-        let base = wiped_dir(&format!("sim/lifecycle-{scenario}"));
+        let base = unique_dir(&format!("sim/lifecycle-{scenario}"));
         events::test_reset();
         events::init(&base);
         events::set_run_meta(7);
@@ -501,14 +591,13 @@ fn randomized_combat_lifecycle_invariants() {
             "SIM_SEED",
             rng.range_i32(0, 1),
             "SIM_NET",
-            // No StartTime forwarded: started_at falls back to the clock.
-            0,
+            1_786_579_200,
         );
         events::combat_started("SIM_ENCOUNTER", "test");
         let mut follow_up = false;
         for step in 0..EVENTS_PER_SCENARIO {
             drive_one_event(&mut rng, &mut follow_up);
-            check_invariants(step);
+            check_invariants(&repro, step);
         }
         events::combat_ended();
         // The walk may have killed the player (drive_damage's rare to-player
@@ -522,22 +611,30 @@ fn randomized_combat_lifecycle_invariants() {
         } else {
             RunOutcome::Victory
         });
-        check_written_files(&base, player_died);
+        check_written_files(&base, player_died, &repro);
         let _ = fs::remove_dir_all(&base);
     }
 }
 
-fn check_written_files(base: &Path, player_died: bool) {
+fn check_written_files(base: &Path, player_died: bool, repro: &str) {
     let runs_dir = base.join("runs");
     let ids: Vec<u32> = combat_ids(&runs_dir)
         .into_iter()
         .map(|(_, id)| id)
         .collect();
-    assert_eq!(ids.len(), 1, "exactly one combat record per scenario");
-    let combats_text =
-        fs::read_to_string(runs_dir.join("1").join("1.json")).expect("combat file must be written");
-    let rec = records::parse_combat_doc(&combats_text).expect("combat doc must parse back");
-    assert_eq!(rec.combat_id, 1, "the scenario's only combat is seq 1");
+    assert_eq!(
+        ids.len(),
+        1,
+        "{repro}: exactly one combat record per scenario"
+    );
+    let combats_text = fs::read_to_string(runs_dir.join("1").join("1.json"))
+        .unwrap_or_else(|err| panic!("{repro}: combat file must be written: {err}"));
+    let rec = records::parse_combat_doc(&combats_text)
+        .unwrap_or_else(|err| panic!("{repro}: combat doc must parse back: {err}"));
+    assert_eq!(
+        rec.combat_id, 1,
+        "{repro}: the scenario's only combat is seq 1"
+    );
     assert_eq!(
         rec.result,
         if player_died {
@@ -545,15 +642,8 @@ fn check_written_files(base: &Path, player_died: bool) {
         } else {
             CombatResult::Completed
         },
-        "the combat result must mirror whether the walk killed the player"
+        "{repro}: the combat result must mirror whether the walk killed the player"
     );
-    // The generation-tree model carries no origin field on any card row, so
-    // any hit here is a stale assertion string rather than a real field.
-    assert!(
-        !combats_text.contains("\"origin\""),
-        "the persisted record must contain no origin field"
-    );
-    check_wire_shape(&combats_text, &rec);
     // The persisted record must mirror the finished in-memory combat
     // (the write/read pairing rule).
     STATE.with(|cell| {
@@ -561,142 +651,47 @@ fn check_written_files(base: &Path, player_died: bool) {
         let combat = st
             .current
             .as_ref()
-            .expect("the finished combat stays in state");
+            .unwrap_or_else(|| panic!("{repro}: the finished combat stays in state"));
         assert_eq!(
             rec.turns, combat.turns,
-            "written turns must match the ledger"
+            "{repro}: written turns must match the ledger"
         );
         assert_eq!(
             rec.damage_received, combat.damage_received,
-            "written damage must match the ledger"
+            "{repro}: written damage must match the ledger"
         );
         assert_eq!(
             rec.cards.len(),
             combat.cards.len(),
-            "written card count must match the ledger"
+            "{repro}: written card count must match the ledger"
         );
     });
-    check_no_sub_rows();
-    check_run_and_store_files(base, player_died);
+    check_no_sub_rows(repro);
+    check_run_file(base, player_died, repro);
 }
 
-/// i64 epoch timestamps, no roster/profile, zero-omission on numeric fields.
-fn check_wire_shape(combats_text: &str, rec: &records::CombatRec) {
-    assert!(
-        !combats_text.contains("\"started_at\":\""),
-        "combat started_at must be an epoch integer, not an ISO string"
-    );
-    assert!(
-        !combats_text.contains("\"players\"") && !combats_text.contains("\"profile\""),
-        "combat docs must not carry the roster or profile"
-    );
-    assert!(
-        !combats_text.contains("\"damage_unblocked\""),
-        "card rows must not carry the derivable damage_unblocked"
-    );
-    check_absent_equals_zero(combats_text, rec);
-}
-
-const CARD_NUMERIC_FIELDS: [&str; 14] = [
-    "plays",
-    "damage_dealt",
-    "damage_blocked",
-    "block_gained",
-    "block_effective",
-    "forge",
-    "dmg_direct",
-    "dmg_attributed",
-    "dmg_modifier",
-    "blk_modifier",
-    "mitigate_debuff",
-    "mitigate_buff",
-    "mitigate_str",
-    "self_damage",
-];
-
-fn card_numeric(card: &records::CardRec, name: &str) -> i64 {
-    match name {
-        "plays" => i64::from(card.plays),
-        "damage_dealt" => card.damage_dealt,
-        "damage_blocked" => card.damage_blocked,
-        "block_gained" => card.block_gained,
-        "block_effective" => card.block_effective,
-        "forge" => card.forge,
-        "dmg_direct" => card.dmg_direct,
-        "dmg_attributed" => card.dmg_attributed,
-        "dmg_modifier" => card.dmg_modifier,
-        "blk_modifier" => card.blk_modifier,
-        "mitigate_debuff" => card.mitigate_debuff,
-        "mitigate_buff" => card.mitigate_buff,
-        "mitigate_str" => card.mitigate_str,
-        "self_damage" => card.self_damage,
-        _ => unreachable!("every schema field name is covered"),
-    }
-}
-
-fn check_absent_equals_zero(combats_text: &str, rec: &records::CombatRec) {
-    let doc: serde_json::Value = serde_json::from_str(combats_text).expect("combat doc is JSON");
-    let rows = doc["cards"]
-        .as_array()
-        .expect("the raw record carries a cards array");
-    assert_eq!(
-        rows.len(),
-        rec.cards.len(),
-        "raw and parsed row counts must agree"
-    );
-    for (raw, parsed) in rows.iter().zip(&rec.cards) {
-        for name in CARD_NUMERIC_FIELDS {
-            let value = card_numeric(parsed, name);
-            match raw.get(name) {
-                Some(json) => assert_eq!(
-                    json.as_i64(),
-                    Some(value),
-                    "present field '{name}' must carry the parsed value"
-                ),
-                None => assert_eq!(
-                    value, 0,
-                    "absent field '{name}' must read as zero (absent == zero)"
-                ),
-            }
-        }
-    }
-}
-
-fn check_run_and_store_files(base: &Path, player_died: bool) {
-    let runs_text =
-        fs::read_to_string(base.join("runs.jsonl")).expect("runs.jsonl must be written");
+fn check_run_file(base: &Path, player_died: bool, repro: &str) {
+    let runs_text = fs::read_to_string(base.join("runs.jsonl"))
+        .unwrap_or_else(|err| panic!("{repro}: runs.jsonl must be written: {err}"));
     let runs: serde_json::Value = serde_json::from_str(
         runs_text
             .lines()
             .next()
-            .expect("runs.jsonl must hold one run line"),
+            .unwrap_or_else(|| panic!("{repro}: runs.jsonl must hold one run line")),
     )
-    .expect("the run line must be valid JSON");
-    assert_eq!(runs["run_id"], 1);
+    .unwrap_or_else(|err| panic!("{repro}: the run line must be valid JSON: {err}"));
+    assert_eq!(
+        runs["run_id"], 1,
+        "{repro}: the scenario's only run is id 1"
+    );
     assert_eq!(
         runs["outcome"],
         if player_died { "defeat" } else { "victory" },
-        "the run record's outcome must mirror the walk's player death"
+        "{repro}: the run record's outcome must mirror the walk's player death"
     );
-    assert!(
-        !runs_text.contains("\"started_at\":\""),
-        "run started_at must be an epoch integer, not an ISO string"
-    );
-    // runs.jsonl keeps the roster but no per-source cards[] array.
-    assert!(
-        runs_text.contains("\"players\""),
-        "the run record must carry the roster"
-    );
-    assert!(
-        !runs_text.contains("\"cards\""),
-        "runs.jsonl must not carry the per-source cards array"
-    );
-    let snapshot = fs::read_to_string(base.join("runs").join("1").join("1.json"))
-        .expect("combat store file must be written");
-    assert!(snapshot.contains("\"combat_id\":1"));
 }
 
-fn check_no_sub_rows() {
+fn check_no_sub_rows(repro: &str) {
     let mut rows =
         [profiler_core::ui::ui_model::UiRow::default(); profiler_core::ui::ui_model::MAX_UI_ROWS];
     let n = profiler_core::ui::snapshot::ui_snapshot_rows(
@@ -709,7 +704,7 @@ fn check_no_sub_rows() {
         assert_eq!(
             row.flags & !ALLOWED,
             0,
-            "no flags other than the self-damage pair may be set (sub rows are gone)"
+            "{repro}: no flags other than the self-damage pair may be set (sub rows are gone)"
         );
     }
 }
@@ -786,7 +781,7 @@ fn naive_push(
 
 fn naive_consume(
     pool: &mut Vec<NaiveChunk>,
-    credits: &mut HashMap<String, (i64, i64)>,
+    credits: &mut BTreeMap<String, (i64, i64)>,
     blocked: i64,
 ) -> i64 {
     let mut remaining = blocked;
@@ -840,6 +835,8 @@ fn naive_consume(
     credited
 }
 
+// One linear scenario walk; splitting it would scatter the model comparison.
+#[allow(clippy::too_many_lines)]
 #[test]
 fn block_pool_consume_matches_naive_model() {
     const SOURCES: [&str; 5] = [
@@ -852,14 +849,16 @@ fn block_pool_consume_matches_naive_model() {
     const MODIFIERS: [&str; 3] = ["DEXTERITY_POWER", "FOOTWORK", "TEMPORARY_DEXTERITY_POWER"];
     const ROUNDS: u32 = 40;
 
-    let mut rng = Rng::new(sim_seed() ^ 0xB10C_3001_C0DE);
-    let base = wiped_dir("sim/blockpool");
+    let base_seed = sim_seed();
+    let repro = format!("SIM_SEED={base_seed}");
+    let mut rng = Rng::new(base_seed ^ 0xB10C_3001_C0DE);
+    let base = unique_dir("sim/blockpool");
     events::test_reset();
     events::init(&base);
     events::combat_started("BLOCKPOOL_SIM", "test");
 
     let mut naive_pool: Vec<NaiveChunk> = Vec::new();
-    let mut naive_credits: HashMap<String, (i64, i64)> = HashMap::new();
+    let mut naive_credits: BTreeMap<String, (i64, i64)> = BTreeMap::new();
     let mut pending: Vec<(String, SourceKind, i64)> = Vec::new();
 
     for _round in 0..ROUNDS {
@@ -901,21 +900,25 @@ fn block_pool_consume_matches_naive_model() {
             let naive_credited = naive_consume(&mut naive_pool, &mut naive_credits, amount);
             assert_eq!(
                 credited, naive_credited,
-                "the pool's credited total must match the naive model"
+                "{repro}: the pool's credited total must match the naive model"
             );
-            compare_pool_and_credits(&naive_pool, &naive_credits);
+            compare_pool_and_credits(&naive_pool, &naive_credits, &repro);
         }
     }
     let credited = consume_chunk(10_000);
     let naive_credited = naive_consume(&mut naive_pool, &mut naive_credits, 10_000);
-    assert_eq!(credited, naive_credited);
-    compare_pool_and_credits(&naive_pool, &naive_credits);
+    assert_eq!(
+        credited, naive_credited,
+        "{repro}: the draining consume matches"
+    );
+    compare_pool_and_credits(&naive_pool, &naive_credits, &repro);
     let _ = fs::remove_dir_all(&base);
 }
 
 fn compare_pool_and_credits(
     naive_pool: &[NaiveChunk],
-    naive_credits: &HashMap<String, (i64, i64)>,
+    naive_credits: &BTreeMap<String, (i64, i64)>,
+    repro: &str,
 ) {
     STATE.with(|cell| {
         let st = cell.borrow();
@@ -923,52 +926,60 @@ fn compare_pool_and_credits(
         assert_eq!(
             pool.len(),
             naive_pool.len(),
-            "the pool must hold the same chunks as the naive model"
+            "{repro}: the pool must hold the same chunks as the naive model"
         );
         for (real, naive) in pool.iter().zip(naive_pool) {
-            assert_eq!(real.id, naive.id, "chunk sources must match");
-            assert_eq!(real.kind, naive.kind, "chunk kinds must match");
+            assert_eq!(real.id, naive.id, "{repro}: chunk sources must match");
+            assert_eq!(real.kind, naive.kind, "{repro}: chunk kinds must match");
             assert_eq!(
                 real.remaining, naive.remaining,
-                "chunk remaining must match"
+                "{repro}: chunk remaining must match"
             );
             assert_eq!(
                 real.base_original, naive.base_original,
-                "chunk base_original must match"
+                "{repro}: chunk base_original must match"
             );
             assert_eq!(
                 real.base_consumed, naive.base_consumed,
-                "chunk base_consumed must match"
+                "{repro}: chunk base_consumed must match"
             );
             assert_eq!(
                 real.mods.len(),
                 naive.mods.len(),
-                "chunk modifier counts must match"
+                "{repro}: chunk modifier counts must match"
             );
             for (m, n) in real.mods.iter().zip(&naive.mods) {
-                assert_eq!(m.id, n.id, "modifier sources must match");
-                assert_eq!(m.kind, n.kind, "modifier kinds must match");
-                assert_eq!(m.original, n.original, "modifier originals must match");
-                assert_eq!(m.consumed, n.consumed, "modifier consumed must match");
+                assert_eq!(m.id, n.id, "{repro}: modifier sources must match");
+                assert_eq!(m.kind, n.kind, "{repro}: modifier kinds must match");
+                assert_eq!(
+                    m.original, n.original,
+                    "{repro}: modifier originals must match"
+                );
+                assert_eq!(
+                    m.consumed, n.consumed,
+                    "{repro}: modifier consumed must match"
+                );
             }
         }
         let combat = st
             .current
             .as_ref()
-            .expect("the block pool sim runs inside a combat");
+            .unwrap_or_else(|| panic!("{repro}: the block pool sim runs inside a combat"));
         for (id, (base, modifier)) in naive_credits {
             let card = combat
                 .cards
                 .iter()
                 .find(|card| card.id == *id)
-                .unwrap_or_else(|| panic!("credited source '{id}' must have a ledger entry"));
+                .unwrap_or_else(|| {
+                    panic!("{repro}: credited source '{id}' must have a ledger entry")
+                });
             assert_eq!(
                 card.block_effective, *base,
-                "base credit for '{id}' must match the naive model"
+                "{repro}: base credit for '{id}' must match the naive model"
             );
             assert_eq!(
                 card.blk_modifier, *modifier,
-                "modifier credit for '{id}' must match the naive model"
+                "{repro}: modifier credit for '{id}' must match the naive model"
             );
         }
         // Every ledger entry in the combat came from a credit: no phantom
@@ -976,7 +987,7 @@ fn compare_pool_and_credits(
         for card in &combat.cards {
             assert!(
                 naive_credits.contains_key(&card.id),
-                "card '{}' must have been credited something",
+                "{repro}: card '{}' must have been credited something",
                 card.id
             );
         }

@@ -47,15 +47,14 @@ pub fn build_shim_cs_with(relics: &[(&str, &str)], powers: &[(&str, &str)]) -> S
         .replace("@NATIVE_LIB_SELECTOR@", &native_lib_selector())
 }
 
-/// 8-space indent, "class|method",.
 fn catalog_literal(entries: &[(&str, &str)]) -> String {
     let mut output = String::new();
     for (class_name, method_name) in entries {
-        output.push_str("        \"");
+        output.push_str("        (\"");
         output.push_str(class_name);
-        output.push('|');
+        output.push_str("\", \"");
         output.push_str(method_name);
-        output.push_str("\",\n");
+        output.push_str("\"),\n");
     }
     output
 }
@@ -109,11 +108,10 @@ mod tests {
             &[("RelicA", "AfterHook"), ("RelicB", "BeforeHook")],
             &[("PowerC", "OnTrigger")],
         );
-        assert!(
-            output
-                .contains("        \"RelicA|AfterHook\",\n        \"RelicB|BeforeHook\",\n    };")
-        );
-        assert!(output.contains("        \"PowerC|OnTrigger\",\n    };"));
+        assert!(output.contains(
+            "        (\"RelicA\", \"AfterHook\"),\n        (\"RelicB\", \"BeforeHook\"),\n    };"
+        ));
+        assert!(output.contains("        (\"PowerC\", \"OnTrigger\"),\n    };"));
         assert!(!output.contains("@RELIC_ENTRIES@"));
         assert!(!output.contains("@POWER_ENTRIES@"));
         assert!(!output.contains("@NATIVE_LIB_SELECTOR@"));

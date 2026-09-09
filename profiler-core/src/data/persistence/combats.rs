@@ -1,9 +1,8 @@
 //! The combat store: one atomic, write-once file per combat under
-//! `runs/<run_id>/`, named by its globally-unique id. Run membership is
-//! structural — the path IS the run — so the per-run paths (run-end
-//! summary, save+quit resume rebuild, next-run-id derivation) read one
-//! run's directory instead of the whole history. Combats outside any run
-//! land in `runs/0/`.
+//! `runs/<run_id>/`, named by its globally-unique id. Paths locate a run's
+//! records; persisted header identities validate their membership before
+//! history or resume aggregation. Per-run reads scan one directory;
+//! combats outside any run land in `runs/0/`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -186,15 +185,15 @@ fn combat_identity_matches_path(combat: &records::CombatRec, stored: &StoredComb
 }
 
 /// Atomic and write-once; a form crossing [`MAX_JSON_SIZE`] is refused.
-pub fn write_combat_file(c: &Combat) {
-    if !ensure_data_dir() {
-        return;
-    }
+pub fn write_combat_file(c: &Combat) -> bool {
     merge_into_run(c);
+    if !ensure_data_dir() {
+        return false;
+    }
     let combat_json = build_combat_json(c);
     if combat_json.len() > MAX_JSON_SIZE {
         fail!("combat {} JSON overflow; combat not written", c.seq);
-        return;
+        return false;
     }
     let path = combat_path(c.run.as_ref().map_or(0, |run| run.seq), c.seq);
     let parent = path
@@ -207,9 +206,11 @@ pub fn write_combat_file(c: &Combat) {
             err.kind(),
             err.raw_os_error().unwrap_or(-1)
         );
-        return;
+        return false;
     }
-    write_file(&path, &combat_json);
+    if !write_file(&path, &combat_json) {
+        return false;
+    }
     crate::data::run_history::invalidate();
     event_log!(
         "combat {} ended: {} ({}), {} plays, {} cards tracked; stored at {}",
@@ -222,13 +223,14 @@ pub fn write_combat_file(c: &Combat) {
         c.cards.len(),
         path.display()
     );
+    true
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::data::persistence::test_support::*;
-    use crate::test_util::combat_ids;
+    use crate::test_util::{combat_ids, unique_dir};
 
     fn store_ids(data: &std::path::Path) -> Vec<u32> {
         combat_ids(&data.join("runs"))
@@ -243,7 +245,7 @@ mod tests {
         let data = dir.join("data");
         init_state(&data);
         let c = synthetic_combat(); // seq 7, run 42, as combat_started would assign
-        write_combat_file(&c);
+        assert!(write_combat_file(&c));
         let path = data.join("runs/42/7.json");
         let content = fs::read_to_string(&path).expect("store file written");
         assert_eq!(content, build_combat_json(&c));
@@ -251,6 +253,17 @@ mod tests {
         let log = fs::read_to_string(data.join("profiler.log")).unwrap();
         assert!(log.contains("combat 7 ended: BYGONE_EFFIGY (completed)"));
         assert!(log.contains("stored at "));
+    }
+
+    #[test]
+    fn write_combat_file_refuses_oversized_json() {
+        let data = unique_dir("combat-write-overflow");
+        init_state(&data);
+        let mut combat = synthetic_combat();
+        combat.encounter_id = "x".repeat(MAX_JSON_SIZE);
+        assert!(!write_combat_file(&combat));
+        assert!(!data.join("runs/42").exists());
+        assert!(!data.join("profiler.log").exists());
     }
 
     #[test]

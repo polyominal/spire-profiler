@@ -7,6 +7,7 @@ Run `cargo xtask --help`.
 - Supported build hosts are macOS, Linux, and WSL2. Native Windows is not a
   build host; use WSL2.
 - `build` produces the complete pinned target matrix.
+- Release packaging and its tests need the `zip` and `unzip` host CLIs.
 - Host cargo tools use the pinned stable recorded in
   [main.rs](../xtask/src/main.rs), not the workspace nightly. Rustup by default
   exports the workspace nightly to child Cargo processes, and cargo-insta's

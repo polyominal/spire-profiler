@@ -197,9 +197,7 @@ pub fn combat_started(encounter_id: &str, encounter_type: &str) {
     }
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
-        // Init seeds at the store's highest id, so this pre-increment
-        // makes the new combat's id max+1.
-        state.next_combat_id += 1;
+        state.current = None;
         // Per-player transient state clears wholesale at the boundary.
         state.per_player.clear();
         ledger::clear_all_fallbacks_in(&mut state);
@@ -212,7 +210,11 @@ pub fn combat_started(encounter_id: &str, encounter_type: &str) {
         state.debuff_layers.clear();
         state.str_reductions.clear();
         state.enemy_hit = None;
-        let seq = state.next_combat_id;
+        let Some(seq) = state.next_combat_id.checked_add(1) else {
+            fail!("combat IDs exhausted; combat not started");
+            return;
+        };
+        state.next_combat_id = seq;
         state.current = Some(Combat {
             seq,
             encounter_id: encounter_id.to_owned(),
@@ -240,9 +242,9 @@ pub struct DamageDealt<'a> {
     pub blocked: i32,
     pub card_source_id: &'a str,
     pub to_player: i32,
-    pub receiver_hash: u64,
+    pub receiver_hash: i32,
     pub osty_flag: i32,
-    pub dealer_hash: u64,
+    pub dealer_hash: i32,
     pub dealer_slot: i32,
     pub receiver_slot: i32,
     pub card_source_slot: i32,
@@ -339,7 +341,7 @@ fn record_enemy_damage_in(
     unblocked: i32,
     blocked: i32,
     card_source_id: &str,
-    receiver_hash: u64,
+    receiver_hash: i32,
     dealer_slot: i32,
     card_source_slot: i32,
 ) {
@@ -418,8 +420,8 @@ fn record_damage_to_player_in(
     unblocked: i32,
     blocked: i32,
     card_source_id: &str,
-    dealer_hash: u64,
-    receiver_hash: u64,
+    dealer_hash: i32,
+    receiver_hash: i32,
     dealer_slot: i32,
     receiver_slot: i32,
     card_source_slot: i32,
@@ -561,9 +563,10 @@ pub fn combat_ended() {
         });
         Some(combat.clone())
     });
-    if let Some(combat) = staged {
+    if let Some(combat) = staged
+        && write_combat_file(&combat)
+    {
         let seq = combat.seq;
-        write_combat_file(&combat);
         marker!("combat {seq} summary written");
     }
 }

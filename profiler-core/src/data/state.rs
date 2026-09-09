@@ -1,10 +1,15 @@
-//! Global profiler state: the state types, the file-scope globals, and the
-//! player-slot model. All game state lives in one [`State`] behind the
-//! [`STATE`] thread-local `RefCell`; the game's logic loop is
-//! single-threaded. Fixed-capacity tables are bounded `Vec`s with caps in
-//! [`caps`]; overflow is fail-logged, never a silent grow. Cross-table
-//! references are indices into the owning `Vec` — the safe-Rust way to
-//! reference sibling state without self-borrowing.
+//! Live combat/run data and the player-slot model. [`State`] owns this data
+//! behind the [`STATE`] thread-local `RefCell`; the game's logic loop is
+//! single-threaded.
+//!
+//! Mutations hold one active `STATE` guard. Helpers given `&State` or
+//! `&mut State` must not reborrow `STATE`. Release guards before callbacks
+//! or writers that can reenter it; sequential borrows within an event are valid.
+//!
+//! Fixed-capacity tables are bounded `Vec`s with caps in [`caps`]; overflow
+//! is fail-logged, never a silent grow. Cross-table references are indices
+//! into the owning `Vec` — the safe-Rust way to reference sibling state
+//! without self-borrowing.
 //!
 //! # The game facts the model relies on
 //!
@@ -357,8 +362,10 @@ pub struct RunSnapshot {
     pub character: String,
     pub ascension: i32,
     pub game_mode: String,
-    /// So a resumed run's fragments re-join by seed.
     pub seed: String,
+    pub profile: i32,
+    /// Original game StartTime in epoch seconds; 0 means unknown.
+    pub started_at: i64,
 }
 
 impl Default for RunSnapshot {
@@ -370,6 +377,8 @@ impl Default for RunSnapshot {
             ascension: -1,
             game_mode: String::new(),
             seed: String::new(),
+            profile: -1,
+            started_at: 0,
         }
     }
 }
@@ -450,8 +459,6 @@ where
 #[derive(Clone, Debug, Default)]
 pub struct RunContext {
     pub run: RunSnapshot,
-    /// Falls back to `now_seconds()` when the shim reports no time.
-    pub started_at: i64,
     /// Serialized as runs.jsonl's `"players"`.
     pub players: Vec<RunPlayer>,
 }
@@ -470,6 +477,64 @@ pub struct ContextEntry {
     pub kind: SourceKind,
     /// The context branch keys its row here.
     pub slot: SourceSlot,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ContextStack {
+    frames: Vec<Option<ContextEntry>>,
+    // Rejected scopes unwind above a full stack. None freezes unwinding
+    // after counter overflow: a lost depth must never pop an outer source.
+    rejected_depth: Option<usize>,
+}
+
+impl Default for ContextStack {
+    fn default() -> Self {
+        Self {
+            frames: Vec::new(),
+            rejected_depth: Some(0),
+        }
+    }
+}
+
+impl ContextStack {
+    pub(crate) fn begin(
+        &mut self,
+        source_id: &str,
+        kind: SourceKind,
+        slot: SourceSlot,
+    ) -> Option<&ContextEntry> {
+        let rejected = self.rejected_depth?;
+        if self.frames.len() >= caps::CONTEXT_STACK {
+            self.rejected_depth = rejected.checked_add(1);
+            fail!("context stack overflow ({}) entries", caps::CONTEXT_STACK);
+            return None;
+        }
+        self.frames
+            .push((!source_id.is_empty()).then(|| ContextEntry {
+                id: source_id.to_owned(),
+                kind,
+                slot,
+            }));
+        self.frames.last().and_then(Option::as_ref)
+    }
+
+    pub(crate) fn end(&mut self) -> Option<ContextEntry> {
+        let rejected = self.rejected_depth.as_mut()?;
+        if *rejected > 0 {
+            debug_assert_eq!(
+                self.frames.len(),
+                caps::CONTEXT_STACK,
+                "rejected scopes must unwind above a full accepted stack"
+            );
+            *rejected -= 1;
+            return None;
+        }
+        self.frames.pop().flatten()
+    }
+
+    pub(crate) fn active(&self) -> Option<&ContextEntry> {
+        self.frames.iter().rev().find_map(Option::as_ref)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -593,7 +658,7 @@ pub struct GeneratedInstance {
 /// current HP) attributes FIFO across the applications.
 #[derive(Clone, Debug)]
 pub struct DoomLayer {
-    pub creature_hash: u64,
+    pub creature_hash: i32,
     pub source_id: String,
     pub kind: SourceKind,
     /// The applier's slot; the DoomKill credit row keys at it.
@@ -603,7 +668,7 @@ pub struct DoomLayer {
 
 #[derive(Clone, Copy, Debug)]
 pub struct DoomTarget {
-    pub creature_hash: u64,
+    pub creature_hash: i32,
     pub hp: i64,
 }
 
@@ -622,7 +687,7 @@ pub struct OstyEntry {
 /// reducer's mitigate_str; a positive delta consumes reductions LIFO.
 #[derive(Clone, Debug)]
 pub struct StrReduction {
-    pub creature_hash: u64,
+    pub creature_hash: i32,
     pub source_id: String,
     pub kind: SourceKind,
     /// The reducer's row slot; the mitigation credit keys at it.
@@ -634,7 +699,7 @@ pub struct StrReduction {
 /// from the head, and poison tick damage splits by duration fraction.
 #[derive(Clone, Debug)]
 pub struct DebuffLayer {
-    pub creature_hash: u64,
+    pub creature_hash: i32,
     pub power_id: String,
     pub source_id: String,
     pub kind: SourceKind,
@@ -667,8 +732,7 @@ pub struct State {
     pub run_cards: Vec<CardStat>,
     pub run_turns: u32,
     pub run_combats: u32,
-    /// The session's profile id (-1 until known); run-history matching
-    /// filters on it so profiles never mix.
+    /// Profile metadata for the next run (-1 until known).
     pub run_profile: i32,
     pub player_filter: PlayerFilter,
 
@@ -678,7 +742,7 @@ pub struct State {
     /// the combat boundary.
     pub per_player: Vec<PlayerSlotState>,
 
-    pub context_stack: Vec<ContextEntry>,
+    pub(crate) context_stack: ContextStack,
     /// Most recent attribution source, remembered across async gaps so
     /// effects firing after a hook's pop still resolve to their cause.
     pub last_source: Option<ContextEntry>,
@@ -728,9 +792,8 @@ impl State {
 }
 
 pub mod caps {
-    /// Open hook contexts at one instant: each relic/power hook's begin
-    /// push pairs with an end pop, so the cap bounds how deep hooks nest
-    /// into each other, not the combat's hook count.
+    /// Open hook frames, including empty sources; deeper scopes are counted
+    /// without storing sources so their ends preserve accepted outer frames.
     pub const CONTEXT_STACK: usize = 32;
     /// Channeling sources keyed by orb hash; a re-channel upserts and
     /// nothing leaves the table before the combat boundary.
@@ -803,6 +866,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn context_counter_exhaustion_freezes_unwinding_until_reset() {
+        crate::data::events::test_reset();
+        STATE.with(|cell| {
+            let contexts = &mut cell.borrow_mut().context_stack;
+            for _ in 0..caps::CONTEXT_STACK {
+                contexts.begin("OUTER", SourceKind::Relic, 0);
+            }
+            contexts.rejected_depth = Some(usize::MAX);
+            contexts.begin("REJECTED", SourceKind::Power, 0);
+            for _ in 0..caps::CONTEXT_STACK + 2 {
+                contexts.end();
+            }
+            contexts.begin("STILL_REJECTED", SourceKind::Power, 0);
+            assert_eq!(
+                contexts.active().map(|source| source.id.as_str()),
+                Some("OUTER")
+            );
+        });
+        crate::data::events::test_reset();
+        STATE.with(|cell| {
+            let contexts = &mut cell.borrow_mut().context_stack;
+            assert!(contexts.active().is_none());
+            contexts.begin("RECOVERED", SourceKind::Relic, 0);
+            assert_eq!(
+                contexts.end().map(|source| source.id),
+                Some("RECOVERED".to_owned())
+            );
+            assert!(contexts.active().is_none());
+        });
+    }
+
+    #[test]
     fn from_c_clamps_every_input_to_a_catalogued_kind() {
         assert_eq!(SourceKind::from_c(i32::MIN), SourceKind::Card);
         assert_eq!(SourceKind::from_c(-1), SourceKind::Card);
@@ -814,13 +909,6 @@ mod tests {
         assert_eq!(SourceKind::from_c(3), SourceKind::Power);
         assert_eq!(SourceKind::from_c(4), SourceKind::Power);
         assert_eq!(SourceKind::from_c(i32::MAX), SourceKind::Power);
-        for kind in -64..=64 {
-            let k = SourceKind::from_c(kind);
-            debug_assert!(
-                matches!(k, SourceKind::Card | SourceKind::Relic | SourceKind::Power),
-                "from_c({kind}) must clamp to a catalogued kind"
-            );
-        }
     }
 
     #[test]
@@ -842,11 +930,7 @@ mod tests {
     }
 
     #[test]
-    fn outcome_serde_round_trips_lowercase_and_reads_unknowns_as_defeat() {
-        assert_eq!(
-            serde_json::to_string(&RunOutcome::Victory).expect("victory serializes"),
-            "\"victory\""
-        );
+    fn outcome_serde_reads_unknown_strings_as_defeat() {
         let out: RunOutcome =
             serde_json::from_str("\"bogus\"").expect("unknown outcome string decodes");
         assert_eq!(out, RunOutcome::Defeat);

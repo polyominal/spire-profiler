@@ -8,14 +8,29 @@ use crate::fail;
 
 /// The Run Summary tab survives a save+quit+resume.
 pub fn rebuild_run_accumulator(seq: u32) -> (u32, u32) {
+    let Some(active) = STATE.with(|s| {
+        s.borrow()
+            .run_ctx
+            .as_ref()
+            .map(|context| context.run.clone())
+    }) else {
+        return (0, 0);
+    };
+    if active.seq != seq {
+        return (0, 0);
+    }
     let combats = parse_combat_docs(&load_run_combat_docs(seq));
     let mut cards: Vec<CardStat> = Vec::new();
     let mut turns = 0u32;
     let mut count = 0u32;
     for combat in combats {
-        // The path IS the run: a mismatch means we misfiled the record.
-        if combat.run.as_ref().is_none_or(|run| run.seq != seq) {
-            fail!("combat {} misfiled outside run {seq}", combat.combat_id);
+        if combat.run.as_ref().is_none_or(|run| {
+            run.seq != seq || !run.matches_identity(&active.seed, active.started_at, active.profile)
+        }) {
+            fail!(
+                "combat {} has a different identity from run {seq}",
+                combat.combat_id
+            );
             continue;
         }
         count += 1;
@@ -41,11 +56,13 @@ pub fn merge_into_run(c: &Combat) {
     STATE.with(|s| {
         let mut state = s.borrow_mut();
         let Some(run) = &c.run else { return };
-        if !state
-            .run_ctx
-            .as_ref()
-            .is_some_and(|context| context.run.seq == run.seq)
-        {
+        if !state.run_ctx.as_ref().is_some_and(|context| {
+            context.run.seq != 0
+                && context.run.seq == run.seq
+                && context.run.seed == run.seed
+                && context.run.profile == run.profile
+                && context.run.started_at == run.started_at
+        }) {
             return;
         }
         state.run_turns += c.turns;
@@ -180,7 +197,7 @@ mod tests {
     }
 
     #[test]
-    fn old_combat_records_parse_as_slot_zero() {
+    fn missing_run_identity_parses_but_cannot_rebuild() {
         let old = r#"[{"combat_id":1,"encounter_id":"A","result":"completed","turns":2,
             "damage_received":5,"block_total":0,
             "run":{"seq":7,"character":"DEFECT","ascension":1,"game_mode":"Standard"},
@@ -203,13 +220,12 @@ mod tests {
             st.run_turns = 0;
             st.run_combats = 0;
         });
+        set_active_run(7);
         let (combats, turns) = rebuild_run_accumulator(7);
-        assert_eq!((combats, turns), (1, 2));
+        assert_eq!((combats, turns), (0, 0));
         STATE.with(|s| {
             let st = s.borrow();
-            assert_eq!(st.run_cards.len(), 1);
-            assert_eq!(st.run_cards[0].player, 0);
-            assert_eq!(st.run_cards[0].plays, 1);
+            assert!(st.run_cards.is_empty());
         });
     }
 
@@ -279,14 +295,14 @@ mod tests {
             &data,
             r#"[{"combat_id":1,"encounter_id":"A","result":"completed","turns":4,"damage_received":12,
                 "block_total":0,
-                "run":{"seq":5,"character":"DEFECT","ascension":1,"game_mode":"Standard","seed":"S"},
+                "run":{"seq":5,"character":"DEFECT","ascension":1,"game_mode":"Standard","seed":"S","profile":2,"started_at":1000},
                 "cards":[
                   {"id":"STRIKE","kind":0,"plays":2,"damage_dealt":12,"block_gained":0,"block_effective":0,"heal":0},
                   {"id":"DEFEND","kind":0,"plays":1,"damage_dealt":0,"block_gained":5,"block_effective":5,"heal":0}
                 ]},
                {"combat_id":2,"encounter_id":"B","result":"completed","turns":3,"damage_received":8,
                 "block_total":0,
-                "run":{"seq":5,"character":"DEFECT","ascension":1,"game_mode":"Standard","seed":"S"},
+                "run":{"seq":5,"character":"DEFECT","ascension":1,"game_mode":"Standard","seed":"S","profile":2,"started_at":1000},
                 "cards":[
                   {"id":"STRIKE","kind":0,"plays":1,"damage_dealt":7,"block_gained":0,"block_effective":0,"heal":0}
                 ]},
@@ -296,12 +312,24 @@ mod tests {
                 "cards":[{"id":"BASH","kind":0,"plays":9,"damage_dealt":99,"block_gained":0,"block_effective":0,"heal":0}]}
               ]"#,
         );
+        for (id, profile, start, seed) in [(4, 3, 1000, "S"), (5, 2, 1001, "S"), (6, 2, 1000, "T")]
+        {
+            let mut foreign = synthetic_combat();
+            foreign.seq = id;
+            let mut run = synthetic_run(5);
+            run.profile = profile;
+            run.started_at = start;
+            run.seed = seed.to_owned();
+            foreign.run = Some(run);
+            write_store_file(&data, 5, id, &build_combat_json(&foreign));
+        }
         STATE.with(|s| {
             let mut st = s.borrow_mut();
             st.run_cards.clear();
             st.run_turns = 0;
             st.run_combats = 0;
         });
+        set_active_run(5);
         let (combats, turns) = rebuild_run_accumulator(5);
         assert_eq!((combats, turns), (2, 7));
         STATE.with(|s| {
@@ -338,7 +366,7 @@ mod tests {
             1,
             r#"{"combat_id":1,"encounter_id":"A","result":"completed","turns":4,"damage_received":12,
                 "block_total":0,
-                "run":{"seq":5,"character":"DEFECT","ascension":1,"game_mode":"Standard","seed":"S"},
+                "run":{"seq":5,"character":"DEFECT","ascension":1,"game_mode":"Standard","seed":"S","profile":2,"started_at":1000},
                 "cards":[{"id":"STRIKE","kind":0,"plays":2,"damage_dealt":12,
                           "block_gained":0,"block_effective":0,"heal":0}]}"#,
         );
@@ -348,7 +376,7 @@ mod tests {
             4,
             r#"{"combat_id":4,"encounter_id":"D","result":"completed","turns":1,
                 "damage_received":1,"block_total":0,
-                "run":{"seq":5,"character":"DEFECT","ascension":1,"game_mode":"Standard","seed":"S"},
+                "run":{"seq":5,"character":"DEFECT","ascension":1,"game_mode":"Standard","seed":"S","profile":2,"started_at":1000},
                 "cards":[{"id":"SNEAKY","kind":0,"plays":100,"damage_dealt":1,
                           "block_gained":0,"block_effective":0,"heal":0}]}"#,
         );
@@ -358,6 +386,7 @@ mod tests {
             st.run_turns = 0;
             st.run_combats = 0;
         });
+        set_active_run(5);
         let (combats, turns) = rebuild_run_accumulator(5);
         assert_eq!(
             (combats, turns),
@@ -372,28 +401,6 @@ mod tests {
                 "a same-seq combat in a foreign run's directory must not fold"
             );
         });
-    }
-
-    /// Compares every field explicitly, so a field added to [`CardStat`]
-    /// must be added to the merge and to this assertion.
-    fn assert_card_stat_eq(a: &CardStat, b: &CardStat) {
-        assert_eq!(a.id, b.id);
-        assert_eq!(a.kind, b.kind);
-        assert_eq!(a.player, b.player);
-        assert_eq!(a.plays, b.plays);
-        assert_eq!(a.damage_dealt, b.damage_dealt);
-        assert_eq!(a.damage_blocked, b.damage_blocked);
-        assert_eq!(a.block_gained, b.block_gained);
-        assert_eq!(a.block_effective, b.block_effective);
-        assert_eq!(a.forge, b.forge);
-        assert_eq!(a.dmg_direct, b.dmg_direct);
-        assert_eq!(a.dmg_attributed, b.dmg_attributed);
-        assert_eq!(a.dmg_modifier, b.dmg_modifier);
-        assert_eq!(a.blk_modifier, b.blk_modifier);
-        assert_eq!(a.mitigate_debuff, b.mitigate_debuff);
-        assert_eq!(a.mitigate_buff, b.mitigate_buff);
-        assert_eq!(a.mitigate_str, b.mitigate_str);
-        assert_eq!(a.self_damage, b.self_damage);
     }
 
     #[test]
@@ -437,10 +444,7 @@ mod tests {
             let st = s.borrow();
             assert_eq!(st.run_turns, live_turns);
             assert_eq!(st.run_combats, live_combats);
-            assert_eq!(st.run_cards.len(), live_cards.len());
-            for (rebuilt, expected) in st.run_cards.iter().zip(&live_cards) {
-                assert_card_stat_eq(rebuilt, expected);
-            }
+            assert_eq!(st.run_cards, live_cards);
         });
     }
 

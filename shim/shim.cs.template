@@ -171,9 +171,9 @@ public static class SpireProfilerMod
             result?.BlockedDamage ?? 0,
             cardSource?.Id?.Entry ?? "",
             toPlayer,
-            receiver != null ? (ulong)receiver.GetHashCode() : 0UL,
+            receiver?.GetHashCode() ?? 0,
             ostyFlag,
-            dealer != null ? (ulong)dealer.GetHashCode() : 0UL,
+            dealer?.GetHashCode() ?? 0,
             dealerSlot,
             receiverSlot,
             cardSourceSlot);
@@ -192,7 +192,7 @@ public static class SpireProfilerMod
             if (weakMult < 0.1m) weakMult = 0.1m;
             int prevented = (int)Math.Round(result.TotalDamage / weakMult - result.TotalDamage);
             if (prevented > 0)
-                ProfilerNative.OnWeakMitigation(prevented, (ulong)dealer.GetHashCode());
+                ProfilerNative.OnWeakMitigation(prevented, dealer.GetHashCode());
         }
     }
 
@@ -698,7 +698,7 @@ internal static class ProfilerNative
     // for the core's per-slot state; they never change what is forwarded.
     private delegate void NativeCardPlayStarted([MarshalAs(UnmanagedType.LPUTF8Str)] string cardId, int playIndex, int playCount, int cardHash, int playerSlot);
     private delegate void NativeCardPlayFinished(int playerSlot);
-    private delegate void NativeDamageDealt(int total, int unblocked, int blocked, [MarshalAs(UnmanagedType.LPUTF8Str)] string cardSourceId, int toPlayer, ulong receiverHash, int ostyFlag, ulong dealerHash, int dealerSlot, int receiverSlot, int cardSourceSlot);
+    private delegate void NativeDamageDealt(int total, int unblocked, int blocked, [MarshalAs(UnmanagedType.LPUTF8Str)] string cardSourceId, int toPlayer, int receiverHash, int ostyFlag, int dealerHash, int dealerSlot, int receiverSlot, int cardSourceSlot);
     private delegate void NativeBlockGained(int amount, [MarshalAs(UnmanagedType.LPUTF8Str)] string cardId, int playerSlot, int sourceSlot);
     private delegate void NativeRunStarted([MarshalAs(UnmanagedType.LPUTF8Str)] string characterIds, int ascension, [MarshalAs(UnmanagedType.LPUTF8Str)] string gameMode, [MarshalAs(UnmanagedType.LPUTF8Str)] string seed, int continued, [MarshalAs(UnmanagedType.LPUTF8Str)] string netIds, long startTime);
     // The run terminal state: 0 = victory, 1 = defeat, 2 = abandoned (see
@@ -712,14 +712,14 @@ internal static class ProfilerNative
     private delegate void NativePotionContextBegin([MarshalAs(UnmanagedType.LPUTF8Str)] string potionId, int playerSlot);
     private delegate void NativeBlockPoolClear(int playerSlot);
     private delegate void NativePanelToggle();
-    private delegate void NativePowerApplied([MarshalAs(UnmanagedType.LPUTF8Str)] string powerId, int amount, ulong creatureHash, int isPlayer, int playerSlot);
-    private delegate void NativePowerDecreased([MarshalAs(UnmanagedType.LPUTF8Str)] string powerId, int amount, ulong creatureHash, int isPlayer, int playerSlot);
+    private delegate void NativePowerApplied([MarshalAs(UnmanagedType.LPUTF8Str)] string powerId, int amount, int creatureHash, int isPlayer, int playerSlot);
+    private delegate void NativePowerDecreased([MarshalAs(UnmanagedType.LPUTF8Str)] string powerId, int amount, int creatureHash, int isPlayer, int playerSlot);
     private delegate void NativeModifierContribution([MarshalAs(UnmanagedType.LPUTF8Str)] string modifierId, int kind, int contribution, int playerSlot);
     private delegate void NativeCardGenerated(int cardHash, [MarshalAs(UnmanagedType.LPUTF8Str)] string sourceId, int sourceKind, int playerSlot);
     private delegate void NativeForge([MarshalAs(UnmanagedType.LPUTF8Str)] string sourceId, int kind, int amount, int playerSlot);
     private delegate void NativeDoomTargetCapture(int creatureHash, int currentHp);
     private delegate void NativeOstySummoned([MarshalAs(UnmanagedType.LPUTF8Str)] string sourceId, int kind, int hpAmount, int playerSlot);
-    private delegate void NativeWeakMitigation(int prevented, ulong dealerHash);
+    private delegate void NativeWeakMitigation(int prevented, int dealerHash);
     private delegate void NativeEnemyHitContext(int baseDamage, int dealerStr);
     private delegate void NativeBuffMitigation([MarshalAs(UnmanagedType.LPUTF8Str)] string powerId, int prevented);
     private delegate void NativeRunMeta(int profileId);
@@ -834,7 +834,7 @@ internal static class ProfilerNative
     public static void OnCardPlayStarted(string cardId, int playIndex, int playCount, int cardHash, int playerSlot) =>
         _cardPlayStarted(cardId, playIndex, playCount, cardHash, playerSlot);
     public static void OnCardPlayFinished(int playerSlot) => _cardPlayFinished(playerSlot);
-    public static void OnDamageDealt(int total, int unblocked, int blocked, string cardSourceId, bool toPlayer, ulong receiverHash, int ostyFlag, ulong dealerHash, int dealerSlot, int receiverSlot, int cardSourceSlot) =>
+    public static void OnDamageDealt(int total, int unblocked, int blocked, string cardSourceId, bool toPlayer, int receiverHash, int ostyFlag, int dealerHash, int dealerSlot, int receiverSlot, int cardSourceSlot) =>
         _damageDealt(total, unblocked, blocked, cardSourceId, toPlayer ? 1 : 0, receiverHash, ostyFlag, dealerHash, dealerSlot, receiverSlot, cardSourceSlot);
     public static void OnBlockGained(int amount, string cardId, int playerSlot, int sourceSlot) => _blockGained(amount, cardId, playerSlot, sourceSlot);
     public static void OnCombatEnded() => _combatEnded();
@@ -850,8 +850,8 @@ internal static class ProfilerNative
     public static void OnPotionUsed(string potionId, int playerSlot) => _potionUsed(potionId, playerSlot);
     public static void OnPotionContextBegin(string potionId, int playerSlot) => _potionContextBegin(potionId, playerSlot);
     public static void OnBlockPoolClear(int playerSlot) => _blockPoolClear(playerSlot);
-    public static void OnPowerApplied(string powerId, int amount, ulong creatureHash, bool isPlayer, int playerSlot) => _powerApplied(powerId, amount, creatureHash, isPlayer ? 1 : 0, playerSlot);
-    public static void OnPowerDecreased(string powerId, int amount, ulong creatureHash, bool isPlayer, int playerSlot) => _powerDecreased(powerId, amount, creatureHash, isPlayer ? 1 : 0, playerSlot);
+    public static void OnPowerApplied(string powerId, int amount, int creatureHash, bool isPlayer, int playerSlot) => _powerApplied(powerId, amount, creatureHash, isPlayer ? 1 : 0, playerSlot);
+    public static void OnPowerDecreased(string powerId, int amount, int creatureHash, bool isPlayer, int playerSlot) => _powerDecreased(powerId, amount, creatureHash, isPlayer ? 1 : 0, playerSlot);
     public static void OnDamageModifierContribution(string modifierId, int kind, int contribution, int playerSlot) => _modifierContribution(modifierId, kind, contribution, playerSlot);
     public static void OnCardGenerated(int cardHash, string sourceId, int sourceKind, int playerSlot) => _cardGenerated(cardHash, sourceId, sourceKind, playerSlot);
     public static void OnForge(string sourceId, int kind, int amount, int playerSlot) => _forge(sourceId, kind, amount, playerSlot);
@@ -859,7 +859,7 @@ internal static class ProfilerNative
     public static void OnDoomKillsCompleted() => _doomKillsCompleted();
     public static void OnOstySummoned(string sourceId, int kind, int hpAmount, int playerSlot) => _ostySummoned(sourceId, kind, hpAmount, playerSlot);
     public static void OnOstyKilled(int playerSlot) => _ostyKilled(playerSlot);
-    public static void OnWeakMitigation(int prevented, ulong dealerHash) => _weakMitigation(prevented, dealerHash);
+    public static void OnWeakMitigation(int prevented, int dealerHash) => _weakMitigation(prevented, dealerHash);
     public static void OnEnemyHitContext(int baseDamage, int dealerStr) => _enemyHitContext(baseDamage, dealerStr);
     public static void OnBuffMitigation(string powerId, int prevented) => _buffMitigation(powerId, prevented);
     public static void OnBlockModifierContribution(string modifierId, int kind, int contribution, int playerSlot) => _blockModifierContribution(modifierId, kind, contribution, playerSlot);
@@ -1069,8 +1069,7 @@ internal static class RunStartPatches
         // original run's start for a resume), already set before these
         // SetUp* postfixes run. Forwarding it makes run-history matching
         // exact — both sides carry the same integer by provenance. The
-        // read degrades to 0 on any failure; the core then stamps its own
-        // clock, the pre-forwarding behavior.
+        // read degrades to 0 on failure, leaving the identity unknown.
         long startTime = 0;
         try
         {
@@ -1106,11 +1105,11 @@ internal static class AttributionPatcher
     private const string RelicNamespace = "MegaCrit.Sts2.Core.Models.Relics";
     private const string PowerNamespace = "MegaCrit.Sts2.Core.Models.Powers";
 
-    private static readonly string[] RelicEntries = new[]
+    private static readonly (string, string)[] RelicEntries = new[]
     {
 @RELIC_ENTRIES@    };
 
-    private static readonly string[] PowerEntries = new[]
+    private static readonly (string, string)[] PowerEntries = new[]
     {
 @POWER_ENTRIES@    };
 
@@ -1140,17 +1139,14 @@ internal static class AttributionPatcher
 
     public static void PatchAll(Harmony harmony)
     {
-        foreach (var entry in RelicEntries) TryPatch(harmony, entry, RelicNamespace, "RelicPrefix", "RelicPostfix");
-        foreach (var entry in PowerEntries) TryPatch(harmony, entry, PowerNamespace, "PowerPrefix", "PowerPostfix");
+        foreach (var (className, methodName) in RelicEntries) TryPatch(harmony, className, methodName, RelicNamespace, "RelicPrefix", "RelicPostfix");
+        foreach (var (className, methodName) in PowerEntries) TryPatch(harmony, className, methodName, PowerNamespace, "PowerPrefix", "PowerPostfix");
     }
 
-    private static void TryPatch(Harmony harmony, string entry, string ns, string prefixName, string postfixName)
+    private static void TryPatch(Harmony harmony, string className, string methodName, string ns, string prefixName, string postfixName)
     {
         try
         {
-            var parts = entry.Split('|');
-            var className = parts[0];
-            var methodName = parts[1];
             var fullName = className.IndexOf('.') >= 0 ? className : ns + "." + className;
             var type = typeof(SpireProfilerMod).Assembly.GetType(fullName) ?? typeof(ModManager).Assembly.GetType(fullName);
             if (type == null)
@@ -1170,7 +1166,7 @@ internal static class AttributionPatcher
         }
         catch (Exception ex)
         {
-            Log.Error($"[SpireProfiler] catalog: failed to patch {entry}: {ex.Message}");
+            Log.Error($"[SpireProfiler] catalog: failed to patch {className}|{methodName}: {ex.Message}");
         }
     }
 }
@@ -1491,7 +1487,7 @@ internal static class PatchPowerApply
             // a player creature, else 0 (enemy powers have no player owner
             // — the applier still resolves through the core's ambient
             // per-slot state).
-            ulong creatureHash = (ulong)owner.GetHashCode();
+            int creatureHash = owner.GetHashCode();
             bool isPlayer = owner.IsPlayer;
             int playerSlot = owner.IsPlayer ? SpireProfilerMod.PlayerSlot(owner.Player) : 0;
             if (amount > __state)
@@ -2095,12 +2091,11 @@ internal static class PatchRunSuspend
 /// disconnect reason cannot distinguish "host saved and quit" (the run is
 /// resumable) from "host quit without saving", so the run must be
 /// SUSPENDED, not closed: run_suspended deactivates without writing a
-/// record, and a later resume rejoins the same run id by seed (closing as
-/// defeat here would split one run across two runs.json entries). The
+/// record, and a later resume rejoins by profile, seed, and original
+/// StartTime (closing as defeat here would split one run across two records). The
 /// game-over case never reaches this forward: QuitGameOver disconnects are
 /// skipped below, and an already-abandoned run is closed by the OnEnded
-/// postfix. StateDivergence disconnects suspend as well (the stale record
-/// then closes as a loss at the next run start).
+/// postfix. StateDivergence disconnects suspend as well.
 /// </summary>
 [HarmonyPatch(typeof(RunManager), nameof(RunManager.LocalPlayerDisconnected))]
 internal static class PatchRunDisconnected

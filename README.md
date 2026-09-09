@@ -17,8 +17,8 @@ generated output.
 ## Quick start
 
 Prerequisites: a Steam install of Slay the Spire 2. The pinned Rust nightly
-auto-fetches from `rust-toolchain.toml`, and the build bootstraps necessary
-non-Rust tools.
+auto-fetches from [rust-toolchain.toml](rust-toolchain.toml), and the build
+bootstraps necessary non-Rust tools.
 
 ```sh
 cargo xtask build          # build cross-platform mod bundle
@@ -26,23 +26,16 @@ cargo xtask install-mod    # copy the bundle to the game's mods directory
 ```
 
 Enable the mod in the game's mod settings, then play: F8 toggles the panel
-(combat panel in play, run panel on the run-history screen) and clicking a
+(combat panel in play, run panel on the run-history screen), and clicking a
 character avatar in a panel's header filters the chart to that player (click the
-active avatar again for the full team view); the run-history screen gains its
-own panel.
+active avatar again for the full team view).
 
 ## Where things live
 
-- The crate overview (architecture, layers, and the standing contracts) is the
-  module doc at the top of `profiler-core/src/lib.rs`; each subsystem's spec
-  sits in its own module doc next to the code.
-- `docs/`: environment guides — building (`build.md`), verification gates and
-  headless testing (`verify.md`), GDExtension interop (`gdextension.md`), and
-  the game environment (`game.md`).
-
-## Roadmap
-
-Deferred:
-
-- Turn-by-turn timeline, per-card efficiency metrics, per-combat bars in the Run
-  Summary tab, and a generated-count hover note.
+- Specs live in module docs: the crate overview (architecture, layers, standing
+  contracts) at the top of [lib.rs](profiler-core/src/lib.rs), each subsystem's
+  spec next to its code.
+- `docs/` holds the environment guides: building ([build.md](docs/build.md)),
+  verification gates and headless testing ([verify.md](docs/verify.md)),
+  GDExtension interop ([gdextension.md](docs/gdextension.md)), and the game
+  environment ([game.md](docs/game.md)).

@@ -9,12 +9,6 @@
 //! └── runs/<run_id>/<combat_id>.json     one write-once file per finished combat
 //! ```
 //!
-//! Split topically: [`time`] (the epoch-seconds clock), [`log`] (the held
-//! log handle), [`io`] (tmp+rename writes, whole-file reads), [`combats`]
-//! (the combat store), [`combat_doc`] (the combat record's serializer),
-//! [`runs`] (the run accumulator and its fold), [`writes`] (the run
-//! finalizer).
-//!
 //! # Identifiers
 //!
 //! Both ids are u32s derived from the store itself, never a process
@@ -24,7 +18,9 @@
 //! never collide. The run id is
 //! max+1 over `runs.jsonl` records and the store's run directory names (an
 //! abandoned run leaves its directory but no record line); a continued run
-//! rejoins its fragments by seed instead.
+//! rejoins only a unique exact (profile, seed, original StartTime) identity.
+//! Both allocate through `u32::MAX`, then fail-log and refuse fresh starts
+//! without wrapping or reusing an ID; exact run continuation still works.
 //!
 //! # On-disk formats
 //!
@@ -41,7 +37,8 @@
 //! combat_id, started_at, encounter_id,
 //! result ("completed" | "defeat" | "interrupted"),
 //! turns, damage_received,
-//! run: {seq, character, ascension, game_mode, seed}   // absent for out-of-run combats
+//! run: {seq, character, ascension, game_mode, seed, profile, started_at}
+//!     // absent for out-of-run combats
 //! cards: [{id, kind, plays, damage_dealt, damage_blocked,
 //!          block_gained, block_effective, forge, dmg_direct, dmg_attributed,
 //!          dmg_modifier, blk_modifier,
@@ -49,10 +46,15 @@
 //! ```
 //!
 //! It carries only what the read side consumes — the run-history view and
-//! the resume rebuild: no roster or profile (`runs.jsonl` is their home)
+//! the resume rebuild: no roster (`runs.jsonl` is its home)
 //! and no headline counters (`plays`, `potions_used`, ...). The `run`
 //! header is complete so the combats-only fallback for unclosed runs can
-//! synthesize a view, and its seed rejoins a resumed run's fragments.
+//! synthesize a view and rejoin a resumed run's fragments. Its `started_at`
+//! is the original game StartTime, distinct from the combat's timestamp.
+//! Profile is captured at run start, never taken from later metadata. An
+//! empty seed, profile < 0 (unknown defaults to -1), or start time <= 0
+//! (unknown defaults to 0) cannot match; run ID 0 is never a real run.
+//! Unknown identities remain explicit and never use the session clock.
 //!
 //! Run record:
 //!
@@ -66,16 +68,16 @@
 //! `outcome` maps the ABI's `run_ended` code (0/1/2); there is no
 //! `abandoned_at` because the abandon force-kill ends the run — `ended_at`
 //! IS the abandon moment. `started_at` is the game's own `StartTime`, so
-//! run-history matching is exact equality on seed + time. The record is
+//! run-history matching uses the same full identity as combat headers. The record is
 //! identity + header only: the run-history panel recomputes roll-ups from
 //! the combat store. The roster carries slot + character; the net id stays
 //! in-memory (nothing reads it back).
 //!
-//! Schema evolution is additive-only, enforced by the parse structs: new
-//! fields arrive optional-on-read, existing fields never change type or
-//! meaning, and every parser ignores unknown fields — a reader of any age
-//! parses any record. There is no migration machinery and no schema
-//! version.
+//! The schema changes with the structs: a breaking change lands directly,
+//! and incompatible old data is deleted by hand, never migrated. The parse
+//! structs stay lenient (missing fields default, unknown fields ignored) so
+//! a partial or stale record still reads; that leniency is boundary
+//! robustness, not a compatibility contract.
 //!
 //! # Write protocol
 //!
@@ -87,6 +89,9 @@
 //! crash-durability. [`MAX_JSON_SIZE`] (64 MiB) caps one document in both
 //! directions — the writer refuses a too-large record and [`read_file`]
 //! refuses one.
+//! Combat/run writers return true, report success, and invalidate history
+//! only after rename succeeds. Finished combats merge into their active
+//! run's live totals even on write failure; lifecycle events never retry.
 //!
 //! [`read_file`] keeps “missing” separate from “unreadable” (an empty file
 //! is a state, not an error) and validates UTF-8, so the runs.jsonl rewrite
@@ -160,7 +165,9 @@ pub(crate) mod test_support {
             character: "SHROUD".to_owned(),
             ascension: 5,
             game_mode: "standard".to_owned(),
-            seed: String::new(),
+            seed: "S".to_owned(),
+            profile: 2,
+            started_at: 1000,
         }
     }
 

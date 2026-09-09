@@ -14,7 +14,8 @@ pub fn orb_channeled(hash: i32, player_slot: i32) {
             return;
         }
         let slot = state.slot_index(player_slot);
-        let resolved: Option<(String, SourceKind)> = if let Some(top) = state.context_stack.last() {
+        let resolved: Option<(String, SourceKind)> = if let Some(top) = state.context_stack.active()
+        {
             Some((top.id.clone(), top.kind))
         } else if Combat::active(&state.current).is_some()
             && let Some(play) = state.per_player[slot].active_play.clone()

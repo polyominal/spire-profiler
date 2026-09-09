@@ -20,39 +20,12 @@ pub fn binary_in(dir: &Path) -> PathBuf {
     dir.join("zig")
 }
 
-pub fn pick(bootstrap_dir: &Path) -> Result<PathBuf> {
-    let bootstrapped = binary_in(bootstrap_dir);
-    if bootstrapped.is_file() {
-        Ok(bootstrapped)
-    } else {
-        Err(anyhow::anyhow!(
-            "no zig bootstrap at {}; run `cargo xtask install-tool` to bootstrap the pinned \
-             zig {ZIG_VERSION}",
-            bootstrap_dir.display()
-        ))
-    }
-}
-
 /// ALWAYS the bootstrap dir, never PATH; a wrong zig can never silently
 /// feed the build.
 pub fn resolve_zig(shell: &Shell) -> Result<PathBuf> {
     let dir = bootstrap_dir();
-    let binary = match pick(&dir) {
-        Ok(binary) => binary,
-        Err(_) => {
-            // The build provisions the pin itself instead of asking for
-            // install-tool.
-            ensure_bootstrap_in(shell, &dir)?;
-            pick(&dir)?
-        }
-    };
-    // Refreshing wipes the dir and reinstalls the pinned tarball.
-    if zig_version_of(shell, &binary)? != ZIG_VERSION {
-        ensure_bootstrap_in(shell, &dir)?;
-    }
-    let binary = pick(&dir)?;
-    // The check above (and the refresh's post-install verify) pins the
-    // version, so the println needs no second query.
+    ensure_bootstrap_in(shell, &dir)?;
+    let binary = binary_in(&dir);
     println!("zig: {} ({ZIG_VERSION}, bootstrapped)", binary.display());
     Ok(binary)
 }
@@ -131,7 +104,11 @@ pub fn ensure_bootstrap_in(shell: &Shell, dir: &Path) -> Result<()> {
             ));
         }
     }
-    cmd!(shell, "tar -xJf {tarball} --strip-components=1 -C {dir}").run()?;
+    cmd!(
+        shell,
+        "tar --extract --xz --file {tarball} --strip-components=1 --directory {dir}"
+    )
+    .run()?;
     let version = zig_version_of(shell, &binary_in(dir))?;
     if version != ZIG_VERSION {
         return Err(anyhow::anyhow!(

@@ -210,7 +210,11 @@ fn ensure_gdre_tools(shell: &Shell, host: discover::Platform, root: &Path) -> Re
 /// tampered download never reaches the tools dir.
 fn download_and_verify(shell: &Shell, zip: &Path, url: &str, expected_sha256: &str) -> Result<()> {
     println!("downloading GDRE Tools from {url}");
-    cmd!(shell, "curl -fL --retry 3 -o {zip} {url}").run()?;
+    cmd!(
+        shell,
+        "curl --fail --location --retry 3 --output {zip} {url}"
+    )
+    .run()?;
     let actual = crate::sha256_file(zip)?;
     if actual != expected_sha256 {
         bail!(

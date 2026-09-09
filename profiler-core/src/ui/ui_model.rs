@@ -158,7 +158,7 @@ impl Default for UiMeta {
 }
 
 impl UiMeta {
-    pub fn encounter_str(&self) -> &str {
+    pub(crate) fn encounter_str(&self) -> &str {
         let len = usize::from(self.encounter_len).min(self.encounter.len());
         std::str::from_utf8(&self.encounter[..len]).unwrap_or("")
     }

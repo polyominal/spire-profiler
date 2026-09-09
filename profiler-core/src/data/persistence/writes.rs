@@ -8,29 +8,28 @@ use crate::data::records;
 use crate::data::state::{EndedRun, STATE};
 
 /// The record comes from the run context: identity and header facts only.
-pub fn write_run_record(ended: &EndedRun) {
+pub fn write_run_record(ended: &EndedRun) -> bool {
     let run = &ended.context.run;
     if parse_combat_docs(&load_run_combat_docs(run.seq)).is_empty() {
         event_log!("run {} ended with no combat records", run.seq);
-        return;
+        return false;
     }
 
-    let (profile, runs_path) = STATE.with(|s| {
-        let st = s.borrow();
-        (st.run_profile, st.runs_path_full.clone())
-    });
-    let line = records::build_run_json(ended, profile);
+    let runs_path = STATE.with(|s| s.borrow().runs_path_full.clone());
+    let line = records::build_run_json(ended);
     let mut content = match read_file(&runs_path) {
         ReadFile::Missing => String::new(),
         ReadFile::Content(content) => content,
-        ReadFile::Failed => return,
+        ReadFile::Failed => return false,
     };
     if !content.is_empty() && !content.ends_with('\n') {
         content.push('\n');
     }
     content.push_str(&line);
     content.push('\n');
-    write_file(&runs_path, &content);
+    if !write_file(&runs_path, &content) {
+        return false;
+    }
 
     crate::data::run_history::invalidate();
 
@@ -41,6 +40,7 @@ pub fn write_run_record(ended: &EndedRun) {
         run.game_mode,
         ended.outcome.name(),
     );
+    true
 }
 
 #[cfg(test)]
@@ -49,6 +49,7 @@ mod tests {
     use crate::data::persistence::build_combat_json;
     use crate::data::persistence::test_support::*;
     use crate::data::state::{RunContext, RunOutcome, RunSnapshot};
+    use crate::test_util::unique_dir;
 
     #[test]
     fn write_run_record_appends_one_line_per_run() {
@@ -68,8 +69,9 @@ mod tests {
                     ascension: 5,
                     game_mode: "standard".to_owned(),
                     seed: "SEED123".to_owned(),
+                    profile: 3,
+                    started_at: 1_786_624_000,
                 },
-                started_at: 1_786_624_000,
                 players: synthetic_roster(),
             },
             outcome: RunOutcome::Victory,
@@ -78,7 +80,7 @@ mod tests {
         let c = synthetic_combat(); // run 42, seq 7
         write_store_file(&data, 42, 7, &build_combat_json(&c));
 
-        write_run_record(&ended);
+        assert!(write_run_record(&ended));
 
         let content = std::fs::read_to_string(data.join("runs.jsonl")).unwrap();
         let lines: Vec<&str> = content.lines().collect();
@@ -118,7 +120,7 @@ mod tests {
         c2.run = Some(synthetic_run(43));
         c2.seq = 8;
         write_store_file(&data, 43, 8, &build_combat_json(&c2));
-        write_run_record(&ended);
+        assert!(write_run_record(&ended));
         let content = std::fs::read_to_string(data.join("runs.jsonl")).unwrap();
         let lines: Vec<&str> = content.lines().collect();
         assert_eq!(lines.len(), 2);
@@ -131,7 +133,7 @@ mod tests {
         let data = dir.join("data");
         std::fs::create_dir_all(&data).unwrap();
         init_state(&data);
-        write_run_record(&EndedRun {
+        assert!(!write_run_record(&EndedRun {
             context: RunContext {
                 run: RunSnapshot {
                     seq: 42,
@@ -141,10 +143,11 @@ mod tests {
             },
             outcome: RunOutcome::Defeat,
             ended_at: 1_786_624_996,
-        });
+        }));
         assert!(!data.join("runs.jsonl").exists());
         let log = std::fs::read_to_string(data.join("profiler.log")).unwrap();
         assert!(log.contains("run 42 ended with no combat records"));
+        assert!(!log.contains("run 42 ended:"));
     }
 
     #[test]
@@ -158,16 +161,38 @@ mod tests {
         let runs_path = data.join("runs.jsonl");
         std::fs::write(&runs_path, [0xff]).unwrap();
 
-        write_run_record(&EndedRun {
+        assert!(!write_run_record(&EndedRun {
             context: RunContext {
                 run: synthetic_run(42),
                 ..RunContext::default()
             },
             outcome: RunOutcome::Victory,
             ended_at: 1_786_624_496,
-        });
+        }));
 
         assert_eq!(std::fs::read(&runs_path).unwrap(), vec![0xff]);
         assert!(!runs_path.with_extension("jsonl.tmp").exists());
+        assert!(!data.join("profiler.log").exists());
+    }
+
+    #[test]
+    fn write_run_record_refuses_history_growth_over_the_json_cap() {
+        let data = unique_dir("run-write-overflow");
+        init_state(&data);
+        write_store_file(&data, 42, 7, &build_combat_json(&synthetic_combat()));
+        let path = data.join("runs.jsonl");
+        let old = " ".repeat(super::super::MAX_JSON_SIZE);
+        std::fs::write(&path, &old).unwrap();
+        assert!(!write_run_record(&EndedRun {
+            context: RunContext {
+                run: synthetic_run(42),
+                ..RunContext::default()
+            },
+            outcome: RunOutcome::Victory,
+            ended_at: 2000,
+        }));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), old);
+        assert!(!data.join("runs.jsonl.tmp").exists());
+        assert!(!data.join("profiler.log").exists());
     }
 }

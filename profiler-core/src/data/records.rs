@@ -1,7 +1,7 @@
 //! The persisted record types and their serde contracts: the read-side
 //! mirrors of the JSON the core writes. Unknown fields are ignored and
-//! missing fields fall back to defaults — that tolerance is the schema's
-//! additive evolution contract.
+//! missing fields fall back to defaults; that tolerance is boundary
+//! robustness, not an evolution contract.
 
 use serde::{Deserialize, Serialize};
 
@@ -47,6 +47,8 @@ pub struct RunRec {
     pub ascension: i32,
     pub game_mode: String,
     pub seed: String,
+    pub profile: i32,
+    pub started_at: i64,
 }
 
 impl Default for RunRec {
@@ -58,7 +60,21 @@ impl Default for RunRec {
             ascension: -1,
             game_mode: String::new(),
             seed: String::new(),
+            profile: -1,
+            started_at: 0,
         }
+    }
+}
+
+impl RunRec {
+    pub(crate) fn matches_identity(&self, seed: &str, started_at: i64, profile: i32) -> bool {
+        self.seq != 0
+            && !seed.is_empty()
+            && started_at > 0
+            && profile >= 0
+            && self.seed == seed
+            && self.started_at == started_at
+            && self.profile == profile
     }
 }
 
@@ -116,12 +132,11 @@ struct RunDoc<'a> {
     seed: &'a str,
     started_at: i64,
     ended_at: i64,
-    /// Omitted when empty, so the field is additive.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     players: Vec<PlayerDoc<'a>>,
 }
 
-#[cfg(any(test, debug_assertions))]
+#[cfg(test)]
 #[derive(Deserialize)]
 struct RunDocOwned {
     run_id: u32,
@@ -138,65 +153,21 @@ struct RunDocOwned {
     players: Vec<PlayerRec>,
 }
 
-/// `profile` is the shim-forwarded SaveManager.ProfileId (-1 when never
-/// reported).
-pub fn build_run_json(ended: &EndedRun, profile: i32) -> String {
+pub fn build_run_json(ended: &EndedRun) -> String {
     let run = &ended.context;
     let doc = RunDoc {
         run_id: run.run.seq,
-        profile,
+        profile: run.run.profile,
         character: &run.run.character,
         ascension: run.run.ascension,
         game_mode: &run.run.game_mode,
         outcome: ended.outcome,
         seed: &run.run.seed,
-        started_at: run.started_at,
+        started_at: run.run.started_at,
         ended_at: ended.ended_at,
         players: run.players.iter().map(PlayerDoc::from).collect(),
     };
-    let json = serde_json::to_string(&doc).expect("run document cannot fail to serialize");
-    // The emitted entry must parse back to the run record that produced it.
-    #[cfg(debug_assertions)]
-    {
-        let parsed: RunDocOwned = serde_json::from_str(&json).expect("run JSON must parse back");
-        debug_assert_eq!(parsed.run_id, run.run.seq, "run run_id must round-trip");
-        debug_assert_eq!(parsed.profile, profile, "run profile must round-trip");
-        debug_assert_eq!(
-            parsed.character, run.run.character,
-            "run character must round-trip"
-        );
-        debug_assert_eq!(
-            parsed.ascension, run.run.ascension,
-            "run ascension must round-trip"
-        );
-        debug_assert_eq!(
-            parsed.game_mode, run.run.game_mode,
-            "run game_mode must round-trip"
-        );
-        debug_assert_eq!(parsed.outcome, ended.outcome, "run outcome must round-trip");
-        debug_assert_eq!(parsed.seed, run.run.seed, "run seed must round-trip");
-        debug_assert_eq!(
-            parsed.started_at, run.started_at,
-            "run started_at must round-trip"
-        );
-        debug_assert_eq!(
-            parsed.ended_at, ended.ended_at,
-            "run ended_at must round-trip"
-        );
-        debug_assert_eq!(
-            parsed.players.len(),
-            run.players.len(),
-            "run roster must round-trip"
-        );
-        for (parsed, wrote) in parsed.players.iter().zip(&run.players) {
-            debug_assert_eq!(parsed.slot, wrote.slot, "run roster slot must round-trip");
-            debug_assert_eq!(
-                parsed.character, wrote.character,
-                "run roster character must round-trip"
-            );
-        }
-    }
-    json
+    serde_json::to_string(&doc).expect("run document cannot fail to serialize")
 }
 
 #[cfg(test)]

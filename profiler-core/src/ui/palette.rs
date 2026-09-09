@@ -102,7 +102,7 @@ pub(crate) fn kind_prefix(kind: SourceKind) -> Option<KindPrefix> {
     }
 }
 
-/// "[O] " = 40.7px at 24px plus 1px-per-glyph tracking, ceiled; one fixed
+/// `"[O] "` = 40.7px at 24px plus 1px-per-glyph tracking, ceiled; one fixed
 /// column keeps the names aligned.
 pub(crate) const PREFIX_ADVANCE: f32 = 41.0;
 

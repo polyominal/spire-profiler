@@ -15,13 +15,19 @@ pub fn set_run_meta(profile_id: i32) {
         if !state.initialized {
             return;
         }
+        let profile_id = if profile_id < -1 {
+            fail!("invalid run profile {profile_id}; clamping to unknown");
+            -1
+        } else {
+            profile_id
+        };
         state.run_profile = profile_id;
         event_log!("run meta: profile {profile_id}");
     });
 }
 
 /// `start_time` is the game's own `StartTime`; 0 means the read failed and
-/// the core stamps its own clock.
+/// the identity stays unknown.
 pub fn run_started(
     character_ids: &str,
     ascension: i32,
@@ -35,20 +41,27 @@ pub fn run_started(
         fail!("run_started called before init");
         return;
     }
+    if start_time < 0 {
+        fail!("invalid run start time {start_time}; clamping to unknown");
+    }
+    let start_time = start_time.max(0);
     if let Some(ended) = take_ended_run(RunOutcome::Defeat) {
         // Closing with 0 would fabricate a win.
         record_ended_run(&ended);
     }
-    let (seq, resumed_seq) = STATE.with(|cell| {
+    let Some((seq, resumed_seq)) = STATE.with(|cell| {
         let mut state = cell.borrow_mut();
-        // A resumed run rejoins its earlier fragments by seed.
         let resumed = (continued != 0)
-            .then(|| crate::data::run_history::continued_run_id(&state.runs_dir_full, seed))
+            .then(|| {
+                crate::data::run_history::continued_run_id(
+                    &state.runs_path_full,
+                    &state.runs_dir_full,
+                    seed,
+                    start_time,
+                    state.run_profile,
+                )
+            })
             .flatten();
-        // The run id comes from the store, not a session counter.
-        let seq = resumed.unwrap_or_else(|| {
-            crate::data::run_history::next_run_id(&state.runs_path_full, &state.runs_dir_full)
-        });
         // Fresh run: the accumulator starts over. The player filter
         // resets too — the avatar row only ever lists the current
         // roster, so a slot from a previous run's roster would strand
@@ -57,7 +70,14 @@ pub fn run_started(
         state.run_turns = 0;
         state.run_combats = 0;
         state.player_filter = state::PlayerFilter::All;
-        let roster = parse_roster(character_ids, net_ids);
+        // Exact continuation remains valid when fresh IDs are exhausted.
+        let Some(seq) = resumed.or_else(|| {
+            crate::data::run_history::next_run_id(&state.runs_path_full, &state.runs_dir_full)
+        }) else {
+            state.current = None;
+            fail!("run IDs exhausted; run not started");
+            return None;
+        };
         state.run_ctx = Some(RunContext {
             run: RunSnapshot {
                 seq,
@@ -65,17 +85,15 @@ pub fn run_started(
                 ascension,
                 game_mode: game_mode.to_owned(),
                 seed: seed.to_owned(),
+                profile: state.run_profile,
+                started_at: start_time,
             },
-            started_at: if start_time > 0 {
-                start_time
-            } else {
-                // The session clock preserves the old behavior.
-                now_seconds()
-            },
-            players: roster,
+            players: parse_roster(character_ids, net_ids),
         });
-        (seq, resumed)
-    });
+        Some((seq, resumed))
+    }) else {
+        return;
+    };
     // The accumulator rebuild re-borrows STATE, so the start line waits.
     if let Some(seq) = resumed_seq {
         let (combats, turns) = crate::data::persistence::rebuild_run_accumulator(seq);
@@ -115,12 +133,13 @@ fn take_ended_run(outcome: RunOutcome) -> Option<EndedRun> {
 }
 
 fn record_ended_run(ended: &EndedRun) {
-    write_run_record(ended);
-    marker!(
-        "run {} recorded ({})",
-        ended.context.run.seq,
-        ended.outcome.name()
-    );
+    if write_run_record(ended) {
+        marker!(
+            "run {} recorded ({})",
+            ended.context.run.seq,
+            ended.outcome.name()
+        );
+    }
 }
 
 struct RosterLog<'a>(&'a [RunPlayer]);

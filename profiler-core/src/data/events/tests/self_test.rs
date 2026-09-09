@@ -4,7 +4,7 @@
 use super::*;
 use crate::data::state::{CombatResult, PlayerFilter, RunOutcome};
 use crate::source_kind::SourceKind;
-use crate::test_util::wiped_dir;
+use crate::test_util::unique_dir;
 use crate::ui::ui_model::{Section, Segment, UiRow, UiTab};
 
 fn assert_self_test_combat(combat: &CombatRec, combat_json: &serde_json::Value) {
@@ -67,7 +67,7 @@ fn assert_self_test_combat(combat: &CombatRec, combat_json: &serde_json::Value) 
 
 #[test]
 fn self_test_pipeline_writes_combat_and_run_files() {
-    let base = wiped_dir("spire-profiler-test");
+    let base = unique_dir("spire-profiler-test");
     test_reset();
     init(&base);
     self_test();
@@ -119,7 +119,7 @@ fn combat_tab_rows_and_footer_render_generator_and_forge() {
 
 #[test]
 fn chart_rows_payload_sections_ordering_self_rows() {
-    let base = wiped_dir("spire-profiler-test-rows");
+    let base = unique_dir("spire-profiler-test-rows");
     test_reset();
     init(&base);
     seed_rows_combat_one();
@@ -281,7 +281,7 @@ fn assert_rows_meta_and_footers() {
 /// start resets a stale filter.
 #[test]
 fn panel_filter_toggle_selects_and_deselects_players() {
-    let base = wiped_dir("spire-profiler-test-mp2-filter");
+    let base = unique_dir("spire-profiler-test-mp2-filter");
     test_reset();
     init(&base);
 

@@ -14,6 +14,7 @@ mod check_abi;
 mod check_catalog;
 mod check_citations;
 mod check_docs;
+mod check_emdash;
 mod cross;
 mod decompile;
 mod discover;
@@ -24,6 +25,7 @@ mod headless;
 mod install;
 mod md;
 mod release;
+mod scan;
 mod shim;
 mod zig;
 
@@ -35,14 +37,14 @@ mod flags {
         src "./src/main.rs"
 
         cmd xtask {
-            /// Format check (rust + markdown) + clippy + nextest + citation check:
-            /// the commit gate.
+            /// The commit gate: format checks (rust + markdown), citation,
+            /// em-dash, ABI, and doc checks, clippy, and nextest.
             cmd smoke {}
             /// Install the pinned toolchain and verify the dev tools.
             cmd install-tool {}
             /// Assemble the cross-platform mod bundle under target/mods/.
             cmd build {}
-            /// Rebuild and package the mod as release zips under dist/.
+            /// Require clean Git inputs, run smoke, rebuild, and package under dist/.
             cmd release {}
             /// Copy the mod into the game's mods directory.
             cmd install-mod {}
@@ -57,6 +59,8 @@ mod flags {
             }
             /// Fail on file:line citations in comments and docs.
             cmd check-citations {}
+            /// Fail on em dashes beyond the pinned per-file ceilings.
+            cmd check-emdash {}
             /// Reflow the project markdown docs to the pinned width.
             cmd fmt-md {
                 /// Check for wrapping drift without rewriting.
@@ -93,6 +97,7 @@ mod flags {
         CheckAbi(CheckAbi),
         CheckDocs(CheckDocs),
         CheckCitations(CheckCitations),
+        CheckEmdash(CheckEmdash),
         FmtMd(FmtMd),
         Decompile(Decompile),
         CheckCatalog(CheckCatalog),
@@ -126,6 +131,9 @@ mod flags {
 
     #[derive(Debug)]
     pub struct CheckCitations;
+
+    #[derive(Debug)]
+    pub struct CheckEmdash;
 
     #[derive(Debug)]
     pub struct FmtMd {
@@ -176,6 +184,7 @@ fn main() -> Result<()> {
         flags::XtaskCmd::CheckCatalog(_) => check_catalog::run(),
         flags::XtaskCmd::CheckDocs(flags) => check_docs::check_docs(&shell, flags.top),
         flags::XtaskCmd::CheckCitations(_) => check_citations::run(),
+        flags::XtaskCmd::CheckEmdash(_) => check_emdash::run(),
         flags::XtaskCmd::FmtMd(flags) => md::fmt_md(flags.check),
         flags::XtaskCmd::Decompile(flags) => {
             decompile::decompile(&shell, flags.output_dir, flags.yes)
@@ -247,12 +256,19 @@ fn smoke(shell: &Shell) -> Result<()> {
     cmd!(shell, "cargo fmt --all -- --check").run()?;
     md::fmt_md(true)?;
     check_citations::run()?;
+    check_emdash::run()?;
+    check_abi::run()?;
     cmd!(
         shell,
-        "cargo clippy --workspace --all-targets --all-features -- --deny warnings"
+        "cargo clippy --workspace --all-targets --all-features --locked -- --deny warnings"
     )
     .run()?;
-    cmd!(shell, "cargo nextest run --workspace").run()?;
+    check_docs::check_docs(shell, None)?;
+    cmd!(
+        shell,
+        "cargo nextest run --workspace --locked --no-fail-fast"
+    )
+    .run()?;
     Ok(())
 }
 
@@ -269,28 +285,25 @@ fn install_tool(shell: &Shell) -> Result<()> {
     // Same host gate as build: the toolchain bootstraps are Unix-only.
     discover::Platform::detect()?;
 
-    let tool_checks: [(&[&str], String, &str); 3] = [
+    let tool_checks: [(&[&str], &str, &str); 3] = [
         (
             &["cargo", "nextest", "--version"],
-            format!("cargo-nextest --version {NEXTEST_VERSION} --locked"),
+            "cargo-nextest",
             NEXTEST_VERSION,
         ),
         (
             &["cargo", "insta", "--version"],
-            format!("cargo-insta --version {INSTA_VERSION} --locked"),
+            "cargo-insta",
             INSTA_VERSION,
         ),
         (
             &["cargo-zigbuild", "--version"],
-            format!(
-                "cargo-zigbuild --version {} --locked",
-                cross::ZIGBUILD_VERSION
-            ),
+            "cargo-zigbuild",
             cross::ZIGBUILD_VERSION,
         ),
     ];
-    for (probe, install_spec, expected_version) in tool_checks {
-        ensure_cargo_tool(shell, probe, &install_spec, expected_version)?;
+    for (probe, tool, expected_version) in tool_checks {
+        ensure_cargo_tool(shell, probe, tool, expected_version)?;
     }
 
     crate::dotnet::ensure_bootstrap(shell)?;
@@ -306,14 +319,10 @@ fn install_tool(shell: &Shell) -> Result<()> {
 pub(crate) fn ensure_cargo_tool(
     shell: &Shell,
     probe: &[&str],
-    install_spec: &str,
+    tool: &str,
     expected_version: &str,
 ) -> Result<()> {
     let probe_command = probe[0];
-    let tool = install_spec
-        .split_whitespace()
-        .next()
-        .expect("every install spec names its cargo package");
     let version = Shell::cmd(shell, probe_command)
         .args(&probe[1..])
         .read()
@@ -325,10 +334,12 @@ pub(crate) fn ensure_cargo_tool(
     }
 
     println!("{tool}: installing pinned {expected_version}");
-    let argv = install_tool_argv(install_spec);
-    cmd!(shell, "cargo {argv...}").run().map_err(|e| {
-        anyhow::anyhow!("installing {tool} {expected_version} with cargo failed: {e}")
-    })?;
+    cmd!(
+        shell,
+        "cargo +{TOOL_STABLE} install {tool} --version {expected_version} --locked"
+    )
+    .run()
+    .map_err(|e| anyhow::anyhow!("installing {tool} {expected_version} with cargo failed: {e}"))?;
     let output = Shell::cmd(shell, probe_command)
         .args(&probe[1..])
         .read()
@@ -350,43 +361,9 @@ fn reports_version(output: &str, tool: &str, expected_version: &str) -> bool {
     })
 }
 
-/// The spec arrives as one string; it must reach cargo as separate argv
-/// elements — a single argument would name a bogus crate and always fail.
-fn install_tool_argv(install_spec: &str) -> Vec<String> {
-    let mut argv = vec![format!("+{TOOL_STABLE}"), "install".to_owned()];
-    argv.extend(install_spec.split_whitespace().map(str::to_owned));
-    argv
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn install_tool_argv_splits_the_spec_into_separate_arguments() {
-        assert_eq!(
-            install_tool_argv("cargo-zigbuild --version 0.23.0 --locked"),
-            vec![
-                "+1.96.0",
-                "install",
-                "cargo-zigbuild",
-                "--version",
-                "0.23.0",
-                "--locked",
-            ]
-        );
-        assert_eq!(
-            install_tool_argv("cargo-insta --version 1.48.0 --locked"),
-            vec![
-                "+1.96.0",
-                "install",
-                "cargo-insta",
-                "--version",
-                "1.48.0",
-                "--locked"
-            ]
-        );
-    }
 
     #[test]
     fn tool_versions_must_match_exactly() {

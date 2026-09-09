@@ -14,8 +14,9 @@ fn run_context() -> EndedRun {
                 ascension: 3,
                 game_mode: "standard".to_owned(),
                 seed: "SEED123".to_owned(),
+                profile: 2,
+                started_at: 1_786_579_200,
             },
-            started_at: 1_786_579_200, // 2026-08-13T00:00:00Z in epoch seconds
             players: vec![
                 RunPlayer {
                     slot: 0,
@@ -81,8 +82,7 @@ fn parse_combat_doc_ignores_unknown_fields_and_fills_defaults() {
     assert_eq!(c.cards[0].mitigate_str, 9);
     assert_eq!(c.cards[0].player, 3);
     // Missing fields fall back to defaults; unknown fields are skipped.
-    // A card row without `player` reads as slot 0 (single-player), the
-    // additive-schema rule.
+    // A card row without `player` reads as slot 0 (single-player).
     assert_eq!(
         c.cards[1],
         CardRec {
@@ -91,6 +91,16 @@ fn parse_combat_doc_ignores_unknown_fields_and_fills_defaults() {
         }
     );
     assert_eq!(c.cards[1].player, 0);
+}
+
+#[test]
+fn parse_combat_doc_preserves_potion_and_osty_and_defaults_unknown_kinds_to_osty() {
+    let c = parse_combat_doc(r#"{"cards":[{"kind":3},{"kind":4},{"kind":255}]}"#)
+        .expect("stored Potion, Osty, and unknown kinds must remain readable");
+    assert_eq!(
+        c.cards.iter().map(|card| card.kind).collect::<Vec<_>>(),
+        [SourceKind::Potion, SourceKind::Osty, SourceKind::Osty]
+    );
 }
 
 #[test]
@@ -129,14 +139,15 @@ fn parse_combat_doc_clamps_an_unknown_result() {
 // facts, outcome, timestamps, roster; no build tag, no combat roll-ups.
 #[test]
 fn build_run_json_matches_the_documented_schema() {
-    insta::assert_snapshot!(build_run_json(&run_context(), 2));
+    insta::assert_snapshot!(build_run_json(&run_context()));
 }
 
 #[test]
 fn build_run_json_round_trips_through_the_parser() {
-    let ended = run_context();
+    let mut ended = run_context();
+    ended.context.run.profile = 7;
     let run = &ended.context;
-    let json = build_run_json(&ended, 7);
+    let json = build_run_json(&ended);
     let parsed: RunDocOwned = serde_json::from_str(&json).expect("parses back");
     assert_eq!(parsed.run_id, run.run.seq);
     assert_eq!(parsed.profile, 7);
@@ -145,7 +156,7 @@ fn build_run_json_round_trips_through_the_parser() {
     assert_eq!(parsed.game_mode, run.run.game_mode);
     assert_eq!(parsed.outcome, RunOutcome::Victory);
     assert_eq!(parsed.seed, run.run.seed);
-    assert_eq!(parsed.started_at, run.started_at);
+    assert_eq!(parsed.started_at, run.run.started_at);
     assert_eq!(parsed.ended_at, ended.ended_at);
     assert_eq!(parsed.players.len(), 2);
     assert_eq!(parsed.players[1].slot, 1);
@@ -156,7 +167,7 @@ fn build_run_json_round_trips_through_the_parser() {
 fn build_run_json_omits_an_empty_roster() {
     let mut ended = run_context();
     ended.context.players = Vec::new();
-    let json = build_run_json(&ended, 7);
+    let json = build_run_json(&ended);
     assert!(!json.contains(r#""players""#));
     let parsed: RunDocOwned = serde_json::from_str(&json).expect("parses back");
     assert!(parsed.players.is_empty());
