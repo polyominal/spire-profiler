@@ -136,7 +136,7 @@ struct RunDoc<'a> {
     players: Vec<PlayerDoc<'a>>,
 }
 
-#[cfg(any(test, debug_assertions))]
+#[cfg(test)]
 #[derive(Deserialize)]
 struct RunDocOwned {
     run_id: u32,
@@ -167,52 +167,7 @@ pub fn build_run_json(ended: &EndedRun) -> String {
         ended_at: ended.ended_at,
         players: run.players.iter().map(PlayerDoc::from).collect(),
     };
-    let json = serde_json::to_string(&doc).expect("run document cannot fail to serialize");
-    // The emitted entry must parse back to the run record that produced it.
-    #[cfg(debug_assertions)]
-    {
-        let parsed: RunDocOwned = serde_json::from_str(&json).expect("run JSON must parse back");
-        debug_assert_eq!(parsed.run_id, run.run.seq, "run run_id must round-trip");
-        debug_assert_eq!(
-            parsed.profile, run.run.profile,
-            "run profile must round-trip"
-        );
-        debug_assert_eq!(
-            parsed.character, run.run.character,
-            "run character must round-trip"
-        );
-        debug_assert_eq!(
-            parsed.ascension, run.run.ascension,
-            "run ascension must round-trip"
-        );
-        debug_assert_eq!(
-            parsed.game_mode, run.run.game_mode,
-            "run game_mode must round-trip"
-        );
-        debug_assert_eq!(parsed.outcome, ended.outcome, "run outcome must round-trip");
-        debug_assert_eq!(parsed.seed, run.run.seed, "run seed must round-trip");
-        debug_assert_eq!(
-            parsed.started_at, run.run.started_at,
-            "run started_at must round-trip"
-        );
-        debug_assert_eq!(
-            parsed.ended_at, ended.ended_at,
-            "run ended_at must round-trip"
-        );
-        debug_assert_eq!(
-            parsed.players.len(),
-            run.players.len(),
-            "run roster must round-trip"
-        );
-        for (parsed, wrote) in parsed.players.iter().zip(&run.players) {
-            debug_assert_eq!(parsed.slot, wrote.slot, "run roster slot must round-trip");
-            debug_assert_eq!(
-                parsed.character, wrote.character,
-                "run roster character must round-trip"
-            );
-        }
-    }
-    json
+    serde_json::to_string(&doc).expect("run document cannot fail to serialize")
 }
 
 #[cfg(test)]
