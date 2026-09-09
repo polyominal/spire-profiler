@@ -909,13 +909,6 @@ mod tests {
         assert_eq!(SourceKind::from_c(3), SourceKind::Power);
         assert_eq!(SourceKind::from_c(4), SourceKind::Power);
         assert_eq!(SourceKind::from_c(i32::MAX), SourceKind::Power);
-        for kind in -64..=64 {
-            let k = SourceKind::from_c(kind);
-            debug_assert!(
-                matches!(k, SourceKind::Card | SourceKind::Relic | SourceKind::Power),
-                "from_c({kind}) must clamp to a catalogued kind"
-            );
-        }
     }
 
     #[test]

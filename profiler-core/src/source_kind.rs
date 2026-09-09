@@ -30,14 +30,14 @@ impl SourceKind {
         SourceKind::Osty,
     ];
 
-    /// The shim sends only card/relic/power for contexts; anything
-    /// outside clamps to Power (logged once).
+    /// The shim sends only Card/Relic/Power context codes. Invalid values
+    /// clamp to Card (0) below zero or Power (2) above two, logged once.
     pub fn from_c(kind: i32) -> SourceKind {
         let clamped = kind.clamp(0, SourceKind::Power as i32);
         if clamped != kind {
             crate::fail_once(
                 &BAD_KIND_LOGGED,
-                format_args!("invalid context kind {kind}; clamping to power"),
+                format_args!("invalid context kind {kind}; clamping to {clamped}"),
             );
         }
         match clamped {

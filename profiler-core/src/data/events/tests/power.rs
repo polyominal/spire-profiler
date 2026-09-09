@@ -326,8 +326,8 @@ fn power_appliers_record_their_slots() {
     assert_eq!(bash.damage_dealt, 6, "BASH keeps its base 6");
 }
 
-/// The modifier kind wire codes are their own enum: 0 = power, 1 = relic;
-/// anything else clamps to power. With no recorded appliers each share
+/// The modifier kind wire codes are 2 = Power, 1 = Relic;
+/// anything else clamps to Power. With no recorded appliers each share
 /// keeps the modifier's own kind.
 #[test]
 fn modifier_kind_codes_map_power_and_relic_and_clamp_unknowns() {
