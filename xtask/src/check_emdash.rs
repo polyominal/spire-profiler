@@ -51,7 +51,6 @@ const PINS: &[(&str, usize)] = &[
     ("profiler-core/src/ui/panel_body.rs", 3),
     ("profiler-core/src/ui/panel_common.rs", 4),
     ("profiler-core/src/ui/panel_replay.rs", 2),
-    ("profiler-core/src/ui/run_layout.rs", 2),
     ("profiler-core/src/ui/run_panel.rs", 7),
     ("profiler-core/src/ui/theme.rs", 3),
     ("profiler-core/src/ui/tooltip.rs", 4),
