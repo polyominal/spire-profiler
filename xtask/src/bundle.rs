@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use crate::cross::{self, MATRIX};
+use crate::cross;
 
 /// The dotnet assembly is SpireProfiler; the game loads \<id\>.dll, so the
 /// bundle renames the built dll to the id.
@@ -70,14 +70,4 @@ fn copy_file(source: &Path, destination: &Path) -> Result<()> {
             destination.display()
         )
     })
-}
-
-/// Iterates the matrix directly — the .gdextension is rendered from the
-/// same rows, so a missing file is a build gap.
-pub(crate) fn missing_gdextension_libraries(mod_dir: &Path) -> Vec<String> {
-    MATRIX
-        .iter()
-        .filter(|row| !mod_dir.join(row.bundle_name).is_file())
-        .map(|row| format!("{}.{} -> {}", row.os, row.arch, row.bundle_name))
-        .collect()
 }

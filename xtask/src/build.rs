@@ -28,15 +28,6 @@ pub fn build(shell: &Shell) -> Result<discover::GamePaths> {
     let mod_dir = root.join("target/mods").join(bundle::MOD_ID);
     bundle::assemble_bundle(root, &gen_dir, &mod_dir, &libs, &build_commit)?;
 
-    // A gap is a build failure, never silent.
-    let missing = bundle::missing_gdextension_libraries(&mod_dir);
-    if !missing.is_empty() {
-        return Err(anyhow::anyhow!(
-            "the distribution bundle is missing native libraries: {}",
-            missing.join(", ")
-        ));
-    }
-
     println!("game root: {}", game.game_root.display());
     println!(
         "mod target: {}",

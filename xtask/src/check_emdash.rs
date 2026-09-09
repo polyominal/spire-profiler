@@ -55,7 +55,7 @@ const PINS: &[(&str, usize)] = &[
     ("profiler-core/src/ui/theme.rs", 3),
     ("profiler-core/src/ui/tooltip.rs", 4),
     ("profiler-core/src/ui/ui_model.rs", 1),
-    ("xtask/src/bundle.rs", 2),
+    ("xtask/src/bundle.rs", 1),
     ("xtask/src/check_abi.rs", 3),
     ("xtask/src/check_catalog.rs", 10),
     ("xtask/src/check_citations.rs", 1),
