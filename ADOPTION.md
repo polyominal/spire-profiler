@@ -15,8 +15,8 @@ A sufficient continuation prompt is: “Continue ADOPTION.md from the next pendi
 
 ## Current checkpoint
 
-Checkpoint: run-accumulator vector equality, based on clean HEAD `ebe873e2c48f390cf61317ce6c6ea58ccba43f4e` on 2026-09-09. The simulation cleanup is committed there. Implementation, independent review (SHIP), and required checks are complete. Next: Git abbreviation fixture coverage.
-The user authorizes a one-time exception for this four-item Bounded test improvements batch: the root orchestrator creates one commit per item after implementation, independent review, gates, and checkpoint update. Subagents never commit. Continue through ABI empty-string coverage, simulation cleanup, run-accumulator equality, and the Git abbreviation fixture, then stop; the human-only commit rule resumes for later work. Stop and discuss instructions that need clarification.
+Checkpoint: Bounded test improvements complete, with the final Git-test change based on clean HEAD `9feca40a04303c13458c1d30ea985414d66ec705` on 2026-09-09. All four batch items passed independent review (SHIP), targeted tests, and smoke. Stop after the Git-test commit; the next pending item is `run_layout` test extraction.
+The user's one-time exception lets the root orchestrator commit the four-item Bounded test improvements batch after each implementation, independent review, gates, and checkpoint update. Subagents never commit. The exception ends with this Git-test commit; later work follows the human-only commit rule. Stop and discuss instructions that need clarification.
 
 Completed work:
 
@@ -37,11 +37,12 @@ Completed work:
 - The [ABI null-string test](profiler-core/src/abi.rs) asserts empty encounter metadata and active potion behavior for null, empty, and valid NUL-terminated non-UTF-8 strings. Each potion-use call increments the counter; damage/block attribution checks after each use and context call detect lost or replaced fallback independently. Redundant survival-only context calls are removed; the existing context matrix remains. Production behavior, signatures, schema, and snapshots are unchanged. Rust context is 25 lines added, 8 deleted, with no moves, helpers, or new tests.
 - [sim.rs](profiler-core/tests/sim.rs) deletes fixed JSON absence/type checks, parsed-to-parsed zero checks and their field mapping, and the duplicate combat-file read/ID substring check. `check_run_file` retains run parsing, identity, and outcome assertions. Event/RNG order, ledger/queue/model invariants, file counts, parsed/live comparisons, fixture lifecycle, seed diagnostics, and UI checks remain; schema snapshots and the identity-only fixture retain serialization coverage. Rust context is 2 lines added, 111 deleted, with no moves, new helpers, production changes, or snapshot changes.
 - The [run-accumulator parity test](profiler-core/src/data/persistence/runs.rs) compares rebuilt and live card vectors directly, deleting the field-by-field helper and length/zip comparison. Derived `CardStat` equality checks row count, order, and every field. Fixtures, live/rebuild paths, turn/combat checks, and the test name remain. Rust context is 1 line added, 26 deleted, with no moves, production changes, new helpers, or snapshot changes.
+- The [Git fixture](xtask/src/git.rs) checks that the developer abbreviation is at least eight characters and prefixes its full committed HEAD, and that a dirty worktree leaves the abbreviation unchanged. The standalone fixed-eight-character checkout test is deleted. Release rejection for dirty worktree/index, untracked files, corrupt index, missing repository, and unborn HEAD, plus clean restoration and developer `unknown` fallbacks, remain. Rust context is 4 lines added, 13 deleted, with no moves, production changes, new helpers, or fixture-ownership changes.
 
 Verification:
 
-- `cargo nextest run --package profiler_core --locked --no-fail-fast --filter-expr 'test(data::persistence::runs::tests::rebuild_run_accumulator)'` passed all 3 targeted tests. They retain fragment-folding, foreign-directory exclusion, and live/rebuilt row-count, order, field, turn, and combat-count failure coverage.
-- `cargo xtask smoke` passed 363/363 tests, workspace Clippy, private rustdoc, formatting, citations, 38 ABI bindings, and em-dash checks. Rust comment density is 10.4% (3,062 / 29,346); em-dash pins remain 39 files / 130 dashes. `cargo xtask fmt-md` and `git diff --check` passed. This test-only change requires no new build or headless run; prior runtime/platform limits below still apply.
+- `cargo nextest run --package xtask --locked --no-fail-fast --filter-expr 'test(git::tests::)'` passed the Git fixture. It detects short/wrong-HEAD abbreviations, changes to developer resolution under dirty input, and the preserved release-rejection/fallback cases above.
+- `cargo xtask smoke` passed 362/362 tests, workspace Clippy, private rustdoc, formatting, citations, 38 ABI bindings, and em-dash checks. The suite has one fewer test because the standalone hash-shape test was removed after strengthening the Git fixture. Rust comment density is 10.4% (3,062 / 29,338); em-dash pins remain 39 files / 130 dashes. `cargo xtask fmt-md` and `git diff --check` passed. This test-only batch requires no new build or headless run; prior runtime/platform limits below still apply.
 - The committed Zig resolver change passed `zig-sdk/zig version` at the pinned 0.16.0 and `ZIG_GLOBAL_CACHE_DIR="$PWD/target/zig-cache" cargo xtask build`, exercising the simplified resolver with the cached SDK and building all four native targets and the C# shim; C# had zero warnings/errors. The existing macOS SDK-discovery and deprecated-linker-setting warnings were nonfatal. Missing/wrong-version refresh and download-failure paths were reviewed in the unchanged installer, not executed against the real SDK.
 - The committed catalog-fixture change passed all 10 catalog tests and four concurrent processes running the three affected tests against one isolated shared `TMPDIR`: all 12 executions passed. Former fixed-path sentinels and occupied xshell directory/file candidates retained their bytes; all newly owned fixture directories were removed.
 - The committed outer-locking change passed an isolated offline stale-lock probe: `cargo xtask probe` refused before compilation/execution and preserved lockfile bytes and metadata. The prior unlocked alias updated the same stale lock and ran; the locked alias ran with the repaired lock, forwarded arguments, and preserved it. The repository lockfile remained unchanged.
@@ -54,14 +55,10 @@ Follow [build.md](docs/build.md), [verify.md](docs/verify.md), and [game.md](doc
 
 ## Bounded test improvements
 
-The source review is settled; these are concrete dispositions, not another open audit.
+All items in this section are complete. The source review is settled; these are retained test constraints, not another open audit.
 Preserve [run_panel.rs](profiler-core/src/ui/run_panel.rs) `run_manual_visible_cycles` and `dismiss_run_manual_lands_on_hidden`: distinct hide/dismiss/hidden-input/reopen regressions.
 Existing context ABI tests observe null/empty/valid non-UTF-8 attribution; add no duplicate context matrix.
 Keep deterministic simulation, the naive block model, allocation tests, persistence snapshots, and failure coverage.
-
-- [ ] Replace [git.rs](xtask/src/git.rs)'s checkout-dependent hash-shape test after its Git fixture asserts the dev abbreviation matches known full HEAD (at least eight characters; Git may lengthen it). Preserve dirty index/worktree, untracked, missing, unborn, and fallback behavior.
-
-Run targeted tests and smoke for each bounded change; preserve each changed test's distinct failure mode.
 
 ## Mechanical extraction
 

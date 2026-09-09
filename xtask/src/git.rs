@@ -34,18 +34,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resolves_the_checked_out_commit_to_an_8_char_hex_hash() {
-        let shell = Shell::new().expect("cargo test always runs with a working directory");
-        shell.change_dir(crate::workspace_root());
-        let hash = resolve_commit(&shell);
-        assert_eq!(hash.len(), 8, "expected an 8-char short hash, got {hash:?}");
-        assert!(
-            hash.bytes().all(|byte| byte.is_ascii_hexdigit()),
-            "expected hex characters, got {hash:?}"
-        );
-    }
-
-    #[test]
     fn release_rejects_dirty_inputs_and_git_failures_without_changing_developer_builds()
     -> Result<()> {
         let shell = Shell::new()?;
@@ -55,10 +43,13 @@ mod tests {
         cmd!(shell, "git clone --quiet --shared {root} {repo}").run()?;
         shell.change_dir(&repo);
         let commit = release_commit(&shell)?;
+        let abbreviation = resolve_commit(&shell);
+        assert!(abbreviation.len() >= 8);
+        assert!(commit.starts_with(&abbreviation));
         cmd!(shell, "git config status.showUntrackedFiles no").run()?;
         std::fs::write(repo.join("README.md"), "changed tracked input")?;
         assert!(release_commit(&shell).is_err());
-        assert_ne!(resolve_commit(&shell), "unknown");
+        assert_eq!(resolve_commit(&shell), abbreviation);
         cmd!(shell, "git add README.md").run()?;
         assert!(release_commit(&shell).is_err());
         cmd!(
