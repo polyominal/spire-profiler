@@ -275,7 +275,7 @@ fn run_gdre(root: &Path, gdre: &Path, pck: &Path, output: &Path) -> Result<()> {
         .env_remove("DYLD_INSERT_LIBRARIES")
         .env_remove("LD_PRELOAD")
         .current_dir(root);
-    reset_child_signal_dispositions(&mut command);
+    reset_child_sigusr1(&mut command).context("preparing GDRE's SIGUSR1 disposition")?;
 
     let status = command
         .status()
@@ -287,31 +287,49 @@ fn run_gdre(root: &Path, gdre: &Path, pck: &Path, output: &Path) -> Result<()> {
 }
 
 /// Cargo leaves SA_SIGINFO set on SIGUSR1 across exec; GDRE's NativeAOT
-/// runtime uses SIGUSR1 internally and crashes. Resetting every signal to
-/// SIG_DFL makes the spawn equivalent to a plain shell launch.
+/// runtime uses SIGUSR1 internally and crashes. Clear that disposition
+/// without changing other inherited signals or the signal mask.
 #[cfg(unix)]
-fn reset_child_signal_dispositions(command: &mut Command) {
+fn reset_child_sigusr1(command: &mut Command) -> std::io::Result<()> {
     use std::os::unix::process::CommandExt;
 
-    // SAFETY: sigaction/sigemptyset are async-signal-safe, the only kind
-    // pre_exec permits between fork and exec.
-    unsafe {
-        command.pre_exec(|| {
-            let mut default_action: libc::sigaction = std::mem::zeroed();
-            libc::sigemptyset(&mut default_action.sa_mask);
-            default_action.sa_sigaction = libc::SIG_DFL;
-            default_action.sa_flags = 0;
-            // 1..=31 is the full set of standard signals on both platforms.
-            for sig in 1..=31 {
-                libc::sigaction(sig, &default_action, std::ptr::null_mut());
-            }
-            Ok(())
-        });
+    let mut action = std::mem::MaybeUninit::<libc::sigaction>::uninit();
+    // SAFETY: sigaction writes the current SIGUSR1 action to this aligned,
+    // writable out-pointer without retaining it; null act only queries it.
+    if unsafe { libc::sigaction(libc::SIGUSR1, std::ptr::null(), action.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error());
     }
+    // SAFETY: the successful query initializes every sigaction field.
+    let mut action = unsafe { action.assume_init() };
+    // SAFETY: sa_mask is a live, exclusively borrowed sigset_t; sigemptyset
+    // initializes it and retains no pointer.
+    if unsafe { libc::sigemptyset(&mut action.sa_mask) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    action.sa_sigaction = libc::SIG_DFL;
+    action.sa_flags = 0;
+    let reset = move || {
+        // SAFETY: the captured action remains initialized and readable
+        // for this call. SIG_DFL with zero flags is a default disposition;
+        // null oldact is permitted, and sigaction retains no pointer.
+        if unsafe { libc::sigaction(libc::SIGUSR1, &action, std::ptr::null_mut()) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    };
+    // SAFETY: the child uses only its captured action, sigaction (POSIX
+    // async-signal-safe), and allocation-free OS error capture. It neither
+    // formats panics, acquires locks, nor accesses inherited file handles.
+    unsafe {
+        command.pre_exec(reset);
+    }
+    Ok(())
 }
 
 #[cfg(not(unix))]
-fn reset_child_signal_dispositions(_command: &mut Command) {}
+fn reset_child_sigusr1(_command: &mut Command) -> std::io::Result<()> {
+    Ok(())
+}
 
 fn write_provenance(output: &Path, pck: &Path, host: discover::Platform) -> Result<()> {
     let utc = std::time::SystemTime::now()
@@ -353,4 +371,44 @@ fn prompt_yes_no(prompt: &str) -> Result<bool> {
         return Ok(false);
     }
     Ok(matches!(answer.trim(), "y" | "Y" | "yes" | "YES"))
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::os::unix::process::ExitStatusExt;
+
+    use super::*;
+
+    #[test]
+    fn child_resets_sigusr1_and_preserves_other_ignored_signals() -> Result<()> {
+        const CHILD: &str = "SPIRE_PROFILER_TEST_INHERITED_SIGNALS";
+        if std::env::var_os(CHILD).is_none() {
+            let status = Command::new("/bin/sh")
+                .args(["-c", "trap '' USR1 USR2; exec \"$@\"", "signal-test"])
+                .arg(std::env::current_exe()?)
+                .args([
+                    "--exact",
+                    "decompile::tests::child_resets_sigusr1_and_preserves_other_ignored_signals",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .status()?;
+            assert!(status.success(), "the isolated signal test must succeed");
+            return Ok(());
+        }
+        for (signal, expected) in [("USR1", Some(libc::SIGUSR1)), ("USR2", None)] {
+            let mut command = Command::new("/bin/sh");
+            command.args(["-c", &format!("kill -s {signal} $$")]);
+            reset_child_sigusr1(&mut command)?;
+            let status = command.status()?;
+            assert_eq!(status.signal(), expected, "unexpected {signal} disposition");
+            if expected.is_none() {
+                assert!(
+                    status.success(),
+                    "the ignored signal must leave the child running"
+                );
+            }
+        }
+        Ok(())
+    }
 }

@@ -97,8 +97,8 @@ developers learned something…"
 
 - GDRE segfaults when launched through `cargo` but not from the bare
   `target/debug/xtask` binary: cargo leaks `SA_SIGINFO` on SIGUSR1 across exec
-  into GDRE's NativeAOT runtime. The subcommand resets every signal in a
-  `pre_exec` hook before exec, so no action is needed.
+  into GDRE's NativeAOT runtime. The subcommand resets SIGUSR1 in a `pre_exec`
+  hook before exec, so no action is needed.
 
 - Signal 11 right after "Loading GDScript cache", with "Failed to open
   'user://logs/...'" in the output, means the Godot user-data dir is unwritable
