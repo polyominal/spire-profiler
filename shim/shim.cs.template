@@ -1105,11 +1105,11 @@ internal static class AttributionPatcher
     private const string RelicNamespace = "MegaCrit.Sts2.Core.Models.Relics";
     private const string PowerNamespace = "MegaCrit.Sts2.Core.Models.Powers";
 
-    private static readonly string[] RelicEntries = new[]
+    private static readonly (string, string)[] RelicEntries = new[]
     {
 @RELIC_ENTRIES@    };
 
-    private static readonly string[] PowerEntries = new[]
+    private static readonly (string, string)[] PowerEntries = new[]
     {
 @POWER_ENTRIES@    };
 
@@ -1139,17 +1139,14 @@ internal static class AttributionPatcher
 
     public static void PatchAll(Harmony harmony)
     {
-        foreach (var entry in RelicEntries) TryPatch(harmony, entry, RelicNamespace, "RelicPrefix", "RelicPostfix");
-        foreach (var entry in PowerEntries) TryPatch(harmony, entry, PowerNamespace, "PowerPrefix", "PowerPostfix");
+        foreach (var (className, methodName) in RelicEntries) TryPatch(harmony, className, methodName, RelicNamespace, "RelicPrefix", "RelicPostfix");
+        foreach (var (className, methodName) in PowerEntries) TryPatch(harmony, className, methodName, PowerNamespace, "PowerPrefix", "PowerPostfix");
     }
 
-    private static void TryPatch(Harmony harmony, string entry, string ns, string prefixName, string postfixName)
+    private static void TryPatch(Harmony harmony, string className, string methodName, string ns, string prefixName, string postfixName)
     {
         try
         {
-            var parts = entry.Split('|');
-            var className = parts[0];
-            var methodName = parts[1];
             var fullName = className.IndexOf('.') >= 0 ? className : ns + "." + className;
             var type = typeof(SpireProfilerMod).Assembly.GetType(fullName) ?? typeof(ModManager).Assembly.GetType(fullName);
             if (type == null)
@@ -1169,7 +1166,7 @@ internal static class AttributionPatcher
         }
         catch (Exception ex)
         {
-            Log.Error($"[SpireProfiler] catalog: failed to patch {entry}: {ex.Message}");
+            Log.Error($"[SpireProfiler] catalog: failed to patch {className}|{methodName}: {ex.Message}");
         }
     }
 }
