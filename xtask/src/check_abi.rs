@@ -1,5 +1,5 @@
 //! ABI conformance between the generated C# shim and the Rust core: every
-//! GetExport binding must match its `unsafe extern "C" fn` parameter list,
+//! GetExport binding must match its `extern "C" fn` parameter list,
 //! compared as canonical classes (int / long / ulong / double / string). The
 //! check runs inside build and fails it on mismatch. Only *bound* exports
 //! are checked; test-only exports are ignored. The scanners are deliberately
@@ -237,7 +237,7 @@ fn scan_rust_exports(
     source: &str,
     exports: &mut HashMap<String, RustExport>,
 ) -> Result<(), String> {
-    const NEEDLE: &str = "unsafe extern \"C\" fn ";
+    const NEEDLE: &str = "extern \"C\" fn ";
     let mut pos = 0;
     while let Some(found) = text[pos..].find(NEEDLE).map(|i| pos + i) {
         let mut i = found + NEEDLE.len();
@@ -343,7 +343,7 @@ fn scan_bindings(template: &str, bindings: &mut Vec<Binding>) -> Result<(), Stri
 mod tests {
     use super::*;
 
-    /// A known-good target plus a test-only export (never GetExport'd —
+    /// Safe and unsafe targets plus a test-only export (never GetExport'd —
     /// must be ignored).
     const GOOD_RUST: &str = r#"
 #[unsafe(no_mangle)]
@@ -352,19 +352,26 @@ pub unsafe extern "C" fn spire_profiler_foo(amount: i32, id: *const c_char, hash
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn spire_profiler_test_reset() {
+pub extern "C" fn spire_profiler_bar(amount: i32, started_at: i64, delta: f64) {
+    let _ = (amount, started_at, delta);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_test_reset() {
 }
 "#;
 
-    /// One matching binding (with a MarshalAs attribute to exercise the
+    /// Matching bindings (with a MarshalAs attribute to exercise the
     /// stripper) plus a private delegate that is never bound.
     const GOOD_TMPL: &str = r#"
 internal static class ProfilerNative
 {
     private delegate void NativeFoo(int amount, [MarshalAs(UnmanagedType.LPUTF8Str)] string id, ulong hash);
+    private delegate void NativeBar(int amount, long started_at, double delta);
     private delegate void NativeVoid();
 
     private static NativeFoo _foo;
+    private static NativeBar _bar;
     private static T GetExport<T>(IntPtr lib, string name) where T : Delegate =>
         Marshal.GetDelegateForFunctionPointer<T>(NativeLibrary.GetExport(lib, name));
 
@@ -372,6 +379,7 @@ internal static class ProfilerNative
     {
         var lib = NativeLibrary.Load(libPath);
         _foo = GetExport<NativeFoo>(lib, "spire_profiler_foo");
+        _bar = GetExport<NativeBar>(lib, "spire_profiler_bar");
     }
 }
 "#;
@@ -379,35 +387,45 @@ internal static class ProfilerNative
     #[test]
     fn known_good_binding_passes() {
         let bindings = compare(GOOD_RUST, "abi.rs", GOOD_TMPL).expect("good fixture must pass");
-        assert_eq!(bindings, 1);
+        assert_eq!(bindings, 2);
     }
 
     /// Drifted delegate parameter order must fail with a side-by-side diff.
     #[test]
     fn shifted_parameter_list_fails_with_a_diff() {
-        let template = GOOD_TMPL.replace(
-            "int amount, [MarshalAs(UnmanagedType.LPUTF8Str)] string id, ulong hash",
-            "[MarshalAs(UnmanagedType.LPUTF8Str)] string id, int amount, ulong hash",
-        );
-        let errors = compare(GOOD_RUST, "abi.rs", &template).expect_err("shifted params must fail");
-        assert_eq!(errors.len(), 1);
-        assert_eq!(
-            errors[0],
-            "spire_profiler_foo: Rust(int, string, ulong) [abi.rs] \
-             != C# NativeFoo(string, int, ulong)"
-        );
+        for (original, shifted, expected) in [
+            (
+                "int amount, [MarshalAs(UnmanagedType.LPUTF8Str)] string id, ulong hash",
+                "[MarshalAs(UnmanagedType.LPUTF8Str)] string id, int amount, ulong hash",
+                "spire_profiler_foo: Rust(int, string, ulong) [abi.rs] \
+                 != C# NativeFoo(string, int, ulong)",
+            ),
+            (
+                "int amount, long started_at, double delta",
+                "long started_at, int amount, double delta",
+                "spire_profiler_bar: Rust(int, long, double) [abi.rs] \
+                 != C# NativeBar(long, int, double)",
+            ),
+        ] {
+            let template = GOOD_TMPL.replace(original, shifted);
+            let errors = compare(GOOD_RUST, "abi.rs", &template)
+                .expect_err("shifted params must fail for safe and unsafe exports");
+            assert_eq!(errors, [expected]);
+        }
     }
 
     /// A bound name with no Rust export resolves to a null delegate at load.
     #[test]
     fn binding_without_an_export_fails() {
-        let template = GOOD_TMPL.replace("spire_profiler_foo", "spire_profiler_missing");
-        let errors = compare(GOOD_RUST, "abi.rs", &template).expect_err("missing export must fail");
-        assert_eq!(errors.len(), 1);
-        assert_eq!(
-            errors[0],
-            "'spire_profiler_missing' is bound in the shim but has no Rust export"
-        );
+        for name in ["spire_profiler_foo", "spire_profiler_bar"] {
+            let template = GOOD_TMPL.replace(name, "spire_profiler_missing");
+            let errors =
+                compare(GOOD_RUST, "abi.rs", &template).expect_err("missing export must fail");
+            assert_eq!(
+                errors,
+                ["'spire_profiler_missing' is bound in the shim but has no Rust export"]
+            );
+        }
     }
 
     #[test]

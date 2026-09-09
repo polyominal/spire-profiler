@@ -28,11 +28,11 @@
 //! 1. **C pointer reads** — [`with_c_str`] dereferences a NUL-terminated string pointer supplied by
 //!    the host. Null maps to "", and so does a valid C string whose bytes are not UTF-8; any other
 //!    pointer violates the unsafe export contract (the matched-pair shim never forms one).
-//! 2. **`no_mangle` exports** — the 39 `spire_profiler_*` functions (38 bound by the shim and one
-//!    test-only reset export) carry `#[unsafe(no_mangle)] pub unsafe extern "C"` so their symbols
-//!    exist for the host. Their bodies contain no other unsafe operations; each one decodes its
-//!    arguments and delegates to a safe counterpart — [`events`] for the recorded facts,
-//!    [`crate::ui`] for the panel interactions (toggle, scroll).
+//! 2. **`no_mangle` exports**: the 39 `spire_profiler_*` functions (38 bound by the shim and one
+//!    test-only reset export) carry `#[unsafe(no_mangle)]` so their symbols exist for the host.
+//!    Pointer-free exports are safe to call; pointer-reading exports require the caller to uphold
+//!    the C-string contract. Each decodes its arguments and delegates to [`events`] for the
+//!    recorded facts or [`crate::ui`] for panel interactions (toggle, scroll).
 //! 3. **Panic containment** — a Rust panic must never unwind across the C ABI into the game. Every
 //!    export runs through [`contain`], which catches a panicking core function, reports it through
 //!    [`crate::fail`] (stderr, touches no state), and swallows it. A panic escaping into the host
@@ -44,8 +44,6 @@
 //! callbacks route into, and [`crate::engine::gdext`] owns the raw engine
 //! pointers and interface-function resolution. Any future unsafe
 //! requirement belongs behind a safe helper in one of these three.
-
-// The unsafe-op blocks below are exactly the three sources listed above.
 
 use std::ffi::{CStr, c_char};
 use std::path::Path;
@@ -101,17 +99,13 @@ pub unsafe extern "C" fn spire_profiler_init(data_dir: *const c_char) {
     };
 }
 
-/// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn spire_profiler_self_test() {
+pub extern "C" fn spire_profiler_self_test() {
     contain("spire_profiler_self_test", (), events::self_test);
 }
 
-/// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn spire_profiler_set_run_meta(profile_id: i32) {
+pub extern "C" fn spire_profiler_set_run_meta(profile_id: i32) {
     contain("spire_profiler_set_run_meta", (), || {
         events::set_run_meta(profile_id);
     });
@@ -159,20 +153,15 @@ pub unsafe extern "C" fn spire_profiler_run_started(
 }
 
 /// `outcome`: 0 = victory, 1 = defeat, 2 = abandoned.
-///
-/// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn spire_profiler_run_ended(outcome: i32) {
+pub extern "C" fn spire_profiler_run_ended(outcome: i32) {
     contain("spire_profiler_run_ended", (), || {
         events::run_ended(RunOutcome::from_c(outcome))
     });
 }
 
-/// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn spire_profiler_run_suspended() {
+pub extern "C" fn spire_profiler_run_suspended() {
     contain("spire_profiler_run_suspended", (), events::run_suspended);
 }
 
@@ -196,35 +185,26 @@ pub unsafe extern "C" fn spire_profiler_context_begin(
     };
 }
 
-/// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn spire_profiler_context_end() {
+pub extern "C" fn spire_profiler_context_end() {
     contain("spire_profiler_context_end", (), events::context_end);
 }
 
 /// Re-hooked at the side-level boundary, so the counter counts rounds.
-///
-/// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn spire_profiler_turn_started() {
+pub extern "C" fn spire_profiler_turn_started() {
     contain("spire_profiler_turn_started", (), events::turn_started);
 }
 
-/// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn spire_profiler_orb_channeled(hash: i32, player_slot: i32) {
+pub extern "C" fn spire_profiler_orb_channeled(hash: i32, player_slot: i32) {
     contain("spire_profiler_orb_channeled", (), || {
         events::orb_channeled(hash, player_slot)
     });
 }
 
-/// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn spire_profiler_orb_context_begin(hash: i32, player_slot: i32) {
+pub extern "C" fn spire_profiler_orb_context_begin(hash: i32, player_slot: i32) {
     contain("spire_profiler_orb_context_begin", (), || {
         events::orb_context_begin(hash, player_slot);
     });
@@ -261,10 +241,8 @@ pub unsafe extern "C" fn spire_profiler_potion_context_begin(
     };
 }
 
-/// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn spire_profiler_block_pool_clear(player_slot: i32) {
+pub extern "C" fn spire_profiler_block_pool_clear(player_slot: i32) {
     contain("spire_profiler_block_pool_clear", (), || {
         events::block_pool_clear(player_slot)
     });
@@ -313,19 +291,15 @@ pub unsafe extern "C" fn spire_profiler_power_decreased(
     };
 }
 
-/// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn spire_profiler_doom_target_capture(creature_hash: i32, current_hp: i32) {
+pub extern "C" fn spire_profiler_doom_target_capture(creature_hash: i32, current_hp: i32) {
     contain("spire_profiler_doom_target_capture", (), || {
         events::doom_target_capture(creature_hash, current_hp);
     });
 }
 
-/// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn spire_profiler_doom_kills_completed() {
+pub extern "C" fn spire_profiler_doom_kills_completed() {
     contain(
         "spire_profiler_doom_kills_completed",
         (),
@@ -352,10 +326,8 @@ pub unsafe extern "C" fn spire_profiler_osty_summoned(
     };
 }
 
-/// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn spire_profiler_osty_killed(player_slot: i32) {
+pub extern "C" fn spire_profiler_osty_killed(player_slot: i32) {
     contain("spire_profiler_osty_killed", (), || {
         events::osty_killed(player_slot)
     });
@@ -363,11 +335,8 @@ pub unsafe extern "C" fn spire_profiler_osty_killed(player_slot: i32) {
 
 /// The Kill patch fires this on every player death path; damage-kills
 /// double-fire idempotently.
-///
-/// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn spire_profiler_player_died(player_slot: i32) {
+pub extern "C" fn spire_profiler_player_died(player_slot: i32) {
     contain("spire_profiler_player_died", (), || {
         events::player_died(player_slot)
     });
@@ -417,10 +386,8 @@ pub unsafe extern "C" fn spire_profiler_block_modifier_contribution(
     };
 }
 
-/// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn spire_profiler_weak_mitigation(prevented: i32, dealer_hash: i32) {
+pub extern "C" fn spire_profiler_weak_mitigation(prevented: i32, dealer_hash: i32) {
     contain("spire_profiler_weak_mitigation", (), || {
         events::weak_mitigation(prevented, dealer_hash);
     });
@@ -440,10 +407,8 @@ pub unsafe extern "C" fn spire_profiler_buff_mitigation(power_id: *const c_char,
     };
 }
 
-/// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn spire_profiler_enemy_hit_context(base_damage: i32, dealer_str: i32) {
+pub extern "C" fn spire_profiler_enemy_hit_context(base_damage: i32, dealer_str: i32) {
     contain("spire_profiler_enemy_hit_context", (), || {
         events::enemy_hit_context(base_damage, dealer_str);
     });
@@ -488,10 +453,8 @@ pub unsafe extern "C" fn spire_profiler_card_play_started(
     };
 }
 
-/// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn spire_profiler_card_play_finished(player_slot: i32) {
+pub extern "C" fn spire_profiler_card_play_finished(player_slot: i32) {
     contain("spire_profiler_card_play_finished", (), || {
         events::card_play_finished(player_slot)
     });
@@ -603,17 +566,13 @@ pub unsafe extern "C" fn spire_profiler_block_gained(
     };
 }
 
-/// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn spire_profiler_combat_ended() {
+pub extern "C" fn spire_profiler_combat_ended() {
     contain("spire_profiler_combat_ended", (), events::combat_ended);
 }
 
-/// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn spire_profiler_test_reset() {
+pub extern "C" fn spire_profiler_test_reset() {
     contain("spire_profiler_test_reset", (), events::test_reset);
 }
 
@@ -635,10 +594,8 @@ pub unsafe extern "C" fn spire_profiler_run_history_select(
     };
 }
 
-/// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn spire_profiler_run_history_clear() {
+pub extern "C" fn spire_profiler_run_history_clear() {
     contain("spire_profiler_run_history_clear", (), || {
         events::run_history_clear();
         // The screen's close (and its open prefix) also closes the run
@@ -649,11 +606,8 @@ pub unsafe extern "C" fn spire_profiler_run_history_clear() {
 
 /// Context-routed in the core: run-history open flips the run panel's
 /// flag, otherwise it flips the combat panel's.
-///
-/// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn spire_profiler_panel_toggle() {
+pub extern "C" fn spire_profiler_panel_toggle() {
     contain("spire_profiler_panel_toggle", (), || {
         if crate::data::run_history::screen_open() {
             crate::ui::run_panel::toggle_run_manual();
@@ -665,11 +619,8 @@ pub unsafe extern "C" fn spire_profiler_panel_toggle() {
 
 /// The core never inspects engine input objects — such calls hang the
 /// engine fork — so the event reading stays on the C# side.
-///
-/// # Safety
-/// Pointer arguments, if any, are null or valid C strings.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn spire_profiler_scroll_input(
+pub extern "C" fn spire_profiler_scroll_input(
     panel: i32,
     button_index: i32,
     pressed: i32,
@@ -906,33 +857,24 @@ mod tests {
         crate::ui::run_panel::toggle_run_manual();
 
         for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            // SAFETY: these exports take only scalar values.
-            unsafe {
-                spire_profiler_scroll_input(0, 5, 1, invalid);
-                spire_profiler_scroll_input(0, 0, 0, 12.5);
-                spire_profiler_scroll_input(0, 0, 0, invalid);
-                spire_profiler_scroll_input(1, 0, 0, -10.0);
-                spire_profiler_scroll_input(1, 4, 0, invalid);
-                spire_profiler_scroll_input(1, 4, 0, -2.5);
-                spire_profiler_scroll_input(1, 4, 1, invalid);
-                spire_profiler_scroll_input(7, 5, 1, 0.0);
-                spire_profiler_scroll_input(7, 0, 0, invalid);
-            }
+            spire_profiler_scroll_input(0, 5, 1, invalid);
+            spire_profiler_scroll_input(0, 0, 0, 12.5);
+            spire_profiler_scroll_input(0, 0, 0, invalid);
+            spire_profiler_scroll_input(1, 0, 0, -10.0);
+            spire_profiler_scroll_input(1, 4, 0, invalid);
+            spire_profiler_scroll_input(1, 4, 0, -2.5);
+            spire_profiler_scroll_input(1, 4, 1, invalid);
+            spire_profiler_scroll_input(7, 5, 1, 0.0);
+            spire_profiler_scroll_input(7, 0, 0, invalid);
             assert_eq!(crate::ui::panel::take_queued_scroll(), 72.5);
             assert_eq!(crate::ui::run_panel::take_queued_scroll(), -72.5);
         }
-        // SAFETY: these exports take only scalar values.
-        unsafe {
-            spire_profiler_scroll_input(0, 0, 0, f64::MAX);
-            spire_profiler_scroll_input(1, 0, 0, -f64::MAX);
-        }
+        spire_profiler_scroll_input(0, 0, 0, f64::MAX);
+        spire_profiler_scroll_input(1, 0, 0, -f64::MAX);
         assert_eq!(crate::ui::panel::take_queued_scroll(), f32::MAX);
         assert_eq!(crate::ui::run_panel::take_queued_scroll(), -f32::MAX);
-        // SAFETY: these exports take only scalar values.
-        unsafe {
-            spire_profiler_scroll_input(0, 0, 0, 15.0);
-            spire_profiler_scroll_input(1, 0, 0, -12.5);
-        }
+        spire_profiler_scroll_input(0, 0, 0, 15.0);
+        spire_profiler_scroll_input(1, 0, 0, -12.5);
         assert_eq!(crate::ui::panel::take_queued_scroll(), 15.0);
         assert_eq!(crate::ui::run_panel::take_queued_scroll(), -12.5);
     }
@@ -953,8 +895,7 @@ mod tests {
         }
         // Outside a run the combat-panel toggle is the documented no-op.
         let before = crate::ui::panel::visible();
-        // SAFETY: the test forms valid C-string arguments for these exports.
-        unsafe { spire_profiler_panel_toggle() };
+        spire_profiler_panel_toggle();
         assert_eq!(crate::ui::panel::visible(), before);
         // Inside a run the same export flips the panel.
         // SAFETY: the test forms valid C-string arguments for these exports.
@@ -971,8 +912,7 @@ mod tests {
             spire_profiler_panel_toggle();
         }
         assert!(crate::ui::panel::visible());
-        // SAFETY: the test forms valid C-string arguments for these exports.
-        unsafe { spire_profiler_panel_toggle() };
+        spire_profiler_panel_toggle();
         assert!(!crate::ui::panel::visible());
         // With the run-history screen open, the toggle routes to the run
         // panel's manual flag instead: every press flips it.
@@ -982,19 +922,14 @@ mod tests {
             spire_profiler_panel_toggle();
         }
         assert!(crate::ui::run_panel::run_manual_visible());
-        // SAFETY: the test forms valid C-string arguments for these exports.
-        unsafe { spire_profiler_panel_toggle() };
+        spire_profiler_panel_toggle();
         assert!(!crate::ui::run_panel::run_manual_visible());
-        // SAFETY: the test forms valid C-string arguments for these exports.
-        unsafe { spire_profiler_panel_toggle() };
+        spire_profiler_panel_toggle();
         assert!(crate::ui::run_panel::run_manual_visible());
         // The clear that precedes every screen entry resets the flag: the
         // panel starts closed on each visit.
-        // SAFETY: the test forms valid C-string arguments for these exports.
-        unsafe {
-            spire_profiler_scroll_input(1, 5, 1, 0.0);
-            spire_profiler_run_history_clear();
-        }
+        spire_profiler_scroll_input(1, 5, 1, 0.0);
+        spire_profiler_run_history_clear();
         assert!(!crate::ui::run_panel::run_manual_visible());
         assert_eq!(crate::ui::run_panel::take_queued_scroll(), 0.0);
         // SAFETY: seed is a valid C string; the other arguments are scalars.
@@ -1031,8 +966,7 @@ mod tests {
         assert_eq!(view.combats.len(), 1);
         assert_eq!(view.combats[0].encounter, "SELF_TEST");
 
-        // SAFETY: the test forms valid C-string arguments for these exports.
-        unsafe { spire_profiler_run_history_clear() };
+        spire_profiler_run_history_clear();
         assert!(crate::data::run_history::selected_view().is_none());
     }
 }
