@@ -850,21 +850,38 @@ mod tests {
         assert!(found, "the self-test combat must be in the store");
     }
 
-    /// A null string argument must not crash the core: the ABI maps it to "".
     #[test]
     fn null_string_arguments_are_treated_as_empty() {
         let (_base, c_base) = unique_dir("spire-profiler-abi-null");
-        // SAFETY: the test forms valid C-string arguments for these exports.
+        // SAFETY: pointers are null or live, NUL-terminated C strings; 0xff tests UTF-8 rejection.
         unsafe {
             spire_profiler_test_reset();
             spire_profiler_init(c_base.as_ptr());
-            // Empty source ids are skipped by the core; reaching the end of
-            // this block without a crash is the assertion.
-            spire_profiler_context_begin(std::ptr::null(), 1, 0);
-            spire_profiler_context_end();
-            spire_profiler_potion_used(std::ptr::null(), 0);
-            spire_profiler_potion_context_begin(std::ptr::null(), 0);
             spire_profiler_combat_started(std::ptr::null(), std::ptr::null());
+            STATE.with(|cell| {
+                let state = cell.borrow();
+                let combat = state.current.as_ref().expect("test combat is active");
+                assert_eq!(
+                    (combat.encounter_id.as_str(), combat.encounter_type.as_str()),
+                    ("", "")
+                );
+            });
+            spire_profiler_potion_context_begin(c"FALLBACK".as_ptr(), 0);
+            for (empty, uses) in [
+                (std::ptr::null(), 1),
+                (c"".as_ptr(), 2),
+                (c"\xff".as_ptr(), 3),
+            ] {
+                spire_profiler_potion_used(empty, 0);
+                STATE.with(|cell| {
+                    let state = cell.borrow();
+                    let combat = state.current.as_ref().expect("test combat is active");
+                    assert_eq!(combat.potions_used, uses);
+                });
+                assert_context_credit("FALLBACK", SourceKind::Potion, 0);
+                spire_profiler_potion_context_begin(empty, 0);
+                assert_context_credit("FALLBACK", SourceKind::Potion, 0);
+            }
             spire_profiler_combat_ended();
         }
     }
