@@ -15,7 +15,17 @@ internal sealed record PendingPower(CaptureEpoch Epoch, object Power, object Tar
 {
     internal static readonly PendingPower Barrier = new(default, null, null, SourceSnapshot.Unavailable);
 }
-internal readonly record struct MutationState(CaptureEpoch Epoch, PowerObservation Before, SourceSnapshot Source, IdentityMetadata Metadata, bool PriorDirty, bool Captured = false);
+internal enum MutationOperation { Attachment, AmountChange, Removal }
+internal abstract record MutationState
+{
+    private MutationState() { }
+    internal static readonly MutationState Inactive = new Idle();
+    private sealed record Idle : MutationState;
+    internal abstract record Tracked(CaptureEpoch Epoch, IdentityMetadata Metadata) : MutationState;
+    internal sealed record ObservationFailed(CaptureEpoch Epoch, IdentityMetadata Metadata) : Tracked(Epoch, Metadata);
+    internal sealed record Observed(CaptureEpoch Epoch, IdentityMetadata Metadata, MutationOperation Operation,
+        PowerObservation Before, SourceSnapshot Source, bool PriorDirty) : Tracked(Epoch, Metadata);
+}
 internal static class ProvenanceCapture
 {
     private static readonly AsyncLocal<PendingPower> pending = new();
@@ -39,79 +49,88 @@ internal static class ProvenanceCapture
     internal static void CommandFinalizer(PendingPower __state) { if (__state != null) Pending = __state; }
     internal static void MutationPrefix(object __instance, MethodBase __originalMethod, object[] __args, out MutationState __state)
     {
-        __state = default;
+        __state = MutationState.Inactive;
         try
         {
             var epoch = CaptureRuntime.EntryEpoch();
             if (!CaptureRuntime.Valid(epoch)) return;
-            bool amount = __originalMethod.Name == "SetAmount";
+            var operation = __originalMethod.Name switch
+            {
+                "ApplyPowerInternal" => MutationOperation.Attachment,
+                "SetAmount" => MutationOperation.AmountChange,
+                "RemovePowerInternal" => MutationOperation.Removal,
+                _ => throw new InvalidOperationException("Unsupported power mutation")
+            };
+            bool amount = operation == MutationOperation.AmountChange;
             object power = amount ? __instance : __args[0];
             var metadata = IdentityCapture.Get(power, epoch);
             if (metadata == null) return;
-            __state = new(epoch, default, SourceSnapshot.Unavailable, metadata, metadata.Dirty);
+            __state = new MutationState.ObservationFailed(epoch, metadata);
             var before = CaptureRuntime.Backend.ObservePower(power, amount ? null : __instance);
-            __state = new(epoch, before, SourceSnapshot.Unavailable, metadata, metadata.Dirty, true);
-            var source = __originalMethod.Name == "RemovePowerInternal" ? FlowCapture.Source(power, epoch)
+            __state = new MutationState.Observed(epoch, metadata, operation, before, SourceSnapshot.Unavailable, metadata.Dirty);
+            var source = operation == MutationOperation.Removal ? FlowCapture.Source(power, epoch)
                 : Matching(power) ? Pending.Source : FlowCapture.Supplied(null, epoch);
-            __state = new(epoch, before, source, metadata, metadata.Dirty, true);
-            if (__originalMethod.Name == "RemovePowerInternal") metadata.Detached = source;
+            __state = new MutationState.Observed(epoch, metadata, operation, before, source, metadata.Dirty);
+            if (operation == MutationOperation.Removal) metadata.Detached = source;
         }
         catch (Exception ex) { CaptureRuntime.Fail("power-observe-prefix", ex); }
     }
-    internal static void MutationFinalizer(MethodBase __originalMethod, MutationState __state)
+    internal static void MutationFinalizer(MutationState __state)
     {
+        var tracked = __state as MutationState.Tracked;
         try
         {
-            if (__state.Metadata == null || !CaptureRuntime.Valid(__state.Epoch)) return;
-            if (!__state.Captured)
+            if (tracked == null || !CaptureRuntime.Valid(tracked.Epoch)) return;
+            if (tracked is MutationState.ObservationFailed)
             {
-                __state.Metadata.Dirty = true;
-                CaptureRuntime.Backend.PowerInvalidate(__state.Epoch.Sequence, __state.Metadata.Identity);
+                tracked.Metadata.Dirty = true;
+                CaptureRuntime.Backend.PowerInvalidate(tracked.Epoch.Sequence, tracked.Metadata.Identity);
                 return;
             }
-            var before = __state.Before;
+            if (tracked is not MutationState.Observed observed) return;
+            var before = observed.Before;
             var after = CaptureRuntime.Backend.ObservePower(before.Power, before.Owner);
-            if (__originalMethod.Name == "RemovePowerInternal")
+            if (observed.Operation == MutationOperation.Removal)
             {
                 if (before.Attached && !after.Attached)
                 {
-                    __state.Metadata.Detached = __state.Source;
-                    __state.Metadata.Dirty = true;
-                    if (CaptureRuntime.Backend.PowerRemoved(__state.Epoch.Sequence, __state.Metadata.Identity) == 1) __state.Metadata.Dirty = false;
-                    TemporalPowerCapture.RemovePower(__state.Metadata.Identity);
+                    tracked.Metadata.Detached = observed.Source;
+                    tracked.Metadata.Dirty = true;
+                    if (CaptureRuntime.Backend.PowerRemoved(tracked.Epoch.Sequence, tracked.Metadata.Identity) == 1) tracked.Metadata.Dirty = false;
+                    TemporalPowerCapture.RemovePower(tracked.Metadata.Identity);
                 }
-                else if (after.Attached) __state.Metadata.Detached = null;
+                else if (after.Attached) tracked.Metadata.Detached = null;
                 return;
             }
-            bool attachment = __originalMethod.Name == "ApplyPowerInternal";
+            bool attachment = observed.Operation == MutationOperation.Attachment;
             if (!after.Attached || (attachment ? before.Attached : !before.Attached)) return;
-            __state.Metadata.Dirty = true;
+            tracked.Metadata.Dirty = true;
             try
             {
-                if (__state.PriorDirty && CaptureRuntime.Backend.PowerInvalidate(__state.Epoch.Sequence, __state.Metadata.Identity) != 1)
+                if (observed.PriorDirty && CaptureRuntime.Backend.PowerInvalidate(tracked.Epoch.Sequence, tracked.Metadata.Identity) != 1)
                     throw new InvalidOperationException("Prior dirty provenance could not be invalidated");
-                var owner = IdentityCapture.Get(after.Owner, __state.Epoch);
+                var owner = IdentityCapture.Get(after.Owner, tracked.Epoch);
                 if (owner == null) throw new InvalidOperationException("Unavailable power owner identity");
-                int status = CaptureRuntime.Upload(__state.Epoch, __state.Source, transfer => attachment
-                    ? CaptureRuntime.Backend.PowerAttached(__state.Epoch, __state.Metadata.Identity, owner.Identity, after, transfer)
-                    : CaptureRuntime.Backend.PowerChanged(__state.Epoch, __state.Metadata.Identity, owner.Identity, after, before.Amount, transfer));
+                int status = CaptureRuntime.Upload(tracked.Epoch, observed.Source, transfer => attachment
+                    ? CaptureRuntime.Backend.PowerAttached(tracked.Epoch, tracked.Metadata.Identity, owner.Identity, after, transfer)
+                    : CaptureRuntime.Backend.PowerChanged(tracked.Epoch, tracked.Metadata.Identity, owner.Identity, after, before.Amount, transfer));
                 if (status != 1) throw new InvalidOperationException("Observed power mutation rejected");
-                __state.Metadata.Dirty = false;
-                __state.Metadata.Detached = null;
+                tracked.Metadata.Dirty = false;
+                tracked.Metadata.Detached = null;
             }
             catch (Exception ex)
             {
                 CaptureRuntime.Fail("power-observe-update", ex);
-                try { CaptureRuntime.Backend.PowerInvalidate(__state.Epoch.Sequence, __state.Metadata.Identity); }
+                try { CaptureRuntime.Backend.PowerInvalidate(tracked.Epoch.Sequence, tracked.Metadata.Identity); }
                 catch (Exception invalidate) { CaptureRuntime.Fail("power-invalidate", invalidate); }
             }
         }
         catch (Exception ex)
         {
-            if (__state.Metadata != null)
+            if (tracked != null)
             {
-                __state.Metadata.Dirty = true;
-                try { if (CaptureRuntime.Valid(__state.Epoch)) CaptureRuntime.Backend.PowerInvalidate(__state.Epoch.Sequence, __state.Metadata.Identity); }
+                tracked.Metadata.Dirty = true;
+                try { if (CaptureRuntime.Valid(tracked.Epoch)) CaptureRuntime.Backend.PowerInvalidate(tracked.Epoch.Sequence, tracked.Metadata.Identity); }
                 catch (Exception invalidate) { CaptureRuntime.Fail("power-invalidate", invalidate); }
             }
             CaptureRuntime.Fail("power-observe-finalizer", ex);

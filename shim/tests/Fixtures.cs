@@ -96,12 +96,13 @@ internal sealed class ProbePower : ProbeModel
 internal sealed class ProbeCreature
 {
     internal readonly List<ProbePower> Powers = new();
+    internal Exception RemovalException;
     [MethodImpl(MethodImplOptions.NoInlining)]
     internal void ApplyPowerInternal(ProbePower power)
     { Powers.Add(power); if (power.NotificationException != null) throw power.NotificationException; }
     [MethodImpl(MethodImplOptions.NoInlining)]
     internal void RemovePowerInternal(ProbePower power)
-    { Powers.Remove(power); if (power.NotificationException != null) throw power.NotificationException; }
+    { if (RemovalException != null) throw RemovalException; Powers.Remove(power); if (power.NotificationException != null) throw power.NotificationException; }
 }
 internal static class ProbeCommands
 {
@@ -391,6 +392,7 @@ internal sealed class FakeBackend : AttributionBackend
     internal int Released, Started, Finished, ExecutionEnds;
     internal string Failure;
     internal int FailureCount = 1;
+    internal int FailObservationAfter = -1;
     private ulong serial;
     internal int OpenLeases => leases.Count;
     internal int OpenCalculations => calculations.Count;
@@ -416,6 +418,12 @@ internal sealed class FakeBackend : AttributionBackend
     internal override bool TemporaryPower(object power) => power is ProbeModel probe && probe.Temporary;
     internal override PowerObservation ObservePower(object power, object owner = null)
     {
+        if (FailObservationAfter == 0)
+        {
+            FailObservationAfter = -1;
+            throw new InvalidOperationException("fixture observation failure");
+        }
+        if (FailObservationAfter > 0) FailObservationAfter--;
         if (power is PowerModel) return new NativeAttributionBackend().ObservePower(power, owner);
         var p = (ProbePower)power;
         var c = owner as ProbeCreature ?? p.Owner;
@@ -452,7 +460,7 @@ internal sealed class FakeBackend : AttributionBackend
         Sources[identity] = observed.Amount == before ? Sources.GetValueOrDefault(identity) ?? SourceSnapshot.Unknown(epoch.Sequence) : Read(source);
         return 1;
     }
-    internal override int PowerRemoved(ulong epoch, ulong identity) { Calls.Add("PowerRemoved"); Sources.Remove(identity); return 1; }
+    internal override int PowerRemoved(ulong epoch, ulong identity) { if (Reject("PowerRemoved")) return 0; Sources.Remove(identity); return 1; }
     internal override int PowerInvalidate(ulong epoch, ulong identity)
     {
         if (Reject("PowerInvalidate")) return 0;
@@ -655,6 +663,8 @@ internal static class ManagedFixtures
             AccessTools.Method(typeof(ProbeModel), "Synchronous"), AccessTools.Method(typeof(ProbeModel), "Passive"),
             AccessTools.Method(typeof(ProbeModel), "OnPlayWrapper"), AccessTools.Method(typeof(ProbeModel), "OnUseWrapper"),
             AccessTools.Method(typeof(ProbeCommands), "Apply"), AccessTools.Method(typeof(ProbeCommands), "ModifyAmount"),
+            AccessTools.Method(typeof(ProbePower), "SetAmount"), AccessTools.Method(typeof(ProbeCreature), "ApplyPowerInternal"),
+            AccessTools.Method(typeof(ProbeCreature), "RemovePowerInternal"),
             AccessTools.Method(typeof(DamageFixture), "Damage")
         })
             harmony.Patch(target, prefix: new HarmonyMethod(typeof(ManagedFixtures), nameof(EarlierPrefix)) { priority = Priority.First });
@@ -665,6 +675,8 @@ internal static class ManagedFixtures
         Test("accepted first attachment, stack ordering and notification exceptions", PowerMutations);
         Test("Misery clone zero-delta attachment and temporary null-card forwarding", TemporaryAndClone);
         Test("dirty provenance invalidation ordering and Unknown recovery", DirtyRecovery);
+        Test("failed observations and removal preserve provenance failure ordering", MutationFailures);
+        Test("stale mutation finalizers leave replacement combat untouched", StaleMutation);
         Test("detached callback provenance and death removal batches", DetachedPowers);
         Test("generation ancestry, cross-player supplier, regeneration and identity budget", Generation);
         Test("saved dictionary sources exclude later stacks; Rupture exact increments", Temporal);
@@ -810,6 +822,17 @@ internal static class ManagedFixtures
         };
         context.Complete(ProbeCommands.Apply(null, power, owner, 2, null, outer));
         DuringBeforeApplied = null;
+        int calls = backend.Calls.Count;
+        skipPrefix = true;
+        try
+        {
+            power.SetAmount(9);
+            owner.RemovePowerInternal(power);
+            owner.ApplyPowerInternal(new ProbePower("SKIPPED_ATTACHMENT"));
+            Check(power.Amount == 2 && owner.Powers.Count == 1 && owner.Powers.Contains(power), "Earlier Prefix suppresses all mutation bodies");
+            Check(backend.Calls.Count == calls, "Never-entered mutation Finalizers make no native calls");
+        }
+        finally { skipPrefix = false; }
         context.Complete(outer.OnPlayWrapper(() =>
         {
             PlayCapture.Started(outer, 0, 0, 1);
@@ -918,6 +941,71 @@ internal static class ManagedFixtures
         power.SetAmount(4);
         Check(!metadata.Dirty && backend.Calls.IndexOf("PowerInvalidate") < backend.Calls.IndexOf("PowerChanged"), "Correctly ordered accepted recovery clears dirty");
         Same(FlowCapture.Source(power, CaptureRuntime.Epoch), SourceSnapshot.Unknown(epoch), "Same-amount recovery cannot reclaim old balance");
+    }
+    private static void MutationFailures()
+    {
+        var owner = new ProbeCreature(); var power = new ProbePower("OBSERVED");
+        context.Complete(ProbeCommands.Apply(null, power, owner, 2, null, new ProbeModel("A")));
+        var metadata = IdentityCapture.Get(power, CaptureRuntime.Epoch);
+        foreach (int observation in new[] { 0, 1 })
+        {
+            backend.Calls.Clear(); int events = backend.PowerEvents.Count;
+            backend.FailObservationAfter = observation;
+            var notification = new InvalidOperationException("mutation notification");
+            power.NotificationException = notification;
+            Exception thrown = null;
+            try { power.SetAmount(power.Amount + 1); } catch (InvalidOperationException actual) { thrown = actual; }
+            Check(ReferenceEquals(notification, thrown), "Failed observation preserves the original game exception after mutation");
+            power.NotificationException = null;
+            Check(metadata.Dirty && backend.Calls.Contains("PowerInvalidate") && backend.PowerEvents.Count == events,
+                "Failure before or after the mutation invalidates without guessing an observed delta");
+            Check(FlowCapture.Source(power, CaptureRuntime.Epoch).Epoch == 0, "Failed observation cannot expose old provenance");
+            backend.Calls.Clear(); power.SetAmount(power.Amount);
+            Check(!metadata.Dirty && backend.Calls.IndexOf("PowerInvalidate") < backend.Calls.IndexOf("PowerChanged"),
+                "Observation failure recovery invalidates before accepting the current amount");
+        }
+        var error = new InvalidOperationException("removal rejected"); owner.RemovalException = error;
+        backend.Calls.Clear();
+        Exception observed = null;
+        try { owner.RemovePowerInternal(power); } catch (InvalidOperationException actual) { observed = actual; }
+        Check(ReferenceEquals(error, observed), "Pre-removal failure preserves the game exception");
+        Check(owner.Powers.Contains(power) && metadata.Detached == null && !backend.Calls.Contains("PowerRemoved"),
+            "A rejected removal clears its speculative detached snapshot without retiring attached provenance");
+        owner.RemovalException = null;
+        TemporalPowerCapture.Save(power, null, 1, A, CaptureRuntime.Epoch);
+        backend.Failure = "PowerRemoved"; backend.FailureCount = 1;
+        owner.RemovePowerInternal(power);
+        Check(!owner.Powers.Contains(power) && metadata.Dirty && metadata.Detached != null,
+            "Rejected native retirement leaves the actual detached power dirty");
+        Check(FlowCapture.Source(power, CaptureRuntime.Epoch).Epoch == 0, "Dirty detached metadata cannot bypass capture rejection");
+        Check(TemporalPowerCapture.Take(power, null, CaptureRuntime.Epoch).Epoch == 0, "Actual removal clears temporal entries even when native retirement is rejected");
+
+        var unavailable = new ProbePower("UNAVAILABLE");
+        context.Complete(ProbeCommands.Apply(null, unavailable, owner, 1, null, new ProbeModel("A")));
+        var unavailableMetadata = IdentityCapture.Get(unavailable, CaptureRuntime.Epoch);
+        unavailable.FailCapture = true;
+        unavailable.NotificationException = new InvalidOperationException("detached notification");
+        observed = null; backend.Calls.Clear();
+        try { owner.RemovePowerInternal(unavailable); } catch (InvalidOperationException actual) { observed = actual; }
+        Check(ReferenceEquals(unavailable.NotificationException, observed), "Removal after source failure preserves the notification exception");
+        Check(backend.Calls.Contains("PowerRemoved") && !unavailableMetadata.Dirty && unavailableMetadata.Detached?.Epoch == 0,
+            "Unavailable source still allows observed removal and cannot restore the old source");
+    }
+    private static void StaleMutation()
+    {
+        var owner = new ProbeCreature(); var power = new ProbePower("STALE");
+        context.Complete(ProbeCommands.Apply(null, power, owner, 2, null, new ProbeModel("A")));
+        var method = AccessTools.Method(typeof(ProbePower), "SetAmount");
+        ProvenanceCapture.MutationPrefix(power, method, new object[] { 3 }, out var observed);
+        backend.FailObservationAfter = 0;
+        ProvenanceCapture.MutationPrefix(power, method, new object[] { 3 }, out var failed);
+        var nextCombat = RuntimeHelpers.GetUninitializedObject(typeof(CombatState)); backend.Combat = nextCombat;
+        CaptureRuntime.Register(backend, ++epoch, nextCombat);
+        var metadata = IdentityCapture.Get(power, CaptureRuntime.Epoch);
+        int calls = backend.Calls.Count;
+        ProvenanceCapture.MutationFinalizer(observed);
+        ProvenanceCapture.MutationFinalizer(failed);
+        Check(backend.Calls.Count == calls && !metadata.Dirty, "Stale observed and failed mutations cannot update or invalidate the replacement combat");
     }
     private static void DetachedPowers()
     {
