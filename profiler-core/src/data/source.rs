@@ -13,12 +13,25 @@
 //! `clear_combat_sources` are logical reset boundaries, so a qualifying reset
 //! preserves retained capacity. A diagnostic report does not hide allocation
 //! performed by the computation that produced it.
+//!
+//! Initialization reserves transfer uploads, immutable snapshots, tracking
+//! tables, and calculation captures. Slots retain their buffers behind a live
+//! prefix; removal preserves live order and recycles the removed owner. The
+//! flat grant table names its owning power by index, adjusted when powers move.
+//! Suspended calculations copy supplier facts into their own reserved slots,
+//! so grant mutation and removal cannot change an earlier capture.
+//!
+//! Root-budget outputs, the owned prefix-credit adapter, grouped attribution,
+//! ledger transaction clones, and Doom capture outputs allocate. Clearing
+//! populated Doom batches releases their nested output buffers.
 
+use std::collections::TryReserveError;
 use std::num::NonZeroU32;
 
 use super::state::{Combat, SourceSlot, State, TEAM_SLOT, caps};
 
 mod snapshot;
+mod storage;
 mod wire;
 use snapshot::{PowerGrant, RootBudgets, SourcePrefix, SourceSnapshot};
 use wire::{
@@ -32,6 +45,7 @@ const KIND_MASK: u64 = (1 << KIND_BITS) - 1;
 
 const _: () = assert!(KIND_BITS + PAYLOAD_BITS == 32);
 const _: () = assert!(caps::COMBAT_CARDS <= PAYLOAD_MAX as usize);
+const _: () = assert!(caps::ACTIVE_PLAYS <= PAYLOAD_MAX as usize);
 const _: () = assert!(caps::SOURCE_DESTINATIONS == 128);
 const _: () = assert!(caps::SOURCE_TRANSFERS == 16);
 const _: () = assert!(caps::POWER_GRANTS_TOTAL >= caps::POWER_INSTANCES);
@@ -178,22 +192,84 @@ impl SourceDiagnostics {
 }
 
 enum TransferValue {
-    Upload(Vec<(Destination, u128)>),
-    Sealed(SourceSnapshot),
+    Upload,
+    Sealed,
     Invalid,
 }
 
 struct Transfer {
     serial: u32,
     value: TransferValue,
+    upload: Vec<(Destination, u128)>,
+    source: SourceSnapshot,
 }
 
 #[derive(Default)]
 pub(super) struct SourceTransfers {
     epoch: Option<CombatEpoch>,
     serial: u32,
-    entries: Vec<Transfer>,
+    entries: storage::Slots<Transfer>,
+    scratch: snapshot::SnapshotScratch,
     diagnostics: SourceDiagnostics,
+}
+
+impl SourceTransfers {
+    fn reserve(&mut self) -> Result<(), TryReserveError> {
+        self.entries.try_init(caps::SOURCE_TRANSFERS, || {
+            let mut upload = Vec::new();
+            upload.try_reserve_exact(caps::SOURCE_DESTINATIONS)?;
+            Ok(Transfer {
+                serial: 0,
+                value: TransferValue::Invalid,
+                upload,
+                source: SourceSnapshot::try_new()?,
+            })
+        })?;
+        self.scratch = snapshot::SnapshotScratch::try_new()?;
+        Ok(())
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.epoch = None;
+        self.serial = 0;
+        self.diagnostics = SourceDiagnostics::default();
+    }
+
+    fn read_index(&self, epoch: CombatEpoch, wire: u64) -> Result<usize, SourceFailure> {
+        let token = Token::decode(wire)?;
+        if token.kind != TokenKind::SourceTransfer {
+            return Err(SourceFailure::Token);
+        }
+        if token.epoch != epoch || self.epoch != Some(epoch) {
+            return Err(SourceFailure::Epoch);
+        }
+        let index = self
+            .entries
+            .iter()
+            .position(|entry| entry.serial == token.payload)
+            .ok_or(SourceFailure::Token)?;
+        let entry = &self.entries[index];
+        if !matches!(entry.value, TransferValue::Sealed) {
+            return Err(SourceFailure::Token);
+        }
+        Ok(index)
+    }
+
+    fn snapshot_into(
+        &self,
+        epoch: CombatEpoch,
+        transfer: u64,
+        destination: &mut SourceSnapshot,
+    ) -> Result<(), SourceFailure> {
+        if transfer == 0 {
+            destination.set_unknown(epoch);
+        } else {
+            let index = self.read_index(epoch, transfer)?;
+            destination.clone_from(&self.entries[index].source);
+        }
+        Ok(())
+    }
 }
 
 impl State {
@@ -201,10 +277,8 @@ impl State {
         let result = CombatEpoch::from_wire(wire).and_then(|epoch| {
             if Combat::active(&self.current).is_some_and(|combat| combat.seq == epoch.0.get()) {
                 if self.source_transfers.epoch != Some(epoch) {
-                    self.source_transfers = SourceTransfers {
-                        epoch: Some(epoch),
-                        ..SourceTransfers::default()
-                    };
+                    self.source_transfers.clear();
+                    self.source_transfers.epoch = Some(epoch);
                 }
                 Ok(epoch)
             } else {
@@ -236,35 +310,33 @@ impl State {
 
     fn source_transfer_read(&mut self, wire: u64) -> Result<&SourceSnapshot, SourceFailure> {
         let token = self.source_transfer_token(wire)?;
-        let found = self
-            .source_transfers
-            .entries
-            .iter()
-            .find(|entry| entry.serial == token.payload);
-        if let Some(Transfer {
-            value: TransferValue::Sealed(snapshot),
-            ..
-        }) = found
-        {
-            Ok(snapshot)
-        } else {
-            self.source_transfers
-                .diagnostics
-                .report(SourceFailure::Token);
-            Err(SourceFailure::Token)
+        match self.source_transfers.read_index(token.epoch, wire) {
+            Ok(index) => Ok(&self.source_transfers.entries[index].source),
+            Err(failure) => {
+                self.source_transfers.diagnostics.report(failure);
+                Err(failure)
+            }
         }
     }
 
+    #[cfg(test)]
     fn source_snapshot(
         &mut self,
         combat_seq: u64,
         transfer: u64,
     ) -> Result<SourceSnapshot, SourceFailure> {
-        let epoch = self.source_epoch(combat_seq)?;
-        if transfer == 0 {
-            return Ok(SourceSnapshot::unknown(epoch));
-        }
-        self.source_transfer_read(transfer).cloned()
+        self.capture_source_snapshot(combat_seq, transfer)?;
+        Ok(self.provenance.incoming.clone())
+    }
+
+    fn capture_source_snapshot(
+        &mut self,
+        combat_seq: u64,
+        transfer: u64,
+    ) -> Result<(), SourceFailure> {
+        let epoch = self.provenance_epoch(combat_seq)?;
+        self.source_transfers
+            .snapshot_into(epoch, transfer, &mut self.provenance.incoming)
     }
 
     pub(crate) fn source_transfer_begin(&mut self, combat_seq: u64) -> u64 {
@@ -277,10 +349,14 @@ impl State {
             return 0;
         }
         let serial = transfers.serial + 1;
-        transfers.entries.push(Transfer {
-            serial,
-            value: TransferValue::Upload(Vec::new()),
-        });
+        let Some(entry) = transfers.entries.vacant_mut() else {
+            transfers.diagnostics.report(SourceFailure::Capacity);
+            return 0;
+        };
+        entry.serial = serial;
+        entry.value = TransferValue::Upload;
+        entry.upload.clear();
+        transfers.entries.activate();
         transfers.serial = serial;
         Token {
             epoch,
@@ -308,9 +384,10 @@ impl State {
                 .find(|entry| entry.serial == token.payload)
                 .ok_or(SourceFailure::Token)?;
             let previous = std::mem::replace(&mut entry.value, TransferValue::Invalid);
-            let TransferValue::Upload(mut entries) = previous else {
+            let TransferValue::Upload = previous else {
                 return Err(SourceFailure::Token);
             };
+            let entries = &mut entry.upload;
             let destination = Destination::from_token(destination, token.epoch, rows)?;
             let destination = if let Destination::Row(row) = destination {
                 self.current
@@ -334,7 +411,7 @@ impl State {
                 }
                 entries.push((destination, u128::from(weight)));
             }
-            entry.value = TransferValue::Upload(entries);
+            entry.value = TransferValue::Upload;
             Ok(())
         })();
         if let Err(failure) = result {
@@ -350,18 +427,23 @@ impl State {
         };
         let rows = self.current.as_ref().map_or(0, |combat| combat.cards.len());
         let result = (|| {
-            let entry = self
-                .source_transfers
+            let transfers = &mut self.source_transfers;
+            let entry = transfers
                 .entries
                 .iter_mut()
                 .find(|entry| entry.serial == token.payload)
                 .ok_or(SourceFailure::Token)?;
             let previous = std::mem::replace(&mut entry.value, TransferValue::Invalid);
-            let TransferValue::Upload(entries) = previous else {
+            let TransferValue::Upload = previous else {
                 return Err(SourceFailure::Token);
             };
-            entry.value =
-                TransferValue::Sealed(SourceSnapshot::normalized(token.epoch, rows, entries)?);
+            entry.source.normalize_into(
+                token.epoch,
+                rows,
+                &entry.upload,
+                &mut transfers.scratch,
+            )?;
+            entry.value = TransferValue::Sealed;
             Ok(())
         })();
         if let Err(failure) = result {
@@ -437,20 +519,22 @@ mod power;
 #[derive(Default)]
 pub(super) struct Provenance {
     epoch: Option<CombatEpoch>,
-    powers: Vec<PowerProvenance>,
-    generated: Vec<GeneratedSource>,
-    orbs: Vec<InstanceSource>,
-    plays: Vec<ActiveSourcePlay>,
+    powers: storage::Slots<PowerProvenance>,
+    grants: storage::Slots<FlatGrant>,
+    generated: storage::Slots<GeneratedSource>,
+    orbs: storage::Slots<InstanceSource>,
+    plays: storage::Slots<ActiveSourcePlay>,
+    incoming: SourceSnapshot,
+    mixture_scratch: snapshot::SnapshotScratch,
     play_serial: u32,
-    calculations: Vec<DamageCalculation>,
+    calculations: storage::Slots<DamageCalculation>,
     calculation_serial: u32,
     doom_batches: Vec<DoomBatch>,
     doom_serial: u32,
-    reductions: Vec<StrengthReduction>,
+    reductions: storage::Slots<StrengthReduction>,
     pools: Vec<SourcePool>,
 }
 
-#[derive(Clone)]
 struct PowerProvenance {
     instance: u64,
     id: super::state::ModelId,
@@ -458,9 +542,13 @@ struct PowerProvenance {
     owner_kind: CreatureKind,
     owner_slot: SourceSlot,
     observed: i32,
-    grants: Vec<PowerGrant>,
     source: SourceSnapshot,
     trusted: bool,
+}
+
+struct FlatGrant {
+    power: usize,
+    grant: PowerGrant,
 }
 
 struct GeneratedSource {
@@ -512,10 +600,10 @@ struct DamageCalculation {
     producer_role: ProducerRole,
     segment: ProducerSegment,
     original_target: u64,
-    modifiers: Vec<allocation::ModifierContribution>,
+    modifiers: storage::Slots<allocation::ModifierContribution>,
     results: Vec<ObservedDamage>,
-    weak: Option<SourceSnapshot>,
-    strength: Vec<(SourceSnapshot, u64)>,
+    weak: SourceSnapshot,
+    strength: storage::Slots<(SourceSnapshot, u64)>,
     complete: bool,
 }
 
@@ -541,34 +629,34 @@ struct DoomCapture {
     allocations: Vec<(Destination, u64)>,
 }
 
-#[derive(Clone, Default)]
+#[derive(Default)]
 struct SourcePool {
-    blocks: Vec<SourceBlock>,
-    pending: Vec<(SourceSnapshot, u64)>,
-    osty: Vec<SourceOsty>,
+    blocks: storage::Slots<SourceBlock>,
+    pending: storage::Slots<(SourceSnapshot, u64)>,
+    osty: storage::Slots<SourceOsty>,
 }
 
-#[derive(Clone)]
+#[derive(Default)]
 struct SourceBlock {
     base: SourcePrefix,
     base_original: u64,
     base_consumed: i64,
     remaining: u64,
-    mods: Vec<SourceBlockMod>,
+    mods: storage::Slots<SourceBlockMod>,
 }
 
 impl SourceBlock {
     const MAX_MODS: usize = 4;
 }
 
-#[derive(Clone)]
+#[derive(Default)]
 struct SourceBlockMod {
     source: SourcePrefix,
     original: u64,
     consumed: u64,
 }
 
-#[derive(Clone)]
+#[derive(Default)]
 struct SourceOsty {
     source: SourcePrefix,
     remaining: u64,
@@ -591,10 +679,8 @@ impl State {
     fn provenance_epoch(&mut self, wire: u64) -> Result<CombatEpoch, SourceFailure> {
         let epoch = self.source_epoch(wire)?;
         if self.provenance.epoch != Some(epoch) {
-            self.provenance = Provenance {
-                epoch: Some(epoch),
-                ..Provenance::default()
-            };
+            self.provenance.clear();
+            self.provenance.epoch = Some(epoch);
         }
         Ok(epoch)
     }
@@ -618,8 +704,8 @@ impl State {
         Ok(token)
     }
 
-    fn source_export(&mut self, source: SourceSnapshot) -> u64 {
-        let transfer = self.source_transfer_begin(u64::from(source.combat_seq()));
+    fn source_export_incoming(&mut self) -> u64 {
+        let transfer = self.source_transfer_begin(u64::from(self.provenance.incoming.combat_seq()));
         if transfer == 0 {
             return 0;
         }
@@ -630,7 +716,8 @@ impl State {
             .iter_mut()
             .find(|entry| entry.serial == serial)
         {
-            entry.value = TransferValue::Sealed(source);
+            entry.source.clone_from(&self.provenance.incoming);
+            entry.value = TransferValue::Sealed;
             transfer
         } else {
             self.source_transfers
@@ -660,63 +747,73 @@ impl State {
             GenerationState::decode(generation_state, &mut self.source_transfers.diagnostics);
         let kind = crate::source_kind::SourceKind::from_c(source_kind);
         let slot = super::state::clamp_source_slot(source_slot);
-        let unknown = SourceSnapshot::unknown(epoch);
-        let source = match capture {
+        self.provenance.incoming.set_unknown(epoch);
+        match capture {
             SourceCaptureKind::CardInstance => {
-                self.card_source(epoch, instance, source_id, slot, generation, None)
+                self.card_source_into_incoming(epoch, instance, source_id, slot, generation, false);
             }
-            SourceCaptureKind::PowerInstance | SourceCaptureKind::WeakHead => self
-                .provenance
-                .powers
-                .iter()
-                .find(|power| power.instance == instance && power.trusted)
-                .map(|power| {
+            SourceCaptureKind::PowerInstance | SourceCaptureKind::WeakHead => {
+                if let Some((index, power)) = self
+                    .provenance
+                    .powers
+                    .iter()
+                    .enumerate()
+                    .find(|(_, power)| power.instance == instance && power.trusted)
+                {
                     if capture == SourceCaptureKind::WeakHead {
-                        if power.id == "WEAK_POWER" {
-                            power
+                        if power.id == "WEAK_POWER"
+                            && let Some(grant) = self
+                                .provenance
                                 .grants
-                                .first()
-                                .map_or_else(|| unknown.clone(), |grant| grant.source().clone())
-                        } else {
-                            unknown.clone()
+                                .iter()
+                                .find(|grant| grant.power == index)
+                        {
+                            self.provenance.incoming.clone_from(grant.grant.source());
                         }
-                    } else if power.id == "POISON_POWER"
-                        && !power.grants.iter().any(|grant| grant.remaining() > 0)
+                    } else if power.id != "POISON_POWER"
+                        || self
+                            .provenance
+                            .grants
+                            .iter()
+                            .any(|grant| grant.power == index && grant.grant.remaining() > 0)
                     {
-                        unknown.clone()
-                    } else {
-                        power.source.clone()
+                        self.provenance.incoming.clone_from(&power.source);
                     }
-                })
-                .unwrap_or(unknown),
-            SourceCaptureKind::OrbInstance => self
-                .provenance
-                .orbs
-                .iter()
-                .find(|orb| orb.instance == instance)
-                .map_or(unknown, |orb| orb.source.clone()),
+                }
+            }
+            SourceCaptureKind::OrbInstance => {
+                if let Some(orb) = self
+                    .provenance
+                    .orbs
+                    .iter()
+                    .find(|orb| orb.instance == instance)
+                {
+                    self.provenance.incoming.clone_from(&orb.source);
+                }
+            }
             SourceCaptureKind::DirectModel
                 if matches!(
                     kind,
                     crate::source_kind::SourceKind::Relic | crate::source_kind::SourceKind::Potion
                 ) && !source_id.is_empty() =>
             {
-                self.named_source(epoch, slot, source_id, kind)
+                self.named_source_into_incoming(epoch, slot, source_id, kind);
             }
-            _ => unknown,
-        };
-        self.source_export(source)
+            _ => {}
+        }
+        self.source_export_incoming()
     }
 
-    fn named_source(
+    fn named_source_into_incoming(
         &mut self,
         epoch: CombatEpoch,
         slot: SourceSlot,
         id: &str,
         kind: crate::source_kind::SourceKind,
-    ) -> SourceSnapshot {
+    ) {
         let Some(combat) = Combat::active_mut(&mut self.current) else {
-            return SourceSnapshot::unknown(epoch);
+            self.provenance.incoming.set_unknown(epoch);
+            return;
         };
         let destination = crate::data::ledger::get_or_create_card_kind(combat, slot, id, kind)
             .map_or(Destination::Unknown(slot), |row| {
@@ -726,8 +823,7 @@ impl State {
                     Destination::Row(row)
                 }
             });
-        SourceSnapshot::normalized(epoch, combat.cards.len(), vec![(destination, 1)])
-            .unwrap_or_else(|_| SourceSnapshot::unknown(epoch))
+        self.provenance.incoming.set_single(epoch, destination);
     }
 }
 
@@ -890,7 +986,7 @@ impl LedgerStage {
             "ledger publication must retain the initialized live row owner"
         );
         state.current.set(&self.combat);
-        state.provenance.pools = self.pools;
+        state.provenance.pools.clone_from(&self.pools);
         if self.capacity_lost {
             state
                 .source_transfers
@@ -979,9 +1075,31 @@ mod limits;
 mod scenarios;
 
 impl State {
+    pub(crate) fn reserve_sources(&mut self) -> Result<(), TryReserveError> {
+        self.source_transfers.reserve()?;
+        self.provenance.reserve_tracking()?;
+        self.provenance.reserve_calculations_and_pools()?;
+        self.provenance
+            .doom_batches
+            .try_reserve_exact(caps::DOOM_BATCHES)?;
+        Ok(())
+    }
+
     pub(crate) fn clear_combat_sources(&mut self) {
-        self.source_transfers = SourceTransfers::default();
-        self.provenance = Provenance::default();
+        self.source_transfers.clear();
+        self.provenance.clear();
+    }
+}
+
+impl Provenance {
+    fn clear(&mut self) {
+        self.clear_tracking();
+        self.clear_calculations_and_pools();
+        self.doom_batches.clear();
+        self.epoch = None;
+        self.play_serial = 0;
+        self.calculation_serial = 0;
+        self.doom_serial = 0;
     }
 }
 

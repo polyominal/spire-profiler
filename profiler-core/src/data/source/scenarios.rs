@@ -22,16 +22,18 @@ struct Scenario {
 
 impl Scenario {
     fn new() -> Self {
-        Self {
-            state: State {
-                current: Some(Combat {
-                    seq: 7,
-                    ..Combat::default()
-                })
-                .into(),
-                ..State::default()
-            },
-        }
+        let mut state = State {
+            current: Some(Combat {
+                seq: 7,
+                ..Combat::default()
+            })
+            .into(),
+            ..State::default()
+        };
+        state
+            .reserve_lifecycle()
+            .expect("scenario storage fits the bounded source caps");
+        Self { state }
     }
 
     fn card(&mut self, instance: u64, id: &str, slot: i32) -> u64 {

@@ -553,6 +553,10 @@ pub fn finish_run_for_allocation_probe(
     crate::data::events::FinishedRun::take(outcome)
 }
 
+pub fn snapshot_allocation_fixture() -> impl FnMut() {
+    crate::data::state::State::snapshot_allocation_fixture()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

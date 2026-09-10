@@ -849,11 +849,15 @@ mod tests {
     fn transfer_exports_contain_reentrant_state_borrows_and_reject_stale_epochs() {
         events::test_reset();
         STATE.with(|cell| {
-            cell.borrow_mut().current = Some(crate::data::state::Combat {
+            let mut state = cell.borrow_mut();
+            state.current = Some(crate::data::state::Combat {
                 seq: 9,
                 ..Default::default()
             })
             .into();
+            state
+                .reserve_lifecycle()
+                .expect("ABI fixture reserves the production source buffers");
         });
         let transfer = spire_profiler_source_transfer_begin(9);
         let destination = (9_u64 << 32) | (4 << 3) | 1;

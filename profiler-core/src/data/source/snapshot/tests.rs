@@ -19,7 +19,7 @@ fn source(weights: &[(usize, u64)]) -> SourceSnapshot {
 }
 
 fn state(rows: usize) -> State {
-    State {
+    let mut state = State {
         current: Some(Combat {
             seq: epoch().0.get(),
             cards: (0..rows).map(|_| CardStat::default()).collect(),
@@ -27,7 +27,11 @@ fn state(rows: usize) -> State {
         })
         .into(),
         ..State::default()
-    }
+    };
+    state
+        .reserve_lifecycle()
+        .expect("fixture lifetime storage reservation succeeds");
+    state
 }
 
 fn unknown(slot: SourceSlot) -> u64 {
@@ -455,16 +459,22 @@ fn token_kind_epoch_membership_and_serial_exhaustion_are_checked() {
 #[test]
 fn synchronous_source_copy_survives_release_without_retargeting_an_epoch() {
     let mut state = state(0);
+    let mut saved = SourceSnapshot::try_new().expect("fixture snapshot reservation succeeds");
+    let initial_epoch = state.source_epoch(7).expect("fixture combat is active");
     assert_eq!(
-        state.source_snapshot(7, 0),
-        Ok(SourceSnapshot::unknown(epoch()))
+        state
+            .source_transfers
+            .snapshot_into(initial_epoch, 0, &mut saved),
+        Ok(())
     );
+    assert!(saved.is_unknown());
     let transfer = state.source_transfer_begin(7);
     assert_eq!(state.source_transfer_add(transfer, unknown(1), 1), 1);
     assert_eq!(state.source_transfer_add(transfer, unknown(3), 2), 1);
     assert_eq!(state.source_transfer_seal(transfer), 1);
-    let saved = state
-        .source_snapshot(7, transfer)
+    state
+        .source_transfers
+        .snapshot_into(initial_epoch, transfer, &mut saved)
         .expect("sealed live lease can be copied");
     assert_eq!(state.source_transfer_release(transfer), 1);
     assert_eq!(
@@ -476,17 +486,38 @@ fn synchronous_source_copy_survives_release_without_retargeting_an_epoch() {
         [1, 2]
     );
     assert_eq!(
-        state.source_snapshot(7, transfer),
+        state
+            .source_transfers
+            .snapshot_into(initial_epoch, transfer, &mut saved),
         Err(SourceFailure::Token)
     );
     state.current.as_mut().expect("fixture combat exists").seq = 8;
-    assert_eq!(state.source_snapshot(7, 0), Err(SourceFailure::Epoch));
+    assert!(matches!(state.source_epoch(7), Err(SourceFailure::Epoch)));
+    let next_epoch = state
+        .source_epoch(8)
+        .expect("replacement fixture combat is active");
     assert_eq!(
-        state.source_snapshot(8, transfer),
+        state
+            .source_transfers
+            .snapshot_into(next_epoch, transfer, &mut saved),
         Err(SourceFailure::Epoch)
     );
     let forged = transfer ^ (7_u64 << 32) ^ (8_u64 << 32);
-    assert_eq!(state.source_snapshot(8, forged), Err(SourceFailure::Token));
+    assert_eq!(
+        state
+            .source_transfers
+            .snapshot_into(next_epoch, forged, &mut saved),
+        Err(SourceFailure::Token)
+    );
+    assert_eq!(saved.combat_seq(), 7);
+    assert_eq!(
+        saved
+            .shares
+            .iter()
+            .map(|share| share.weight)
+            .collect::<Vec<_>>(),
+        [1, 2]
+    );
 }
 
 #[test]
@@ -512,7 +543,7 @@ fn monotone_prefixes_match_independent_per_seat_quotient_model() {
                 }
             }
             model[winner] += 1;
-            for (destination, amount) in prefix.credit(1).expect("small credit cursor fits") {
+            for (destination, amount) in prefix.credit_iter(1).expect("small credit cursor fits") {
                 let Destination::Row(row) = destination else {
                     panic!("fixture uses rows")
                 };
@@ -595,4 +626,166 @@ fn forged_historical_serials_do_not_release_live_transfers() {
     assert_eq!(state.source_count(live), 1);
     assert_eq!(state.source_transfer_release(live), 1);
     assert_eq!(state.source_transfer_release(live), 0);
+}
+
+#[test]
+fn retained_normalization_publishes_only_checked_snapshots_and_recovers() {
+    let mut snapshot = SourceSnapshot::try_new().expect("fixture snapshot reservation succeeds");
+    let mut scratch = SnapshotScratch::try_new().expect("fixture scratch reservation succeeds");
+    let mut copied = SourceSnapshot::try_new().expect("fixture copy reservation succeeds");
+    let allocation = snapshot.shares.as_ptr();
+    let scratch_allocation = scratch.merged.as_ptr();
+    let copy_allocation = copied.shares.as_ptr();
+    let full: Vec<_> = (0..caps::SOURCE_DESTINATIONS)
+        .map(|row| (Destination::Row(row), (row + 1) as u128))
+        .collect();
+    let mut excess = full.clone();
+    excess.push((Destination::Unknown(TEAM_SLOT), 1));
+    for _ in 0..3 {
+        snapshot.set_unknown(epoch());
+        assert!(snapshot.is_unknown());
+        snapshot
+            .normalize_into(epoch(), caps::COMBAT_CARDS, &full, &mut scratch)
+            .expect("all bounded roots and their total fit");
+        copied.clone_from(&snapshot);
+        for (entries, failure) in [
+            (excess.as_slice(), SourceFailure::Capacity),
+            (&[(Destination::Row(0), 0)], SourceFailure::Packet),
+            (
+                &[(Destination::Row(caps::COMBAT_CARDS), 1)],
+                SourceFailure::Token,
+            ),
+            (
+                &[(Destination::Unknown(TEAM_SLOT + 1), 1)],
+                SourceFailure::Packet,
+            ),
+            (
+                &[(Destination::Row(0), u128::MAX), (Destination::Row(0), 1)],
+                SourceFailure::Arithmetic,
+            ),
+            (
+                &[
+                    (Destination::Row(0), u128::from(u64::MAX)),
+                    (Destination::Row(1), 1),
+                ],
+                SourceFailure::Arithmetic,
+            ),
+        ] {
+            assert_eq!(
+                snapshot.normalize_into(epoch(), caps::COMBAT_CARDS, entries, &mut scratch),
+                Err(failure)
+            );
+            assert_eq!(snapshot, copied);
+        }
+        snapshot.set_single(
+            CombatEpoch::from_wire(8).expect("next fixture epoch fits"),
+            Destination::Row(3),
+        );
+        assert_eq!(copied.combat_seq(), epoch().0.get());
+        assert_eq!(copied.shares().len(), caps::SOURCE_DESTINATIONS);
+        assert_eq!(snapshot.shares.as_ptr(), allocation);
+        assert_eq!(scratch.merged.as_ptr(), scratch_allocation);
+        assert_eq!(copied.shares.as_ptr(), copy_allocation);
+    }
+}
+
+#[test]
+fn retained_mixtures_clear_scratch_after_failure_and_zero_grants() {
+    let mut snapshot = SourceSnapshot::try_new().expect("fixture snapshot reservation succeeds");
+    let mut scratch = SnapshotScratch::try_new().expect("fixture scratch reservation succeeds");
+    let mut diagnostics = SourceDiagnostics::default();
+    let a = source(&[(0, 1), (1, 1)]);
+    let b = source(&[(0, 1), (2, 2)]);
+    let allocation = snapshot.shares.as_ptr();
+    for _ in 0..3 {
+        snapshot.mixture_into(
+            epoch(),
+            3,
+            [(1, &a), (1, &b)],
+            &mut scratch,
+            &mut diagnostics,
+        );
+        assert_eq!(
+            snapshot
+                .shares
+                .iter()
+                .map(|share| share.weight)
+                .collect::<Vec<_>>(),
+            [5, 3, 4]
+        );
+        snapshot.mixture_into(epoch(), 3, [(0, &a)], &mut scratch, &mut diagnostics);
+        assert!(snapshot.is_unknown());
+        snapshot.mixture_into(
+            epoch(),
+            3,
+            std::iter::repeat_n((1, &a), caps::POWER_GRANTS_TOTAL + 1),
+            &mut scratch,
+            &mut diagnostics,
+        );
+        assert!(snapshot.is_unknown());
+        snapshot.mixture_into(epoch(), 3, [(1, &b)], &mut scratch, &mut diagnostics);
+        assert_eq!(snapshot, b);
+        assert_eq!(snapshot.shares.as_ptr(), allocation);
+    }
+}
+
+#[test]
+fn retained_prefixes_copy_independent_cursors_and_reuse_after_exhaustion() {
+    let mut prefix = SourcePrefix::try_new().expect("fixture prefix reservation succeeds");
+    let mut copied = SourcePrefix::try_new().expect("fixture prefix copy reservation succeeds");
+    let mut source = source(&[(0, 2), (1, 3), (2, 5)]);
+    let shares = prefix.source.shares.as_ptr();
+    let cursors = [prefix.credits.as_ptr(), prefix.candidate.as_ptr()];
+    for _ in 0..3 {
+        prefix.reset_from(&source);
+        assert_eq!(
+            prefix
+                .credit_iter(4)
+                .expect("small cursor fits")
+                .map(|(_, amount)| amount)
+                .sum::<u64>(),
+            4
+        );
+        copied.clone_from(&prefix);
+        assert_eq!(
+            prefix
+                .credit_iter(1)
+                .expect("next point fits")
+                .collect::<Vec<_>>(),
+            [(Destination::Row(2), 1)]
+        );
+        assert_eq!(
+            copied
+                .credit_iter(1)
+                .expect("copied cursor is independent")
+                .collect::<Vec<_>>(),
+            [(Destination::Row(2), 1)]
+        );
+        let remainder = u64::MAX - 5;
+        assert_eq!(
+            prefix
+                .credit_iter(remainder)
+                .expect("last cursor total fits")
+                .map(|(_, amount)| amount)
+                .sum::<u64>(),
+            remainder
+        );
+        assert!(matches!(
+            prefix.credit_iter(1),
+            Err(SourceFailure::Arithmetic)
+        ));
+        assert_eq!(
+            prefix
+                .credit_iter(0)
+                .expect("zero credit fits after overflow")
+                .count(),
+            0
+        );
+        assert_eq!(prefix.source.shares.as_ptr(), shares);
+        assert!(cursors.contains(&prefix.credits.as_ptr()));
+        assert!(cursors.contains(&prefix.candidate.as_ptr()));
+    }
+    source.set_unknown(CombatEpoch::from_wire(8).expect("next fixture epoch fits"));
+    assert_eq!(prefix.source.combat_seq(), epoch().0.get());
+    assert_eq!(prefix.source.shares().len(), 3);
 }

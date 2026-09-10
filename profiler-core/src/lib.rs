@@ -78,7 +78,10 @@
 //! Sink probes assert zero for warmed diagnostics. Lifecycle probes assert zero
 //! for combat start and roster copies, pure run publication, finish leases,
 //! empty-source resets, metadata rejection, and repeated initialization.
-//! Populated source clearing and transaction staging remain measured in baselines.
+//! Source probes cover normalization, prefix cursors, transfers, power/orb
+//! tracking, rejected play/generation admission, calculation capture/release,
+//! and their populated resets. Owned attribution
+//! outputs, transaction staging, and Doom batches remain measured in baselines.
 //!
 //! Expected failure means a bounded result such as a rejected wire packet,
 //! stale token, full table, arithmetic overflow, malformed input, or failed

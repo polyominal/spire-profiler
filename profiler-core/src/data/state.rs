@@ -559,6 +559,8 @@ pub mod caps {
     pub const POWER_GRANTS_TOTAL: usize = 512;
     /// Nested and replayed card frames on one physical player.
     pub const ACTIVE_PLAYS_PER_SLOT: usize = 32;
+    /// Every creditor slot can reach its independent active-play limit.
+    pub const ACTIVE_PLAYS: usize = ACTIVE_PLAYS_PER_SLOT * MAX_PLAYER_SLOTS;
     /// Saved card, turn, and accumulated snapshots in the reviewed power family.
     pub const TEMPORAL_POWER_PENDING: usize = 128;
     /// Suspended live target calculations across independent commands.
@@ -760,6 +762,7 @@ impl State {
         self.self_test_leases
             .get_or_insert_with(Vec::new)
             .try_reserve_exact(caps::SELF_TEST_LEASES)?;
+        self.reserve_sources()?;
         Ok(())
     }
 }

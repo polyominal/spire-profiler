@@ -6,20 +6,21 @@ use crate::data::state::SourceKind;
 
 impl State {
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn card_source(
+    pub(super) fn card_source_into_incoming(
         &mut self,
         epoch: CombatEpoch,
         instance: u64,
         id: &str,
         slot: SourceSlot,
         generation: GenerationState,
-        given: Option<SourceSnapshot>,
-    ) -> SourceSnapshot {
+        given: bool,
+    ) {
         if generation == GenerationState::GeneratedUnavailable {
             self.provenance
                 .generated
                 .retain(|entry| entry.instance != instance);
-            return SourceSnapshot::unknown(epoch);
+            self.provenance.incoming.set_unknown(epoch);
+            return;
         }
         let generated = self
             .provenance
@@ -28,36 +29,54 @@ impl State {
             .find(|entry| entry.instance == instance);
         match generation {
             GenerationState::Ordinary if instance != 0 && !id.is_empty() && generated.is_none() => {
-                if let Some(source) = given {
-                    if source.shares().len() == 1 {
-                        source
-                    } else {
+                if given {
+                    if self.provenance.incoming.shares().len() != 1 {
                         self.source_transfers
                             .diagnostics
                             .report(SourceFailure::Packet);
-                        SourceSnapshot::unknown(epoch)
+                        self.provenance.incoming.set_unknown(epoch);
                     }
                 } else {
-                    self.named_source(epoch, slot, id, SourceKind::Card)
+                    let Some(combat) = Combat::active_mut(&mut self.current) else {
+                        self.provenance.incoming.set_unknown(epoch);
+                        return;
+                    };
+                    let destination = crate::data::ledger::get_or_create_card_kind(
+                        combat,
+                        slot,
+                        id,
+                        SourceKind::Card,
+                    )
+                    .map_or(Destination::Unknown(slot), |row| {
+                        if combat.cards[row].kind == SourceKind::Unknown {
+                            Destination::Unknown(slot)
+                        } else {
+                            Destination::Row(row)
+                        }
+                    });
+                    self.provenance.incoming.set_single(epoch, destination);
                 }
             }
             GenerationState::Ordinary => {
                 self.source_transfers
                     .diagnostics
                     .report(SourceFailure::Packet);
-                SourceSnapshot::unknown(epoch)
+                self.provenance.incoming.set_unknown(epoch);
             }
-            GenerationState::GeneratedRecorded => generated.map_or_else(
-                || SourceSnapshot::unknown(epoch),
-                |entry| {
+            GenerationState::GeneratedRecorded => {
+                if let Some(entry) = generated {
                     crate::data::persistence::event_log!(
                         "  generated instance {instance}, supplier role {:?}",
                         entry.producer_role
                     );
-                    given.unwrap_or_else(|| entry.source.clone())
-                },
-            ),
-            _ => SourceSnapshot::unknown(epoch),
+                    if !given {
+                        self.provenance.incoming.clone_from(&entry.source);
+                    }
+                } else {
+                    self.provenance.incoming.set_unknown(epoch);
+                }
+            }
+            _ => self.provenance.incoming.set_unknown(epoch),
         }
     }
 
@@ -73,10 +92,13 @@ impl State {
             self.provenance
                 .generated
                 .retain(|entry| entry.instance != instance);
+            if instance != 0 && self.provenance.generated.len() == caps::GENERATED_INSTANCES {
+                return Err(SourceFailure::Capacity);
+            }
             let role = ProducerRole::decode(producer_role, &mut self.source_transfers.diagnostics);
-            let source = self.source_snapshot(combat_seq, transfer)?;
+            self.capture_source_snapshot(combat_seq, transfer)?;
             let mut stage = LedgerStage::new(self)?;
-            for share in source.shares() {
+            for share in self.provenance.incoming.shares() {
                 let row = stage.row(share.destination())?;
                 if stage.combat.cards[row].kind != SourceKind::Card {
                     stage.row_play(share.destination())?;
@@ -88,20 +110,29 @@ impl State {
                 }
             }
             stage.commit(self)?;
-            if instance == 0 || self.provenance.generated.len() == caps::GENERATED_INSTANCES {
+            // Missing card identity prevents ancestry retention, not the observed trigger.
+            if instance == 0 {
                 return Err(SourceFailure::Capacity);
             }
-            self.provenance.generated.push(GeneratedSource {
-                instance,
-                source,
-                producer_role: role,
-            });
+            let entry = self
+                .provenance
+                .generated
+                .vacant_mut()
+                .expect("generated admission leaves one initialized slot");
+            entry.instance = instance;
+            entry.source.clone_from(&self.provenance.incoming);
+            entry.producer_role = role;
+            self.provenance.generated.activate();
             Ok(())
         })();
         self.source_status(result)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "keep frame admission before ledger publication and missing-identity counting explicit"
+    )]
     pub(crate) fn card_play_started(
         &mut self,
         combat_seq: u64,
@@ -120,10 +151,24 @@ impl State {
                 return Err(SourceFailure::Packet);
             }
             let owner = super::super::state::clamp_source_slot(player_slot);
+            if execution != 0
+                && instance != 0
+                && (self.provenance.play_serial == PAYLOAD_MAX
+                    || self.provenance.plays.len() == caps::ACTIVE_PLAYS
+                    || self
+                        .provenance
+                        .plays
+                        .iter()
+                        .filter(|play| play.owner_slot == owner)
+                        .count()
+                        == caps::ACTIVE_PLAYS_PER_SLOT)
+            {
+                return Err(SourceFailure::Capacity);
+            }
             let generation =
                 GenerationState::decode(generation_state, &mut self.source_transfers.diagnostics);
-            let source = self.source_snapshot(combat_seq, transfer)?;
-            let source = self.card_source(epoch, instance, id, owner, generation, Some(source));
+            self.capture_source_snapshot(combat_seq, transfer)?;
+            self.card_source_into_incoming(epoch, instance, id, owner, generation, true);
             let mut stage = LedgerStage::new(self)?;
             stage.combat.plays = stage
                 .combat
@@ -140,32 +185,27 @@ impl State {
                     .checked_add(1)
                     .ok_or(SourceFailure::Arithmetic)?;
             } else {
-                stage.row_play(source.shares()[0].destination())?;
+                stage.row_play(self.provenance.incoming.shares()[0].destination())?;
             }
             stage.commit(self)?;
             self.slot_index(i32::from(owner));
-            if execution == 0
-                || instance == 0
-                || self.provenance.play_serial == PAYLOAD_MAX
-                || self
-                    .provenance
-                    .plays
-                    .iter()
-                    .filter(|play| play.owner_slot == owner)
-                    .count()
-                    == caps::ACTIVE_PLAYS_PER_SLOT
-            {
+            // History confirms the play even when no identity can own its frame.
+            if execution == 0 || instance == 0 {
                 return Err(SourceFailure::Capacity);
             }
             let serial = self.provenance.play_serial + 1;
-            self.provenance.plays.push(ActiveSourcePlay {
-                serial,
-                execution,
-                card_instance: instance,
-                owner_slot: owner,
-                source,
-                first_orb_used: false,
-            });
+            let entry = self
+                .provenance
+                .plays
+                .vacant_mut()
+                .expect("play admission leaves one initialized slot");
+            entry.serial = serial;
+            entry.execution = execution;
+            entry.card_instance = instance;
+            entry.owner_slot = owner;
+            entry.source.clone_from(&self.provenance.incoming);
+            entry.first_orb_used = false;
+            self.provenance.plays.activate();
             self.provenance.play_serial = serial;
             Ok(Token {
                 epoch,
@@ -192,12 +232,13 @@ impl State {
                 .iter()
                 .position(|play| play.serial == token.payload)
                 .ok_or(SourceFailure::Token)?;
-            let play = self.provenance.plays.remove(index);
+            let play = &self.provenance.plays[index];
             crate::data::persistence::event_log!(
                 "  play finished: card {}, execution {}",
                 play.card_instance,
                 play.execution
             );
+            self.provenance.plays.remove(index);
             Ok(())
         })();
         self.source_status(result)
@@ -223,13 +264,18 @@ impl State {
             self.provenance
                 .orbs
                 .retain(|entry| entry.instance != instance);
-            let source = self.source_snapshot(combat_seq, transfer)?;
             if instance == 0 || self.provenance.orbs.len() == caps::ORB_SOURCES {
                 return Err(SourceFailure::Capacity);
             }
-            self.provenance
+            self.capture_source_snapshot(combat_seq, transfer)?;
+            let entry = self
+                .provenance
                 .orbs
-                .push(InstanceSource { instance, source });
+                .vacant_mut()
+                .expect("orb admission leaves one initialized slot");
+            entry.instance = instance;
+            entry.source.clone_from(&self.provenance.incoming);
+            self.provenance.orbs.activate();
             Ok(())
         })();
         self.source_status(result)

@@ -3,7 +3,126 @@
 
 use super::*;
 
+impl Clone for SourcePool {
+    fn clone(&self) -> Self {
+        Self {
+            blocks: self.blocks.clone(),
+            pending: self.pending.clone(),
+            osty: self.osty.clone(),
+        }
+    }
+
+    fn clone_from(&mut self, source: &Self) {
+        self.blocks.clone_from(&source.blocks);
+        if self.pending.all_slots().len() < source.pending.all_slots().len() {
+            self.pending = source.pending.clone();
+        }
+        self.pending.clear();
+        // Tuple clone_from replaces the source owner, so copy its fields separately.
+        for (snapshot, amount) in &source.pending {
+            let pending = self
+                .pending
+                .vacant_mut()
+                .expect("pool publication retains the initialized pending reserve");
+            pending.0.clone_from(snapshot);
+            pending.1 = *amount;
+            self.pending.activate();
+        }
+        self.osty.clone_from(&source.osty);
+    }
+}
+
+impl SourcePool {
+    pub(super) fn try_new() -> Result<Self, std::collections::TryReserveError> {
+        let mut pool = Self::default();
+        pool.blocks
+            .try_init(caps::BLOCK_POOL, SourceBlock::try_new)?;
+        pool.pending.try_init(caps::PENDING_BLOCK_CONTRIBS, || {
+            Ok((SourceSnapshot::try_new()?, 0))
+        })?;
+        pool.osty.try_init(caps::OSTY_STACK, || {
+            Ok(SourceOsty {
+                source: SourcePrefix::try_new()?,
+                remaining: 0,
+            })
+        })?;
+        Ok(pool)
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.blocks.clear();
+        self.pending.clear();
+        self.osty.clear();
+    }
+}
+
+impl Clone for SourceBlock {
+    fn clone(&self) -> Self {
+        Self {
+            base: self.base.clone(),
+            base_original: self.base_original,
+            base_consumed: self.base_consumed,
+            remaining: self.remaining,
+            mods: self.mods.clone(),
+        }
+    }
+
+    fn clone_from(&mut self, source: &Self) {
+        self.base.clone_from(&source.base);
+        self.base_original = source.base_original;
+        self.base_consumed = source.base_consumed;
+        self.remaining = source.remaining;
+        self.mods.clone_from(&source.mods);
+    }
+}
+
+impl Clone for SourceBlockMod {
+    fn clone(&self) -> Self {
+        Self {
+            source: self.source.clone(),
+            original: self.original,
+            consumed: self.consumed,
+        }
+    }
+
+    fn clone_from(&mut self, source: &Self) {
+        self.source.clone_from(&source.source);
+        self.original = source.original;
+        self.consumed = source.consumed;
+    }
+}
+
+impl Clone for SourceOsty {
+    fn clone(&self) -> Self {
+        Self {
+            source: self.source.clone(),
+            remaining: self.remaining,
+        }
+    }
+
+    fn clone_from(&mut self, source: &Self) {
+        self.source.clone_from(&source.source);
+        self.remaining = source.remaining;
+    }
+}
+
 impl SourceBlock {
+    fn try_new() -> Result<Self, std::collections::TryReserveError> {
+        let mut mods = storage::Slots::default();
+        mods.try_init(Self::MAX_MODS, || {
+            Ok(SourceBlockMod {
+                source: SourcePrefix::try_new()?,
+                original: 0,
+                consumed: 0,
+            })
+        })?;
+        Ok(Self {
+            base: SourcePrefix::try_new()?,
+            mods,
+            ..Self::default()
+        })
+    }
+
     fn consume(
         &mut self,
         take: u64,
@@ -83,11 +202,11 @@ impl LedgerStage {
     fn push_block(
         &mut self,
         slot: SourceSlot,
-        source: SourceSnapshot,
+        source: &SourceSnapshot,
         amount: u64,
     ) -> Result<(), SourceFailure> {
         let pool = self.pool(slot)?;
-        let pending = std::mem::take(&mut pool.pending);
+        let pending = &pool.pending;
         let modifiers = pending
             .iter()
             .try_fold(0_u64, |sum, (_, amount)| sum.checked_add(*amount))
@@ -97,7 +216,7 @@ impl LedgerStage {
             && let Some(entry) = pool
                 .blocks
                 .iter_mut()
-                .find(|entry| entry.mods.is_empty() && entry.base.source() == &source)
+                .find(|entry| entry.mods.is_empty() && entry.base.source() == source)
         {
             entry.remaining = entry
                 .remaining
@@ -110,31 +229,36 @@ impl LedgerStage {
             return Ok(());
         }
         if pool.blocks.len() == caps::BLOCK_POOL {
+            pool.pending.clear();
             self.capacity_lost = true;
             return Ok(());
         }
         let lost = pending.len() > SourceBlock::MAX_MODS;
-        let mut entry = SourceBlock {
-            base: source.prefix(),
-            base_original: base,
-            base_consumed: 0,
-            remaining: base,
-            mods: Vec::new(),
-        };
-        for (source, amount) in pending.into_iter().take(SourceBlock::MAX_MODS) {
+        let entry = pool.blocks.vacant_mut().ok_or(SourceFailure::Capacity)?;
+        entry.base.reset_from(source);
+        entry.base_original = base;
+        entry.base_consumed = 0;
+        entry.remaining = base;
+        entry.mods.clear();
+        entry
+            .mods
+            .try_init(SourceBlock::MAX_MODS, || Ok(SourceBlockMod::default()))
+            .map_err(|_| SourceFailure::Capacity)?;
+        for (source, amount) in pending.iter().take(SourceBlock::MAX_MODS) {
             entry.remaining = entry
                 .remaining
-                .checked_add(amount)
+                .checked_add(*amount)
                 .ok_or(SourceFailure::Arithmetic)?;
-            entry.mods.push(SourceBlockMod {
-                source: source.prefix(),
-                original: amount,
-                consumed: 0,
-            });
+            let modifier = entry.mods.vacant_mut().ok_or(SourceFailure::Capacity)?;
+            modifier.source.reset_from(source);
+            modifier.original = *amount;
+            modifier.consumed = 0;
+            entry.mods.activate();
         }
         if entry.remaining > 0 {
-            pool.blocks.push(entry);
+            pool.blocks.activate();
         }
+        pool.pending.clear();
         self.capacity_lost |= lost;
         Ok(())
     }
@@ -185,7 +309,8 @@ impl LedgerStage {
             entry.remaining -= take;
             remaining -= take;
             if entry.remaining == 0 {
-                self.pool(slot)?.osty.pop();
+                let pool = self.pool(slot)?;
+                pool.osty.remove(pool.osty.len() - 1);
             }
             for (destination, share) in credits {
                 self.credit(
@@ -223,7 +348,8 @@ impl State {
     ) -> i32 {
         let result = (|| {
             self.provenance_epoch(combat_seq)?;
-            let source = self.source_snapshot(combat_seq, transfer)?;
+            self.capture_source_snapshot(combat_seq, transfer)?;
+            let source = &self.provenance.incoming;
             if amount < 0 {
                 return Err(SourceFailure::Packet);
             }
@@ -234,7 +360,10 @@ impl State {
                 return Err(SourceFailure::Capacity);
             }
             if amount > 0 {
-                pool.pending.push((source, amount as u64));
+                let pending = pool.pending.vacant_mut().ok_or(SourceFailure::Capacity)?;
+                pending.0.clone_from(source);
+                pending.1 = amount as u64;
+                pool.pending.activate();
             }
             stage.commit(self)?;
             Ok(())
@@ -251,7 +380,8 @@ impl State {
     ) -> i32 {
         let result = (|| {
             self.provenance_epoch(combat_seq)?;
-            let source = self.source_snapshot(combat_seq, transfer)?;
+            self.capture_source_snapshot(combat_seq, transfer)?;
+            let source = &self.provenance.incoming;
             if amount < 0 {
                 return Err(SourceFailure::Packet);
             }
@@ -265,7 +395,7 @@ impl State {
                 .block_total
                 .checked_add(i64::from(amount))
                 .ok_or(SourceFailure::Arithmetic)?;
-            stage.source_credit(&source, CreditField::BlockGained, amount as u64)?;
+            stage.source_credit(source, CreditField::BlockGained, amount as u64)?;
             stage.push_block(slot, source, amount as u64)?;
             stage.commit(self)?;
             self.slot_index(i32::from(slot));
@@ -286,9 +416,10 @@ impl State {
             if amount < 0 {
                 return Err(SourceFailure::Packet);
             }
-            let source = self.source_snapshot(combat_seq, transfer)?;
+            self.capture_source_snapshot(combat_seq, transfer)?;
+            let source = &self.provenance.incoming;
             let mut stage = LedgerStage::new(self)?;
-            stage.source_credit(&source, field, amount as u64)?;
+            stage.source_credit(source, field, amount as u64)?;
             stage.commit(self)?;
             Ok(())
         })();
@@ -320,7 +451,8 @@ impl State {
             if amount < 0 {
                 return Err(SourceFailure::Packet);
             }
-            let source = self.source_snapshot(combat_seq, transfer)?;
+            self.capture_source_snapshot(combat_seq, transfer)?;
+            let source = &self.provenance.incoming;
             let slot = super::super::state::clamp_source_slot(owner_slot);
             let mut stage = LedgerStage::new(self)?;
             let pool = stage.pool(slot)?;
@@ -328,10 +460,10 @@ impl State {
                 return Err(SourceFailure::Capacity);
             }
             if amount > 0 {
-                pool.osty.push(SourceOsty {
-                    source: source.prefix(),
-                    remaining: amount as u64,
-                });
+                let entry = pool.osty.vacant_mut().ok_or(SourceFailure::Capacity)?;
+                entry.source.reset_from(source);
+                entry.remaining = amount as u64;
+                pool.osty.activate();
             }
             stage.commit(self)?;
             self.slot_index(i32::from(slot));
@@ -344,20 +476,17 @@ impl State {
         let result = (|| {
             self.provenance_epoch(combat_seq)?;
             let owner = super::super::state::clamp_source_slot(owner_slot);
-            let source = if play == 0 {
-                None
-            } else {
+            if play != 0 {
                 let token = self.provenance_token(play, TokenKind::CardPlay)?;
-                Some(
-                    self.provenance
-                        .plays
-                        .iter()
-                        .find(|play| play.serial == token.payload && play.owner_slot == owner)
-                        .ok_or(SourceFailure::Token)?
-                        .source
-                        .clone(),
-                )
-            };
+                let source = &self
+                    .provenance
+                    .plays
+                    .iter()
+                    .find(|play| play.serial == token.payload && play.owner_slot == owner)
+                    .ok_or(SourceFailure::Token)?
+                    .source;
+                self.provenance.incoming.clone_from(source);
+            }
             let mut stage = LedgerStage::new(self)?;
             let remaining = stage
                 .pool(owner)?
@@ -365,8 +494,13 @@ impl State {
                 .iter()
                 .try_fold(0_u64, |sum, entry| sum.checked_add(entry.remaining))
                 .ok_or(SourceFailure::Arithmetic)?;
-            if let Some(source) = source {
-                for (destination, amount) in source.budgets(remaining).take(remaining)? {
+            if play != 0 {
+                for (destination, amount) in self
+                    .provenance
+                    .incoming
+                    .budgets(remaining)
+                    .take(remaining)?
+                {
                     stage.credit(
                         destination,
                         CreditField::BlockEffective,

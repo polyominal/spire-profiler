@@ -1,5 +1,5 @@
-//! Accepted mutations of actual power instances retain complete supplier grants.
-//! Decreases consume FIFO; a drained attachment keeps its last captured source.
+//! Accepted mutations retain supplier grants in application order. Drained
+//! attachments keep their last captured source; every grant owns its snapshot.
 
 use super::*;
 
@@ -7,34 +7,139 @@ impl PowerProvenance {
     fn matches_owner(&self, id: &str, owner: u64, kind: CreatureKind) -> bool {
         self.id == id && self.owner == owner && self.owner_kind == kind
     }
+}
 
-    fn consume(&mut self, amount: u32) {
-        let mut remaining = amount;
-        while remaining > 0 && !self.grants.is_empty() {
-            let take = self.grants[0].consume(remaining);
-            remaining -= take;
-            if self.grants[0].remaining() == 0 {
-                self.grants.remove(0);
+impl Provenance {
+    pub(super) fn reserve_tracking(&mut self) -> Result<(), std::collections::TryReserveError> {
+        self.powers.try_init(caps::POWER_INSTANCES, || {
+            Ok(PowerProvenance {
+                instance: 0,
+                id: Default::default(),
+                owner: 0,
+                owner_kind: CreatureKind::Other,
+                owner_slot: TEAM_SLOT,
+                observed: 0,
+                source: SourceSnapshot::try_new()?,
+                trusted: false,
+            })
+        })?;
+        self.grants.try_init(caps::POWER_GRANTS_TOTAL, || {
+            Ok(FlatGrant {
+                power: 0,
+                grant: PowerGrant::try_new()?,
+            })
+        })?;
+        self.generated.try_init(caps::GENERATED_INSTANCES, || {
+            Ok(GeneratedSource {
+                instance: 0,
+                source: SourceSnapshot::try_new()?,
+                producer_role: ProducerRole::Unknown,
+            })
+        })?;
+        self.orbs.try_init(caps::ORB_SOURCES, || {
+            Ok(InstanceSource {
+                instance: 0,
+                source: SourceSnapshot::try_new()?,
+            })
+        })?;
+        self.plays.try_init(caps::ACTIVE_PLAYS, || {
+            Ok(ActiveSourcePlay {
+                serial: 0,
+                execution: 0,
+                card_instance: 0,
+                owner_slot: TEAM_SLOT,
+                source: SourceSnapshot::try_new()?,
+                first_orb_used: false,
+            })
+        })?;
+        self.reductions.try_init(caps::STR_REDUCTIONS, || {
+            Ok(StrengthReduction {
+                power_instance: 0,
+                creature: 0,
+                amount: 0,
+                source: SourceSnapshot::try_new()?,
+            })
+        })?;
+        self.incoming = SourceSnapshot::try_new()?;
+        self.mixture_scratch = snapshot::SnapshotScratch::try_new()?;
+        Ok(())
+    }
+
+    pub(super) fn clear_tracking(&mut self) {
+        self.powers.clear();
+        self.grants.clear();
+        self.generated.clear();
+        self.orbs.clear();
+        self.plays.clear();
+        self.reductions.clear();
+        self.play_serial = 0;
+        self.incoming.clear();
+    }
+
+    fn consume_power(&mut self, power: usize, mut remaining: u32) {
+        let mut index = 0;
+        while remaining > 0 && index < self.grants.len() {
+            if self.grants[index].power != power {
+                index += 1;
+                continue;
+            }
+            remaining -= self.grants[index].grant.consume(remaining);
+            if self.grants[index].grant.remaining() == 0 {
+                self.grants.remove(index);
+            } else {
+                index += 1;
             }
         }
     }
-    fn refresh_source(
+
+    fn reset_power_grants(&mut self, power: usize, amount: u32, epoch: CombatEpoch) {
+        self.grants.retain(|entry| entry.power != power);
+        self.powers[power].source.set_unknown(epoch);
+        if amount > 0 {
+            let entry = self
+                .grants
+                .vacant_mut()
+                .expect("the global grant reserve admits one Unknown for every power");
+            entry.power = power;
+            entry.grant.reset_from(amount, &self.powers[power].source);
+            self.grants.activate();
+        }
+    }
+
+    fn refresh_power_source(
         &mut self,
+        power: usize,
         epoch: CombatEpoch,
         rows: usize,
         diagnostics: &mut SourceDiagnostics,
     ) {
-        if self.grants.is_empty() {
+        if !self.grants.iter().any(|entry| entry.power == power) {
             return;
         }
-        let mixed = SourceSnapshot::mixture(epoch, rows, &self.grants, diagnostics);
-        if mixed == SourceSnapshot::unknown(epoch)
-            && self.grants.iter().any(|grant| grant.source() != &mixed)
+        self.powers[power].source.mixture_into(
+            epoch,
+            rows,
+            self.grants
+                .iter()
+                .filter(|entry| entry.power == power)
+                .map(|entry| (entry.grant.remaining(), entry.grant.source())),
+            &mut self.mixture_scratch,
+            diagnostics,
+        );
+        if self.powers[power].source.is_unknown()
+            && self
+                .grants
+                .iter()
+                .any(|entry| entry.power == power && !entry.grant.source().is_unknown())
         {
-            let remaining = self.grants.iter().map(|grant| grant.remaining()).sum();
-            self.grants = vec![PowerGrant::new(remaining, mixed.clone())];
+            let remaining = self
+                .grants
+                .iter()
+                .filter(|entry| entry.power == power)
+                .map(|entry| entry.grant.remaining())
+                .sum();
+            self.reset_power_grants(power, remaining, epoch);
         }
-        self.source = mixed;
     }
 }
 
@@ -90,7 +195,11 @@ impl State {
         self.source_status(result)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "keep all rejection preflight before publishing grants and reduction balances"
+    )]
     fn power_observed(
         &mut self,
         combat_seq: u64,
@@ -111,160 +220,197 @@ impl State {
             super::super::state::ModelId::try_from(id).map_err(|_| SourceFailure::Packet)?;
         let kind = CreatureKind::decode(owner_kind, &mut self.source_transfers.diagnostics);
         let slot = super::super::state::clamp_source_slot(owner_slot);
-        let incoming = self.source_snapshot(combat_seq, transfer)?;
-        let powers = &self.provenance.powers;
-        let index = powers.iter().position(|power| power.instance == instance);
-        let mut power = if let Some(index) = index {
-            let power = &powers[index];
+        let index = self
+            .provenance
+            .powers
+            .iter()
+            .position(|power| power.instance == instance);
+        let before = old.unwrap_or(0);
+        let reset = if let Some(index) = index {
+            let power = &self.provenance.powers[index];
             if old.is_none() || !power.matches_owner(id, owner, kind) || power.owner_slot != slot {
                 return Err(SourceFailure::Packet);
             }
-            power.clone()
+            !power.trusted || power.observed != before
         } else {
-            if powers.len() == caps::POWER_INSTANCES {
+            if self.provenance.powers.len() == caps::POWER_INSTANCES {
                 return Err(SourceFailure::Capacity);
             }
-            PowerProvenance {
-                instance,
-                id: bounded_id,
-                owner,
-                owner_kind: kind,
-                owner_slot: slot,
-                observed: old.unwrap_or(0),
-                grants: Vec::new(),
-                source: incoming.clone(),
-                trusted: old.is_none(),
-            }
+            old.is_some()
         };
-        let before = old.unwrap_or(0);
-        if !power.trusted || power.observed != before {
-            power.grants.clear();
-            power.source = SourceSnapshot::unknown(epoch);
-            if before > 0 {
-                power
-                    .grants
-                    .push(PowerGrant::new(before as u32, power.source.clone()));
+        self.capture_source_snapshot(combat_seq, transfer)?;
+        let strength = id == "STRENGTH_POWER" && kind == CreatureKind::Enemy;
+        let delta = i64::from(new) - i64::from(before);
+        let reduction_amount = if strength && delta < 0 {
+            let reductions = &self.provenance.reductions;
+            let matched = reductions.iter().find(|entry| {
+                !reset
+                    && entry.power_instance == instance
+                    && entry.creature == owner
+                    && entry.source == self.provenance.incoming
+            });
+            if let Some(entry) = matched {
+                Some(
+                    entry
+                        .amount
+                        .checked_add(delta.unsigned_abs())
+                        .ok_or(SourceFailure::Arithmetic)?,
+                )
+            } else {
+                let retained = reductions
+                    .iter()
+                    .filter(|entry| !reset || entry.power_instance != instance)
+                    .count();
+                if retained == caps::STR_REDUCTIONS {
+                    return Err(SourceFailure::Capacity);
+                }
+                Some(delta.unsigned_abs())
             }
+        } else {
+            None
+        };
+
+        // Every fallible admission is settled before changing the accepted balance.
+        let power = if let Some(index) = index {
+            index
+        } else {
+            let index = self.provenance.powers.len();
+            let power = self
+                .provenance
+                .powers
+                .vacant_mut()
+                .expect("power admission leaves one initialized slot");
+            power.instance = instance;
+            power.id = bounded_id;
+            power.owner = owner;
+            power.owner_kind = kind;
+            power.owner_slot = slot;
+            power.observed = before;
+            power.trusted = old.is_none();
+            power.source.clone_from(&self.provenance.incoming);
+            self.provenance.powers.activate();
+            index
+        };
+        if reset {
+            self.provenance
+                .reset_power_grants(power, before.max(0) as u32, epoch);
             self.source_transfers
                 .diagnostics
                 .report(SourceFailure::Packet);
         }
-        self.update_power_grants(&mut power, before, new, incoming.clone(), epoch)?;
-        let mut reductions = self.provenance.reductions.clone();
-        if id == "STRENGTH_POWER" && kind == CreatureKind::Enemy {
-            if !power.trusted || power.observed != before {
-                reductions.retain(|entry| entry.power_instance != instance);
+        self.update_power_grants(power, before, new, epoch);
+        if strength {
+            if reset {
+                self.provenance
+                    .reductions
+                    .retain(|entry| entry.power_instance != instance);
             }
-            Self::strength_transition(
-                &mut reductions,
-                instance,
-                owner,
-                i64::from(new) - i64::from(before),
-                incoming,
-            )?;
+            if let Some(amount) = reduction_amount {
+                if let Some(entry) = self.provenance.reductions.iter_mut().find(|entry| {
+                    entry.power_instance == instance
+                        && entry.creature == owner
+                        && entry.source == self.provenance.incoming
+                }) {
+                    entry.amount = amount;
+                } else {
+                    let entry = self
+                        .provenance
+                        .reductions
+                        .vacant_mut()
+                        .expect("reduction admission is validated before mutation");
+                    entry.power_instance = instance;
+                    entry.creature = owner;
+                    entry.amount = amount;
+                    entry.source.clone_from(&self.provenance.incoming);
+                    self.provenance.reductions.activate();
+                }
+            } else {
+                let mut remaining = delta as u64;
+                let mut index = self.provenance.reductions.len();
+                while remaining > 0 && index > 0 {
+                    index -= 1;
+                    if self.provenance.reductions[index].creature != owner {
+                        continue;
+                    }
+                    let take = remaining.min(self.provenance.reductions[index].amount);
+                    self.provenance.reductions[index].amount -= take;
+                    remaining -= take;
+                    if self.provenance.reductions[index].amount == 0 {
+                        self.provenance.reductions.remove(index);
+                    }
+                }
+            }
         }
-        power.observed = new;
-        power.trusted = true;
-        if let Some(index) = index {
-            self.provenance.powers[index] = power;
-        } else {
-            self.provenance.powers.push(power);
-        }
-        self.provenance.reductions = reductions;
+        self.provenance.powers[power].observed = new;
+        self.provenance.powers[power].trusted = true;
         Ok(())
     }
 
-    fn update_power_grants(
-        &mut self,
-        power: &mut PowerProvenance,
-        before: i32,
-        after: i32,
-        incoming: SourceSnapshot,
-        epoch: CombatEpoch,
-    ) -> Result<(), SourceFailure> {
+    fn update_power_grants(&mut self, power: usize, before: i32, after: i32, epoch: CombatEpoch) {
         let previous = before.max(0) as u32;
         let current = after.max(0) as u32;
         if current < previous {
-            power.consume(previous - current);
+            self.provenance.consume_power(power, previous - current);
         } else if current > previous {
             let amount = current - previous;
-            if let Some(last) = power
+            let last = self
+                .provenance
                 .grants
-                .last_mut()
-                .filter(|last| last.source() == &incoming)
-            {
-                last.add(amount)?;
+                .iter()
+                .rposition(|entry| entry.power == power);
+            if let Some(last) = last.filter(|index| {
+                self.provenance.grants[*index].grant.source() == &self.provenance.incoming
+            }) {
+                self.provenance.grants[last]
+                    .grant
+                    .add(amount)
+                    .expect("one grant cannot exceed the positive observed i32 balance");
             } else {
-                power.grants.push(PowerGrant::new(amount, incoming));
+                let count = self
+                    .provenance
+                    .grants
+                    .iter()
+                    .filter(|entry| entry.power == power)
+                    .count();
+                let occupied = self
+                    .provenance
+                    .powers
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| {
+                        self.provenance
+                            .grants
+                            .iter()
+                            .any(|entry| entry.power == *index)
+                    })
+                    .count();
+                let extras = self.provenance.grants.len() - occupied;
+                if count == caps::POWER_GRANTS_PER_INSTANCE
+                    || (count > 0 && extras == caps::POWER_GRANTS_TOTAL - caps::POWER_INSTANCES)
+                {
+                    self.provenance.reset_power_grants(power, current, epoch);
+                    self.source_transfers
+                        .diagnostics
+                        .report(SourceFailure::Capacity);
+                } else {
+                    let entry = self
+                        .provenance
+                        .grants
+                        .vacant_mut()
+                        .expect("global extra-grant admission preserves one slot per power");
+                    entry.power = power;
+                    entry.grant.reset_from(amount, &self.provenance.incoming);
+                    self.provenance.grants.activate();
+                }
             }
-        }
-        let others = self
-            .provenance
-            .powers
-            .iter()
-            .filter(|entry| entry.instance != power.instance)
-            .map(|entry| entry.grants.len().saturating_sub(1))
-            .sum::<usize>();
-        if power.grants.len() > caps::POWER_GRANTS_PER_INSTANCE
-            || others + power.grants.len().saturating_sub(1)
-                > caps::POWER_GRANTS_TOTAL - caps::POWER_INSTANCES
-        {
-            power.grants = vec![PowerGrant::new(current, SourceSnapshot::unknown(epoch))];
-            self.source_transfers
-                .diagnostics
-                .report(SourceFailure::Capacity);
         }
         let rows = self.current.as_ref().map_or(0, |combat| combat.cards.len());
-        power.refresh_source(epoch, rows, &mut self.source_transfers.diagnostics);
-        Ok(())
-    }
-
-    fn strength_transition(
-        reductions: &mut Vec<StrengthReduction>,
-        instance: u64,
-        creature: u64,
-        delta: i64,
-        source: SourceSnapshot,
-    ) -> Result<(), SourceFailure> {
-        if delta < 0 {
-            let amount = delta.unsigned_abs();
-            if let Some(last) = reductions.iter_mut().find(|entry| {
-                entry.power_instance == instance
-                    && entry.creature == creature
-                    && entry.source == source
-            }) {
-                last.amount = last
-                    .amount
-                    .checked_add(amount)
-                    .ok_or(SourceFailure::Arithmetic)?;
-            } else {
-                if reductions.len() == caps::STR_REDUCTIONS {
-                    return Err(SourceFailure::Capacity);
-                }
-                reductions.push(StrengthReduction {
-                    power_instance: instance,
-                    creature,
-                    amount,
-                    source,
-                });
-            }
-        } else {
-            let mut remaining = delta as u64;
-            let mut index = reductions.len();
-            while remaining > 0 && index > 0 {
-                index -= 1;
-                if reductions[index].creature != creature {
-                    continue;
-                }
-                let take = remaining.min(reductions[index].amount);
-                reductions[index].amount -= take;
-                remaining -= take;
-                if reductions[index].amount == 0 {
-                    reductions.remove(index);
-                }
-            }
-        }
-        Ok(())
+        self.provenance.refresh_power_source(
+            power,
+            epoch,
+            rows,
+            &mut self.source_transfers.diagnostics,
+        );
     }
 
     pub(crate) fn power_provenance_invalidate(&mut self, combat_seq: u64, instance: u64) -> i32 {
@@ -286,9 +432,23 @@ impl State {
 
     pub(crate) fn power_removed(&mut self, combat_seq: u64, instance: u64) -> i32 {
         let result = self.provenance_epoch(combat_seq).map(|_| {
-            self.provenance
+            if let Some(index) = self
+                .provenance
                 .powers
-                .retain(|power| power.instance != instance);
+                .iter()
+                .position(|power| power.instance == instance)
+            {
+                self.provenance.grants.retain(|entry| entry.power != index);
+                for entry in self
+                    .provenance
+                    .grants
+                    .iter_mut()
+                    .filter(|entry| entry.power > index)
+                {
+                    entry.power -= 1;
+                }
+                self.provenance.powers.remove(index);
+            }
             self.provenance
                 .reductions
                 .retain(|entry| entry.power_instance != instance);
@@ -353,12 +513,18 @@ impl State {
             }
             let mut remaining = hp as u64;
             let mut allocations = Vec::new();
-            if let Some(power) = self.provenance.powers.iter().find(|power| {
+            if let Some(power) = self.provenance.powers.iter().position(|power| {
                 power.instance == instance
                     && power.matches_owner("DOOM_POWER", creature, CreatureKind::Enemy)
                     && power.trusted
             }) {
-                for grant in &power.grants {
+                for entry in self
+                    .provenance
+                    .grants
+                    .iter()
+                    .filter(|entry| entry.power == power)
+                {
+                    let grant = &entry.grant;
                     let take = remaining.min(u64::from(grant.remaining()));
                     allocations.extend(grant.source().budgets(take).take(take)?);
                     remaining -= take;
@@ -406,11 +572,16 @@ impl State {
             stage.commit(self)?;
             let rows = self.current.as_ref().map_or(0, |combat| combat.cards.len());
             for target in batch.targets {
-                if let Some(power) = self.provenance.powers.iter_mut().find(|power| {
+                if let Some(power) = self.provenance.powers.iter().position(|power| {
                     power.instance == target.power_instance && power.owner == target.creature
                 }) {
-                    power.consume(target.debit);
-                    power.refresh_source(token.epoch, rows, &mut self.source_transfers.diagnostics);
+                    self.provenance.consume_power(power, target.debit);
+                    self.provenance.refresh_power_source(
+                        power,
+                        token.epoch,
+                        rows,
+                        &mut self.source_transfers.diagnostics,
+                    );
                 }
             }
             Ok(())
@@ -433,3 +604,7 @@ impl State {
         self.source_status(result)
     }
 }
+
+#[cfg(test)]
+#[path = "tracking_tests.rs"]
+mod tracking_tests;

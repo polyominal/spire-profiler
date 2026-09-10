@@ -5,6 +5,67 @@ use allocation::{DamageAllocation, ModifierContribution};
 
 use super::*;
 
+impl DamageCalculation {
+    fn try_new() -> Result<Self, std::collections::TryReserveError> {
+        let mut modifiers = storage::Slots::default();
+        modifiers.try_init(caps::DAMAGE_MODIFIERS, || {
+            Ok(ModifierContribution {
+                source: SourceSnapshot::try_new()?,
+                amount: 0,
+            })
+        })?;
+        let mut strength = storage::Slots::default();
+        strength.try_init(caps::STR_REDUCTIONS, || Ok((SourceSnapshot::try_new()?, 0)))?;
+        let mut results = Vec::new();
+        results.try_reserve_exact(caps::DAMAGE_RESULTS)?;
+        Ok(Self {
+            serial: 0,
+            source: SourceSnapshot::try_new()?,
+            producer_role: ProducerRole::Unknown,
+            segment: ProducerSegment::Attributed,
+            original_target: 0,
+            modifiers,
+            results,
+            weak: SourceSnapshot::try_new()?,
+            strength,
+            complete: false,
+        })
+    }
+
+    fn reset(&mut self) {
+        self.serial = 0;
+        self.modifiers.clear();
+        self.results.clear();
+        self.strength.clear();
+        self.complete = false;
+    }
+}
+
+impl Provenance {
+    pub(super) fn reserve_calculations_and_pools(
+        &mut self,
+    ) -> Result<(), std::collections::TryReserveError> {
+        self.calculations
+            .try_init(caps::DAMAGE_CALCULATIONS, DamageCalculation::try_new)?;
+        self.pools
+            .try_reserve_exact(caps::MAX_PLAYER_SLOTS.saturating_sub(self.pools.len()))?;
+        while self.pools.len() < caps::MAX_PLAYER_SLOTS {
+            self.pools.push(SourcePool::try_new()?);
+        }
+        Ok(())
+    }
+
+    pub(super) fn clear_calculations_and_pools(&mut self) {
+        for calculation in self.calculations.iter_mut() {
+            calculation.reset();
+        }
+        self.calculations.clear();
+        for pool in &mut self.pools {
+            pool.clear();
+        }
+    }
+}
+
 impl ObservedDamage {
     #[allow(clippy::too_many_arguments)]
     fn from_wire(
@@ -62,25 +123,24 @@ impl LedgerStage {
         Ok(())
     }
 
-    fn apply_group(&mut self, calculation: &DamageCalculation) -> Result<(), SourceFailure> {
-        let outgoing: Vec<_> = calculation
-            .results
+    fn apply_group(
+        &mut self,
+        source: &SourceSnapshot,
+        segment: ProducerSegment,
+        modifiers: &[ModifierContribution],
+        results: &[ObservedDamage],
+        weak: &SourceSnapshot,
+        strength: &[(SourceSnapshot, u64)],
+    ) -> Result<(), SourceFailure> {
+        let outgoing: Vec<_> = results
             .iter()
             .filter(|result| result.kind == ResultKind::Outgoing)
             .map(|result| (result.total, result.blocked))
             .collect();
-        let allocated = DamageAllocation::build(
-            &calculation.source,
-            calculation.segment,
-            &calculation.modifiers,
-            &outgoing,
-        )?;
+        let allocated = DamageAllocation::build(source, segment, modifiers, &outgoing)?;
         let mut outgoing_credits = allocated.into_iter();
-        let epoch = CombatEpoch::from_wire(u64::from(self.combat.seq))?;
-        let unknown = SourceSnapshot::unknown(epoch);
-        let weak = calculation.weak.as_ref().unwrap_or(&unknown);
-        let mut strength = calculation.strength.as_slice();
-        for result in &calculation.results {
+        let mut strength = strength;
+        for result in results {
             match result.kind {
                 ResultKind::Outgoing => {
                     for credit in outgoing_credits.next().ok_or(SourceFailure::Packet)? {
@@ -93,14 +153,14 @@ impl LedgerStage {
                     }
                 }
                 ResultKind::Incoming | ResultKind::SelfDamage => {
-                    self.received(result, &calculation.source, weak, strength)?;
+                    self.received(result, source, weak, strength)?;
                     if result.kind == ResultKind::Incoming {
                         strength = &[];
                     }
                 }
                 ResultKind::OstyDealt => {
                     let credits = DamageAllocation::build(
-                        &calculation.source,
+                        source,
                         ProducerSegment::Direct,
                         &[],
                         &[(result.total, result.blocked)],
@@ -144,9 +204,7 @@ impl State {
             if original_target == 0 {
                 return Err(SourceFailure::Packet);
             }
-            let mut source = self.source_snapshot(combat_seq, transfer)?;
             if role == ProducerRole::Unknown {
-                source = SourceSnapshot::unknown(epoch);
                 segment = ProducerSegment::Attributed;
             }
             if role == ProducerRole::Power && segment != ProducerSegment::Attributed
@@ -163,18 +221,24 @@ impl State {
                 return Err(SourceFailure::Capacity);
             }
             let serial = self.provenance.calculation_serial + 1;
-            self.provenance.calculations.push(DamageCalculation {
-                serial,
-                source,
-                producer_role: role,
-                segment,
-                original_target,
-                modifiers: Vec::new(),
-                results: Vec::new(),
-                weak: None,
-                strength: Vec::new(),
-                complete: true,
-            });
+            let calculation = self
+                .provenance
+                .calculations
+                .vacant_mut()
+                .ok_or(SourceFailure::Capacity)?;
+            calculation.reset();
+            self.source_transfers
+                .snapshot_into(epoch, transfer, &mut calculation.source)?;
+            if role == ProducerRole::Unknown {
+                calculation.source.set_unknown(epoch);
+            }
+            calculation.weak.set_unknown(epoch);
+            calculation.serial = serial;
+            calculation.producer_role = role;
+            calculation.segment = segment;
+            calculation.original_target = original_target;
+            calculation.complete = true;
+            self.provenance.calculations.activate();
             self.provenance.calculation_serial = serial;
             Ok(Token {
                 epoch,
@@ -227,16 +291,21 @@ impl State {
                 return Err(SourceFailure::Packet);
             }
             let epoch = state.provenance.calculations[index].source.combat_seq();
-            let source = state.source_snapshot(u64::from(epoch), transfer)?;
+            let epoch = CombatEpoch::from_wire(u64::from(epoch))?;
             let calculation = &mut state.provenance.calculations[index];
             if calculation.modifiers.len() == caps::DAMAGE_MODIFIERS {
                 return Err(SourceFailure::Capacity);
             }
+            let modifier = calculation
+                .modifiers
+                .vacant_mut()
+                .ok_or(SourceFailure::Capacity)?;
+            state
+                .source_transfers
+                .snapshot_into(epoch, transfer, &mut modifier.source)?;
             if amount > 0 {
-                calculation.modifiers.push(ModifierContribution {
-                    source,
-                    amount: amount as u64,
-                });
+                modifier.amount = amount as u64;
+                calculation.modifiers.activate();
             }
             Ok(())
         })
@@ -249,8 +318,12 @@ impl State {
     ) -> i32 {
         self.calculation_mutation(calculation, |state, index| {
             let epoch = state.provenance.calculations[index].source.combat_seq();
-            let source = state.source_snapshot(u64::from(epoch), transfer)?;
-            state.provenance.calculations[index].weak = Some(source);
+            let epoch = CombatEpoch::from_wire(u64::from(epoch))?;
+            state.source_transfers.snapshot_into(
+                epoch,
+                transfer,
+                &mut state.provenance.calculations[index].weak,
+            )?;
             Ok(())
         })
     }
@@ -266,24 +339,29 @@ impl State {
             if dealer == 0 {
                 return Err(SourceFailure::Packet);
             }
-            let reductions: Vec<_> = state
-                .provenance
-                .reductions
-                .iter()
-                .filter(|entry| entry.creature == dealer)
-                .collect();
+            let reductions = &state.provenance.reductions;
+            let mut count = 0;
             let total = reductions
                 .iter()
-                .try_fold(0_u64, |sum, entry| sum.checked_add(entry.amount))
+                .filter(|entry| entry.creature == dealer)
+                .try_fold(0_u64, |sum, entry| {
+                    count += 1;
+                    sum.checked_add(entry.amount)
+                })
                 .ok_or(SourceFailure::Arithmetic)?;
             let hypothetical = (i128::from(base) + i128::from(strength) + i128::from(total)).max(0);
             let effective = u64::try_from(hypothetical.min(i128::from(total)))
                 .map_err(|_| SourceFailure::Arithmetic)?;
             let mut allocated = 0_u64;
-            let mut shares = Vec::new();
+            let shares = &mut state.provenance.calculations[index].strength;
+            shares.clear();
             if total > 0 {
-                for (index, entry) in reductions.iter().enumerate() {
-                    let amount = if index + 1 == reductions.len() {
+                for (position, entry) in reductions
+                    .iter()
+                    .filter(|entry| entry.creature == dealer)
+                    .enumerate()
+                {
+                    let amount = if position + 1 == count {
                         effective - allocated
                     } else {
                         (u128::from(effective) * u128::from(entry.amount) / u128::from(total))
@@ -291,11 +369,13 @@ impl State {
                     };
                     allocated += amount;
                     if amount > 0 {
-                        shares.push((entry.source.clone(), amount));
+                        let capture = shares.vacant_mut().ok_or(SourceFailure::Capacity)?;
+                        capture.0.clone_from(&entry.source);
+                        capture.1 = amount;
+                        shares.activate();
                     }
                 }
             }
-            state.provenance.calculations[index].strength = shares;
             Ok(())
         })
     }
@@ -339,26 +419,41 @@ impl State {
                 .iter()
                 .position(|entry| entry.serial == token.payload)
                 .ok_or(SourceFailure::Token)?;
-            let calculation = self.provenance.calculations.remove(index);
-            if !calculation.complete {
-                return Err(SourceFailure::Packet);
-            }
-            crate::data::persistence::event_log!(
-                "  damage group: target {}, producer role {:?}",
-                calculation.original_target,
-                calculation.producer_role
-            );
-            let mut stage = LedgerStage::new(self)?;
-            stage.apply_group(&calculation)?;
-            stage.commit(self)?;
-            for result in calculation.results {
-                if matches!(
-                    result.kind,
-                    ResultKind::Incoming | ResultKind::SelfDamage | ResultKind::OstyAbsorbed
-                ) {
-                    self.slot_index(i32::from(result.receiver));
+            let result = (|| {
+                let calculation = &self.provenance.calculations[index];
+                if !calculation.complete {
+                    return Err(SourceFailure::Packet);
                 }
-            }
+                crate::data::persistence::event_log!(
+                    "  damage group: target {}, producer role {:?}",
+                    calculation.original_target,
+                    calculation.producer_role
+                );
+                let mut stage = LedgerStage::new(self)?;
+                stage.apply_group(
+                    &calculation.source,
+                    calculation.segment,
+                    &calculation.modifiers,
+                    &calculation.results,
+                    &calculation.weak,
+                    &calculation.strength,
+                )?;
+                stage.commit(self)?;
+                for result_index in 0..self.provenance.calculations[index].results.len() {
+                    let result = &self.provenance.calculations[index].results[result_index];
+                    if matches!(
+                        result.kind,
+                        ResultKind::Incoming | ResultKind::SelfDamage | ResultKind::OstyAbsorbed
+                    ) {
+                        let receiver = result.receiver;
+                        self.slot_index(i32::from(receiver));
+                    }
+                }
+                Ok(())
+            })();
+            self.provenance.calculations[index].reset();
+            self.provenance.calculations.remove(index);
+            result?;
             Ok(())
         })();
         self.source_status(result)
@@ -373,6 +468,7 @@ impl State {
                 .iter()
                 .position(|entry| entry.serial == token.payload)
                 .ok_or(SourceFailure::Token)?;
+            self.provenance.calculations[index].reset();
             self.provenance.calculations.remove(index);
             Ok(())
         })();
@@ -406,20 +502,17 @@ impl State {
                 result.kind,
                 ResultKind::Incoming | ResultKind::SelfDamage | ResultKind::OstyAbsorbed
             );
-            let calculation = DamageCalculation {
-                serial: 0,
-                source: SourceSnapshot::unknown(epoch),
-                producer_role: ProducerRole::Unknown,
-                segment: ProducerSegment::Attributed,
-                original_target: 0,
-                modifiers: Vec::new(),
-                results: vec![result],
-                weak: None,
-                strength: Vec::new(),
-                complete: true,
-            };
+            self.provenance.incoming.set_unknown(epoch);
+            let source = &self.provenance.incoming;
             let mut stage = LedgerStage::new(self)?;
-            stage.apply_group(&calculation)?;
+            stage.apply_group(
+                source,
+                ProducerSegment::Attributed,
+                &[],
+                &[result],
+                source,
+                &[],
+            )?;
             stage.commit(self)?;
             if received {
                 self.slot_index(i32::from(receiver));

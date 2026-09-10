@@ -2,14 +2,18 @@ use super::*;
 use crate::data::state::{CardStat, SourceKind};
 
 fn fixture() -> State {
-    State {
+    let mut state = State {
         current: Some(Combat {
             seq: 7,
             ..Combat::default()
         })
         .into(),
         ..State::default()
-    }
+    };
+    state
+        .reserve_lifecycle()
+        .expect("source fixture storage reservation succeeds");
+    state
 }
 
 fn card(state: &mut State, id: &str, slot: i32) -> u64 {
@@ -408,4 +412,163 @@ fn producer_segments_preserve_wire_policy_and_credited_rows() {
             assert_eq!(rows.iter().map(|row| row.damage_blocked).sum::<i64>(), 2);
         }
     }
+}
+
+#[test]
+fn calculation_capacity_releases_failed_and_aborted_slots_without_reusing_tokens() {
+    let mut state = fixture();
+    let source = card(&mut state, "A", 0);
+    let calculations: Vec<_> = (0..caps::DAMAGE_CALCULATIONS)
+        .map(|_| state.damage_calculation_begin(7, source, 1, 0, 999))
+        .collect();
+    assert!(calculations.iter().all(|token| *token != 0));
+    assert_eq!(state.damage_calculation_begin(7, source, 1, 0, 999), 0);
+    assert_eq!(state.damage_unattributed(7, 1, 1, 0, 0, 4, 0), 1);
+    assert_eq!(state.damage_calculation_abort(calculations[0]), 1);
+    let replacement = state.damage_calculation_begin(7, source, 1, 0, 999);
+    assert_ne!(replacement, 0);
+    assert!(!calculations.contains(&replacement));
+    assert_eq!(state.damage_calculation_abort(calculations[0]), 0);
+    assert_eq!(
+        state.damage_modifier_contribution(replacement, u64::MAX, 1),
+        0
+    );
+    assert_eq!(state.damage_calculation_commit(replacement), 0);
+    let after_failure = state.damage_calculation_begin(7, source, 1, 0, 999);
+    assert_ne!(after_failure, 0);
+    assert_ne!(after_failure, replacement);
+    assert_eq!(state.damage_calculation_abort(replacement), 0);
+    assert_eq!(state.damage_calculation_abort(after_failure), 1);
+    for token in calculations.into_iter().skip(1) {
+        assert_eq!(state.damage_calculation_abort(token), 1);
+    }
+}
+
+#[test]
+fn suspended_strength_captures_survive_reduction_removal_and_slot_reuse() {
+    let mut state = fixture();
+    let a = card(&mut state, "A", 0);
+    let b = card(&mut state, "B", 1);
+    assert_eq!(
+        state.power_attached(7, 70, "STRENGTH_POWER", 80, 1, 4, 0, a),
+        1
+    );
+    assert_eq!(
+        state.power_amount_changed(7, 70, "STRENGTH_POWER", 80, 1, 4, 0, -3, a),
+        1
+    );
+    let first = state.damage_calculation_begin(7, a, 1, 0, 999);
+    assert_eq!(state.damage_calculation_enemy_hit(first, 80, 10, -3), 1);
+    assert_eq!(
+        state.power_amount_changed(7, 70, "STRENGTH_POWER", 80, 1, 4, -3, 0, 0),
+        1
+    );
+    assert_eq!(
+        state.power_amount_changed(7, 70, "STRENGTH_POWER", 80, 1, 4, 0, -2, b),
+        1
+    );
+    let second = state.damage_calculation_begin(7, b, 1, 0, 999);
+    assert_eq!(state.damage_calculation_enemy_hit(second, 80, 10, -2), 1);
+    assert_eq!(state.damage_result_append(second, 8, 8, 0, 1, 0, 0), 1);
+    assert_eq!(state.damage_calculation_commit(second), 1);
+    assert_eq!(state.damage_result_append(first, 7, 7, 0, 1, 0, 0), 1);
+    assert_eq!(state.damage_calculation_commit(first), 1);
+    let rows = &state.current.as_ref().expect("fixture combat exists").cards;
+    assert_eq!(
+        rows.iter()
+            .find(|row| row.id == "A")
+            .expect("A supplied a reduction")
+            .mitigate_str,
+        3
+    );
+    assert_eq!(
+        rows.iter()
+            .find(|row| row.id == "B")
+            .expect("B supplied a reduction")
+            .mitigate_str,
+        2
+    );
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "One pointer inventory spans calculation and pool publication and resets"
+)]
+fn calculation_and_pool_resets_retain_every_initialized_source_owner() {
+    let mut state = fixture();
+    let a = card(&mut state, "A", 0);
+    let b = card(&mut state, "B", 1);
+    let owners = |state: &State| {
+        let mut pointers = Vec::new();
+        for calculation in state.provenance.calculations.all_slots() {
+            pointers.push(calculation.source.shares().as_ptr());
+            pointers.push(calculation.weak.shares().as_ptr());
+            for modifier in calculation.modifiers.all_slots() {
+                pointers.push(modifier.source.shares().as_ptr());
+            }
+            for (source, _) in calculation.strength.all_slots() {
+                pointers.push(source.shares().as_ptr());
+            }
+        }
+        for pool in &state.provenance.pools {
+            for block in pool.blocks.all_slots() {
+                pointers.push(block.base.source().shares().as_ptr());
+                for modifier in block.mods.all_slots() {
+                    pointers.push(modifier.source.source().shares().as_ptr());
+                }
+            }
+            for (source, _) in pool.pending.all_slots() {
+                pointers.push(source.shares().as_ptr());
+            }
+            for osty in pool.osty.all_slots() {
+                pointers.push(osty.source.source().shares().as_ptr());
+            }
+        }
+        pointers.sort_unstable();
+        pointers
+    };
+    let before = owners(&state);
+    assert!(before.windows(2).all(|pair| pair[0] != pair[1]));
+    assert_eq!(
+        before.len(),
+        caps::DAMAGE_CALCULATIONS * (2 + caps::DAMAGE_MODIFIERS + caps::STR_REDUCTIONS)
+            + caps::MAX_PLAYER_SLOTS
+                * (caps::BLOCK_POOL * (1 + SourceBlock::MAX_MODS)
+                    + caps::PENDING_BLOCK_CONTRIBS
+                    + caps::OSTY_STACK)
+    );
+    for _ in 0..2 {
+        let calculation = state.damage_calculation_begin(7, a, 1, 0, 999);
+        for _ in 0..caps::DAMAGE_MODIFIERS {
+            assert_eq!(state.damage_modifier_contribution(calculation, b, 1), 1);
+        }
+        assert_eq!(state.damage_calculation_weak_source(calculation, b), 1);
+        assert_eq!(state.damage_calculation_abort(calculation), 1);
+        for slot in 0..caps::MAX_PLAYER_SLOTS as i32 {
+            assert_eq!(state.block_modifier_contribution(7, b, 1, slot), 1);
+            assert_eq!(state.block_gained(7, 4, a, slot), 1);
+            assert_eq!(state.osty_summoned(7, b, 3, slot), 1);
+            assert_eq!(state.damage_unattributed(7, 2, 0, 2, 1, slot, 0), 1);
+            assert_eq!(state.block_pool_clear(7, slot), 1);
+            assert_eq!(state.osty_killed(7, slot, 0), 1);
+        }
+        assert!(
+            owners(&state) == before,
+            "pool publication retains all initialized source allocations"
+        );
+    }
+    state.provenance.clear_calculations_and_pools();
+    assert!(
+        owners(&state) == before,
+        "reset retains all initialized source allocations"
+    );
+    assert!(state.provenance.calculations.is_empty());
+    assert!(
+        state
+            .provenance
+            .pools
+            .iter()
+            .all(|pool| pool.blocks.is_empty() && pool.pending.is_empty() && pool.osty.is_empty())
+    );
 }
