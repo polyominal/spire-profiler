@@ -82,6 +82,13 @@ pub(crate) fn enable_for_selftest() {
     }
 }
 
+struct PanelFingerprints {
+    /// Rebuild only when the snapshot hash changes.
+    content: u64,
+    /// The frame returns before building the snapshot when this repeats.
+    frame: u64,
+}
+
 /// The class name must stay [`SpireProfilerPanel`].
 pub(crate) struct SpireProfilerPanel {
     object: Object,
@@ -92,10 +99,7 @@ pub(crate) struct SpireProfilerPanel {
     footer: String,
     detail: RowDetail,
     layout: Layout,
-    /// Rebuild only when the snapshot hash changes.
-    sig: Option<u64>,
-    /// The frame returns before building the snapshot when this repeats.
-    cheap_sig: u64,
+    fingerprints: Option<PanelFingerprints>,
     active_tab: UiTab,
     hover_row: Option<usize>,
     interaction: InteractionState,
@@ -143,8 +147,7 @@ impl SpireProfilerPanel {
             footer: String::new(),
             detail: RowDetail::default(),
             layout: Layout::default(),
-            sig: None,
-            cheap_sig: 0,
+            fingerprints: None,
             active_tab: UiTab::Combat,
             hover_row: None,
             interaction: InteractionState::default(),
@@ -182,7 +185,7 @@ impl SpireProfilerPanel {
     /// Draws the pinned chrome — plate, tab strip, and header. Rows and
     /// overlays are drawn by the two child Controls.
     pub(crate) fn draw(&mut self) {
-        if self.sig.is_none() {
+        if self.fingerprints.is_none() {
             return;
         }
         self.log_draw_start();
@@ -190,11 +193,11 @@ impl SpireProfilerPanel {
         // Engine calls never borrow `&mut self`.
         if self.theme.resolve() {
             // Newly loaded/failed assets change the chrome.
-            self.sig = None;
+            self.fingerprints = None;
         }
         if self.resolve_avatars() {
             // Newly loaded roster avatars change the header.
-            self.sig = None;
+            self.fingerprints = None;
         }
         let fonts = panel_replay::Fonts::new(
             &self.object,
@@ -242,7 +245,7 @@ impl SpireProfilerPanel {
 
     /// The rows child's `_draw`; commands are translated into child space.
     pub(crate) fn draw_body(&mut self, body: &Object) {
-        if self.sig.is_none() {
+        if self.fingerprints.is_none() {
             return;
         }
         if !self.logged_body_draw {
@@ -273,7 +276,7 @@ impl SpireProfilerPanel {
 
     /// The overlay child's `_draw`.
     pub(crate) fn draw_overlay(&mut self, overlay: &Object) {
-        if self.sig.is_none() {
+        if self.fingerprints.is_none() {
             return;
         }
         if !self.logged_overlay_draw {
@@ -339,7 +342,7 @@ impl SpireProfilerPanel {
         let shown = shown();
         self.object.set_visible(shown);
         if !shown {
-            self.sig = None;
+            self.fingerprints = None;
             self.hover_row = None;
             self.legend = None;
             self.tip = None;
@@ -367,7 +370,7 @@ impl SpireProfilerPanel {
         );
         if gutter != self.gutter {
             self.gutter = gutter;
-            self.sig = None;
+            self.fingerprints = None;
         }
         panel_common::viewport_mouse(&self.object, &mut self.mouse);
         let mouse = self.mouse;
@@ -409,7 +412,11 @@ impl SpireProfilerPanel {
         // Cheap dirty check first: hash snapshot-relevant state plus the
         // hover target, so an unchanged hash ends the frame here.
         let cheap = cheap_frame_signature(self.active_tab, hover);
-        if self.sig.is_some() && cheap == self.cheap_sig {
+        if self
+            .fingerprints
+            .as_ref()
+            .is_some_and(|fp| fp.frame == cheap)
+        {
             return;
         }
         self.rebuild(hover, cheap);
@@ -434,11 +441,13 @@ impl SpireProfilerPanel {
             self.active_tab,
             hover,
         );
-        self.cheap_sig = cheap;
-        if self.sig == Some(sig) {
+        let previous = self.fingerprints.replace(PanelFingerprints {
+            content: sig,
+            frame: cheap,
+        });
+        if previous.is_some_and(|fp| fp.content == sig) {
             return;
         }
-        self.sig = Some(sig);
 
         self.rows[..n].copy_from_slice(&rows_scratch[..n]);
         self.row_count = n;
@@ -657,7 +666,7 @@ impl SpireProfilerPanel {
             && tab != self.active_tab
         {
             self.active_tab = tab;
-            self.sig = None; // rebuild from the other dataset
+            self.fingerprints = None; // rebuild from the other dataset
         }
         if step.pressed
             && !was_down
@@ -667,7 +676,7 @@ impl SpireProfilerPanel {
             // The toggle itself is the state transition: pressing the
             // active avatar returns to All, any other selects it.
             crate::data::events::panel_filter_toggle(slot);
-            self.sig = None; // rebuild with the filter applied
+            self.fingerprints = None; // rebuild with the filter applied
         }
     }
 }
