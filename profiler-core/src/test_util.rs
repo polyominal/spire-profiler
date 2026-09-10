@@ -106,6 +106,11 @@ pub fn bind_event_log_probe(path: &Path) {
     bind_log_path(path);
 }
 
+/// Runs the pure combat-finalization staging step without persistence I/O.
+pub fn finish_combat_for_allocation_probe(combat_seq: u64) -> Option<crate::data::state::Combat> {
+    crate::data::state::STATE.with(|cell| cell.borrow_mut().finished_combat(combat_seq))
+}
+
 /// A synthetic UiRow; the name truncates to the fixed 64-byte field.
 #[allow(clippy::too_many_arguments)] // fixture: the args mirror UiRow's flat field shape
 pub fn test_row(

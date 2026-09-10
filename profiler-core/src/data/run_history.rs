@@ -37,6 +37,20 @@
 //! The cache parses `runs.jsonl` and the combat store once per data-dir
 //! path pair per process, invalidated by successful mid-session combat or
 //! run writes.
+//!
+//! # Allocation scope
+//!
+//! `continued_run_id` and `next_run_id` use allocating store scans, while
+//! identity matching is computation. In `select_run`, `load_runs`,
+//! `load_combats`, and cache replacement are persistence-boundary work;
+//! `matching_run_id`, `build_view`, the roll-ups, fingerprinting, and filter
+//! healing are computation. `select` then retains the selected view, and
+//! `selected_view` clones it, so selection and access remain
+//! measured storage operations rather than an I/O exemption. `invalidate`
+//! and `clear` are logical resets: retained history storage must be reused
+//! after setup instead of being treated as a new setup interval. A caller
+//! must measure the computation around a store read separately from the read
+//! adapter itself.
 
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};

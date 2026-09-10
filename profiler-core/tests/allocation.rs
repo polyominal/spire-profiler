@@ -1,30 +1,10 @@
-use std::alloc::{GlobalAlloc, Layout, System};
 use std::io;
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use profiler_core::test_util::emit_allocation_probe;
 
-static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
-
-struct CountingAllocator;
-
-// SAFETY: all unsafe allocator operations forward to `System`.
-unsafe impl GlobalAlloc for CountingAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
-        // Safety: `layout` is allocator-valid by `GlobalAlloc`'s contract.
-        unsafe { System.alloc(layout) }
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        // Safety: `ptr` was allocated by `alloc` with this `layout`.
-        unsafe { System.dealloc(ptr, layout) }
-    }
-}
-
-#[global_allocator]
-static GLOBAL: CountingAllocator = CountingAllocator;
+#[path = "support/allocation.rs"]
+mod allocation_support;
 
 #[test]
 fn console_diagnostics_do_not_allocate_after_stderr_warmup() {
@@ -34,12 +14,12 @@ fn console_diagnostics_do_not_allocate_after_stderr_warmup() {
     let err = io::Error::from_raw_os_error(13);
 
     emit_allocation_probe("warm stderr", 7, path, &err);
-    ALLOCATIONS.store(0, Ordering::Relaxed);
-    emit_allocation_probe("steady state", 4_294_967_296, path, &err);
+    let counts = allocation_support::measure_and_drop(|| {
+        emit_allocation_probe("steady state", 4_294_967_296, path, &err);
+    });
 
-    let allocations = ALLOCATIONS.load(Ordering::Relaxed);
-    if allocations != 0 {
-        eprintln!("allocation probe logged {allocations} allocation(s)");
+    if !counts.all_zero() {
+        eprintln!("allocation probe observed {counts:?}");
         std::process::exit(1);
     }
 }

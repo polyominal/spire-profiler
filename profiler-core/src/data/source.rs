@@ -4,6 +4,15 @@
 //! Completed damage groups fix each root's budget before consuming results.
 //! Pool prefixes instead retain original weights and a monotone credit cursor;
 //! merging a grant or correcting outer residue never changes those weights.
+//!
+//! Provenance capture, source normalization, power and play tracking, damage
+//! allocation, block pools, Doom batches, and Osty stacks are computation
+//! scopes. The target requires their storage to be bounded and retained by
+//! `State`; cap, token, epoch, and arithmetic failures are measured just like
+//! successful operations. Combat-epoch invalidation and
+//! `clear_combat_sources` are logical reset boundaries, so a qualifying reset
+//! preserves retained capacity. A diagnostic report does not hide allocation
+//! performed by the computation that produced it.
 
 use std::num::NonZeroU32;
 

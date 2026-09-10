@@ -11,6 +11,16 @@
 //! into the owning `Vec` — the safe-Rust way to reference sibling state
 //! without self-borrowing.
 //!
+//! `State` is the lifetime owner for gameplay storage. The setup entrypoint is
+//! [`crate::data::events::init`]. After setup, [`State::slot_index`], combat
+//! and run lifecycle transitions, and source event methods are computation
+//! scopes. A zero-allocation reset at `clear_combat_sources`,
+//! `discard_combat`, run replacement, or a logical slot reset must clear
+//! occupancy while retaining capacity. The caps bound cardinality, but do not
+//! prove that pushes, clones, or drops avoid allocator calls. Admission
+//! failure returns the event's failure value and leaves the state valid; it is
+//! not a reason to grow a table or panic.
+//!
 //! # The game facts the model relies on
 //!
 //! Co-op fully replicates the simulation on every peer: only actions cross

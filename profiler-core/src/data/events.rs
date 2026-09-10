@@ -1,4 +1,25 @@
 //! Native events carry explicit epochs and immutable source-transfer values.
+//!
+//! [`init`] is setup for the profiler owner; [`test_reset`] is test teardown.
+//! The source, combat, run, and panel event wrappers are computation
+//! entrypoints after setup. Their expected rejected wire values, stale
+//! tokens, full tables, and arithmetic failures remain in the measured scope.
+//! Logging and persistence calls are separate adapters, even when a wrapper
+//! calls one before or after its state mutation.
+//!
+//! For accounting, the mixed lifecycle calls have these split points.
+//! [`combat_started`] finalizes and clears a previous combat, may call the
+//! combat writer, then constructs the next live record. [`combat_ended`]
+//! finishes the record before its writer. [`run_started`] combines store
+//! scans for resume or a new id with run setup and roster parsing; a resumed
+//! accumulator combines store reads, parsing, and merge computation. Its
+//! whole call remains a valid baseline, while a pure merge sample supplies
+//! separate computation evidence where a helper boundary exists.
+//! [`run_ended`] takes the live run before writing it, and [`run_suspended`]
+//! clears live state before its trace line. [`run_history_select`] separates
+//! store loading from matching, view construction, and selection retention.
+//! These are scope requirements, not permission to exclude a whole call
+//! because it performs I/O.
 
 use std::path::Path;
 

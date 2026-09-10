@@ -7,6 +7,14 @@
 //! (`Box::into_raw` — never null), and the engine-side null guards live at
 //! the FFI boundary in [`crate::engine::gdext`]'s callbacks, so no defensive
 //! null checks are needed here.
+//!
+//! `panel_create`, `run_panel_create`, and `body_create` allocate the
+//! panel-owned boxes and attach engine children; the matching `*_free`
+//! callbacks release them. Creation and teardown are lifecycle boundaries.
+//! `panel_refresh`, `run_panel_refresh`, and the draw callbacks can mix native
+//! computation with engine calls, so only the engine spans are adapter work.
+//! Their native state, snapshot, layout, and tooltip work remains subject to
+//! the crate allocation contract.
 
 use std::ffi::c_void;
 

@@ -106,6 +106,27 @@
 //! skips names that are not `<digits>.json`, and every parse failure is
 //! fail-logged and skipped — one bad file never takes the rest of the
 //! store down. The store grows without bound by design.
+//!
+//! # Allocation boundary
+//!
+//! Filesystem and codec work is an explicit allocating boundary. The
+//! inventory is `ensure_data_dir`, `read_file`, `read_dir`, `write_file`,
+//! `build_combat_json`, the record builders and parsers in `records`,
+//! `max_combat_id`, `load_run_combat_docs`, `load_combat_docs_from`,
+//! `parse_combat_docs`, `write_combat_file`, and `write_run_record`.
+//! `bind_log_path` and `append_log` are also adapters: the line buffer is
+//! fixed, but path ownership, opening the sink, and the operating system may
+//! allocate. `reset_log_sink` is their owner reset.
+//!
+//! These names identify allocation boundaries, not exemptions for callers.
+//! `write_combat_file` calls `merge_into_run` before any store or codec work;
+//! that merge is computation and stays measured. `rebuild_run_accumulator`
+//! combines store loading, parsing, and run merging in one mixed operation.
+//! Its whole call remains measured; a pure merge sample is separate evidence,
+//! not a claim that the resume path is physically split. Cache invalidation
+//! after a successful write is a lifecycle reset and remains observable by the
+//! computation accounting. A mixed event cannot be wrapped in one ignored
+//! region merely because it eventually writes a file.
 
 mod combat_doc;
 mod combats;
