@@ -12,6 +12,7 @@ use crate::workspace_root;
 pub(crate) const DOCS: &[&str] = &[
     "README.md",
     "AGENTS.md",
+    "STATIC_ALLOC_HANDOFF.md",
     "docs/build.md",
     "docs/verify.md",
     "docs/gdextension.md",

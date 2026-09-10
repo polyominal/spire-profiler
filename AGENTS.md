@@ -1,5 +1,18 @@
 # Guidelines for LLM agents
 
+<!-- STATIC_ALLOC_HANDOFF_START -->
+
+## Temporary static allocation handoff
+
+Read [STATIC\_ALLOC\_HANDOFF.md](STATIC_ALLOC_HANDOFF.md) before continuing the
+static allocation work. It contains the paused checkpoint, remaining plan,
+required agent/review process, and update protocol. Development is paused after
+item 3; resume only on the user's explicit instruction. Before the final merge,
+remove this marked block, the handoff document, and its temporary formatter
+entry as specified in the handoff's cleanup instructions.
+
+<!-- STATIC_ALLOC_HANDOFF_END -->
+
 ## Design goals
 
 1. **The game must never crash because of us.** A panic unwinding across the C
