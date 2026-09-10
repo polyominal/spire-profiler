@@ -2,6 +2,8 @@
 //! sequence against a fresh core and asserts the persisted JSON. The suite
 //! is split by topic into submodules; this file keeps the shared helpers.
 
+use std::path::PathBuf;
+
 use super::*;
 use crate::data::records::{CardRec, CombatRec};
 use crate::test_util::{SourceFixture, combat_epoch, combat_ids, unique_dir};

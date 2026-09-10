@@ -5,7 +5,7 @@ use crate::data::state::{Combat, CombatPhase, CombatResult, STATE};
 use crate::{fail, marker};
 
 pub fn combat_started(encounter_id: &str, encounter_type: &str) -> u64 {
-    if !STATE.with(|cell| cell.borrow().initialized) {
+    if STATE.with(|cell| cell.borrow().store_paths.is_none()) {
         fail!("combat_started called before init");
         return 0;
     }

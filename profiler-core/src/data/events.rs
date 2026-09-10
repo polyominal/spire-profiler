@@ -1,11 +1,11 @@
 //! Native events carry explicit epochs and immutable source-transfer values.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::data::persistence::{
     bind_log_path, ensure_data_dir, event_log, max_combat_id, reset_log_sink,
 };
-use crate::data::state::{PlayerFilter, STATE, State};
+use crate::data::state::{PlayerFilter, STATE, State, StorePaths};
 use crate::marker;
 
 mod combat;
@@ -21,17 +21,13 @@ pub use run::{
 pub use self_test::self_test;
 
 pub fn init(data_dir: &Path) {
-    if STATE.with(|cell| cell.borrow().initialized) {
+    if STATE.with(|cell| cell.borrow().store_paths.is_some()) {
         return;
     }
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
-        let data_dir = PathBuf::from(data_dir);
-        state.data_dir = data_dir.clone();
-        state.runs_dir_full = data_dir.join("runs");
-        state.runs_path_full = data_dir.join("runs.jsonl");
+        state.store_paths = Some(StorePaths::new(data_dir));
         state.run_profile = -1;
-        state.initialized = true;
     });
     bind_log_path(&data_dir.join("profiler.log"));
     let _ = ensure_data_dir();

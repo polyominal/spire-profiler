@@ -5,26 +5,16 @@
 //! combats outside any run land in `runs/0/`.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
+use super::MAX_JSON_SIZE;
 use super::combat_doc::build_combat_json;
 use super::io::{ReadFile, ensure_data_dir, read_file, write_file};
 use super::runs::merge_into_run;
-use super::{MAX_JSON_SIZE, RUNS_DIR_NAME};
 use crate::data::persistence::event_log;
 use crate::data::records;
 use crate::data::state::{Combat, STATE};
 use crate::fail;
-
-fn combat_path(run_seq: u32, id: u32) -> PathBuf {
-    STATE.with(|s| {
-        s.borrow()
-            .data_dir
-            .join(RUNS_DIR_NAME)
-            .join(run_seq.to_string())
-            .join(format!("{id}.json"))
-    })
-}
 
 pub(crate) struct StoredCombatDoc {
     path_run_id: u32,
@@ -58,7 +48,14 @@ fn scan_combat_ids(dir: &Path) -> Vec<u32> {
 
 /// The highest id in the store; boot seeds `next_combat_id` with this.
 pub(crate) fn max_combat_id() -> u32 {
-    let base = STATE.with(|s| s.borrow().data_dir.join(RUNS_DIR_NAME));
+    let Some(base) = STATE.with(|s| {
+        s.borrow()
+            .store_paths
+            .as_ref()
+            .map(|paths| paths.runs_dir.clone())
+    }) else {
+        return 0;
+    };
     let Ok(entries) = fs::read_dir(&base) else {
         return 0;
     };
@@ -78,12 +75,14 @@ pub(crate) fn max_combat_id() -> u32 {
 
 /// One run's documents in id order; unreadable files are skipped.
 pub(crate) fn load_run_combat_docs(run_id: u32) -> Vec<StoredCombatDoc> {
-    let dir = STATE.with(|s| {
+    let Some(dir) = STATE.with(|s| {
         s.borrow()
-            .data_dir
-            .join(RUNS_DIR_NAME)
-            .join(run_id.to_string())
-    });
+            .store_paths
+            .as_ref()
+            .map(|paths| paths.runs_dir.join(run_id.to_string()))
+    }) else {
+        return Vec::new();
+    };
     let mut docs = Vec::new();
     for id in scan_combat_ids(&dir) {
         if let ReadFile::Content(content) = read_file(&dir.join(format!("{id}.json"))) {
@@ -132,7 +131,14 @@ pub(crate) fn load_combat_docs_from(dir: &Path) -> Vec<StoredCombatDoc> {
 /// Test-only alias for [`load_combat_docs_from`] on the configured store.
 #[cfg(test)]
 pub(crate) fn load_all_combat_docs() -> Vec<String> {
-    let dir = STATE.with(|s| s.borrow().data_dir.join(RUNS_DIR_NAME));
+    let Some(dir) = STATE.with(|s| {
+        s.borrow()
+            .store_paths
+            .as_ref()
+            .map(|paths| paths.runs_dir.clone())
+    }) else {
+        return Vec::new();
+    };
     load_combat_docs_from(&dir)
         .into_iter()
         .map(|stored| stored.doc)
@@ -195,7 +201,16 @@ pub fn write_combat_file(c: &Combat) -> bool {
         fail!("combat {} JSON overflow; combat not written", c.seq);
         return false;
     }
-    let path = combat_path(c.run.as_ref().map_or(0, |run| run.seq), c.seq);
+    let Some(path) = STATE.with(|s| {
+        s.borrow().store_paths.as_ref().map(|paths| {
+            paths
+                .runs_dir
+                .join(c.run.as_ref().map_or(0, |run| run.seq).to_string())
+                .join(format!("{}.json", c.seq))
+        })
+    }) else {
+        return false;
+    };
     let parent = path
         .parent()
         .expect("a store path always has a parent directory");
@@ -230,6 +245,7 @@ pub fn write_combat_file(c: &Combat) -> bool {
 mod tests {
     use super::*;
     use crate::data::persistence::test_support::*;
+    use crate::data::state::{EndedRun, RunContext, RunOutcome};
     use crate::test_util::{combat_ids, unique_dir};
 
     fn store_ids(data: &std::path::Path) -> Vec<u32> {
@@ -237,6 +253,36 @@ mod tests {
             .into_iter()
             .map(|(_, id)| id)
             .collect()
+    }
+
+    #[test]
+    fn reset_disables_store_reads_and_writes() {
+        let data = unique_dir("store-reset");
+        init_state(&data);
+        let combat = synthetic_combat();
+        assert!(write_combat_file(&combat));
+        let path = data.join("runs/42/7.json");
+        let before = fs::read(&path).expect("combat was written");
+
+        crate::data::events::test_reset();
+
+        assert_eq!(max_combat_id(), 0);
+        assert!(load_run_combat_docs(42).is_empty());
+        assert!(load_all_combat_docs().is_empty());
+        assert!(!ensure_data_dir());
+        let mut replacement = synthetic_combat();
+        replacement.encounter_id = "REPLACEMENT".to_owned();
+        assert!(!write_combat_file(&replacement));
+        assert!(!crate::data::persistence::write_run_record(&EndedRun {
+            context: RunContext {
+                run: synthetic_run(42),
+                players: synthetic_roster(),
+            },
+            outcome: RunOutcome::Victory,
+            ended_at: 2000,
+        }));
+        assert_eq!(fs::read(path).expect("original combat remains"), before);
+        assert!(!data.join("runs.jsonl").exists());
     }
 
     #[test]

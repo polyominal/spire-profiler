@@ -780,7 +780,7 @@ fn cheap_state_signature(tab: UiTab) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     STATE.with(|s| {
         let st = s.borrow();
-        st.initialized.hash(&mut hasher);
+        st.store_paths.is_some().hash(&mut hasher);
         (tab as u8).hash(&mut hasher);
         match tab {
             UiTab::Combat => {
@@ -819,8 +819,8 @@ fn cheap_state_signature(tab: UiTab) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data::state::{Combat, PlayerFilter};
-    use crate::test_util::test_row;
+    use crate::data::state::{Combat, PlayerFilter, StorePaths};
+    use crate::test_util::{test_row, unique_dir};
     use crate::ui::ui_model::{SEG_COUNT, Section};
 
     fn test_layout() -> Layout {
@@ -853,7 +853,7 @@ mod tests {
     fn panel_visible_toggles_on_and_off() {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
-            st.initialized = true;
+            st.store_paths = Some(StorePaths::new(&unique_dir("ui-store")));
             st.run_ctx = Some(Default::default());
         });
         VISIBLE.with(|v| v.set(false));
@@ -874,7 +874,7 @@ mod tests {
     fn toggle_is_ignored_outside_a_run() {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
-            st.initialized = true;
+            st.store_paths = Some(StorePaths::new(&unique_dir("ui-store")));
             st.run_ctx = None;
         });
         VISIBLE.with(|v| v.set(false));
@@ -889,7 +889,7 @@ mod tests {
     fn dismiss_turns_the_panel_off_like_f8() {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
-            st.initialized = true;
+            st.store_paths = Some(StorePaths::new(&unique_dir("ui-store")));
             st.run_ctx = Some(Default::default());
         });
         VISIBLE.with(|v| v.set(true));
@@ -1069,7 +1069,7 @@ mod tests {
     fn cheap_state_signature_tracks_snapshot_relevant_changes() {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
-            st.initialized = true;
+            st.store_paths = Some(StorePaths::new(&unique_dir("ui-store")));
             st.current = Some(Combat {
                 seq: 1,
                 encounter_id: "BYGONE_EFFIGY".to_owned(),

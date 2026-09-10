@@ -44,7 +44,7 @@ impl Drop for Script {
 
 #[allow(clippy::too_many_lines)]
 pub fn self_test() {
-    if !STATE.with(|cell| cell.borrow().initialized) {
+    if STATE.with(|cell| cell.borrow().store_paths.is_none()) {
         return;
     }
     set_run_meta(1);

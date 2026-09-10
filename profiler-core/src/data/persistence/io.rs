@@ -6,27 +6,20 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use super::{MAX_JSON_SIZE, RUNS_DIR_NAME};
+use super::MAX_JSON_SIZE;
 use crate::data::state::STATE;
 use crate::fail;
 
-/// Creates `<data_dir>` and the runs store (false + a fail log on error).
+/// Creates the configured store; false before init or on a logged IO error.
 pub fn ensure_data_dir() -> bool {
-    let (data_dir, runs_dir) = STATE.with(|s| {
-        let st = s.borrow();
-        let data_dir = st.data_dir.clone();
-        let runs_dir = data_dir.join(RUNS_DIR_NAME);
-        (data_dir, runs_dir)
-    });
-    if let Err(err) = fs::create_dir_all(&data_dir) {
-        fail!(
-            "cannot create data directory '{}': {} (os error {})",
-            data_dir.display(),
-            err.kind(),
-            err.raw_os_error().unwrap_or(-1)
-        );
+    let Some(runs_dir) = STATE.with(|s| {
+        s.borrow()
+            .store_paths
+            .as_ref()
+            .map(|paths| paths.runs_dir.clone())
+    }) else {
         return false;
-    }
+    };
     if let Err(err) = fs::create_dir_all(&runs_dir) {
         fail!(
             "cannot create runs store directory '{}': {} (os error {})",

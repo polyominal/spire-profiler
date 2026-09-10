@@ -1,5 +1,6 @@
 use super::*;
-use crate::data::state::{State, TEAM_SLOT};
+use crate::data::state::{State, StorePaths, TEAM_SLOT};
+use crate::test_util::unique_dir;
 
 fn reset_state() {
     STATE.with(|s| *s.borrow_mut() = State::default());
@@ -9,7 +10,7 @@ fn start_combat() {
     reset_state();
     STATE.with(|s| {
         let mut st = s.borrow_mut();
-        st.initialized = true;
+        st.store_paths = Some(StorePaths::new(&unique_dir("ui-store")));
         st.current = Some(Combat {
             seq: 1,
             encounter_id: "BYGONE_EFFIGY".to_owned(),
@@ -105,7 +106,7 @@ fn run_tab_rows_filter_by_player_filter() {
     reset_state();
     STATE.with(|s| {
         let mut st = s.borrow_mut();
-        st.initialized = true;
+        st.store_paths = Some(StorePaths::new(&unique_dir("ui-store")));
         // The run accumulator keys rows on (player, id, kind), so the
         // avatar toggle filters it the same way as the combat's cards.
         st.run_cards.push(CardStat {

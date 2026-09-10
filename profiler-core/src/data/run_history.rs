@@ -157,13 +157,6 @@ thread_local! {
     static RUN_FILTER: Cell<PlayerFilter> = const { Cell::new(PlayerFilter::All) };
 }
 
-fn store_paths() -> (PathBuf, PathBuf) {
-    STATE.with(|s| {
-        let st = s.borrow();
-        (st.runs_path_full.clone(), st.runs_dir_full.clone())
-    })
-}
-
 /// One JSON object per line; one bad line never hides the rest.
 fn load_runs(path: &Path) -> Vec<RunEntry> {
     let Some(content) = crate::data::persistence::read_file(path).content() else {
@@ -223,7 +216,15 @@ pub(crate) fn next_run_id(runs_path: &Path, runs_dir: &Path) -> Option<u32> {
 }
 
 fn ensure_loaded() {
-    let (runs_path, runs_dir) = store_paths();
+    let Some((runs_path, runs_dir)) = STATE.with(|s| {
+        s.borrow()
+            .store_paths
+            .as_ref()
+            .map(|paths| (paths.runs_path.clone(), paths.runs_dir.clone()))
+    }) else {
+        invalidate();
+        return;
+    };
     let hit = CACHE.with(|cell| {
         let cache = cell.borrow();
         cache
@@ -367,9 +368,9 @@ pub fn select_run(seed: &str, start_time: i64, profile: i32) -> RunSelection {
     ensure_loaded();
     CACHE.with(|cell| {
         let cache = cell.borrow();
-        let cache = cache
-            .as_ref()
-            .expect("ensure_loaded just populated the cache");
+        let Some(cache) = cache.as_ref() else {
+            return RunSelection::Empty;
+        };
         let Some(run_id) = matching_run_id(&cache.runs, &cache.combats, seed, start_time, profile)
         else {
             return RunSelection::Empty;

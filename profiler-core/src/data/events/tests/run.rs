@@ -22,7 +22,11 @@ fn repeated_init_keeps_the_first_data_dir() {
     init(&second);
 
     assert!(
-        STATE.with(|cell| cell.borrow().data_dir == first),
+        STATE.with(|cell| cell
+            .borrow()
+            .store_paths
+            .as_ref()
+            .is_some_and(|paths| paths.runs_dir == first.join("runs"))),
         "the second data dir must not replace the initialized one"
     );
     let log = read_test_file(&first, "profiler.log");
@@ -35,6 +39,53 @@ fn repeated_init_keeps_the_first_data_dir() {
         !second.join("profiler.log").exists(),
         "a repeated init must not write through the new argument"
     );
+}
+
+#[test]
+fn failed_init_keeps_the_first_store() {
+    let base = unique_dir("spire-profiler-test-init-failed");
+    let first = base.join("blocked");
+    let second = base.join("other");
+    std::fs::write(&first, "blocker").expect("block directory creation");
+    test_reset();
+    init(&first);
+    init(&second);
+    std::fs::remove_file(&first).expect("allow the first store to recover");
+
+    combat_started("RECOVERED", "test");
+    combat_ended(combat_epoch());
+
+    assert_eq!(read_combat(&first).0.encounter_id, "RECOVERED");
+    assert!(
+        !second.exists(),
+        "failed initialization must still be idempotent"
+    );
+}
+
+#[test]
+fn reset_then_init_routes_records_to_the_new_store() {
+    let first = unique_dir("spire-profiler-test-reset-first");
+    let second = unique_dir("spire-profiler-test-reset-second");
+    test_reset();
+    init(&first);
+    run_started("IRONCLAD", 0, "Standard", "FIRST", 0, "", 1000);
+    combat_started("FIRST", "test");
+    combat_ended(combat_epoch());
+    run_ended(RunOutcome::Victory);
+    let first_log = read_test_file(&first, "profiler.log");
+
+    test_reset();
+    init(&second);
+    run_started("IRONCLAD", 0, "Standard", "SECOND", 0, "", 2000);
+    combat_started("SECOND", "test");
+    combat_ended(combat_epoch());
+    run_ended(RunOutcome::Defeat);
+
+    assert_eq!(read_combat(&first).0.encounter_id, "FIRST");
+    assert_eq!(read_run(&first)["seed"], "FIRST");
+    assert_eq!(read_test_file(&first, "profiler.log"), first_log);
+    assert_eq!(read_combat(&second).0.encounter_id, "SECOND");
+    assert_eq!(read_run(&second)["seed"], "SECOND");
 }
 
 #[test]

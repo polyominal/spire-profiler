@@ -163,7 +163,7 @@ fn chart_dataset(tab: UiTab) -> Vec<CardStat> {
 /// Defense sorts standalone self-damage below every positive contributor:
 /// what protected the player first, then what it cost.
 pub fn ui_snapshot_rows(tab: UiTab, out: &mut [UiRow]) -> usize {
-    if !STATE.with(|s| s.borrow().initialized) {
+    if STATE.with(|s| s.borrow().store_paths.is_none()) {
         return 0;
     }
     let cards = chart_dataset(tab);
@@ -361,7 +361,7 @@ pub(crate) fn ui_snapshot_meta(tab: UiTab) -> UiMeta {
     STATE.with(|s| {
         let st = s.borrow();
         let mut m = UiMeta::default();
-        if !st.initialized {
+        if st.store_paths.is_none() {
             return m;
         }
         if tab == UiTab::Run {
@@ -430,7 +430,7 @@ pub fn ui_row_detail_from_rows(tab: UiTab, rows: &[UiRow], flat_index: usize) ->
 pub fn ui_footer_text(tab: UiTab) -> String {
     STATE.with(|s| {
         let st = s.borrow();
-        if !st.initialized {
+        if st.store_paths.is_none() {
             return String::new();
         }
         if tab == UiTab::Run {

@@ -9,13 +9,20 @@ use crate::data::state::{EndedRun, STATE};
 
 /// The record comes from the run context: identity and header facts only.
 pub fn write_run_record(ended: &EndedRun) -> bool {
+    let Some(runs_path) = STATE.with(|s| {
+        s.borrow()
+            .store_paths
+            .as_ref()
+            .map(|paths| paths.runs_path.clone())
+    }) else {
+        return false;
+    };
     let run = &ended.context.run;
     if parse_combat_docs(&load_run_combat_docs(run.seq)).is_empty() {
         event_log!("run {} ended with no combat records", run.seq);
         return false;
     }
 
-    let runs_path = STATE.with(|s| s.borrow().runs_path_full.clone());
     let line = records::build_run_json(ended);
     let mut content = match read_file(&runs_path) {
         ReadFile::Missing => String::new(),

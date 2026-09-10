@@ -127,8 +127,6 @@ pub use writes::write_run_record;
 /// Hard cap on one JSON document (read and write).
 const MAX_JSON_SIZE: usize = 64 * 1024 * 1024;
 
-const RUNS_DIR_NAME: &str = "runs";
-
 #[cfg(test)]
 pub(crate) mod test_support {
     // The shared fixtures for the persistence submodule suites: the STATE
@@ -141,14 +139,11 @@ pub(crate) mod test_support {
     use crate::source_kind::SourceKind;
     pub(crate) use crate::test_util::unique_dir;
 
-    /// Points the test process's STATE at `data` (creating it), with the
-    /// file paths derived the way init derives them.
+    /// Configures the store and log paths without creating their directories.
     pub(crate) fn init_state(data: &std::path::Path) {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
-            st.data_dir = data.to_path_buf();
-            st.runs_dir_full = data.join("runs");
-            st.runs_path_full = data.join("runs.jsonl");
+            st.store_paths = Some(crate::data::state::StorePaths::new(data));
         });
         bind_log_path(&data.join("profiler.log"));
     }

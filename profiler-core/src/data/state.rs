@@ -85,7 +85,7 @@
 //! simulation never depends on them).
 
 use std::cell::{Cell, RefCell};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -443,12 +443,23 @@ pub struct PlayerSlotState {
     pub died: bool,
 }
 
+pub(crate) struct StorePaths {
+    pub(super) runs_dir: PathBuf,
+    pub(super) runs_path: PathBuf,
+}
+
+impl StorePaths {
+    pub(crate) fn new(data_dir: &Path) -> Self {
+        Self {
+            runs_dir: data_dir.join("runs"),
+            runs_path: data_dir.join("runs.jsonl"),
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct State {
-    pub initialized: bool,
-    pub data_dir: PathBuf,
-    pub runs_dir_full: PathBuf,
-    pub runs_path_full: PathBuf,
+    pub(crate) store_paths: Option<StorePaths>,
     /// The combat-id counter: seeded at boot to the store's highest id and
     /// incremented at each combat start, so the first new combat takes
     /// max+1.
