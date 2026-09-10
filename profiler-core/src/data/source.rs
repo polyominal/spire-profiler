@@ -30,7 +30,7 @@ const _: () = assert!(caps::POWER_GRANTS_PER_INSTANCE <= caps::POWER_GRANTS_TOTA
 const _: () = assert!(caps::DAMAGE_RESULTS == 2);
 const _: () = assert!(caps::DAMAGE_DESTINATIONS >= caps::SOURCE_DESTINATIONS);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq)]
 struct CombatEpoch(NonZeroU32);
 
 impl CombatEpoch {
@@ -43,7 +43,7 @@ impl CombatEpoch {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(PartialEq)]
 #[repr(u8)]
 enum TokenKind {
     RowDestination = 0,
@@ -61,7 +61,6 @@ const _: () = assert!(TokenKind::DamageCalculation as u8 == 3);
 const _: () = assert!(TokenKind::CardPlay as u8 == 4);
 const _: () = assert!(TokenKind::DoomBatch as u8 == 5);
 
-#[derive(Clone, Copy, Debug)]
 struct Token {
     epoch: CombatEpoch,
     kind: TokenKind,
@@ -110,7 +109,7 @@ impl Token {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Destination {
     Row(usize),
     Unknown(SourceSlot),
@@ -145,7 +144,7 @@ impl Destination {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum SourceFailure {
     Epoch,
     Token,
@@ -154,7 +153,7 @@ enum SourceFailure {
     Arithmetic,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Default)]
 struct SourceDiagnostics {
     reported: u8,
 }
@@ -169,20 +168,18 @@ impl SourceDiagnostics {
     }
 }
 
-#[derive(Clone, Debug)]
 enum TransferValue {
     Upload(Vec<(Destination, u128)>),
     Sealed(SourceSnapshot),
     Invalid,
 }
 
-#[derive(Clone, Debug)]
 struct Transfer {
     serial: u32,
     value: TransferValue,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Default)]
 pub(super) struct SourceTransfers {
     epoch: Option<CombatEpoch>,
     serial: u32,
@@ -428,7 +425,7 @@ mod play;
 mod pools;
 mod power;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Default)]
 pub(super) struct Provenance {
     epoch: Option<CombatEpoch>,
     powers: Vec<PowerProvenance>,
@@ -444,7 +441,7 @@ pub(super) struct Provenance {
     pools: Vec<SourcePool>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct PowerProvenance {
     instance: u64,
     id: String,
@@ -457,20 +454,17 @@ struct PowerProvenance {
     trusted: bool,
 }
 
-#[derive(Clone, Debug)]
 struct GeneratedSource {
     instance: u64,
     source: SourceSnapshot,
     producer_role: ProducerRole,
 }
 
-#[derive(Clone, Debug)]
 struct InstanceSource {
     instance: u64,
     source: SourceSnapshot,
 }
 
-#[derive(Clone, Debug)]
 struct ActiveSourcePlay {
     serial: u32,
     execution: u64,
@@ -480,7 +474,7 @@ struct ActiveSourcePlay {
     first_orb_used: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct StrengthReduction {
     power_instance: u64,
     creature: u64,
@@ -488,7 +482,7 @@ struct StrengthReduction {
     source: SourceSnapshot,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq)]
 enum ProducerSegment {
     Direct,
     Attributed,
@@ -503,7 +497,6 @@ impl From<ProducerSegment> for DamageSegment {
     }
 }
 
-#[derive(Clone, Debug)]
 struct DamageCalculation {
     serial: u32,
     source: SourceSnapshot,
@@ -517,7 +510,6 @@ struct DamageCalculation {
     complete: bool,
 }
 
-#[derive(Clone, Debug)]
 struct ObservedDamage {
     total: u64,
     unblocked: u64,
@@ -527,14 +519,12 @@ struct ObservedDamage {
     weak_prevented: u64,
 }
 
-#[derive(Clone, Debug)]
 struct DoomBatch {
     serial: u32,
     targets: Vec<DoomCapture>,
     complete: bool,
 }
 
-#[derive(Clone, Debug)]
 struct DoomCapture {
     creature: u64,
     power_instance: u64,
@@ -542,14 +532,14 @@ struct DoomCapture {
     allocations: Vec<(Destination, u64)>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 struct SourcePool {
     blocks: Vec<SourceBlock>,
     pending: Vec<(SourceSnapshot, u64)>,
     osty: Vec<SourceOsty>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct SourceBlock {
     base: SourcePrefix,
     base_original: u64,
@@ -562,14 +552,14 @@ impl SourceBlock {
     const MAX_MODS: usize = 4;
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct SourceBlockMod {
     source: SourcePrefix,
     original: u64,
     consumed: u64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct SourceOsty {
     source: SourcePrefix,
     remaining: u64,

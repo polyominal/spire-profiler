@@ -85,7 +85,7 @@ fn format_card_detail(card: &CardStat) -> RowDetail {
     detail
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Default)]
 struct SectionView {
     value: i64,
     segs: [i64; SEG_COUNT],
@@ -126,7 +126,6 @@ fn defense_positive(card: &CardStat) -> i64 {
         + card.mitigate_str
 }
 
-#[derive(Clone, Copy, Debug)]
 struct RowCand<'a> {
     card: &'a CardStat,
     view: SectionView,

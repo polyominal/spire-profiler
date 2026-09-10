@@ -61,7 +61,6 @@ const IDENTITY_BASELINE: f32 = 26.0;
 const SEED_BASELINE: f32 = 54.0;
 
 /// Unloaded portraits are skipped, never placeheld.
-#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct PortraitFact {
     /// The roster slot the press maps to; parallel to the drawn order.
     pub slot: u8,
@@ -71,7 +70,7 @@ pub(crate) struct PortraitFact {
 
 /// Resolved against the theme before the build so the layout engine stays
 /// engine-free.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Default)]
 pub(crate) struct HeaderFacts {
     /// One entry per roster character, capped at
     /// [`crate::data::state::caps::MAX_PLAYERS`].
@@ -118,7 +117,7 @@ pub(crate) fn character_icon_path(id: &str) -> Option<String> {
     ))
 }
 
-#[derive(Clone, Debug, PartialEq, Default)]
+#[derive(Default)]
 pub struct RunLayout {
     pub cmds: Vec<Cmd>,
     pub header_cmds: Vec<Cmd>,

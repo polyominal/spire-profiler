@@ -59,7 +59,7 @@ const LABEL_COL_W: f32 = 170.0;
 
 /// [`StatTone::Direct`] carries (section, kind) because the direct slot is
 /// section-tinted; [`StatTone::Neutral`] is cream.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Hash)]
 pub enum StatTone {
     Neutral,
     Direct(Section, SourceKind),
@@ -71,14 +71,14 @@ pub enum StatTone {
     SelfDamage,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Hash)]
 pub struct StatLine {
     pub label: String,
     pub value: String,
     pub tone: StatTone,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Debug, Default, Hash)]
 pub struct RowDetail {
     pub title: String,
     pub stats: Vec<StatLine>,
@@ -115,13 +115,13 @@ fn tone_color(tone: StatTone) -> palette::Color {
     palette::slot_color(slot, section, kind)
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug)]
 pub(crate) struct TipValue {
     pub text: String,
     pub color: palette::Color,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug)]
 pub(crate) struct TipLine {
     pub text: String,
     pub title: bool,

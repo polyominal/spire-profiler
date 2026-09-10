@@ -5,13 +5,13 @@ use super::{
     CombatEpoch, Destination, PAYLOAD_MAX, SourceDiagnostics, SourceFailure, TEAM_SLOT, caps,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) struct WeightedDestination {
     destination: Destination,
     weight: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) struct SourceSnapshot {
     combat_seq: u32,
     shares: Vec<WeightedDestination>,
@@ -186,13 +186,12 @@ impl SourceSnapshot {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(super) struct PowerGrant {
     remaining: u32,
     source: SourceSnapshot,
 }
 
-#[derive(Clone, Debug)]
 pub(super) struct RootBudgets {
     remaining: u64,
     shares: Vec<(Destination, u64)>,
@@ -246,7 +245,7 @@ impl RootBudgets {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(super) struct SourcePrefix {
     source: SourceSnapshot,
     credited_total: u64,

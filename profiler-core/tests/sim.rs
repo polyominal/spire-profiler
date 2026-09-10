@@ -119,7 +119,6 @@ impl RowKey {
     }
 }
 
-#[derive(Clone, Copy)]
 enum Origin {
     Ordinary,
     Generated,

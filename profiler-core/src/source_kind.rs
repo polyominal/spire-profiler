@@ -6,7 +6,7 @@ use std::cell::Cell;
 use serde::{Deserialize, Serialize};
 
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Hash, Default, Serialize, Deserialize)]
 #[serde(from = "u8", into = "u8")]
 pub enum SourceKind {
     #[default]

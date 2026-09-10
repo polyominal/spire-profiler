@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct GamePaths {
     /// The detected layout's platform; differs from the host's only in
     /// the WSL2 setup (Windows game, Linux host).
@@ -27,7 +27,7 @@ pub struct GamePaths {
     pub release_info: PathBuf,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Platform {
     Macos,
     Windows,
@@ -53,7 +53,7 @@ impl Platform {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 pub enum Arch {
     Arm64,
     X86_64,

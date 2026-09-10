@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::data::state::{CombatResult, EndedRun, RunOutcome, RunPlayer};
 use crate::source_kind::SourceKind;
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct CardRec {
     pub id: String,
@@ -30,7 +30,7 @@ pub struct CardRec {
     pub self_damage: i64,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct PlayerRec {
     pub slot: u8,
@@ -39,7 +39,7 @@ pub struct PlayerRec {
 
 /// Enough to rejoin a resumed run's fragments and synthesize the fallback
 /// view's header.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Deserialize)]
 #[serde(default)]
 pub struct RunRec {
     pub seq: u32,
@@ -78,7 +78,7 @@ impl RunRec {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[derive(Default, Deserialize)]
 #[serde(default)]
 pub struct CombatRec {
     pub combat_id: u32,

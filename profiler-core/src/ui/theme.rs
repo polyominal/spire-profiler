@@ -110,13 +110,13 @@ pub(crate) const SIZE_BODY: i32 = 24;
 /// The tooltip's wrap budgets derive at exactly this size.
 pub(crate) const SIZE_TOOLTIP: i32 = 22;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TextRole {
     Title,
     Body,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum IconId {
     Character(u8),
     TabPlate,
@@ -415,7 +415,7 @@ pub(crate) const FLAT_PAD: f32 = 12.0;
 
 /// The gutter is a parameter because it comes and goes with the
 /// scrollbar; the reflow can never flip the overflow verdict.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct ContentBox {
     pub x: f32,
     pub top: f32,

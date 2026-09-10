@@ -2,13 +2,13 @@ use super::{
     DamageSegment, Destination, ProducerSegment, RootBudgets, SourceFailure, SourceSnapshot, caps,
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(super) struct ModifierContribution {
     pub(super) source: SourceSnapshot,
     pub(super) amount: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 pub(super) struct AllocatedCredit {
     pub(super) destination: Destination,
     pub(super) segment: DamageSegment,

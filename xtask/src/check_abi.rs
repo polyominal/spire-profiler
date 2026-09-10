@@ -22,7 +22,7 @@ use crate::{shim, workspace_root};
 
 const WHITESPACE: &[char] = &[' ', '\t', '\n', '\r', '\x0b', '\x0c'];
 
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq)]
 struct Signature {
     parameters: Vec<String>,
     returns: &'static str,

@@ -175,7 +175,7 @@ fn evaluate(counts: &BTreeMap<String, usize>, pins: &[(&str, usize)]) -> Vec<Off
     offenses
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 enum Offense {
     OverPin {
         path: String,

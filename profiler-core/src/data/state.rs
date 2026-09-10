@@ -181,7 +181,7 @@ pub fn clamp_source_slot(slot: i32) -> SourceSlot {
 
 /// Lives here because it is state owned by [`State`]; [`ui_model`] stays the
 /// dependency-free leaf.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Hash, Default)]
 pub enum PlayerFilter {
     #[default]
     All,
@@ -200,7 +200,7 @@ impl PlayerFilter {
 }
 
 /// Field names and widths define the combat-record JSON schema.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Default, PartialEq, Hash)]
 pub struct CardStat {
     /// First so the serialized identity group mirrors this order.
     pub player: SourceSlot,
@@ -227,7 +227,7 @@ pub struct CardStat {
     pub forge: i64,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Hash)]
 pub enum CombatResult {
     #[default]
     Completed,
@@ -266,14 +266,14 @@ impl<'de> Deserialize<'de> for CombatResult {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Default, PartialEq, Hash)]
 pub enum CombatPhase {
     #[default]
     Active,
     Finished(CombatResult),
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct Combat {
     pub(crate) row_capacity_logged: bool,
     pub seq: u32,
@@ -325,7 +325,7 @@ impl Combat {
 
 /// The run identity a combat was fought under. `None` serializes as the
 /// absent run block (see the persistence module doc).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct RunSnapshot {
     pub seq: u32,
     pub character: String,
@@ -353,7 +353,7 @@ impl Default for RunSnapshot {
 }
 
 /// The run record carries slot + character; the net id stays in-memory.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RunPlayer {
     pub slot: u8,
     pub net_id: String,
@@ -361,10 +361,9 @@ pub struct RunPlayer {
 }
 
 #[repr(i32)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Hash)]
 pub enum RunOutcome {
     Victory = 0,
-    #[default]
     Defeat = 1,
     Abandoned = 2,
 }
@@ -425,14 +424,13 @@ where
 }
 
 /// The active run's identity and roster.
-#[derive(Clone, Debug, Default)]
+#[derive(Default)]
 pub struct RunContext {
     pub run: RunSnapshot,
     /// Serialized as runs.jsonl's `"players"`.
     pub players: Vec<RunPlayer>,
 }
 
-#[derive(Clone, Debug)]
 pub struct EndedRun {
     pub context: RunContext,
     pub outcome: RunOutcome,
@@ -440,12 +438,12 @@ pub struct EndedRun {
     pub ended_at: i64,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Default)]
 pub struct PlayerSlotState {
     pub died: bool,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Default)]
 pub struct State {
     pub initialized: bool,
     pub data_dir: PathBuf,

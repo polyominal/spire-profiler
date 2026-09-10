@@ -103,7 +103,6 @@ const MIN_BAR_W: f32 = 40.0;
 
 /// Fixed name/plays columns and the value reserve at the right edge; the
 /// bar stretches between them. The content box already carries the gutter.
-#[derive(Clone, Copy, Debug, PartialEq)]
 struct Geom {
     content: theme::ContentBox,
     bar_x: f32,
@@ -129,7 +128,6 @@ const SIZE_BODY: i32 = theme::SIZE_BODY;
 /// One avatar in the combat header's roster row: the slot the press maps
 /// to, and the load state resolved against the theme before the build.
 /// Unloaded avatars are skipped, never placeheld.
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct AvatarFact {
     pub slot: u8,
     pub loaded: bool,
@@ -146,7 +144,7 @@ pub(crate) struct AvatarHit {
     pub slot: u8,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RectCmd {
     pub x: f32,
     pub y: f32,
@@ -176,7 +174,7 @@ pub struct TextCmd {
 }
 
 /// The destination rect's aspect must match the icon's source region.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TextureCmd {
     pub x: f32,
     pub y: f32,
@@ -203,14 +201,14 @@ pub enum Cmd {
     Texture(TextureCmd),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy)]
 pub struct RowHit {
     pub y0: f32,
     pub y1: f32,
     pub flat_index: usize,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct TabHit {
     pub x0: f32,
     pub y0: f32,
@@ -223,7 +221,6 @@ pub struct TabHit {
 pub(crate) const MAX_CMDS: usize = ui_model::MAX_UI_ROWS * 15 + 256;
 const MAX_LINES: usize = 64;
 
-#[derive(Clone, Debug, PartialEq)]
 pub struct Layout {
     /// The scrolling body: the clipped body child replays it, translated
     /// by the scroll offset.
@@ -434,7 +431,6 @@ impl Layout {
     }
 }
 
-#[derive(Clone, Debug)]
 pub(crate) struct BuildInput<'a> {
     pub tab: UiTab,
     pub rows: &'a [UiRow],
@@ -476,7 +472,7 @@ impl Default for BuildInput<'_> {
 }
 
 /// Per-mille widths, truncated; the tail overruns the bar past 1000.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy)]
 pub struct Seg {
     pub x: f32,
     pub w: f32,

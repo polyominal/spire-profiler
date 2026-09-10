@@ -50,7 +50,7 @@ use crate::data::records::{CombatRec, PlayerRec};
 use crate::data::state::{CardStat, CombatResult, PlayerFilter, RunOutcome, STATE, TEAM_SLOT};
 
 /// Roll-ups are undeclared on purpose: the view recomputes them.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(default)]
 pub struct RunEntry {
     pub run_id: u32,
@@ -95,7 +95,7 @@ impl RunEntry {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct CombatView {
     pub seq: u32,
     pub encounter: String,
@@ -105,7 +105,7 @@ pub struct CombatView {
     pub turns: u32,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PlayerRollup {
     pub slot: u8,
     pub character: String,
@@ -133,7 +133,6 @@ pub struct RunSummaryView {
     pub player_rollups: Vec<PlayerRollup>,
 }
 
-#[derive(Clone, Debug)]
 pub enum RunSelection {
     Selected(Box<RunSummaryView>),
     Empty,
