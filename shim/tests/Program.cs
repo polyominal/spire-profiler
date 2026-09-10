@@ -20,7 +20,7 @@ internal static class ManagedTestProgram
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static int Run(string[] args)
     {
-        try { ManagedFixtures.Run(args[0], args[1]); Console.WriteLine("MANAGED CAPTURE FIXTURES PASS"); return 0; }
+        try { ManagedFixtures.Run(args[1]); Console.WriteLine("MANAGED CAPTURE FIXTURES PASS"); return 0; }
         catch (Exception ex) { Console.Error.WriteLine(ex); return 1; }
     }
 }

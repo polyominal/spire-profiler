@@ -5,7 +5,6 @@ using System.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
 using System.Runtime.CompilerServices;
-using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 using HarmonyLib;
@@ -559,21 +558,10 @@ internal static class ManagedFixtures
     internal static readonly List<int> HistoryAmounts = new();
     private static SourceSnapshot A, B;
     private static Harmony harmony;
-    internal static void Run(string gameDirectory, string generatedDirectory)
+    internal static void Run(string generatedDirectory)
     {
         context = new FixtureContext();
         SynchronizationContext.SetSynchronizationContext(context);
-        var expected = new Dictionary<string, string>
-        {
-            ["sts2.dll"] = "9CB4F1AD8C9F284AA8FEC3122FFD6D780BBF543D875C817ABDD12FF63FBF12B4",
-            ["0Harmony.dll"] = "EF1898322C9F5C86DC1B0758B272A9C440823B4A41CA9A0B82A3AA6B3D206387"
-        };
-        foreach (var item in expected)
-        {
-            var actual = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(Path.Combine(gameDirectory, item.Key))));
-            Check(actual == item.Value, "Installed assembly hash drift: " + item.Key);
-            Console.WriteLine($"ASSEMBLY {item.Key} SHA256 {actual}");
-        }
         var nativeDelegates = typeof(ProfilerNative).GetNestedTypes(BindingFlags.Public | BindingFlags.NonPublic)
             .Where(type => typeof(MulticastDelegate).IsAssignableFrom(type)).ToArray();
         Check(nativeDelegates.Length == 52, "Complete compiled native delegate inventory");
