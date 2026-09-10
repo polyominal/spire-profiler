@@ -3,16 +3,23 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Reflection.Emit;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Combat;
+using MegaCrit.Sts2.Core.Commands;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Entities.Players;
 using MegaCrit.Sts2.Core.Models.Powers;
+using MegaCrit.Sts2.Core.Models.Cards;
+using MegaCrit.Sts2.Core.Models.Potions;
+using MegaCrit.Sts2.Core.Models.Relics;
+using MegaCrit.Sts2.Core.Models.Orbs;
+using MegaCrit.Sts2.Core.Localization.DynamicVars;
 using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.Hooks;
 using MegaCrit.Sts2.Core.Models;
@@ -135,26 +142,39 @@ internal static class DamageFixture
 {
     internal static Task Pause = Task.CompletedTask;
     internal static List<DamageResult> Results = new();
+    internal static Dictionary<Creature, List<DamageResult>> ResultsByTarget;
+    internal static Dictionary<Creature, (IEnumerable<AbstractModel> Modifiers, decimal Bonus)> ModifiersByTarget;
     internal static Exception Error;
     internal static int HookCalls, Enumerated, LateEnumerated;
     internal static bool PreviewDuringDamage;
     internal static Action DuringLive;
+    internal static Func<Task> Nested;
+    internal static Action AfterGroup;
     internal static IEnumerable<AbstractModel> Modifiers = Array.Empty<AbstractModel>();
     internal static decimal Bonus;
     internal static Task<IEnumerable<DamageResult>> OriginalTask;
     [MethodImpl(MethodImplOptions.NoInlining)]
     internal static async Task<IEnumerable<DamageResult>> Damage(PlayerChoiceContext choice, IEnumerable<Creature> targets, decimal amount, ValueProp props, Creature dealer, CardModel cardSource, CardPlay cardPlay)
     {
-        var results = Results;
-        var target = targets.Single();
-        Hook.ModifyDamage(null, (ICombatState)CaptureRuntime.Epoch.Combat, target, dealer, amount, props, cardSource, cardPlay, ModifyDamageHookType.All, CardPreviewMode.None, out var modifiers);
-        DuringLive?.Invoke();
-        await Pause;
-        if (PreviewDuringDamage) Preview(target, dealer, cardSource);
-        if (Error != null) throw Error;
-        foreach (var result in results) Enumerated += result.TotalDamage;
-        foreach (var result in results) LateEnumerated += result.TotalDamage;
-        return results;
+        var byTarget = ResultsByTarget;
+        var aggregate = byTarget == null ? Results : new List<DamageResult>();
+        var pause = Pause;
+        var nested = Nested;
+        foreach (var target in targets)
+        {
+            var results = byTarget == null ? aggregate : byTarget[target];
+            Hook.ModifyDamage(null, (ICombatState)CaptureRuntime.Epoch.Combat, target, dealer, amount, props, cardSource, cardPlay, ModifyDamageHookType.All, CardPreviewMode.None, out var modifiers);
+            DuringLive?.Invoke();
+            if (nested != null) await nested();
+            await pause;
+            if (PreviewDuringDamage) Preview(target, dealer, cardSource);
+            if (Error != null) throw Error;
+            foreach (var result in results) Enumerated += result.TotalDamage;
+            AfterGroup?.Invoke();
+            if (byTarget != null) aggregate.AddRange(results);
+        }
+        foreach (var result in aggregate) LateEnumerated += result.TotalDamage;
+        return aggregate;
     }
     [MethodImpl(MethodImplOptions.NoInlining)]
     internal static decimal Preview(Creature target, Creature dealer, CardModel card)
@@ -164,7 +184,154 @@ internal static class DamageFixture
     internal static void ObserveTask(Task<IEnumerable<DamageResult>> __result) { OriginalTask = __result; }
     internal static decimal Modify(IRunState runState, ICombatState combatState, Creature target, Creature dealer, decimal damage, ValueProp props, CardModel cardSource, CardPlay cardPlay,
         ModifyDamageHookType hookType, CardPreviewMode previewMode, out IEnumerable<AbstractModel> modifiers)
-    { HookCalls++; modifiers = Modifiers; return damage + Bonus; }
+    {
+        HookCalls++;
+        var values = ModifiersByTarget != null ? ModifiersByTarget[target] : (Modifiers, Bonus);
+        modifiers = values.Item1;
+        return damage + values.Item2;
+    }
+}
+internal static class GameProducerFixture
+{
+    internal static SleightOfFleshPower Listener;
+    internal static IReadOnlyList<Creature> Enemies = Array.Empty<Creature>();
+    internal static Task WaitTask = Task.CompletedTask;
+    internal static int Blocked;
+    internal static Action<PowerModel, Creature, SourceSnapshot> Applied;
+    internal static Action<PowerModel> Decremented;
+    internal static Action<CardModel> Created;
+    internal static readonly List<CardModel> Generated = new();
+    internal static readonly List<(PowerModel Power, decimal Amount, CardModel Card, ProducerFrame Producer)> Applications = new();
+    internal static readonly List<(decimal Amount, ValueProp Props, Creature Dealer, ProducerFrame Producer, PlayFrame Play)> Emissions = new();
+
+    // Only command, targeting and presentation boundaries change; pinned producer
+    // conditions, amounts, order, awaits and actual production scope patches run.
+    internal static IEnumerable<CodeInstruction> Boundaries(IEnumerable<CodeInstruction> instructions)
+    {
+        foreach (var instruction in instructions)
+        {
+            if (instruction.operand is MethodInfo call)
+            {
+                MethodInfo replacement = null;
+                if (call.DeclaringType == typeof(PowerCmd) && call.Name == "Apply" && call.IsGenericMethod)
+                {
+                    string name = call.GetParameters()[1].ParameterType == typeof(Creature) ? nameof(Apply) : nameof(ApplyMany);
+                    replacement = AccessTools.DeclaredMethod(typeof(GameProducerFixture), name).MakeGenericMethod(call.GetGenericArguments());
+                }
+                else if (call.DeclaringType == typeof(PowerCmd) && call.Name == "Decrement")
+                    replacement = AccessTools.DeclaredMethod(typeof(GameProducerFixture), nameof(Decrement));
+                else if (call.DeclaringType == typeof(ICombatState) && call.Name == "CreateCard" && call.IsGenericMethod)
+                    replacement = AccessTools.DeclaredMethod(typeof(GameProducerFixture), nameof(CreateCard)).MakeGenericMethod(call.GetGenericArguments());
+                else if (call.DeclaringType == typeof(CardPileCmd) && call.Name == "AddGeneratedCardToCombat")
+                    replacement = AccessTools.DeclaredMethod(typeof(GameProducerFixture), nameof(AddGenerated));
+                else if (call.DeclaringType == typeof(CreatureCmd))
+                    replacement = call.Name switch
+                    {
+                        "TriggerAnim" => AccessTools.DeclaredMethod(typeof(GameProducerFixture), nameof(Animation)),
+                        "GainBlock" => call.GetParameters()[1].ParameterType == typeof(decimal)
+                            ? AccessTools.DeclaredMethod(typeof(CommandFixture), nameof(CommandFixture.GainBlock)) : AccessTools.DeclaredMethod(typeof(GameProducerFixture), nameof(Block)),
+                        "Damage" => AccessTools.DeclaredMethod(typeof(GameProducerFixture), call.GetParameters()[1].ParameterType == typeof(IEnumerable<Creature>)
+                            ? nameof(EmitManyDamage) : call.GetParameters().Length == 6 ? nameof(EmitCardDamage) : nameof(EmitDamage)),
+                        _ => null
+                    };
+                else if (call.DeclaringType == typeof(Cmd) && call.Name == "Wait")
+                    replacement = AccessTools.DeclaredMethod(typeof(GameProducerFixture), nameof(Wait));
+                else if (call.DeclaringType == typeof(Cmd) && call.Name == "CustomScaledWait")
+                    replacement = AccessTools.DeclaredMethod(typeof(GameProducerFixture), nameof(ScaledWait));
+                else if (call.DeclaringType == typeof(ICombatState) && call.Name == "get_HittableEnemies")
+                    replacement = AccessTools.DeclaredMethod(typeof(GameProducerFixture), nameof(Targets));
+                else if (call.DeclaringType == typeof(CardModel) && call.Name == "get_CombatState")
+                    replacement = AccessTools.DeclaredMethod(typeof(GameProducerFixture), nameof(CardCombat));
+                else if (call.DeclaringType == typeof(MegaCrit.Sts2.Core.Nodes.Rooms.NCombatRoom) && call.Name == "get_Instance")
+                    replacement = AccessTools.DeclaredMethod(typeof(GameProducerFixture), nameof(NoCombatRoom));
+                else if (call.DeclaringType == typeof(MegaCrit.Sts2.Core.Nodes.Vfx.NPoisonImpactVfx) && call.Name == "Create")
+                    replacement = AccessTools.DeclaredMethod(typeof(GameProducerFixture), nameof(NoPoisonVfx));
+                else if (call.DeclaringType == typeof(OrbModel) && call.Name == "PlayPassiveSfx")
+                    replacement = AccessTools.DeclaredMethod(typeof(GameProducerFixture), nameof(NoPassiveSound));
+                else if (call.DeclaringType == typeof(OrbModel) && call.Name == "ModifyOrbValue")
+                    replacement = AccessTools.DeclaredMethod(typeof(GameProducerFixture), nameof(UnmodifiedOrbValue));
+                if (replacement != null)
+                {
+                    var expected = call.GetParameters().Select(parameter => parameter.ParameterType);
+                    if (!call.IsStatic) expected = expected.Prepend(call.DeclaringType);
+                    if (replacement.ReturnType != call.ReturnType || !replacement.GetParameters().Select(parameter => parameter.ParameterType).SequenceEqual(expected))
+                        throw new InvalidOperationException("Pinned producer boundary signature drift: " + call);
+                    instruction.opcode = OpCodes.Call;
+                    instruction.operand = replacement;
+                }
+            }
+            yield return instruction;
+        }
+    }
+    internal static Task Animation(Creature creature, string name, float delay) => Task.CompletedTask;
+    internal static Task<decimal> Block(Creature creature, BlockVar amount, CardPlay play, bool fast)
+        => Task.FromResult(amount.BaseValue);
+    internal static Task Wait(float seconds, bool ignoreCombatEnd) => WaitTask;
+    internal static Task ScaledWait(float fast, float standard, bool ignoreCombatEnd, CancellationToken cancellation) => WaitTask;
+    internal static MegaCrit.Sts2.Core.Nodes.Rooms.NCombatRoom NoCombatRoom() => null;
+    internal static MegaCrit.Sts2.Core.Nodes.Vfx.NPoisonImpactVfx NoPoisonVfx(Creature creature) => null;
+    internal static void NoPassiveSound(OrbModel orb) { }
+    internal static decimal UnmodifiedOrbValue(OrbModel orb, decimal amount) => amount;
+    internal static IReadOnlyList<Creature> Targets(ICombatState combat) => Enemies;
+    internal static ICombatState CardCombat(CardModel card) => card.Owner.Creature.CombatState;
+    internal static async Task<T> Apply<T>(PlayerChoiceContext choice, Creature target, decimal amount, Creature applier, CardModel cardSource, bool silent) where T : PowerModel
+    {
+        var power = (T)RuntimeHelpers.GetUninitializedObject(typeof(T));
+        AccessTools.Field(typeof(AbstractModel), "<IsMutable>k__BackingField").SetValue(power, true);
+        AccessTools.Field(typeof(AbstractModel), "<Id>k__BackingField").SetValue(power, new ModelId("TEST", typeof(T).Name));
+        AccessTools.Field(typeof(PowerModel), "_owner").SetValue(power, target);
+        AccessTools.Field(typeof(PowerModel), "_amount").SetValue(power, checked((int)amount));
+        Applications.Add((power, amount, cardSource, FlowCapture.Current));
+        Applied?.Invoke(power, target, FlowCapture.Supplied(cardSource, CaptureRuntime.Epoch));
+        if (Listener != null) await Listener.AfterPowerAmountChanged(choice, power, amount, applier, cardSource);
+        return power;
+    }
+    internal static async Task<IReadOnlyList<T>> ApplyMany<T>(PlayerChoiceContext choice, IEnumerable<Creature> targets, decimal amount, Creature applier, CardModel cardSource, bool silent) where T : PowerModel
+    {
+        var powers = new List<T>();
+        foreach (var target in targets) powers.Add(await Apply<T>(choice, target, amount, applier, cardSource, silent));
+        return powers;
+    }
+    internal static Task Decrement(PowerModel power)
+    {
+        AccessTools.Field(typeof(PowerModel), "_amount").SetValue(power, power.Amount - 1);
+        Decremented?.Invoke(power);
+        return Task.CompletedTask;
+    }
+    internal static T CreateCard<T>(ICombatState scope, Player owner) where T : CardModel
+    {
+        var card = ManagedFixtures.Mutable<T>(typeof(T).Name);
+        card.Owner = owner;
+        Created?.Invoke(card);
+        return card;
+    }
+    internal static async Task<CardPileAddResult> AddGenerated(CardModel card, PileType pile, Player creator, CardPilePosition position)
+    {
+        Generated.Add(card);
+        ProvenanceCapture.Generated(card);
+        await WaitTask;
+        return new CardPileAddResult { success = true, cardAdded = card, targetPile = pile };
+    }
+    internal static Task<IEnumerable<DamageResult>> EmitDamage(PlayerChoiceContext choice, Creature target, decimal amount, ValueProp props, Creature dealer)
+    {
+        Emissions.Add((amount, props, dealer, FlowCapture.Current, PlayCapture.Current));
+        int total = checked((int)amount);
+        DamageFixture.Results = new() { new(target, props) { UnblockedDamage = total - Blocked, BlockedDamage = Blocked } };
+        return DamageFixture.Damage(choice, new[] { target }, amount, props, dealer, null, null);
+    }
+    internal static Task<IEnumerable<DamageResult>> EmitCardDamage(PlayerChoiceContext choice, Creature target, decimal amount, ValueProp props, CardModel card, CardPlay play)
+    {
+        Emissions.Add((amount, props, card?.Owner.Creature, FlowCapture.Current, PlayCapture.Current));
+        DamageFixture.Results = new() { new(target, props) { UnblockedDamage = checked((int)amount) } };
+        return DamageFixture.Damage(choice, new[] { target }, amount, props, card?.Owner.Creature, card, play);
+    }
+    internal static Task<IEnumerable<DamageResult>> EmitManyDamage(PlayerChoiceContext choice, IEnumerable<Creature> targets, decimal amount, ValueProp props, Creature dealer)
+    {
+        Emissions.Add((amount, props, dealer, FlowCapture.Current, PlayCapture.Current));
+        var captured = targets.ToArray();
+        DamageFixture.ResultsByTarget = captured.ToDictionary(target => target, target => new List<DamageResult> { new(target, props) { UnblockedDamage = checked((int)amount) } });
+        return DamageFixture.Damage(choice, captured, amount, props, dealer, null, null);
+    }
 }
 internal static class CommandFixture
 {
@@ -212,6 +379,8 @@ internal sealed class FakeBackend : AttributionBackend
     internal readonly Dictionary<ulong, (ulong Execution, int Slot, SourceSnapshot Source, bool Triggered)> Plays = new();
     internal readonly List<(string Kind, ulong Identity, int Before, int After, SourceSnapshot Source)> PowerEvents = new();
     internal readonly List<(SourceSnapshot Source, ProducerRole Role, DamageSegment Segment)> Begun = new();
+    internal readonly List<(ulong Calculation, SourceSnapshot Source, int Amount)> DamageModifiers = new();
+    internal readonly List<(ulong Calculation, SourceSnapshot Source, ResultPacket[] Packets)> DamageGroups = new();
     internal readonly List<ResultPacket> Committed = new(), Fallback = new();
     internal readonly List<GenerationState> PlayGenerations = new();
     internal readonly List<(string Kind, int Amount, int Slot, SourceSnapshot Source)> CommandEvents = new();
@@ -319,7 +488,8 @@ internal sealed class FakeBackend : AttributionBackend
         Begun.Add((Read(source), role, segment));
         return token;
     }
-    internal override int DamageModifier(ulong calculation, ulong source, int amount) => Reject("DamageModifier") ? 0 : 1;
+    internal override int DamageModifier(ulong calculation, ulong source, int amount)
+    { if (Reject("DamageModifier")) return 0; DamageModifiers.Add((calculation, Read(source), amount)); return 1; }
     internal override int DamageEnemyHit(ulong calculation, ulong dealer, int baseDamage, int strength) => Reject("DamageEnemyHit") ? 0 : 1;
     internal override int DamageWeak(ulong calculation, ulong source) => Reject("DamageWeak") ? 0 : 1;
     internal override int DamageAppend(ulong calculation, ResultPacket packet)
@@ -327,6 +497,7 @@ internal sealed class FakeBackend : AttributionBackend
     internal override int DamageCommit(ulong calculation)
     {
         if (Reject("DamageCommit")) return 0;
+        DamageGroups.Add((calculation, calculations[calculation].Source, calculations[calculation].Packets.ToArray()));
         Committed.AddRange(calculations[calculation].Packets);
         calculations.Remove(calculation);
         return 1;
@@ -458,6 +629,24 @@ internal static class ManagedFixtures
         harmony.Patch(DamageCapture.HookMethod, prefix: new HarmonyMethod(typeof(DamageFixture), nameof(DamageFixture.PreviewHookPrefix)));
         DamageCapture.OriginalModifyDamage = DamageFixture.Modify;
         DamageCapture.Inspect = (_, _, _) => default;
+        foreach (var item in new (Type Type, string Method, int Boundaries)[]
+        {
+            (typeof(Defy), "OnPlay", 3), (typeof(SleightOfFlesh), "OnPlay", 2),
+            (typeof(Deathbringer), "OnPlay", 7), (typeof(WeakPotion), "OnUse", 2),
+            (typeof(RedMask), "BeforeSideTurnStart", 2), (typeof(CountdownPower), "AfterSideTurnStart", 2),
+            (typeof(SleightOfFleshPower), "AfterPowerAmountChanged", 1),
+            (typeof(CacophonyPower), "AfterCardDrawn", 3), (typeof(FlameBarrierPower), "AfterDamageReceived", 1),
+            (typeof(RollingBoulderPower), "DoDamage", 1), (typeof(PoisonPower), "Trigger", 3), (typeof(Outbreak), "OnPlay", 8),
+            (typeof(SentryModePower), "BeforeHandDraw", 2), (typeof(FrostOrb), "Passive", 3), (typeof(FrostOrb), "get_PassiveVal", 1)
+        })
+        {
+            var body = TemporalPowerCapture.Body(AccessTools.DeclaredMethod(item.Type, item.Method));
+            harmony.Patch(body, transpiler: new HarmonyMethod(typeof(GameProducerFixture), nameof(GameProducerFixture.Boundaries)));
+            int count = PatchProcessor.GetCurrentInstructions(body).Count(instruction => instruction.operand is MethodInfo call
+                && (call.DeclaringType == typeof(GameProducerFixture) || call.DeclaringType == typeof(CommandFixture)));
+            Check(count == item.Boundaries, $"Exact fixture boundary substitutions: {item.Type.Name}.{item.Method}, expected {item.Boundaries}, got {count}");
+            Console.WriteLine($"ACTUAL PRODUCER {item.Type.Name}.{item.Method}; injected command/target boundaries={count}");
+        }
         foreach (var name in new[] { "GainBlock", "Forge", "Summon" }) CommandCapture.PatchCommand(harmony, AccessTools.DeclaredMethod(typeof(CommandFixture), name));
         CapturePatches.Patch(harmony, AccessTools.DeclaredMethod(typeof(DoomFixture), "DoomKill"), prefix: new HarmonyMethod(typeof(DoomCapture), nameof(DoomCapture.Prefix)),
             postfix: new HarmonyMethod(typeof(DoomCapture), nameof(DoomCapture.Postfix)), finalizer: new HarmonyMethod(typeof(DoomCapture), nameof(DoomCapture.Finalizer)));
@@ -481,7 +670,16 @@ internal static class ManagedFixtures
         Test("saved dictionary sources exclude later stacks; Rupture exact increments", Temporal);
         Test("nested card/potion cleanup and outer orb flag restoration", NestedPlays);
         Test("canonical live bridge, complete group seal and original Task/result identity", DamageGroups);
-        Test("capture/append/commit fallback, exception abort and nested damage", DamageFailures);
+        Test("capture/append/commit fallback, exception abort and overlapping damage", DamageFailures);
+        Test("fault and cancellation preserve original Tasks and cannot contaminate a later modifier-bearing hit", FailureThenCleanHit);
+        Test("actual Sleight and Defy bodies: base 9, upgrade 13 and stacked 22 supplier capture", SleightAndDefy);
+        Test("actual potion/relic/power triggers and Deathbringer's separate Doom/Weak procs", SleightTriggerKinds);
+        Test("actual Cacophony draws from another player preserve the supplier across await", CacophonyDraws);
+        Test("nested canonical parent/child awaits preserve distinct sources and modifier batches", NestedDamage);
+        Test("multiple original targets retain independent modifiers and redirected result groups", MultipleDamageTargets);
+        Test("actual Poison turn/Outbreak ticks refresh suppliers and actual Rolling Boulder callback captures without ambient scope", ActualPoisonAndRolling);
+        Test("actual Sentry generation and Frost/Hibernate block retain suppliers across awaits", SentryAndFrost);
+        Test("completed groups precede later fault/combat replacement and exclude overkill", DamageGroupTiming);
         Test("exact independent result classification precedence", Classifications);
         Test("actual model ownership and accepted signed amount adapters", ActualModelAdapters);
         Test("modifier/enemy/Weak rejection invalidates whole groups with evidence intact", CaptureStatusFailures);
@@ -514,6 +712,20 @@ internal static class ManagedFixtures
         CommandPause = null;
         DuringBeforeApplied = null;
         DamageFixture.DuringLive = null;
+        DamageFixture.Nested = null;
+        DamageFixture.AfterGroup = null;
+        DamageFixture.ResultsByTarget = null;
+        DamageFixture.ModifiersByTarget = null;
+        GameProducerFixture.Listener = null;
+        GameProducerFixture.Enemies = Array.Empty<Creature>();
+        GameProducerFixture.WaitTask = Task.CompletedTask;
+        GameProducerFixture.Blocked = 0;
+        GameProducerFixture.Applied = null;
+        GameProducerFixture.Decremented = null;
+        GameProducerFixture.Created = null;
+        GameProducerFixture.Generated.Clear();
+        GameProducerFixture.Applications.Clear();
+        GameProducerFixture.Emissions.Clear();
         skipPrefix = false;
         HistoryAmounts.Clear();
         DamageFixture.Pause = Task.CompletedTask;
@@ -858,6 +1070,454 @@ internal static class ManagedFixtures
         try { context.Complete(Damage(enemy, player)); } catch (InvalidOperationException actual) { Check(ReferenceEquals(actual, error), "Builder SetException preserves game exception"); }
         Check(backend.OpenCalculations == 0 && backend.Fallback.Count == beforeFallback, "No invented partial result after game exception");
     }
+    private static void FailureThenCleanHit()
+    {
+        var world = GameWorld();
+        var failedCard = GameCard<StrikeIronclad>(world.Owner, A);
+        var cleanCard = GameCard<StrikeIronclad>(world.Other, B);
+        var laterModifier = SourceSnapshot.Create(epoch, new[] { new SourceShare((epoch << 32) | 16, 1) });
+        var firstStrength = GamePower<StrengthPower>(world.Owner.Creature, 3, A);
+        var nextStrength = GamePower<StrengthPower>(world.Other.Creature, 2, laterModifier);
+        DamageCapture.Inspect = (_, _, _) => new(true, false, 0, null, false);
+        foreach (bool cancel in new[] { false, true })
+        {
+            int before = backend.DamageGroups.Count;
+            int fallbacks = backend.Fallback.Count;
+            var error = new InvalidOperationException("game fault before result group");
+            var pause = Pause();
+            using var cancellation = new CancellationTokenSource();
+            DamageFixture.Pause = cancel ? pause.Task : Task.CompletedTask;
+            DamageFixture.Error = cancel ? null : error;
+            DamageFixture.Modifiers = new[] { firstStrength }; DamageFixture.Bonus = 3;
+            DamageFixture.Results = new() { new(world.Enemy, ValueProp.Move) { UnblockedDamage = 7, BlockedDamage = 1 } };
+            var failed = Damage(world.Enemy, world.Owner.Creature, failedCard);
+            Check(ReferenceEquals(failed, DamageFixture.OriginalTask), "Fault/cancellation keeps the original canonical Task");
+            if (cancel) { cancellation.Cancel(); pause.SetCanceled(cancellation.Token); }
+            bool observed = false;
+            try { context.Complete(failed); }
+            catch (Exception actual)
+            {
+                observed = cancel ? actual is OperationCanceledException canceled && canceled.CancellationToken == cancellation.Token
+                    : ReferenceEquals(actual, error);
+            }
+            Check(observed && failed.IsCanceled == cancel && backend.OpenCalculations == 0
+                && backend.DamageGroups.Count == before && backend.Fallback.Count == fallbacks,
+                "Original fault/cancellation and token survive cleanup without publishing an incomplete group");
+            ulong abandoned = backend.DamageModifiers.Last().Calculation;
+            DamageFixture.Pause = Task.CompletedTask; DamageFixture.Error = null;
+            DamageFixture.Modifiers = new[] { nextStrength }; DamageFixture.Bonus = 2;
+            DamageFixture.Results = new() { new(world.Enemy, ValueProp.Move) { UnblockedDamage = 4, BlockedDamage = 2 } };
+            context.Complete(Damage(world.Enemy, world.Other.Creature, cleanCard));
+            var group = backend.DamageGroups.Last();
+            Check(backend.DamageGroups.Count == before + 1 && backend.Fallback.Count == fallbacks
+                && group.Calculation != abandoned && group.Packets.Single().Total == 6 && group.Packets.Single().Blocked == 2,
+                "The later hit commits its own six points once, without adopting the abandoned result");
+            Same(group.Source, B, "The later card source excludes the abandoned card supplier");
+            var contribution = backend.DamageModifiers.Single(modifier => modifier.Calculation == group.Calculation);
+            Same(contribution.Source, laterModifier, "The later modifier uses only its new captured supplier");
+            Check(contribution.Amount == 2 && backend.OpenCalculations == 0, "The abandoned three-point modifier cannot leak into the later two-point budget");
+        }
+    }
+    private static (Player Owner, Player Other, Creature Enemy) GameWorld()
+    {
+        var players = new[] { (Player)RuntimeHelpers.GetUninitializedObject(typeof(Player)), (Player)RuntimeHelpers.GetUninitializedObject(typeof(Player)) };
+        var run = Roster(players);
+        AccessTools.Field(typeof(RunState), "<Rng>k__BackingField").SetValue(run, new RunRngSet("managed-producer-111"));
+        for (int slot = 0; slot < players.Length; slot++)
+        {
+            var creature = Creature(true, false, slot);
+            creature.CombatState = (ICombatState)backend.Combat;
+            AccessTools.Field(typeof(Creature), "<Player>k__BackingField").SetValue(creature, players[slot]);
+            AccessTools.Field(typeof(Creature), "<Side>k__BackingField").SetValue(creature, CombatSide.Player);
+            AccessTools.Field(typeof(Creature), "_powers").SetValue(creature, new List<PowerModel>());
+            AccessTools.Field(typeof(Creature), "_currentHp").SetValue(creature, 100);
+            AccessTools.Field(typeof(Player), "<Creature>k__BackingField").SetValue(players[slot], creature);
+            AccessTools.Field(typeof(Player), "<Character>k__BackingField").SetValue(players[slot], Mutable<MegaCrit.Sts2.Core.Models.Characters.Necrobinder>("NECROBINDER"));
+            var playerCombat = RuntimeHelpers.GetUninitializedObject(typeof(PlayerCombatState));
+            AccessTools.Field(typeof(PlayerCombatState), "<TurnNumber>k__BackingField").SetValue(playerCombat, 1);
+            AccessTools.Field(typeof(Player), "<PlayerCombatState>k__BackingField").SetValue(players[slot], playerCombat);
+            AccessTools.Field(typeof(Player), "_runState").SetValue(players[slot], run);
+        }
+        var enemy = Creature();
+        enemy.CombatState = (ICombatState)backend.Combat;
+        AccessTools.Field(typeof(Creature), "<Side>k__BackingField").SetValue(enemy, CombatSide.Enemy);
+        AccessTools.Field(typeof(Creature), "_powers").SetValue(enemy, new List<PowerModel>());
+        AccessTools.Field(typeof(Creature), "_currentHp").SetValue(enemy, 100);
+        AccessTools.Field(typeof(CombatState), "_allies").SetValue(backend.Combat, players.Select(player => player.Creature).ToList());
+        AccessTools.Field(typeof(CombatState), "_enemies").SetValue(backend.Combat, new List<Creature> { enemy });
+        GameProducerFixture.Enemies = new[] { enemy };
+        return (players[0], players[1], enemy);
+    }
+    private static void RecordModel(AbstractModel model, SourceSnapshot source)
+    {
+        backend.Descriptors[model] = new NativeAttributionBackend().Describe(model);
+        if (model is CardModel or PowerModel or OrbModel)
+            backend.Sources[IdentityCapture.Get(model, CaptureRuntime.Epoch).Identity] = source;
+        else backend.NamedSources[model.Id.Entry] = source;
+    }
+    private static T GameCard<T>(Player owner, SourceSnapshot source) where T : CardModel
+    {
+        var card = Mutable<T>(typeof(T).Name);
+        card.Owner = owner;
+        RecordModel(card, source);
+        return card;
+    }
+    private static T GamePower<T>(Creature owner, int amount, SourceSnapshot source) where T : PowerModel
+    {
+        var power = Mutable<T>(typeof(T).Name);
+        AccessTools.Field(typeof(PowerModel), "_owner").SetValue(power, owner);
+        AccessTools.Field(typeof(PowerModel), "_amount").SetValue(power, amount);
+        RecordModel(power, source);
+        return power;
+    }
+    private static Task PlayBody(CardModel card, Creature target)
+    {
+        var play = (CardPlay)RuntimeHelpers.GetUninitializedObject(typeof(CardPlay));
+        AccessTools.Field(typeof(CardPlay), "<Card>k__BackingField").SetValue(play, card);
+        AccessTools.Field(typeof(CardPlay), "<Target>k__BackingField").SetValue(play, target);
+        AccessTools.Field(typeof(CardPlay), "<Player>k__BackingField").SetValue(play, card.Owner);
+        return (Task)AccessTools.DeclaredMethod(card.GetType(), "OnPlay").Invoke(card, new object[] { null, play });
+    }
+    private static void SleightAndDefy()
+    {
+        var world = GameWorld();
+        var supplied = GameCard<SleightOfFlesh>(world.Owner, A);
+        var upgraded = GameCard<SleightOfFlesh>(world.Other, B);
+        context.Complete(PlayBody(supplied, world.Owner.Creature));
+        var initial = GameProducerFixture.Applications.Single();
+        Check(initial.Power is SleightOfFleshPower && initial.Amount == 9, "Pinned base Sleight OnPlay supplies nine stacks");
+        Same(initial.Producer.Source, A, "Actual supplying Sleight card enters its own source scope");
+        AccessTools.DeclaredMethod(typeof(SleightOfFlesh), "OnUpgrade").Invoke(upgraded, null);
+        context.Complete(PlayBody(upgraded, world.Other.Creature));
+        Check(GameProducerFixture.Applications.Last().Amount == 13, "Pinned Sleight OnUpgrade and OnPlay supply thirteen stacks");
+        var defySource = SourceSnapshot.Create(epoch, new[] { new SourceShare((epoch << 32) | 16, 1) });
+        var defy = GameCard<Defy>(world.Owner, defySource);
+        var mixture = SourceSnapshot.Create(epoch, new[] { new SourceShare(A[0].Destination, 9), new SourceShare(B[0].Destination, 13) });
+        foreach (var variant in new[] { (Amount: 9, Source: A), (Amount: 13, Source: B), (Amount: 22, Source: mixture) })
+        {
+            var sleight = GamePower<SleightOfFleshPower>(world.Owner.Creature, variant.Amount, variant.Source);
+            GameProducerFixture.Listener = sleight;
+            GameProducerFixture.Blocked = 2;
+            int before = backend.DamageGroups.Count;
+            var pause = Pause(); DamageFixture.Pause = pause.Task;
+            var wrapper = new ProbeModel("actual Defy wrapper");
+            var task = wrapper.OnPlayWrapper(async () =>
+            {
+                PlayCapture.Started(defy, 0, 0, 1);
+                await PlayBody(defy, world.Enemy);
+                PlayCapture.Finished(defy);
+            });
+            var emitted = GameProducerFixture.Emissions.Last();
+            Check(!task.IsCompleted && backend.OpenCalculations == 1, "Sleight result suspends inside actual Defy OnPlay");
+            Check(ReferenceEquals(emitted.Play?.Card, defy) && emitted.Play.Token != 0, "Defy remains the active triggering play during Sleight's independent damage");
+            Check(ReferenceEquals(emitted.Producer.Model, sleight) && emitted.Amount == variant.Amount && emitted.Props == ValueProp.Unpowered,
+                "Actual Sleight listener emits its own entire amount as Unpowered damage");
+            Same(GameProducerFixture.Applications.Last().Producer.Source, defySource, "Weak application occurs inside Defy's distinct source scope");
+            RecordModel(sleight, defySource);
+            pause.SetResult(1); context.Complete(task);
+            Check(backend.DamageGroups.Count == before + 1 && backend.DamageGroups.Last().Packets.Single().Total == variant.Amount,
+                "Each base/upgraded/stacked emission reports one complete actual result group");
+            Check(backend.DamageGroups.Last().Packets.Single().Blocked == 2 && backend.DamageGroups.Last().Packets.Single().Unblocked == variant.Amount - 2,
+                "Blocked plus HP damage conserves the emitted amount");
+            Same(backend.DamageGroups.Last().Source, variant.Source, "Frozen Sleight suppliers exclude the active Defy and later source mutation");
+            Check(backend.Begun.Last().Role == ProducerRole.Power && backend.Begun.Last().Segment == DamageSegment.Attributed && backend.DamageModifiers.Count == 0,
+                "Independent Sleight output retains Power/Attributed with no attack modifiers");
+        }
+        Check(backend.Committed.Sum(packet => packet.Total) == 44 && backend.Fallback.Count == 0, "Base 9, upgraded 13 and stacked 22 emit exactly 44 captured points");
+    }
+    private static void SleightTriggerKinds()
+    {
+        var world = GameWorld();
+        var sleight = GamePower<SleightOfFleshPower>(world.Owner.Creature, 9, A);
+        GameProducerFixture.Listener = sleight;
+        var potion = Mutable<WeakPotion>("WEAK_POTION"); potion.Owner = world.Owner; RecordModel(potion, B);
+        context.Complete((Task)AccessTools.DeclaredMethod(typeof(WeakPotion), "OnUse").Invoke(potion, new object[] { null, world.Enemy }));
+        var relic = Mutable<RedMask>("RED_MASK"); relic.Owner = world.Owner; RecordModel(relic, B);
+        context.Complete(relic.BeforeSideTurnStart(null, CombatSide.Player, new[] { world.Owner.Creature }, (ICombatState)backend.Combat));
+        var countdown = GamePower<CountdownPower>(world.Owner.Creature, 2, B);
+        context.Complete(countdown.AfterSideTurnStart(CombatSide.Player, new[] { world.Owner.Creature }, (ICombatState)backend.Combat));
+        var deathbringer = GameCard<Deathbringer>(world.Owner, B);
+        context.Complete(PlayBody(deathbringer, null));
+        Check(GameProducerFixture.Applications.Select(application => application.Power.GetType()).SequenceEqual(new[] { typeof(WeakPower), typeof(WeakPower), typeof(DoomPower), typeof(DoomPower), typeof(WeakPower) }),
+            "Pinned potion, relic, Countdown and Deathbringer bodies deliver their real ordered debuffs");
+        Check(GameProducerFixture.Applications.Select(application => application.Amount).SequenceEqual(new decimal[] { 3, 1, 2, 21, 1 }),
+            "Pinned trigger amounts are independent of Sleight's nine-point output");
+        Check(GameProducerFixture.Applications.Select(application => application.Producer.Role).SequenceEqual(new[] { ProducerRole.Potion, ProducerRole.Relic, ProducerRole.Power, ProducerRole.Card, ProducerRole.Card }),
+            "Actual triggering model kinds establish distinct producer scopes");
+        Check(GameProducerFixture.Applications.Take(3).All(application => application.Card == null)
+            && GameProducerFixture.Applications.Skip(3).All(application => ReferenceEquals(application.Card, deathbringer)), "Null-card triggers and explicit Deathbringer source both reach the actual listener");
+        foreach (var application in GameProducerFixture.Applications) Same(application.Producer.Source, B, "Triggering model source is B");
+        Check(backend.DamageGroups.Count == 5 && backend.DamageGroups.Select(group => group.Calculation).Distinct().Count() == 5,
+            "Deathbringer's Doom and Weak generate separate successful calculation groups alongside the other triggers");
+        foreach (var group in backend.DamageGroups)
+        {
+            Same(group.Source, A, "Sleight supplier excludes potion/relic/power/Deathbringer trigger source");
+            Check(group.Packets.Single().Total == 9 && group.Packets.Single().Kind == ResultKind.Outgoing, "Every actual independent Sleight proc captures nine outgoing points");
+        }
+        Check(GameProducerFixture.Emissions.All(emission => ReferenceEquals(emission.Producer.Model, sleight)) && backend.Committed.Sum(packet => packet.Total) == 45,
+            "Five independent actual Sleight emissions capture exactly 45 points");
+        int before = backend.Committed.Count;
+        var weak = GamePower<WeakPower>(world.Enemy, 1, B);
+        var buff = GamePower<StrengthPower>(world.Enemy, 1, B);
+        var temporary = GamePower<DarkShacklesPower>(world.Enemy, 1, B);
+        Check(temporary.GetTypeForAmount(1) == MegaCrit.Sts2.Core.Entities.Powers.PowerType.Debuff,
+            "The temporary control is an actual debuff, so exclusion reaches the temporary-power condition");
+        context.Complete(sleight.AfterPowerAmountChanged(null, weak, 0, world.Owner.Creature, deathbringer));
+        context.Complete(sleight.AfterPowerAmountChanged(null, weak, 1, world.Other.Creature, deathbringer));
+        context.Complete(sleight.AfterPowerAmountChanged(null, buff, 1, world.Owner.Creature, deathbringer));
+        context.Complete(sleight.AfterPowerAmountChanged(null, temporary, 1, world.Owner.Creature, deathbringer));
+        Check(backend.Committed.Count == before, "Actual listener rejects zero change, another applier, buff and temporary debuff");
+    }
+    private static void CacophonyDraws()
+    {
+        var world = GameWorld();
+        var supplierCard = GameCard<Defy>(world.Owner, A);
+        var drawn = GameCard<Defy>(world.Other, B);
+        var cacophony = GamePower<CacophonyPower>(world.Owner.Creature, 7, A);
+        Check(new NativeAttributionBackend().Describe(supplierCard).Slot == 0 && new NativeAttributionBackend().Describe(drawn).Slot == 1,
+            "Cacophony's supplied source and drawn card belong to different roster players");
+        FlowCapture.Current = Frame(drawn, B);
+        for (int draw = 0; draw < 32; draw++) context.Complete(cacophony.AfterCardDrawn(null, drawn, draw % 2 == 0));
+        Check(backend.Committed.Count == 0 && cacophony.DynamicVars.Cards.IntValue == 1, "Actual Cacophony counts all 32 other-player draws without an early emission");
+        var wait = Pause(); GameProducerFixture.WaitTask = wait.Task;
+        var task = cacophony.AfterCardDrawn(null, drawn, false);
+        Check(!task.IsCompleted && cacophony.DynamicVars.Cards.IntValue == 33 && backend.Committed.Count == 0, "Thirty-third actual draw resets counter before the game's awaited delay");
+        RecordModel(cacophony, B);
+        wait.SetResult(1); context.Complete(task);
+        Check(backend.Committed.Single().Total == 7 && backend.Committed.Single().Kind == ResultKind.Outgoing, "Actual Cacophony emits exactly seven outgoing points after its delay");
+        Same(backend.DamageGroups.Single().Source, A, "Cacophony freezes its supplier before wait, excluding drawer and later supplier changes");
+        Check(GameProducerFixture.Emissions.Single().Dealer == world.Owner.Creature
+            && ReferenceEquals(GameProducerFixture.Emissions.Single().Producer.Model, cacophony), "Actual Cacophony dealer remains its owner while the drawn card belongs to the other player");
+        Check(backend.Begun.Single().Role == ProducerRole.Power && backend.Begun.Single().Segment == DamageSegment.Attributed, "Cacophony's captured source remains attributed power damage");
+        Same(FlowCapture.Current.Source, B, "Actual Cacophony async kickoff and completion preserve drawing caller");
+    }
+    private static void NestedDamage()
+    {
+        var world = GameWorld();
+        var parentCard = GameCard<Defy>(world.Owner, A);
+        var childCard = GameCard<Defy>(world.Other, B);
+        var parentModifier = SourceSnapshot.Create(epoch, new[] { new SourceShare((epoch << 32) | 16, 1) });
+        var childModifier = SourceSnapshot.Create(epoch, new[] { new SourceShare((epoch << 32) | 24, 1) });
+        var retaliationSource = SourceSnapshot.Create(epoch, new[] { new SourceShare((epoch << 32) | 32, 1) });
+        var parentStrength = GamePower<StrengthPower>(world.Owner.Creature, 3, parentModifier);
+        var childStrength = GamePower<StrengthPower>(world.Other.Creature, 2, childModifier);
+        var retaliation = GamePower<FlameBarrierPower>(world.Enemy, 4, retaliationSource);
+        DamageCapture.Inspect = (_, dealer, props) => new(props == ValueProp.Move, false, dealer == world.Owner.Creature ? 3 : 2, null, false);
+        var parentPause = Pause(); var childPause = Pause();
+        Task nestedAttack = null;
+        DamageOperation parentOperation = null, childOperation = null;
+        DamageFixture.Results = new() { new(world.Enemy, ValueProp.Move) { UnblockedDamage = 9, BlockedDamage = 2 } };
+        DamageFixture.Pause = parentPause.Task;
+        DamageFixture.Modifiers = new[] { parentStrength }; DamageFixture.Bonus = 3;
+        DamageFixture.DuringLive = () => parentOperation = DamageCapture.Current;
+        DamageFixture.Nested = async () =>
+        {
+            DamageFixture.Results = new() { new(world.Enemy, ValueProp.Move) { UnblockedDamage = 6, BlockedDamage = 1 } };
+            DamageFixture.Pause = childPause.Task;
+            DamageFixture.Modifiers = new[] { childStrength }; DamageFixture.Bonus = 2;
+            DamageFixture.DuringLive = () => childOperation = DamageCapture.Current;
+            DamageFixture.Nested = async () =>
+            {
+                DamageFixture.Nested = null;
+                DamageFixture.DuringLive = null;
+                DamageFixture.Modifiers = Array.Empty<AbstractModel>(); DamageFixture.Bonus = 0;
+                var hit = new DamageResult(world.Enemy, ValueProp.Move) { UnblockedDamage = 6, BlockedDamage = 1 };
+                var task = retaliation.AfterDamageReceived(null, world.Enemy, hit, ValueProp.Move, world.Other.Creature, childCard);
+                Check(ReferenceEquals(DamageCapture.Current, childOperation), "Actual retaliation kickoff restores exact child calculation before its await");
+                await task;
+                Check(ReferenceEquals(DamageCapture.Current, childOperation), "Awaited actual retaliation restores the child's immutable calculation");
+            };
+            var child = DamageFixture.Damage(null, new[] { world.Enemy }, 5, ValueProp.Move, world.Other.Creature, childCard, null);
+            nestedAttack = child;
+            Check(ReferenceEquals(DamageCapture.Current, parentOperation), "Nested canonical child kickoff restores exact parent operation");
+            await child;
+            Check(ReferenceEquals(DamageCapture.Current, parentOperation), "Awaited canonical child preserves parent calculation until its own result group");
+        };
+        var caller = DamageCapture.Current;
+        var parent = DamageFixture.Damage(null, new[] { world.Enemy }, 8, ValueProp.Move, world.Owner.Creature, parentCard, null);
+        Check(ReferenceEquals(DamageCapture.Current, caller) && backend.OpenCalculations == 3 && backend.Committed.Count == 0,
+            "Parent, nested attack and actual retaliation suspend with three independent live calculations and restore outer caller");
+        RecordModel(parentStrength, B); RecordModel(childStrength, A); RecordModel(retaliation, B);
+        DamageFixture.Preview(world.Enemy, world.Owner.Creature, parentCard);
+        Check(backend.DamageModifiers.Count == 2 && backend.Begun.Count == 3, "Nested preview cannot replace or supplement either live modifier batch");
+        childPause.SetResult(1);
+        context.Complete(nestedAttack);
+        Check(!parent.IsCompleted && backend.OpenCalculations == 1 && backend.DamageGroups.Count == 2,
+            "Both descendants finish while the parent retains its own suspended calculation");
+        parentPause.SetResult(1); context.Complete(parent);
+        Check(backend.DamageGroups.Count == 3 && backend.DamageGroups.Select(group => group.Calculation).Distinct().Count() == 3 && backend.Fallback.Count == 0,
+            "Retaliation, child and parent seal three distinct complete groups exactly once");
+        var groups = backend.DamageGroups;
+        Same(groups[0].Source, retaliationSource, "Retaliation retains its actual power source across await");
+        Same(groups[1].Source, B, "Child canonical explicit card retains its source");
+        Same(groups[2].Source, A, "Parent canonical explicit card retains its source");
+        Check(groups.Select(group => group.Packets.Single().Total).SequenceEqual(new[] { 4, 7, 11 })
+            && groups[0].Packets.Single().Kind == ResultKind.Incoming, "Nested game-order results retain incoming retaliation and both outgoing actual amounts");
+        var parentContribution = backend.DamageModifiers.Single(modifier => modifier.Calculation == groups[2].Calculation);
+        var childContribution = backend.DamageModifiers.Single(modifier => modifier.Calculation == groups[1].Calculation);
+        Same(parentContribution.Source, parentModifier, "Parent modifier's actual Strength instance source freezes before await");
+        Same(childContribution.Source, childModifier, "Child modifier's actual Strength instance source freezes independently");
+        Check(parentContribution.Amount == 3 && childContribution.Amount == 2
+            && !backend.DamageModifiers.Any(modifier => modifier.Calculation == groups[0].Calculation), "Independent modifier amounts stay with their calculation; Unpowered retaliation has none");
+    }
+    private static void MultipleDamageTargets()
+    {
+        var world = GameWorld();
+        var second = Creature(); var redirect = Creature();
+        var card = GameCard<Defy>(world.Owner, A);
+        var otherModifierSource = SourceSnapshot.Create(epoch, new[] { new SourceShare((epoch << 32) | 16, 1) });
+        var firstStrength = GamePower<StrengthPower>(world.Owner.Creature, 2, B);
+        var secondStrength = GamePower<StrengthPower>(world.Owner.Creature, 5, otherModifierSource);
+        DamageFixture.ResultsByTarget = new()
+        {
+            [world.Enemy] = new() { new(world.Enemy, ValueProp.Move) { UnblockedDamage = 5, BlockedDamage = 2 }, new(redirect, ValueProp.Move) { UnblockedDamage = 1 } },
+            [second] = new() { new(second, ValueProp.Move) { UnblockedDamage = 7, BlockedDamage = 4 } }
+        };
+        DamageFixture.ModifiersByTarget = new()
+        {
+            [world.Enemy] = (new[] { firstStrength }, 2), [second] = (new[] { secondStrength }, 5)
+        };
+        DamageCapture.Inspect = (_, _, _) => new(true, false, 0, null, false);
+        var pause = Pause(); DamageFixture.Pause = pause.Task;
+        var task = DamageFixture.Damage(null, new[] { world.Enemy, second }, 6, ValueProp.Move, world.Owner.Creature, card, null);
+        Check(backend.Begun.Count == 1 && backend.OpenCalculations == 1 && backend.DamageGroups.Count == 0,
+            "First original target suspends without prematurely enumerating or capturing the next target");
+        DamageFixture.Preview(second, world.Owner.Creature, card);
+        Check(backend.DamageModifiers.Count == 1, "Preview of the next target cannot enter the first target's modifier group");
+        pause.SetResult(1); context.Complete(task);
+        Check(backend.DamageGroups.Count == 2 && backend.DamageGroups[0].Packets.Length == 2 && backend.DamageGroups[1].Packets.Length == 1,
+            "Two original targets create two groups while first-target redirection stays in one group");
+        Check(backend.DamageGroups.Select(group => group.Packets.Sum(packet => packet.Total)).SequenceEqual(new[] { 8, 11 })
+            && task.Result.Sum(result => result.TotalDamage) == 19 && DamageFixture.Enumerated == 19 && DamageFixture.LateEnumerated == 19,
+            "Original target amounts, redirected results and aggregate late enumeration conserve nineteen points exactly once");
+        Check(backend.DamageGroups[0].Calculation != backend.DamageGroups[1].Calculation && backend.DamageModifiers.Count == 2,
+            "Each original target owns its distinct modifier calculation");
+        var first = backend.DamageModifiers.Single(modifier => modifier.Calculation == backend.DamageGroups[0].Calculation);
+        var last = backend.DamageModifiers.Single(modifier => modifier.Calculation == backend.DamageGroups[1].Calculation);
+        Same(first.Source, B, "First target retains its actual modifier source");
+        Same(last.Source, otherModifierSource, "Second target retains a different actual modifier source");
+        Check(first.Amount == 2 && last.Amount == 5 && backend.Fallback.Count == 0, "Different target modifiers stay in their own complete accepted groups");
+    }
+    private static void ActualPoisonAndRolling()
+    {
+        var world = GameWorld();
+        var trigger = GameCard<Defy>(world.Owner, B);
+        var poison = GamePower<PoisonPower>(world.Enemy, 3, A);
+        var accelerant = GamePower<AccelerantPower>(world.Owner.Creature, 1, B);
+        var ownerPowers = (List<PowerModel>)AccessTools.Field(typeof(Creature), "_powers").GetValue(world.Owner.Creature);
+        ownerPowers.Add(accelerant);
+        var remaining = new List<int>();
+        GameProducerFixture.Decremented = power => { remaining.Add(power.Amount); RecordModel(power, B); };
+        FlowCapture.Current = Frame(trigger, B);
+        context.Complete(poison.AfterSideTurnStart(CombatSide.Enemy, new[] { world.Enemy }, (ICombatState)backend.Combat));
+        Check(GameProducerFixture.Emissions.Select(emission => emission.Amount).SequenceEqual(new decimal[] { 3, 2 })
+            && remaining.SequenceEqual(new[] { 2, 1 }), "Actual Poison turn callback and Trigger loop use Accelerant and decrement between two ticks");
+        Same(backend.DamageGroups[0].Source, A, "First actual Poison tick captures its first supplied snapshot");
+        Same(backend.DamageGroups[1].Source, B, "Second actual Poison tick refreshes the changed snapshot instead of reusing Trigger entry source");
+        Check(backend.Committed.Take(2).All(packet => packet.Kind == ResultKind.Outgoing)
+            && backend.Begun.Take(2).All(begin => begin.Role == ProducerRole.Power && begin.Segment == DamageSegment.Attributed), "Actual Poison ticks preserve outgoing attributed power classification");
+        ownerPowers.Clear();
+        GameProducerFixture.Applied = (power, target, source) =>
+        {
+            ((List<PowerModel>)AccessTools.Field(typeof(Creature), "_powers").GetValue(target)).Add(power);
+            RecordModel(power, source);
+        };
+        var outbreak = GameCard<Outbreak>(world.Owner, B);
+        context.Complete(PlayBody(outbreak, null));
+        Check(GameProducerFixture.Applications.Single().Power is PoisonPower && GameProducerFixture.Applications.Single().Amount == 9
+            && ReferenceEquals(GameProducerFixture.Applications.Single().Card, outbreak), "Actual Outbreak applies its nine-point Poison with the explicit supplying card");
+        Check(backend.DamageGroups.Count == 3 && backend.DamageGroups.Last().Packets.Single().Total == 9
+            && GameProducerFixture.Emissions.Last().Producer.Model is PoisonPower, "Actual Outbreak directly invokes the installed Poison Trigger producer after application");
+        Same(backend.DamageGroups.Last().Source, B, "Outbreak-supplied Poison retains its captured supplier");
+        Check(backend.Begun.Last().Segment == DamageSegment.Attributed && world.Enemy.GetPower<PoisonPower>().Amount == 8,
+            "Actual Poison emitted during Outbreak remains attributed and decrements after the hit");
+        DamageFixture.Results = new() { new(world.Enemy, ValueProp.Move) { UnblockedDamage = 2 } };
+        var unrelated = GameCard<Defy>(world.Owner, A);
+        context.Complete(DamageFixture.Damage(null, new[] { world.Enemy }, 2, ValueProp.Move, world.Owner.Creature, unrelated, null));
+        Same(backend.DamageGroups.Last().Source, A, "An unrelated hit against the actually poisoned target retains its canonical card source");
+        Check(backend.Begun.Last().Role == ProducerRole.Card && backend.Begun.Last().Segment == DamageSegment.Direct, "Target Poison cannot replace unrelated explicit card provenance");
+        var rolling = GamePower<RollingBoulderPower>(world.Owner.Creature, 12, A);
+        var second = Creature();
+        var pause = Pause(); DamageFixture.Pause = pause.Task;
+        FlowCapture.Current = ProducerFrame.Barrier;
+        int before = backend.DamageGroups.Count;
+        var task = (Task<IEnumerable<DamageResult>>)AccessTools.DeclaredMethod(typeof(RollingBoulderPower), "DoDamage")
+            .Invoke(rolling, new object[] { null, new[] { world.Enemy, second } });
+        Check(ReferenceEquals(task, DamageFixture.OriginalTask) && ReferenceEquals(FlowCapture.Current, ProducerFrame.Barrier),
+            "Actual independent Rolling Boulder callback returns its boundary Task unchanged and restores the absent caller scope");
+        RecordModel(rolling, B);
+        pause.SetResult(1); context.Complete(task);
+        Check(backend.DamageGroups.Count == before + 2 && task.Result.Sum(result => result.TotalDamage) == 24,
+            "Actual Rolling Boulder callback emits twelve points to each original target");
+        foreach (var group in backend.DamageGroups.Skip(before)) Same(group.Source, A, "Rolling Boulder freezes its own supplier without inherited context across target suspension");
+        Check(backend.Begun.TakeLast(2).All(begin => begin.Role == ProducerRole.Power && begin.Segment == DamageSegment.Attributed)
+            && backend.Fallback.Count == 0, "Independent callback retains attributed power capture for both complete groups");
+    }
+    private static void SentryAndFrost()
+    {
+        var world = GameWorld();
+        var sentry = GamePower<SentryModePower>(world.Other.Creature, 2, A);
+        GameProducerFixture.Created = card => backend.Descriptors[card] = new NativeAttributionBackend().Describe(card);
+        context.Complete(sentry.BeforeHandDraw(world.Owner, null, (ICombatState)backend.Combat));
+        Check(GameProducerFixture.Generated.Count == 0, "Actual Sentry rejects another player's before-draw event");
+        var wait = Pause(); GameProducerFixture.WaitTask = wait.Task;
+        var generation = sentry.BeforeHandDraw(world.Other, null, (ICombatState)backend.Combat);
+        Check(!generation.IsCompleted && GameProducerFixture.Generated.Count == 1, "Actual Sentry creates its first Sweeping Gaze before awaiting pile insertion");
+        RecordModel(sentry, B);
+        wait.SetResult(1); context.Complete(generation);
+        Check(GameProducerFixture.Generated.Count == 2 && GameProducerFixture.Generated.All(card => card is SweepingGaze && ReferenceEquals(card.Owner, world.Other)),
+            "Actual Sentry creates two distinct Sweeping Gaze instances for its physical owner");
+        Check(!ReferenceEquals(GameProducerFixture.Generated[0], GameProducerFixture.Generated[1]), "Separate Sentry loop iterations produce separate card identities");
+        foreach (var card in GameProducerFixture.Generated)
+        {
+            Same(FlowCapture.Source(card, CaptureRuntime.Epoch), A, "Both generated cards preserve Sentry's earlier supplier across the awaited insertion");
+            Check(IdentityCapture.Get(card, CaptureRuntime.Epoch).Generation == GenerationState.GeneratedRecorded, "Production generation capture records each actual generated card identity");
+        }
+        var supplyingCard = GameCard<Defy>(world.Owner, A);
+        var triggeringCard = GameCard<Defy>(world.Other, B);
+        var frost = Mutable<FrostOrb>("FROST_ORB"); frost.Owner = world.Other; RecordModel(frost, B);
+        var hibernate = GamePower<HibernatePower>(world.Other.Creature, 1, B);
+        ((List<PowerModel>)AccessTools.Field(typeof(Creature), "_powers").GetValue(world.Other.Creature)).Add(hibernate);
+        FlowCapture.Current = Frame(supplyingCard, A);
+        CommandCapture.OrbChanneled(backend.Combat, frost);
+        var blockWait = Pause(); CommandFixture.Pause = blockWait.Task;
+        FlowCapture.Current = Frame(triggeringCard, B);
+        var passive = frost.Passive(null, null);
+        Check(!passive.IsCompleted && backend.CommandEvents.Count == 0, "Actual Frost passive suspends at the first canonical-shaped block command");
+        RecordModel(frost, B);
+        blockWait.SetResult(1); context.Complete(passive);
+        Check(backend.CommandEvents.Select(item => (item.Kind, item.Amount, item.Slot)).SequenceEqual(new[] { ("block", 2, 1), ("block", 2, 0) }),
+            "Actual Frost/Hibernate passive produces its two-point block first for the owner, then the other roster player");
+        foreach (var block in backend.CommandEvents) Same(block.Source, A, "Both receiver block events retain the channel supplier despite trigger and later orb-source change");
+        Same(FlowCapture.Current.Source, B, "Actual Frost async scope restores the triggering caller after cross-player block commands");
+    }
+    private static void DamageGroupTiming()
+    {
+        var enemy = Creature(); var player = Creature(true, false, 0); var card = Card();
+        var error = new InvalidOperationException("later game callback failure");
+        DamageFixture.Results = new() { new(enemy, ValueProp.Move) { UnblockedDamage = 3, BlockedDamage = 2, OverkillDamage = 100, WasTargetKilled = true } };
+        DamageFixture.AfterGroup = () =>
+        {
+            Check(backend.Committed.Count == 1 && backend.OpenCalculations == 0, "Complete killed-target group is already reported before a later callback runs");
+            throw error;
+        };
+        bool observed = false;
+        try { context.Complete(Damage(enemy, player, card)); }
+        catch (InvalidOperationException actual) { observed = ReferenceEquals(actual, error); }
+        Check(observed && backend.Committed.Single().Total == 5 && backend.Fallback.Count == 0 && DamageFixture.LateEnumerated == 0,
+            "Later game exception retains the completed five-point result once; positive overkill is excluded");
+        var result = DamageFixture.Results;
+        DamageFixture.AfterGroup = () =>
+        {
+            Check(backend.Committed.Count == 2 && backend.OpenCalculations == 0, "Second complete group is reported before combat replacement");
+            backend.Combat = RuntimeHelpers.GetUninitializedObject(typeof(CombatState));
+            CaptureRuntime.Register(backend, ++epoch, backend.Combat);
+        };
+        var task = Damage(enemy, player, card);
+        context.Complete(task);
+        Check(ReferenceEquals(task.Result, result) && backend.Committed.Count == 2 && backend.Fallback.Count == 0 && DamageFixture.LateEnumerated == 5,
+            "Later aggregate enumeration and builder completion preserve the original result after combat replacement without duplicate reporting");
+    }
     private static void Classifications()
     {
         object player = new(), other = new(), enemy = new(), osty = new();
@@ -871,7 +1531,7 @@ internal static class ManagedFixtures
         Check(DamageCapture.Classify(p, other, true, p, player) == ResultKind.Incoming, "Another player dealer is incoming");
         Check(DamageCapture.Classify(default, null, false, e, enemy) == ResultKind.Outgoing, "Missing producer leaves outgoing classification");
     }
-    private static T Mutable<T>(string id) where T : AbstractModel
+    internal static T Mutable<T>(string id) where T : AbstractModel
     {
         var model = (T)RuntimeHelpers.GetUninitializedObject(typeof(T));
         AccessTools.Field(typeof(AbstractModel), "<IsMutable>k__BackingField").SetValue(model, true);
@@ -1088,8 +1748,14 @@ internal static class ManagedFixtures
         context.Complete(Damage(enemy, osty));
         Same(backend.Begun.Last().Source, SourceSnapshot.Unknown(epoch), "OstyDealt without canonical card excludes ambient producer");
         Check(backend.Committed.Last().Kind == ResultKind.OstyDealt, "Missing canonical card leaves specialized Osty classification");
+        var strength = GamePower<StrengthPower>(osty, 3, B);
+        AccessTools.Field(typeof(Creature), "_powers").SetValue(osty, new List<PowerModel> { strength });
+        DamageFixture.Modifiers = new[] { strength }; DamageFixture.Bonus = 3;
+        DamageCapture.Inspect = AccessTools.DeclaredMethod(typeof(DamageCapture), "InspectGame").CreateDelegate<Func<Creature, Creature, ValueProp, DamageEvidence>>();
         context.Complete(Damage(enemy, osty, Card()));
         Same(backend.Begun.Last().Source, A, "Explicit Osty attack card uses canonical instance snapshot");
+        Check(backend.Committed.Last().Kind == ResultKind.OstyDealt && backend.DamageModifiers.Count == 0,
+            "Production damage eligibility excludes OstyDealt from decomposition despite explicit card and supplied modifier list");
         var card = new ProbeModel("A");
         context.Complete(card.OnPlayWrapper(() =>
         {

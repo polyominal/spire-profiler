@@ -10,6 +10,8 @@
 //! and ledger invariants after every event before parsing persisted JSON.
 //! Supplier grants use a FIFO of individual units; defensive pools retain
 //! an independent outer FIFO/residue model and per-seat source prefixes.
+//! Nested-hit walks keep an attack pending through Thorns and Inferno, then
+//! check another target against fresh modifier budgets from the same play.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
@@ -508,6 +510,69 @@ impl DamageShare {
     }
 }
 
+struct PendingHit {
+    calculation: u64,
+    source: Rc<SimSource>,
+    segment: i32,
+    modifiers: Vec<(Rc<SimSource>, u64)>,
+    total: i32,
+    blocked: i32,
+}
+
+impl PendingHit {
+    fn begin(
+        source: &Rc<SimSource>,
+        total: i32,
+        blocked: i32,
+        modifiers: Vec<(Rc<SimSource>, u64)>,
+        target: u64,
+    ) -> Self {
+        let (role, segment) = match source.origin {
+            Origin::Ordinary | Origin::Generated => (1, 0),
+            Origin::Relic => (3, 0),
+            Origin::Power => (2, 1),
+        };
+        let calculation = source.actual.with_transfer(|transfer| {
+            events::damage_calculation_begin(combat_epoch(), transfer, role, segment, target)
+        });
+        assert_ne!(calculation, 0);
+        for (modifier, amount) in &modifiers {
+            modifier.actual.contribution(calculation, *amount as i32);
+        }
+        Self {
+            calculation,
+            source: Rc::clone(source),
+            segment,
+            modifiers,
+            total,
+            blocked,
+        }
+    }
+
+    fn commit(self, ledger: &mut LedgerModel) {
+        assert_eq!(
+            events::damage_result_append(
+                self.calculation,
+                self.total,
+                self.total - self.blocked,
+                self.blocked,
+                0,
+                4,
+                0
+            ),
+            1
+        );
+        assert_eq!(events::damage_calculation_commit(self.calculation), 1);
+        ledger.damage(
+            &self.source,
+            self.segment,
+            &self.modifiers,
+            self.total as u64,
+            self.blocked as u64,
+        );
+    }
+}
+
 struct LedgerModel {
     rows: BTreeMap<RowKey, CardStat>,
     pools: Vec<NaivePool>,
@@ -680,6 +745,17 @@ impl LedgerModel {
         source
             .actual
             .hit(total as i32, blocked as i32, kind, receiver);
+        self.record_received(source, total, blocked, kind, receiver);
+    }
+
+    fn record_received(
+        &mut self,
+        source: &SimSource,
+        total: u64,
+        blocked: u64,
+        kind: i32,
+        receiver: i32,
+    ) {
         self.observe(receiver);
         if kind == 4 {
             let mut remaining = total;
@@ -840,31 +916,15 @@ impl Walk {
     }
 
     fn damage(&mut self, rng: &mut Rng, source: &Rc<SimSource>) {
-        let (role, segment) = match source.origin {
-            Origin::Ordinary | Origin::Generated => (1, 0),
-            Origin::Relic => (3, 0),
-            Origin::Power => (2, 1),
-        };
         let total = rng.range_i32(0, 30);
         let blocked = rng.range_i32(0, total);
-        let calculation = source.actual.with_transfer(|transfer| {
-            events::damage_calculation_begin(combat_epoch(), transfer, role, segment, 900)
-        });
-        assert_ne!(calculation, 0);
         let mut modifiers = Vec::new();
         for _ in 0..rng.below(4) {
             let modifier = self.source(rng);
             let amount = rng.range_i32(0, 8);
-            modifier.actual.contribution(calculation, amount);
             modifiers.push((modifier, amount as u64));
         }
-        assert_eq!(
-            events::damage_result_append(calculation, total, total - blocked, blocked, 0, 4, 0),
-            1
-        );
-        assert_eq!(events::damage_calculation_commit(calculation), 1);
-        self.ledger
-            .damage(source, segment, &modifiers, total as u64, blocked as u64);
+        PendingHit::begin(source, total, blocked, modifiers, 900).commit(&mut self.ledger);
     }
 
     fn block(&mut self, rng: &mut Rng, source: &Rc<SimSource>) {
@@ -1110,6 +1170,74 @@ fn randomized_frozen_sources_match_naive_attribution() {
         walk.damage(&mut rng, &source);
         walk.block(&mut rng, &source);
         walk.check(&repro, step);
+    }
+}
+
+#[test]
+fn randomized_nested_hits_keep_frozen_suppliers_and_per_target_budgets() {
+    let seed = sim_seed();
+    let repro = format!("SIM_SEED={seed} nested hits");
+    let mut rng = Rng::new(seed ^ 0xCA11_BACC_1AFE);
+    events::test_reset();
+    events::init(&unique_dir("sim/nested-hits"));
+    events::combat_started("NESTED_HITS", "test");
+    let sources = [
+        SimSource::card("STRIKE", 0),
+        SimSource::card("INFERNO", 0),
+        SimSource::card("WHITE_NOISE", 1),
+        SimSource::card("INFLAME", 2),
+        SimSource::card("DEFEND", 0),
+    ];
+    let [attack, supplier, generator, modifier, defend] = &sources;
+    let mut power = PowerModel::new("INFERNO_POWER", 100_001, (100, 0, 0), supplier);
+    power.change(0, 3, supplier);
+    power.change(3, 5, generator);
+    let mut model = LedgerModel::new(&sources);
+    for step in 0..256 {
+        let play = model.play(attack);
+        let block = rng.range_i32(0, 5);
+        model.gain(defend, block as u64, &[], 0);
+        model.check(&format!("{repro} before parent"), step);
+        let total = rng.range_i32(1, 30);
+        let modifiers = vec![(Rc::clone(modifier), rng.range_i32(1, 8) as u64)];
+        let parent = PendingHit::begin(attack, total, rng.range_i32(0, total), modifiers, 900);
+        model.check(&format!("{repro} pending parent"), step);
+
+        // Thorns damages the attacker before its pending hit; positive HP loss
+        // then triggers Inferno on that player's turn in game v0.111.0.
+        let thorns = block + rng.range_i32(1, 5);
+        assert_eq!(
+            events::damage_unattributed(combat_epoch(), thorns, thorns - block, block, 1, 0, 0),
+            1
+        );
+        model.record_received(attack, thorns as u64, block as u64, 1, 0);
+        model.check(&format!("{repro} after Thorns"), step);
+        let frozen = SimSource::power(&power);
+        let child = PendingHit::begin(
+            &frozen,
+            power.observed,
+            rng.range_i32(0, power.observed),
+            Vec::new(),
+            900,
+        );
+        let incoming = if rng.below(2) == 0 {
+            supplier
+        } else {
+            generator
+        };
+        power.change(power.observed, rng.range_i32(1, 12), incoming);
+        model.check(&format!("{repro} suspended Inferno"), step);
+        child.commit(&mut model);
+        model.check(&format!("{repro} after Inferno"), step);
+        parent.commit(&mut model);
+        model.check(&format!("{repro} after parent"), step);
+
+        let total = rng.range_i32(0, 5);
+        let modifiers = vec![(Rc::clone(modifier), rng.range_i32(9, 16) as u64)];
+        PendingHit::begin(attack, total, rng.range_i32(0, total), modifiers, 901)
+            .commit(&mut model);
+        attack.actual.finish(play);
+        model.check(&format!("{repro} after next target"), step);
     }
 }
 
