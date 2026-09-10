@@ -71,7 +71,7 @@ impl LedgerStage {
             .collect();
         let allocated = DamageAllocation::build(
             &calculation.source,
-            calculation.segment as i32,
+            calculation.segment,
             &calculation.modifiers,
             &outgoing,
         )?;
@@ -101,13 +101,18 @@ impl LedgerStage {
                 ResultKind::OstyDealt => {
                     let credits = DamageAllocation::build(
                         &calculation.source,
-                        0,
+                        ProducerSegment::Direct,
                         &[],
                         &[(result.total, result.blocked)],
                     )?;
                     for result in credits {
                         for credit in result {
-                            self.damage(credit.destination, 0, credit.damage, credit.blocked)?;
+                            self.damage(
+                                credit.destination,
+                                credit.segment,
+                                credit.damage,
+                                credit.blocked,
+                            )?;
                         }
                     }
                 }
@@ -131,20 +136,24 @@ impl State {
             let epoch = self.provenance_epoch(combat_seq)?;
             let role = ProducerRole::decode(producer_role, &mut self.source_transfers.diagnostics);
             let mut segment =
-                DamageSegment::decode(segment, &mut self.source_transfers.diagnostics);
-            if segment == DamageSegment::Modifier || original_target == 0 {
+                match DamageSegment::decode(segment, &mut self.source_transfers.diagnostics) {
+                    DamageSegment::Direct => ProducerSegment::Direct,
+                    DamageSegment::Attributed => ProducerSegment::Attributed,
+                    DamageSegment::Modifier => return Err(SourceFailure::Packet),
+                };
+            if original_target == 0 {
                 return Err(SourceFailure::Packet);
             }
             let mut source = self.source_snapshot(combat_seq, transfer)?;
             if role == ProducerRole::Unknown {
                 source = SourceSnapshot::unknown(epoch);
-                segment = DamageSegment::Attributed;
+                segment = ProducerSegment::Attributed;
             }
-            if role == ProducerRole::Power && segment != DamageSegment::Attributed
+            if role == ProducerRole::Power && segment != ProducerSegment::Attributed
                 || matches!(
                     role,
                     ProducerRole::Card | ProducerRole::Relic | ProducerRole::Potion
-                ) && segment != DamageSegment::Direct
+                ) && segment != ProducerSegment::Direct
             {
                 return Err(SourceFailure::Packet);
             }
@@ -401,7 +410,7 @@ impl State {
                 serial: 0,
                 source: SourceSnapshot::unknown(epoch),
                 producer_role: ProducerRole::Unknown,
-                segment: DamageSegment::Attributed,
+                segment: ProducerSegment::Attributed,
                 original_target: 0,
                 modifiers: Vec::new(),
                 results: vec![result],

@@ -488,12 +488,27 @@ struct StrengthReduction {
     source: SourceSnapshot,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProducerSegment {
+    Direct,
+    Attributed,
+}
+
+impl From<ProducerSegment> for DamageSegment {
+    fn from(segment: ProducerSegment) -> Self {
+        match segment {
+            ProducerSegment::Direct => Self::Direct,
+            ProducerSegment::Attributed => Self::Attributed,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct DamageCalculation {
     serial: u32,
     source: SourceSnapshot,
     producer_role: ProducerRole,
-    segment: DamageSegment,
+    segment: ProducerSegment,
     original_target: u64,
     modifiers: Vec<allocation::ModifierContribution>,
     results: Vec<ObservedDamage>,
@@ -819,7 +834,7 @@ impl LedgerStage {
     fn damage(
         &mut self,
         destination: Destination,
-        segment: i32,
+        segment: DamageSegment,
         amount: u64,
         blocked: u64,
     ) -> Result<(), SourceFailure> {
@@ -842,10 +857,9 @@ impl LedgerStage {
             .checked_add(blocked)
             .ok_or(SourceFailure::Arithmetic)?;
         let value = match segment {
-            0 => &mut row.dmg_direct,
-            1 => &mut row.dmg_attributed,
-            2 => &mut row.dmg_modifier,
-            _ => return Err(SourceFailure::Packet),
+            DamageSegment::Direct => &mut row.dmg_direct,
+            DamageSegment::Attributed => &mut row.dmg_attributed,
+            DamageSegment::Modifier => &mut row.dmg_modifier,
         };
         *value = value.checked_add(amount).ok_or(SourceFailure::Arithmetic)?;
         debug_assert_eq!(

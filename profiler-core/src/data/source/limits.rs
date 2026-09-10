@@ -335,3 +335,76 @@ fn malformed_scalars_clamp_without_turning_reserved_tokens_into_objects() {
     assert_eq!(state.source_transfer_add(source, u64::MAX, 1), 0);
     assert_eq!(state.source_count(source), -1);
 }
+
+#[test]
+fn producer_segments_preserve_wire_policy_and_credited_rows() {
+    for (role, direct, attributed) in [
+        (-1, Some(1), Some(1)),
+        (0, Some(1), Some(1)),
+        (1, Some(0), None),
+        (2, None, Some(1)),
+        (3, Some(0), None),
+        (4, Some(0), None),
+        (5, Some(0), Some(1)),
+        (i32::MAX, Some(0), Some(1)),
+    ] {
+        for (segment, expected) in [
+            (i32::MIN, direct),
+            (-1, direct),
+            (0, direct),
+            (1, attributed),
+            (2, None),
+            (i32::MAX, None),
+        ] {
+            let mut state = fixture();
+            let producer = card(&mut state, "PRODUCER", 0);
+            let modifier = card(&mut state, "MODIFIER", 1);
+            let calculation = state.damage_calculation_begin(7, producer, role, segment, 999);
+            let Some(expected) = expected else {
+                assert_eq!(calculation, 0, "role {role}, segment {segment}");
+                assert!(state.provenance.calculations.is_empty());
+                continue;
+            };
+            assert_ne!(calculation, 0, "role {role}, segment {segment}");
+            assert_eq!(
+                state.damage_modifier_contribution(calculation, modifier, 2),
+                1
+            );
+            assert_eq!(state.damage_result_append(calculation, 5, 3, 2, 0, 4, 0), 1);
+            assert_eq!(state.damage_calculation_commit(calculation), 1);
+            let rows = &state.current.as_ref().expect("fixture combat exists").cards;
+            let producer_id = if role <= 0 {
+                "UNATTRIBUTED"
+            } else {
+                "PRODUCER"
+            };
+            let producer_row = rows
+                .iter()
+                .find(|row| row.id == producer_id)
+                .expect("accepted hit credits the normalized producer");
+            assert_eq!(
+                (
+                    producer_row.dmg_direct,
+                    producer_row.dmg_attributed,
+                    producer_row.dmg_modifier
+                ),
+                if expected == 0 { (3, 0, 0) } else { (0, 3, 0) },
+                "role {role}, segment {segment}"
+            );
+            let modifier_row = rows
+                .iter()
+                .find(|row| row.id == "MODIFIER")
+                .expect("modifier source has its own row");
+            assert_eq!(
+                (
+                    modifier_row.dmg_direct,
+                    modifier_row.dmg_attributed,
+                    modifier_row.dmg_modifier
+                ),
+                (0, 0, 2)
+            );
+            assert_eq!(rows.iter().map(|row| row.damage_dealt).sum::<i64>(), 5);
+            assert_eq!(rows.iter().map(|row| row.damage_blocked).sum::<i64>(), 2);
+        }
+    }
+}

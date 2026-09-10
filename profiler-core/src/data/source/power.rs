@@ -401,7 +401,7 @@ impl State {
             let mut stage = LedgerStage::new(self)?;
             for target in &batch.targets {
                 for (destination, amount) in &target.allocations {
-                    stage.damage(*destination, 1, *amount, 0)?;
+                    stage.damage(*destination, DamageSegment::Attributed, *amount, 0)?;
                 }
             }
             stage.commit(self)?;
