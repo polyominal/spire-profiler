@@ -68,8 +68,8 @@ internal static class DamageCapture
         bool enemy = dealer != null && !dealer.IsPlayer && target != null && target.IsPlayer;
         var weak = enemy ? dealer.GetPower<WeakPower>() : null;
         var strength = dealer?.GetPower<StrengthPower>();
-        return new(modifiers, enemy && SpireProfilerMod.IsLocalPlayer(target.Player), strength?.Amount ?? 0,
-            weak, enemy && dealer.GetPower<DebilitatePower>() != null, weak == null ? 0 : SpireProfilerMod.PaperKraneSlots(), strength);
+        return new(modifiers, enemy && RunContext.IsLocalPlayer(target.Player), strength?.Amount ?? 0,
+            weak, enemy && dealer.GetPower<DebilitatePower>() != null, weak == null ? 0 : RunContext.PaperKraneSlots(), strength);
     }
     internal static decimal ModifyDamage(IRunState runState, ICombatState combatState, Creature target, Creature dealer, decimal damage,
         ValueProp props, CardModel cardSource, CardPlay cardPlay, ModifyDamageHookType hookType, CardPreviewMode previewMode, out IEnumerable<AbstractModel> modifiers)

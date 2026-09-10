@@ -58,7 +58,7 @@ internal static class CommandCapture
                 bool forge = __originalMethod.Name == "Forge";
                 receiver = __args[1]; amount = (decimal)__args[forge ? 0 : 2]; model = __args[forge ? 2 : 3];
                 kind = forge ? CommandKind.Forge : CommandKind.Summon;
-                slot = receiver is Player player ? SpireProfilerMod.PlayerSlot(player) : 4;
+                slot = receiver is Player player ? RunContext.PlayerSlot(player) : 4;
             }
             Current = new(epoch, kind, SourceSnapshot.Unavailable, receiver, amount, slot);
             var source = FlowCapture.Supplied(model, epoch, __state.Producer);
@@ -136,7 +136,7 @@ internal static class CommandCapture
             DecomposeBlock(modifiers, start, __result, target, props, cardSource, cardPlay, (model, amount) =>
             {
                 var source = FlowCapture.Source(model, __state.Epoch);
-                if (CaptureRuntime.Upload(__state.Epoch, source, transfer => CaptureRuntime.Backend.BlockModifier(__state.Epoch.Sequence, transfer, amount, SpireProfilerMod.PlayerSlot(target.Player))) != 1)
+                if (CaptureRuntime.Upload(__state.Epoch, source, transfer => CaptureRuntime.Backend.BlockModifier(__state.Epoch.Sequence, transfer, amount, RunContext.PlayerSlot(target.Player))) != 1)
                     CaptureRuntime.Fail("block-modifier-report");
             });
         }

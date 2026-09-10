@@ -27,8 +27,8 @@ Run `cargo xtask --help`.
 
 ## .NET bootstrap
 
-- The handwritten host and attribution files under `shim/` are compiled from the
-  production source inventory in [shim.rs](../xtask/src/shim.rs). Only
+- The handwritten C\# files under `shim/` are compiled from the production
+  source inventory in [shim.rs](../xtask/src/shim.rs). Only
   `NativeLibrarySelector.g.cs` is generated from the native target matrix.
 - The project uses explicit compile inputs, so stale files in
   `target/xtask-gen/` cannot join a later build. Managed tests use the same

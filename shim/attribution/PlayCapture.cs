@@ -102,7 +102,7 @@ internal static class PlayCapture
         {
             var epoch = CaptureRuntime.EntryEpoch();
             if (CaptureRuntime.Valid(epoch) && ReferenceEquals(epoch.Combat, combatState))
-                Started(cardPlay.Card, SpireProfilerMod.PlayerSlot(cardPlay.Player), cardPlay.PlayIndex, cardPlay.PlayCount);
+                Started(cardPlay.Card, RunContext.PlayerSlot(cardPlay.Player), cardPlay.PlayIndex, cardPlay.PlayCount);
         }
         catch (Exception ex) { CaptureRuntime.Fail("play-history-start", ex); }
     }

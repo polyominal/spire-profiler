@@ -1631,7 +1631,7 @@ internal static class ManagedFixtures
         var run = (RunState)RuntimeHelpers.GetUninitializedObject(typeof(RunState));
         AccessTools.Field(typeof(RunState), "_players").SetValue(run, players.ToList());
         AccessTools.Field(typeof(RunState), "_currentRooms").SetValue(run, new List<AbstractRoom>());
-        SpireProfilerMod.CaptureRunPlayers(run);
+        RunContext.CaptureRunPlayers(run);
         return run;
     }
     private static void ActualModelAdapters()
