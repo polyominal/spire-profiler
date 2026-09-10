@@ -27,6 +27,12 @@ Run `cargo xtask --help`.
 
 ## .NET bootstrap
 
+- The handwritten host and attribution files under `shim/` are compiled from the
+  production source inventory in [shim.rs](../xtask/src/shim.rs). Only
+  `NativeLibrarySelector.g.cs` is generated from the native target matrix.
+- The project uses explicit compile inputs, so stale files in
+  `target/xtask-gen/` cannot join a later build. Managed tests use the same
+  production inventory with fixture sources appended.
 - Keep the SDK on 9.x while the shim targets net9.0. SDK 9 bundles that
   targeting pack; SDK 10 would silently fetch it from NuGet.
 - xtask sets `DOTNET_ROOT` to the bootstrap directory while invoking the SDK. If

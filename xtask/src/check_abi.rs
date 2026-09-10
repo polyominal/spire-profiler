@@ -1,4 +1,4 @@
-//! ABI conformance between the generated C# shim and the Rust core: every
+//! ABI conformance between the production C# sources and the Rust core: every
 //! GetExport binding must match its `extern "C" fn` parameters and return,
 //! compared as canonical classes (int / long / ulong / double / string / void).
 //! Returns support only scalars and void. Bound delegates accept whitespace and
@@ -18,7 +18,7 @@ use std::collections::HashMap;
 
 use anyhow::Result;
 
-use crate::workspace_root;
+use crate::{shim, workspace_root};
 
 const WHITESPACE: &[char] = &[' ', '\t', '\n', '\r', '\x0b', '\x0c'];
 
@@ -28,7 +28,7 @@ struct Signature {
     returns: &'static str,
 }
 
-struct RustExport {
+struct Declaration {
     signature: Signature,
     source: String,
 }
@@ -36,15 +36,19 @@ struct RustExport {
 struct Binding {
     delegate: String,
     export_name: String,
+    source: String,
 }
 
 pub fn run() -> Result<()> {
     let root = workspace_root();
     let rust_text = std::fs::read_to_string(root.join("profiler-core/src/abi.rs"))
         .map_err(|e| anyhow::anyhow!("reading profiler-core/src/abi.rs: {e}"))?;
-    let template = std::fs::read_to_string(root.join("shim/shim.cs.template"))
-        .map_err(|e| anyhow::anyhow!("reading shim/shim.cs.template: {e}"))?;
-    match compare(&rust_text, "abi.rs", &template) {
+    let sources = shim::ProjectKind::Mod.read_sources()?;
+    let sources: Vec<_> = sources
+        .iter()
+        .map(|(name, text)| (*name, text.as_str()))
+        .collect();
+    match compare_sources(&rust_text, "profiler-core/src/abi.rs", &sources) {
         Ok(bindings) => {
             println!("check-abi: {bindings} shim bindings verified against Rust exports");
             Ok(())
@@ -62,45 +66,57 @@ pub fn run() -> Result<()> {
 }
 
 /// One Err entry per mismatch, in binding order.
-fn compare(rust_source: &str, source_name: &str, template: &str) -> Result<usize, Vec<String>> {
+fn compare_sources(
+    rust_source: &str,
+    source_name: &str,
+    sources: &[(&str, &str)],
+) -> Result<usize, Vec<String>> {
     let mut bindings = Vec::new();
-    scan_bindings(template, &mut bindings).map_err(|e| vec![e])?;
+    for (name, text) in sources {
+        scan_bindings(text, name, &mut bindings).map_err(|e| vec![format!("{name}: {e}")])?;
+    }
     let mut exports = HashMap::new();
-    scan_rust_exports(rust_source, source_name, &bindings, &mut exports).map_err(|e| vec![e])?;
+    scan_rust_exports(rust_source, source_name, &bindings, &mut exports)
+        .map_err(|e| vec![format!("{source_name}: {e}")])?;
     let mut delegates = HashMap::new();
-    scan_delegates(template, &bindings, &mut delegates).map_err(|e| vec![e])?;
+    for (name, text) in sources {
+        scan_delegates(text, name, &bindings, &mut delegates)
+            .map_err(|e| vec![format!("{name}: {e}")])?;
+    }
 
     let mut errors = Vec::new();
     if bindings.is_empty() {
-        errors.push("no GetExport bindings were parsed from the template".to_owned());
+        errors.push("no GetExport bindings were parsed from the production sources".to_owned());
     }
     for binding in &bindings {
         match exports.get(&binding.export_name) {
             Some(export) => match delegates.get(&binding.delegate) {
-                Some(signature) if *signature == export.signature => {}
-                Some(signature) => {
+                Some(delegate) if delegate.signature == export.signature => {}
+                Some(delegate) => {
                     errors.push(format!(
-                        "{}: Rust({}) -> {} [{}] != C# {}({}) -> {}",
+                        "{}: Rust({}) -> {} [{}] != C# {}({}) -> {} [{}]; binding in {}",
                         binding.export_name,
                         export.signature.parameters.join(", "),
                         export.signature.returns,
                         export.source,
                         binding.delegate,
-                        signature.parameters.join(", "),
-                        signature.returns,
+                        delegate.signature.parameters.join(", "),
+                        delegate.signature.returns,
+                        delegate.source,
+                        binding.source,
                     ));
                 }
                 None => {
                     errors.push(format!(
-                        "delegate '{}' (bound to '{}') not found in the template",
-                        binding.delegate, binding.export_name,
+                        "{}: delegate '{}' (bound to '{}') not found in the production sources",
+                        binding.source, binding.delegate, binding.export_name,
                     ));
                 }
             },
             None => {
                 errors.push(format!(
-                    "'{}' is bound in the shim but has no Rust export",
-                    binding.export_name,
+                    "{}: '{}' is bound in the shim but has no Rust export",
+                    binding.source, binding.export_name,
                 ));
             }
         }
@@ -257,7 +273,7 @@ fn scan_rust_exports(
     text: &str,
     source: &str,
     bindings: &[Binding],
-    exports: &mut HashMap<String, RustExport>,
+    exports: &mut HashMap<String, Declaration>,
 ) -> Result<(), String> {
     const NEEDLE: &str = "extern \"C\" fn ";
     let mut pos = 0;
@@ -313,7 +329,7 @@ fn scan_rust_exports(
             };
             exports.insert(
                 name.to_owned(),
-                RustExport {
+                Declaration {
                     signature: Signature {
                         parameters: rust_param_classes(raw.trim_matches(WHITESPACE))
                             .map_err(|error| format!("{name}: {error}"))?,
@@ -331,19 +347,20 @@ fn scan_rust_exports(
 }
 
 fn scan_delegates(
-    template: &str,
+    text: &str,
+    source: &str,
     bindings: &[Binding],
-    delegates: &mut HashMap<String, Signature>,
+    delegates: &mut HashMap<String, Declaration>,
 ) -> Result<(), String> {
     const NEEDLE: &str = "private delegate ";
     let mut pos = 0;
-    while let Some(found) = template[pos..].find(NEEDLE).map(|i| pos + i) {
+    while let Some(found) = text[pos..].find(NEEDLE).map(|i| pos + i) {
         let header_start = found + NEEDLE.len();
-        let open = template[header_start..]
+        let open = text[header_start..]
             .find('(')
             .map(|index| header_start + index)
-            .ok_or_else(|| format!("delegate at template offset {found} has no parameters"))?;
-        let header = template[header_start..open].trim_matches(WHITESPACE);
+            .ok_or_else(|| format!("delegate at offset {found} has no parameters"))?;
+        let header = text[header_start..open].trim_matches(WHITESPACE);
         let name = header
             .split_ascii_whitespace()
             .next_back()
@@ -357,14 +374,13 @@ fn scan_delegates(
             .filter(|class| *class != "string")
             .ok_or_else(|| format!("{name}: unsupported C# return type '{return_type}'"))?;
         // Only recognized declaration boundaries prove that no attached attribute remains.
-        let mut prefix = template[..found].trim_end_matches(WHITESPACE);
+        let mut prefix = text[..found].trim_end_matches(WHITESPACE);
         let mut has_cdecl = false;
         loop {
             let line = prefix.rsplit(['\r', '\n']).next().unwrap_or_default();
-            if !has_cdecl
-                && line.trim_matches(WHITESPACE)
-                    == "[UnmanagedFunctionPointer(CallingConvention.Cdecl)]"
-            {
+            let is_cdecl = line.trim_matches(WHITESPACE)
+                == "[UnmanagedFunctionPointer(CallingConvention.Cdecl)]";
+            if !has_cdecl && is_cdecl {
                 prefix = prefix[..prefix.len() - line.len()].trim_end_matches(WHITESPACE);
                 has_cdecl = true;
                 continue;
@@ -384,61 +400,66 @@ fn scan_delegates(
             }
             break;
         }
-        let raw = extract_params(template, open).map_err(|error| format!("{name}: {error}"))?;
+        let raw = extract_params(text, open).map_err(|error| format!("{name}: {error}"))?;
         let after_params = open + raw.len() + 2;
-        if !template[after_params..]
-            .trim_start_matches(WHITESPACE)
-            .starts_with(';')
-        {
+        let tail = text[after_params..].trim_start_matches(WHITESPACE);
+        if !tail.starts_with(';') {
             return Err(format!("{name}: expected ';' after delegate parameters"));
         }
-        delegates.insert(
-            name.to_owned(),
-            Signature {
-                parameters: cs_param_classes(raw.trim_matches(WHITESPACE))
-                    .map_err(|error| format!("{name}: {error}"))?,
-                returns,
-            },
-        );
+        if let Some(previous) = delegates.get(name) {
+            return Err(format!(
+                "{name}: ambiguous bound delegate, also declared in {}",
+                previous.source
+            ));
+        }
+        let parameters = cs_param_classes(raw.trim_matches(WHITESPACE))
+            .map_err(|error| format!("{name}: {error}"))?;
+        let signature = Signature {
+            parameters,
+            returns,
+        };
+        let source = source.to_owned();
+        delegates.insert(name.to_owned(), Declaration { signature, source });
         pos = after_params;
     }
     Ok(())
 }
 
 /// All literal, no whitespace.
-fn scan_bindings(template: &str, bindings: &mut Vec<Binding>) -> Result<(), String> {
+fn scan_bindings(text: &str, source: &str, bindings: &mut Vec<Binding>) -> Result<(), String> {
     const NEEDLE: &str = "GetExport<";
     const GENERIC_HELPER: &str = "GetExport<T>(IntPtr lib, string name)";
     let mut pos = 0;
-    while let Some(found) = template[pos..].find(NEEDLE).map(|i| pos + i) {
-        if template[found..].starts_with(GENERIC_HELPER) {
+    while let Some(found) = text[pos..].find(NEEDLE).map(|i| pos + i) {
+        if text[found..].starts_with(GENERIC_HELPER) {
             pos = found + GENERIC_HELPER.len();
             continue;
         }
         let mut i = found + NEEDLE.len();
         let delegate_start = i;
-        while template[i..].chars().next().is_some_and(is_word_char) {
+        while text[i..].chars().next().is_some_and(is_word_char) {
             i += 1;
         }
-        let delegate_name = &template[delegate_start..i];
-        if template[i..].starts_with(">(lib, \"") {
+        let delegate_name = &text[delegate_start..i];
+        if text[i..].starts_with(">(lib, \"") {
             let mut j = i + ">(lib, \"".len();
             let export_start = j;
-            while template[j..].chars().next().is_some_and(is_word_char) {
+            while text[j..].chars().next().is_some_and(is_word_char) {
                 j += 1;
             }
-            let export_name = &template[export_start..j];
-            if is_profiler_name(export_name) && template[j..].starts_with("\")") {
+            let export_name = &text[export_start..j];
+            if is_profiler_name(export_name) && text[j..].starts_with("\")") {
                 bindings.push(Binding {
                     delegate: delegate_name.to_owned(),
                     export_name: export_name.to_owned(),
+                    source: source.to_owned(),
                 });
                 pos = j + "\")".len();
                 continue;
             }
         }
         return Err(format!(
-            "unrecognized GetExport call at template offset {found}: expected \
+            "unrecognized GetExport call at offset {found}: expected \
              GetExport<Delegate>(lib, \"spire_profiler_export\")"
         ));
     }
@@ -448,6 +469,10 @@ fn scan_bindings(template: &str, bindings: &mut Vec<Binding>) -> Result<(), Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn compare(rust: &str, name: &str, cs: &str) -> Result<usize, Vec<String>> {
+        compare_sources(rust, name, &[("fixture.cs", cs)])
+    }
 
     /// Safe and unsafe targets plus a test-only export (never GetExport'd —
     /// must be ignored).
@@ -469,7 +494,7 @@ pub extern "C" fn spire_profiler_test_reset() {
 
     /// Matching bindings (with a MarshalAs attribute to exercise the
     /// stripper) plus a private delegate that is never bound.
-    const GOOD_TMPL: &str = r#"
+    const GOOD_CS: &str = r#"
 internal static class ProfilerNative
 {
     private delegate void NativeFoo(int amount, [MarshalAs(UnmanagedType.LPUTF8Str)] string id, ulong hash);
@@ -492,19 +517,109 @@ internal static class ProfilerNative
 
     #[test]
     fn known_good_binding_passes() {
-        let bindings = compare(GOOD_RUST, "abi.rs", GOOD_TMPL).expect("good fixture must pass");
+        let bindings = compare(GOOD_RUST, "abi.rs", GOOD_CS).expect("good fixture must pass");
         assert_eq!(bindings, 2);
+    }
+
+    #[test]
+    fn bindings_resolve_declarations_across_source_files_in_either_order() {
+        let declarations = r#"
+private delegate void NativeFoo(int amount, [MarshalAs(UnmanagedType.LPUTF8Str)] string id, ulong hash);
+private delegate void NativeBar(int amount, long started_at, double delta);
+"#;
+        let bindings = r#"
+GetExport<NativeFoo>(lib, "spire_profiler_foo");
+GetExport<NativeBar>(lib, "spire_profiler_bar");
+"#;
+        for sources in [
+            [("Declarations.cs", declarations), ("Bindings.cs", bindings)],
+            [("Bindings.cs", bindings), ("Declarations.cs", declarations)],
+        ] {
+            assert_eq!(compare_sources(GOOD_RUST, "abi.rs", &sources), Ok(2));
+        }
+        for (original, replacement, diagnostic) in [
+            (
+                "void NativeFoo",
+                "long NativeFoo",
+                "-> long [Declarations.cs]; binding in Bindings.cs",
+            ),
+            (
+                "int amount",
+                "double amount",
+                "C# NativeFoo(double, string, ulong)",
+            ),
+            ("LPUTF8Str", "LPStr", "Declarations.cs: NativeFoo:"),
+            (
+                "private delegate void NativeFoo",
+                "[return: MarshalAs(UnmanagedType.I4)]\nprivate delegate void NativeFoo",
+                "Declarations.cs: NativeFoo: unsupported delegate prefix",
+            ),
+        ] {
+            let changed = declarations.replace(original, replacement);
+            let errors = compare_sources(
+                GOOD_RUST,
+                "abi.rs",
+                &[("Bindings.cs", bindings), ("Declarations.cs", &changed)],
+            )
+            .expect_err("split declarations retain signature and marshalling validation");
+            assert!(errors[0].contains(diagnostic), "{errors:?}");
+        }
+    }
+
+    #[test]
+    fn separate_sources_report_missing_and_ambiguous_declarations() {
+        let binding = "GetExport<NativeBar>(lib, \"spire_profiler_bar\");";
+        let declaration =
+            "private delegate void NativeBar(int amount, long started_at, double delta);";
+        assert_eq!(
+            compare_sources(GOOD_RUST, "abi.rs", &[("Bindings.cs", binding)]),
+            Err(vec![
+                "Bindings.cs: delegate 'NativeBar' (bound to 'spire_profiler_bar') not found in the production sources".to_owned()
+            ])
+        );
+        assert_eq!(
+            compare_sources(
+                GOOD_RUST,
+                "abi.rs",
+                &[
+                    ("Bindings.cs", binding),
+                    ("First.cs", declaration),
+                    ("Second.cs", declaration),
+                ],
+            ),
+            Err(vec![
+                "Second.cs: NativeBar: ambiguous bound delegate, also declared in First.cs"
+                    .to_owned()
+            ])
+        );
+    }
+
+    #[test]
+    fn malformed_binding_in_another_source_fails_with_its_filename() {
+        let errors = compare_sources(
+            GOOD_RUST,
+            "abi.rs",
+            &[
+                ("Valid.cs", GOOD_CS),
+                (
+                    "Broken.cs",
+                    "GetExport<NativeBar>(other, \"spire_profiler_bar\");",
+                ),
+            ],
+        )
+        .expect_err("valid bindings cannot mask a malformed call in another input");
+        assert!(errors[0].starts_with("Broken.cs: unrecognized GetExport call at offset 0:"));
     }
 
     fn compare_returns(rust_return: &str, cs_return: &str) -> Result<usize, Vec<String>> {
         let rust = format!(
             "pub extern \"C\" fn spire_profiler_value(value: i32) {rust_return} {{ todo!() }}"
         );
-        let template = format!(
+        let cs = format!(
             "private delegate {cs_return} NativeValue(int value);\n\
              GetExport<NativeValue>(lib, \"spire_profiler_value\");"
         );
-        compare(&rust, "abi.rs", &template)
+        compare(&rust, "abi.rs", &cs)
     }
 
     #[test]
@@ -536,7 +651,7 @@ internal static class ProfilerNative
                 errors,
                 [format!(
                     "spire_profiler_value: Rust(int) -> {expected_rust} [abi.rs] \
-                     != C# NativeValue(int) -> {cs_return}"
+                     != C# NativeValue(int) -> {cs_return} [fixture.cs]; binding in fixture.cs"
                 )]
             );
         }
@@ -587,18 +702,18 @@ internal static class ProfilerNative
     #[test]
     fn signatures_without_required_terminators_fail() {
         let rust = "pub extern \"C\" fn spire_profiler_foo() -> u64";
-        let errors = compare(rust, "abi.rs", GOOD_TMPL)
+        let errors = compare(rust, "abi.rs", GOOD_CS)
             .expect_err("a return type without a function body must fail");
         assert_eq!(
             errors,
-            ["spire_profiler_foo: Rust return type has no function body"]
+            ["abi.rs: spire_profiler_foo: Rust return type has no function body"]
         );
-        let template = GOOD_TMPL.replace("double delta);", "double delta) extra;");
-        let errors = compare(GOOD_RUST, "abi.rs", &template)
+        let cs = GOOD_CS.replace("double delta);", "double delta) extra;");
+        let errors = compare(GOOD_RUST, "abi.rs", &cs)
             .expect_err("a malformed delegate terminator must fail");
         assert_eq!(
             errors,
-            ["NativeBar: expected ';' after delegate parameters"]
+            ["fixture.cs: NativeBar: expected ';' after delegate parameters"]
         );
     }
 
@@ -620,16 +735,16 @@ internal static class ProfilerNative
             "[return: MarshalAs(UnmanagedType.I4)] // native result // documented",
             "[return: MarshalAs(UnmanagedType.I4)]\n// one comment\n// another comment",
         ] {
-            let template = format!(
+            let cs = format!(
                 "{prefix}\nprivate delegate long NativeValue(int value);\n\
                  GetExport<NativeValue>(lib, \"spire_profiler_value\");"
             );
-            let errors = compare(rust, "abi.rs", &template)
+            let errors = compare(rust, "abi.rs", &cs)
                 .expect_err("unclassified prefixes can hide native return representation changes");
             assert_eq!(
                 errors,
                 [
-                    "NativeValue: unsupported delegate prefix; expected a declaration boundary, \
+                    "fixture.cs: NativeValue: unsupported delegate prefix; expected a declaration boundary, \
                  whitespace, line comments, or the exact Cdecl attribute"
                 ]
             );
@@ -639,16 +754,16 @@ internal static class ProfilerNative
     #[test]
     fn exact_cdecl_annotation_preserves_scalar_and_utf8_checks() {
         for newline in ["\n", "\r", "\r\n"] {
-            let template = GOOD_TMPL.replace(
+            let cs = GOOD_CS.replace(
                 "private delegate",
                 "// native ABI\n[UnmanagedFunctionPointer(CallingConvention.Cdecl)]\n// signature\nprivate delegate",
             ).replace('\n', newline);
-            assert_eq!(compare(GOOD_RUST, "abi.rs", &template), Ok(2));
-            let bad_return = template.replace("delegate void NativeFoo", "delegate long NativeFoo");
+            assert_eq!(compare(GOOD_RUST, "abi.rs", &cs), Ok(2));
+            let bad_return = cs.replace("delegate void NativeFoo", "delegate long NativeFoo");
             assert!(compare(GOOD_RUST, "abi.rs", &bad_return).is_err());
-            let bad_string = template.replace("LPUTF8Str", "LPStr");
+            let bad_string = cs.replace("LPUTF8Str", "LPStr");
             assert!(compare(GOOD_RUST, "abi.rs", &bad_string).is_err());
-            let hidden_return = template.replace(
+            let hidden_return = cs.replace(
                 "[UnmanagedFunctionPointer(CallingConvention.Cdecl)]",
                 "[return: MarshalAs(UnmanagedType.I4)]\n[UnmanagedFunctionPointer(CallingConvention.Cdecl)]",
             ).replace('\n', newline);
@@ -667,18 +782,18 @@ internal static class ProfilerNative
                 ("#region native result {\n", "\n#endregion"),
                 ("#region native result } // documented\n", "\n#endregion"),
             ] {
-                let template = format!(
+                let cs = format!(
                     "[return: MarshalAs(UnmanagedType.I4)]\n\
                      {prefix}private delegate long NativeValue(int value);{suffix}\n\
                      GetExport<NativeValue>(lib, \"spire_profiler_value\");"
                 )
                 .replace('\n', newline);
-                let errors = compare(rust, "abi.rs", &template)
+                let errors = compare(rust, "abi.rs", &cs)
                     .expect_err("unclassified prefixes cannot prove absence of return attributes");
                 assert_eq!(
                     errors,
                     [
-                        "NativeValue: unsupported delegate prefix; expected a declaration boundary, \
+                        "fixture.cs: NativeValue: unsupported delegate prefix; expected a declaration boundary, \
                      whitespace, line comments, or the exact Cdecl attribute"
                     ]
                 );
@@ -689,14 +804,14 @@ internal static class ProfilerNative
     #[test]
     fn line_comments_before_bound_delegates_are_accepted() {
         for newline in ["\n", "\r", "\r\n"] {
-            let template = GOOD_TMPL
+            let cs = GOOD_CS
                 .replace(
                     "private delegate void NativeFoo",
                     "// Native declaration; documented here\n// More documentation\n\
                  private delegate void NativeFoo",
                 )
                 .replace('\n', newline);
-            assert_eq!(compare(GOOD_RUST, "abi.rs", &template), Ok(2));
+            assert_eq!(compare(GOOD_RUST, "abi.rs", &cs), Ok(2));
         }
     }
 
@@ -706,21 +821,21 @@ internal static class ProfilerNative
             "{GOOD_RUST}\n\
              pub extern \"C\" fn spire_profiler_unused(value: Custom) -> Custom {{ value }}"
         );
-        let template = format!(
+        let cs = format!(
             "[return: MarshalAs(UnmanagedType.I4)] /* unbound attribute */\n\
-             private delegate Custom NativeUnused(Custom value);\n{GOOD_TMPL}"
+             private delegate Custom NativeUnused(Custom value);\n{GOOD_CS}"
         );
-        assert_eq!(compare(&rust, "abi.rs", &template), Ok(2));
+        assert_eq!(compare(&rust, "abi.rs", &cs), Ok(2));
     }
 
     #[test]
     fn identically_spelled_unsupported_parameters_do_not_match() {
         let rust = GOOD_RUST.replace("amount: i32", "amount: Custom");
-        let template = GOOD_TMPL.replace("int amount", "Custom amount");
-        let errors = compare(&rust, "abi.rs", &template)
+        let cs = GOOD_CS.replace("int amount", "Custom amount");
+        let errors = compare(&rust, "abi.rs", &cs)
             .expect_err("unknown parameter classes must not match by spelling");
         assert!(errors[0].contains("unsupported Rust parameter type 'Custom'"));
-        let errors = compare(GOOD_RUST, "abi.rs", &template)
+        let errors = compare(GOOD_RUST, "abi.rs", &cs)
             .expect_err("unknown C# parameter classes must fail explicitly");
         assert!(errors[0].contains("unsupported C# parameter type 'Custom'"));
     }
@@ -733,17 +848,17 @@ internal static class ProfilerNative
                 "int amount, [MarshalAs(UnmanagedType.LPUTF8Str)] string id, ulong hash",
                 "[MarshalAs(UnmanagedType.LPUTF8Str)] string id, int amount, ulong hash",
                 "spire_profiler_foo: Rust(int, string, ulong) -> void [abi.rs] \
-                 != C# NativeFoo(string, int, ulong) -> void",
+                 != C# NativeFoo(string, int, ulong) -> void [fixture.cs]; binding in fixture.cs",
             ),
             (
                 "int amount, long started_at, double delta",
                 "long started_at, int amount, double delta",
                 "spire_profiler_bar: Rust(int, long, double) -> void [abi.rs] \
-                 != C# NativeBar(long, int, double) -> void",
+                 != C# NativeBar(long, int, double) -> void [fixture.cs]; binding in fixture.cs",
             ),
         ] {
-            let template = GOOD_TMPL.replace(original, shifted);
-            let errors = compare(GOOD_RUST, "abi.rs", &template)
+            let cs = GOOD_CS.replace(original, shifted);
+            let errors = compare(GOOD_RUST, "abi.rs", &cs)
                 .expect_err("shifted params must fail for safe and unsafe exports");
             assert_eq!(errors, [expected]);
         }
@@ -753,32 +868,33 @@ internal static class ProfilerNative
     #[test]
     fn binding_without_an_export_fails() {
         for name in ["spire_profiler_foo", "spire_profiler_bar"] {
-            let template = GOOD_TMPL.replace(name, "spire_profiler_missing");
-            let errors =
-                compare(GOOD_RUST, "abi.rs", &template).expect_err("missing export must fail");
+            let cs = GOOD_CS.replace(name, "spire_profiler_missing");
+            let errors = compare(GOOD_RUST, "abi.rs", &cs).expect_err("missing export must fail");
             assert_eq!(
                 errors,
-                ["'spire_profiler_missing' is bound in the shim but has no Rust export"]
+                [
+                    "fixture.cs: 'spire_profiler_missing' is bound in the shim but has no Rust export"
+                ]
             );
         }
     }
 
     #[test]
-    fn empty_template_fails_rather_than_passing_vacuously() {
+    fn empty_cs_fails_rather_than_passing_vacuously() {
         let errors = compare(GOOD_RUST, "abi.rs", "").expect_err("zero bindings must fail");
         assert_eq!(
             errors,
-            ["no GetExport bindings were parsed from the template"]
+            ["no GetExport bindings were parsed from the production sources"]
         );
     }
 
     #[test]
     fn malformed_binding_fails_alongside_a_valid_binding() {
-        let template = GOOD_TMPL.replace(
+        let cs = GOOD_CS.replace(
             "    private static NativeFoo _foo;",
             "    private static NativeFoo _foo;\n    private static NativeVoid _bad;",
         ) + "\n_bad = GetExport<NativeVoid>(IntPtr lib, \"spire_profiler_test_reset\");\n";
-        let errors = compare(GOOD_RUST, "abi.rs", &template).expect_err("malformed call must fail");
+        let errors = compare(GOOD_RUST, "abi.rs", &cs).expect_err("malformed call must fail");
         assert_eq!(errors.len(), 1);
         assert!(
             errors[0].contains("unrecognized GetExport call"),
@@ -789,12 +905,11 @@ internal static class ProfilerNative
 
     #[test]
     fn unbalanced_params_are_a_scanner_error() {
-        let template = r#"
+        let cs = r#"
 private delegate void NativeFoo(int amount;
 GetExport<NativeFoo>(lib, "spire_profiler_foo");
 "#;
-        let errors =
-            compare(GOOD_RUST, "abi.rs", template).expect_err("unbalanced parens must fail");
+        let errors = compare(GOOD_RUST, "abi.rs", cs).expect_err("unbalanced parens must fail");
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("unbalanced parens"));
     }
@@ -802,11 +917,11 @@ GetExport<NativeFoo>(lib, "spire_profiler_foo");
     /// A bare string reverts marshaling to ANSI, corrupting non-ASCII ids.
     #[test]
     fn string_param_without_lputf8str_fails() {
-        let template = GOOD_TMPL.replace(
+        let cs = GOOD_CS.replace(
             "[MarshalAs(UnmanagedType.LPUTF8Str)] string id",
             "string id",
         );
-        let errors = compare(GOOD_RUST, "abi.rs", &template).expect_err("bare string must fail");
+        let errors = compare(GOOD_RUST, "abi.rs", &cs).expect_err("bare string must fail");
         assert_eq!(errors.len(), 1);
         assert!(
             errors[0].contains("without [MarshalAs(UnmanagedType.LPUTF8Str)]"),
@@ -818,11 +933,11 @@ GetExport<NativeFoo>(lib, "spire_profiler_foo");
     /// LPStr is exactly the ANSI default the requirement exists to forbid.
     #[test]
     fn string_param_with_a_non_utf8_marshalas_kind_fails() {
-        let template = GOOD_TMPL.replace(
+        let cs = GOOD_CS.replace(
             "[MarshalAs(UnmanagedType.LPUTF8Str)] string id",
             "[MarshalAs(UnmanagedType.LPStr)] string id",
         );
-        let errors = compare(GOOD_RUST, "abi.rs", &template).expect_err("LPStr must fail");
+        let errors = compare(GOOD_RUST, "abi.rs", &cs).expect_err("LPStr must fail");
         assert_eq!(errors.len(), 1);
         assert!(
             errors[0].contains("without [MarshalAs(UnmanagedType.LPUTF8Str)]"),

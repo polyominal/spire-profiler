@@ -1,5 +1,3 @@
-// GENERATED FILE by the xtask shim generator. Source of truth:
-// shim/shim.cs.template. Do not edit by hand; rebuild with `cargo xtask build`.
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -46,15 +44,6 @@ namespace SpireProfiler;
 public static class SpireProfilerMod
 {
     private static bool _initialized;
-
-    /// <summary>
-    /// The native core's file name on this OS/arch. The load path is
-    /// absolute (the mod directory), so only the file name differs per
-    /// platform; the selection expression is injected by the xtask
-    /// generator (@NATIVE_LIB_SELECTOR@) — this template carries no
-    /// platform knowledge of its own.
-    /// </summary>
-    private static string NativeLibraryName() => @NATIVE_LIB_SELECTOR@;
 
     /// <summary>
     /// The run's players in lobby order (host first) — the game's own slot
@@ -164,7 +153,7 @@ public static class SpireProfilerMod
                 ? dataDirOverride
                 : Path.Combine(Path.GetDirectoryName(modsDir) ?? ".", "mod_data", "spire-profiler");
 
-            ProfilerNative.Load(Path.Combine(modDir, NativeLibraryName()));
+            ProfilerNative.Load(Path.Combine(modDir, NativeLibrarySelector.FileName()));
             ProfilerNative.Init(dataDir);
             CaptureRuntime.Initialize(new NativeAttributionBackend());
             Log.Info($"[SpireProfiler] native core loaded; mod dir: {modDir}; data dir: {dataDir}");
@@ -587,8 +576,7 @@ public static class SpireProfilerMod
 /// <summary>
 /// C ABI bindings for the native core. Function pointers are resolved
 /// explicitly so no DllImport probing rules apply; the native library is
-/// loaded by absolute path from the mod directory (the file name is
-/// platform-dependent — see SpireProfilerMod.NativeLibraryName).
+/// loaded by absolute path from the mod directory.
 /// </summary>
 internal static class ProfilerNative
 {
