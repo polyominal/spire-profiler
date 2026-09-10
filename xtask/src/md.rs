@@ -1,6 +1,6 @@
 //! The markdown docs are wrapped by comrak so casual edits reflow
-//! mechanically: `fmt-md` rewrites them, and `fmt-md --check` (part of
-//! `smoke`) fails on drift.
+//! mechanically: `fmt-md` rewrites them, and the shared formatter's check
+//! mode in `smoke` fails on drift.
 
 use std::fs;
 

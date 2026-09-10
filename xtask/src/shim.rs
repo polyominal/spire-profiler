@@ -157,6 +157,9 @@ pub fn build_csproj(
         r#"<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net9.0</TargetFramework>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>9.0-recommended</AnalysisLevel>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <AssemblyName>{assembly}</AssemblyName>
     <RootNamespace>SpireProfiler</RootNamespace>
 {test_properties}    <Nullable>disable</Nullable>

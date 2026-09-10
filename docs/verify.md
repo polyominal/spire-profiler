@@ -2,19 +2,21 @@
 
 ## The gate set
 
-- `cargo xtask smoke`: `cargo fmt --all -- --check`, `fmt-md --check`,
-  `check-citations`, `check-emdash`, `check-abi` (`GetExport` bindings across
-  the production shim sources against the Rust exports), `cargo clippy
-  --workspace --all-targets --all-features --locked -- --deny warnings`,
-  `check-docs` (warning-free `cargo doc --document-private-items` and the
-  comment-density budget), `cargo nextest run --workspace --locked
-  --no-fail-fast`.
+- `cargo xtask smoke`: `fmt --check` (Rust, handwritten C\# including fixtures,
+  and Markdown; requires the pinned SDK but no game), `check-citations`,
+  `check-emdash`, `check-abi` (`GetExport` bindings across the production shim
+  sources against the Rust exports), `cargo clippy --workspace --all-targets
+  --all-features --locked -- --deny warnings`, `check-docs` (warning-free `cargo
+  doc --document-private-items` and the comment-density budget), `cargo nextest
+  run --workspace --locked --no-fail-fast`.
 - `cargo xtask managed-test`: compile the shared production shim sources and
   deterministic managed fixtures with the pinned .NET SDK against the installed,
-  version-checked game and Harmony assemblies. Each invocation retains an
-  isolated project and source/assembly hashes under `tmp/managed-tests/`. The
-  fixtures check capture, async scope restoration, and exact patch bridges; they
-  do not play the game.
+  version-checked game and Harmony assemblies. Like production builds, it
+  enforces the pinned recommended .NET 9 quality analyzers and treats compiler
+  and analyzer warnings as errors. Each invocation retains an isolated project
+  and source/assembly hashes under `tmp/managed-tests/`. The fixtures check
+  capture, async scope restoration, and exact patch bridges; they do not play
+  the game.
 - `cargo xtask headless-test` first runs `managed-test`, then requires a
   successful game exit, this mod's `OWN PATCHES` minimum and `CAPTURE VERIFIED`
   marker with the exact producer/bridge inventory, no unexpected

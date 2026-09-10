@@ -51,7 +51,7 @@ public static class SpireProfilerMod
             var harmony = new Harmony("dev.spireprofiler");
             foreach (var type in typeof(SpireProfilerMod).Assembly.GetTypes())
             {
-                if (!type.GetCustomAttributes(typeof(HarmonyPatch), false).Any()) continue;
+                if (type.GetCustomAttributes(typeof(HarmonyPatch), false).Length == 0) continue;
                 try
                 {
                     harmony.CreateClassProcessor(type).Patch();

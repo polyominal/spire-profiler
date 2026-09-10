@@ -14,6 +14,16 @@ Run `cargo xtask --help`.
   locked rustix dependency does not compile there. Preserve the `+<stable>`
   prefix when copying an install command by hand.
 
+## Formatting
+
+- `cargo xtask fmt` formats Rust, all handwritten C\# under `shim/` (including
+  fixtures), and the project Markdown docs. `cargo xtask fmt --check` fails on
+  drift without rewriting sources; `cargo xtask fmt-md` formats only docs.
+- C\# layout follows [shim/.editorconfig](../shim/.editorconfig) using the
+  pinned SDK's `dotnet format whitespace` in folder mode. Formatting needs no
+  game, generated project, or NuGet restore; the SDK bootstraps automatically.
+  It does not apply analyzer fixes or format generated build sources.
+
 ## Cross-compilation
 
 - The target matrix and `.gdextension` library keys come from the same table in
@@ -35,6 +45,10 @@ Run `cargo xtask --help`.
   production inventory with fixture sources appended.
 - Keep the SDK on 9.x while the shim targets net9.0. SDK 9 bundles that
   targeting pack; SDK 10 would silently fetch it from NuGet.
+- Production builds and managed fixtures use the SDK's recommended .NET 9
+  quality analyzers, pinned with `AnalysisLevel=9.0-recommended`; compiler and
+  analyzer warnings fail both builds. Fixture-only exceptions preserve Harmony
+  target shapes and keep expected arrays beside their assertions.
 - xtask sets `DOTNET_ROOT` to the bootstrap directory while invoking the SDK. If
   running that binary by hand fails to find an SDK, check the inherited
   `DOTNET_ROOT`.

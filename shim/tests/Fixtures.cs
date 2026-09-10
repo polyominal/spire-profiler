@@ -27,6 +27,9 @@ using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.Rooms;
 using MegaCrit.Sts2.Core.ValueProps;
 
+#pragma warning disable CA1822 // Harmony fixtures preserve the game's instance method shapes.
+#pragma warning disable CA1861 // Expected arrays stay beside the assertions they describe.
+
 namespace SpireProfiler;
 
 internal sealed class FixtureContext : SynchronizationContext
@@ -1463,7 +1466,8 @@ internal static class ManagedFixtures
         };
         DamageFixture.ModifiersByTarget = new()
         {
-            [world.Enemy] = (new[] { firstStrength }, 2), [second] = (new[] { secondStrength }, 5)
+            [world.Enemy] = (new[] { firstStrength }, 2),
+            [second] = (new[] { secondStrength }, 5)
         };
         DamageCapture.Inspect = (_, _, _) => new(true, false, 0, null, false);
         var pause = Pause(); DamageFixture.Pause = pause.Task;
