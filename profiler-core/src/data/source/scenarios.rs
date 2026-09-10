@@ -27,7 +27,8 @@ impl Scenario {
                 current: Some(Combat {
                     seq: 7,
                     ..Combat::default()
-                }),
+                })
+                .into(),
                 ..State::default()
             },
         }
@@ -573,7 +574,8 @@ fn stale_cleanup_cannot_close_replacement_combat_lifetimes() {
     case.state.current = Some(Combat {
         seq: 8,
         ..Combat::default()
-    });
+    })
+    .into();
     let new_source = case.state.source_capture(8, 1, 11, "NEW", 0, 0, 0);
     let new_play = case
         .state

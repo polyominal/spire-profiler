@@ -852,7 +852,8 @@ mod tests {
             cell.borrow_mut().current = Some(crate::data::state::Combat {
                 seq: 9,
                 ..Default::default()
-            });
+            })
+            .into();
         });
         let transfer = spire_profiler_source_transfer_begin(9);
         let destination = (9_u64 << 32) | (4 << 3) | 1;
@@ -890,7 +891,7 @@ mod tests {
         let data = crate::test_util::unique_dir("spire-profiler-abi-scroll");
         events::test_reset();
         events::init(&data);
-        STATE.with(|s| s.borrow_mut().run_ctx = Some(Default::default()));
+        STATE.with(|s| s.borrow_mut().run_ctx = Some(Default::default()).into());
         crate::ui::panel::dismiss();
         crate::ui::panel::toggle();
         crate::data::run_history::select("", 0, 1);

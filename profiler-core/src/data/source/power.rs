@@ -107,27 +107,26 @@ impl State {
         if instance == 0 || owner == 0 || id.is_empty() {
             return Err(SourceFailure::Packet);
         }
+        let bounded_id =
+            super::super::state::ModelId::try_from(id).map_err(|_| SourceFailure::Packet)?;
         let kind = CreatureKind::decode(owner_kind, &mut self.source_transfers.diagnostics);
         let slot = super::super::state::clamp_source_slot(owner_slot);
         let incoming = self.source_snapshot(combat_seq, transfer)?;
-        let index = self
-            .provenance
-            .powers
-            .iter()
-            .position(|power| power.instance == instance);
+        let powers = &self.provenance.powers;
+        let index = powers.iter().position(|power| power.instance == instance);
         let mut power = if let Some(index) = index {
-            let power = &self.provenance.powers[index];
+            let power = &powers[index];
             if old.is_none() || !power.matches_owner(id, owner, kind) || power.owner_slot != slot {
                 return Err(SourceFailure::Packet);
             }
             power.clone()
         } else {
-            if self.provenance.powers.len() == caps::POWER_INSTANCES {
+            if powers.len() == caps::POWER_INSTANCES {
                 return Err(SourceFailure::Capacity);
             }
             PowerProvenance {
                 instance,
-                id: id.to_owned(),
+                id: bounded_id,
                 owner,
                 owner_kind: kind,
                 owner_slot: slot,

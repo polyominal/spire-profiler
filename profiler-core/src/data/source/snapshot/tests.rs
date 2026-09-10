@@ -24,7 +24,8 @@ fn state(rows: usize) -> State {
             seq: epoch().0.get(),
             cards: (0..rows).map(|_| CardStat::default()).collect(),
             ..Combat::default()
-        }),
+        })
+        .into(),
         ..State::default()
     }
 }

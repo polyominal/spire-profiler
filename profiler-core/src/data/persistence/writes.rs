@@ -72,10 +72,10 @@ mod tests {
             context: RunContext {
                 run: RunSnapshot {
                     seq: 42,
-                    character: "SHROUD".to_owned(),
+                    character: crate::test_util::text("SHROUD"),
                     ascension: 5,
-                    game_mode: "standard".to_owned(),
-                    seed: "SEED123".to_owned(),
+                    game_mode: crate::test_util::text("standard"),
+                    seed: crate::test_util::text("SEED123"),
                     profile: 3,
                     started_at: 1_786_624_000,
                 },
@@ -115,7 +115,7 @@ mod tests {
             context: RunContext {
                 run: RunSnapshot {
                     seq: 43,
-                    character: "IRONCLAD".to_owned(),
+                    character: crate::test_util::text("IRONCLAD"),
                     ..RunSnapshot::default()
                 },
                 ..RunContext::default()

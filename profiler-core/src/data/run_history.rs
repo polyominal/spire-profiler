@@ -61,7 +61,9 @@ use crate::data::persistence::{
     CardStatKey, card_stat_from_rec, load_combat_docs_from, parse_combat_docs,
 };
 use crate::data::records::{CombatRec, PlayerRec};
-use crate::data::state::{CardStat, CombatResult, PlayerFilter, RunOutcome, STATE, TEAM_SLOT};
+use crate::data::state::{
+    CardStat, CombatResult, Label, PlayerFilter, RunCharacter, RunOutcome, STATE, Seed, TEAM_SLOT,
+};
 
 /// Roll-ups are undeclared on purpose: the view recomputes them.
 #[derive(Deserialize)]
@@ -69,12 +71,12 @@ use crate::data::state::{CardStat, CombatResult, PlayerFilter, RunOutcome, STATE
 pub struct RunEntry {
     pub run_id: u32,
     pub profile: i32,
-    pub character: String,
+    pub character: RunCharacter,
     pub ascension: i32,
-    pub game_mode: String,
+    pub game_mode: Label,
     /// The view's result label derives from it.
     pub outcome: RunOutcome,
-    pub seed: String,
+    pub seed: Seed,
     /// Original game StartTime in epoch seconds.
     pub started_at: i64,
     pub ended_at: i64,
@@ -88,11 +90,11 @@ impl Default for RunEntry {
         RunEntry {
             run_id: 0,
             profile: -1,
-            character: String::new(),
+            character: RunCharacter::default(),
             ascension: -1,
-            game_mode: String::new(),
+            game_mode: Label::default(),
             outcome: RunOutcome::Defeat,
-            seed: String::new(),
+            seed: Seed::default(),
             started_at: 0,
             ended_at: 0,
             players: Vec::new(),
@@ -301,11 +303,11 @@ fn build_view(entry: &RunEntry, combats: &[CombatRec]) -> RunSummaryView {
     let mut view = RunSummaryView {
         run_id: entry.run_id,
         profile: entry.profile,
-        character: entry.character.clone(),
+        character: entry.character.to_string(),
         ascension: entry.ascension,
-        game_mode: entry.game_mode.clone(),
+        game_mode: entry.game_mode.to_string(),
         outcome: Some(entry.outcome),
-        seed: entry.seed.clone(),
+        seed: entry.seed.to_string(),
         started_at: entry.started_at,
         ended_at: entry.ended_at,
         players: entry.players.clone(),
@@ -317,7 +319,7 @@ fn build_view(entry: &RunEntry, combats: &[CombatRec]) -> RunSummaryView {
         }
         view.combats.push(CombatView {
             seq: combat.combat_id,
-            encounter: combat.encounter_id.clone(),
+            encounter: combat.encounter_id.to_string(),
             result: combat.result,
             damage_dealt: combat.cards.iter().map(|c| c.damage_dealt).sum(),
             damage_taken: combat.damage_received,
@@ -370,7 +372,7 @@ fn build_player_rollups(entry: &RunEntry, combats: &[CombatRec]) -> Vec<PlayerRo
         .iter()
         .map(|player| PlayerRollup {
             slot: player.slot,
-            character: player.character.clone(),
+            character: player.character.to_string(),
             cards: roll_up_cards_for_slot(combats, entry, player.slot),
         })
         .collect()

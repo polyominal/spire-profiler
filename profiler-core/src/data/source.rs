@@ -453,7 +453,7 @@ pub(super) struct Provenance {
 #[derive(Clone)]
 struct PowerProvenance {
     instance: u64,
-    id: String,
+    id: super::state::ModelId,
     owner: u64,
     owner_kind: CreatureKind,
     owner_slot: SourceSlot,
@@ -885,7 +885,11 @@ impl LedgerStage {
         if !crate::data::state::CardStat::arithmetic_representable(&self.combat.cards) {
             return Err(SourceFailure::Arithmetic);
         }
-        state.current = Some(self.combat);
+        debug_assert!(
+            !state.ready() || state.current.storage.cards.capacity() >= caps::COMBAT_CARDS,
+            "ledger publication must retain the initialized live row owner"
+        );
+        state.current.set(&self.combat);
         state.provenance.pools = self.pools;
         if self.capacity_lost {
             state
@@ -934,9 +938,13 @@ impl State {
         self.source_status(result)
     }
 
-    pub(crate) fn finished_combat(&mut self, combat_seq: u64) -> Option<Combat> {
-        self.provenance_epoch(combat_seq).ok()?;
-        let combat = Combat::active_mut(&mut self.current)?;
+    pub(crate) fn finished_combat(&mut self, combat_seq: u64) -> bool {
+        if self.provenance_epoch(combat_seq).is_err() || self.finish_combat.is_none() {
+            return false;
+        }
+        let Some(combat) = Combat::active_mut(&mut self.current) else {
+            return false;
+        };
         let defeated = if combat.players.is_empty() {
             !self.per_player.is_empty()
                 && self
@@ -956,9 +964,12 @@ impl State {
         } else {
             super::state::CombatResult::Completed
         });
-        let finished = combat.clone();
+        self.finish_combat
+            .as_mut()
+            .expect("finish staging was checked before mutation")
+            .clone_from(combat);
         self.clear_combat_sources();
-        Some(finished)
+        true
     }
 }
 
@@ -976,7 +987,7 @@ impl State {
 
 impl State {
     pub(crate) fn discard_combat(&mut self) {
-        self.current = None;
+        self.current.clear();
         self.clear_combat_sources();
     }
 }

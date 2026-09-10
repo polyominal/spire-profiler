@@ -265,7 +265,7 @@ mod tests {
         assert!(load_all_combat_docs().is_empty());
         assert!(!ensure_data_dir());
         let mut replacement = synthetic_combat();
-        replacement.encounter_id = "REPLACEMENT".to_owned();
+        replacement.encounter_id = crate::test_util::text("REPLACEMENT");
         assert!(!write_combat_file(&replacement));
         assert!(!crate::data::persistence::write_run_record(&EndedRun {
             context: RunContext {
@@ -296,17 +296,6 @@ mod tests {
     }
 
     #[test]
-    fn write_combat_file_refuses_oversized_json() {
-        let data = unique_dir("combat-write-overflow");
-        init_state(&data);
-        let mut combat = synthetic_combat();
-        combat.encounter_id = "x".repeat(MAX_JSON_SIZE);
-        assert!(!write_combat_file(&combat));
-        assert!(!data.join("runs/42").exists());
-        assert!(!data.join("profiler.log").exists());
-    }
-
-    #[test]
     fn write_combat_file_uses_the_assigned_global_id() {
         let dir = unique_dir("store-id");
         let data = dir.join("data");
@@ -316,7 +305,7 @@ mod tests {
         write_combat_file(&c);
         let mut c2 = synthetic_combat();
         c2.seq = 418;
-        c2.encounter_id = "FROZEN_COUNCIL".to_owned();
+        c2.encounter_id = crate::test_util::text("FROZEN_COUNCIL");
         write_combat_file(&c2);
         assert_eq!(store_ids(&data), vec![412, 418]);
         assert!(data.join("runs/42/412.json").exists());
@@ -375,7 +364,7 @@ mod tests {
         let mut b2 = synthetic_combat();
         b2.seq = 4;
         b2.run = Some(synthetic_run(43));
-        b2.encounter_id = "FROZEN_COUNCIL".to_owned();
+        b2.encounter_id = crate::test_util::text("FROZEN_COUNCIL");
         write_combat_file(&b1);
         write_combat_file(&b2);
         assert_eq!(

@@ -107,8 +107,19 @@ pub fn bind_event_log_probe(path: &Path) {
 }
 
 /// Runs the pure combat-finalization staging step without persistence I/O.
-pub fn finish_combat_for_allocation_probe(combat_seq: u64) -> Option<crate::data::state::Combat> {
-    crate::data::state::STATE.with(|cell| cell.borrow_mut().finished_combat(combat_seq))
+pub fn finish_combat_for_allocation_probe(
+    combat_seq: u64,
+) -> Option<crate::data::events::FinishedCombat> {
+    crate::data::state::STATE
+        .with(|cell| cell.borrow_mut().finished_combat(combat_seq))
+        .then(crate::data::events::FinishedCombat::take)
+        .flatten()
+}
+
+pub fn text<const N: usize>(value: &str) -> crate::data::state::Text<N> {
+    value
+        .try_into()
+        .expect("fixture text must fit the supported input policy")
 }
 
 /// A synthetic UiRow; the name truncates to the fixed 64-byte field.
@@ -477,6 +488,69 @@ impl SourceFixture {
             1
         );
     }
+}
+
+pub fn fail_lifecycle_initialization() {
+    crate::data::state::FAIL_LIFECYCLE_INITIALIZATION.with(|fail| fail.set(true));
+}
+
+pub fn lifecycle_storage_snapshot() -> [Option<(usize, usize)>; 9] {
+    crate::data::state::STATE.with(|cell| {
+        let state = cell.borrow();
+        [
+            Some((
+                state.current.storage.cards.as_ptr() as usize,
+                state.current.storage.cards.capacity(),
+            )),
+            Some((
+                state.current.storage.players.as_ptr() as usize,
+                state.current.storage.players.capacity(),
+            )),
+            Some((
+                state.run_ctx.storage.players.as_ptr() as usize,
+                state.run_ctx.storage.players.capacity(),
+            )),
+            Some((
+                state.run_cards.as_ptr() as usize,
+                state.run_cards.capacity(),
+            )),
+            Some((
+                state.per_player.as_ptr() as usize,
+                state.per_player.capacity(),
+            )),
+            state
+                .finish_combat
+                .as_ref()
+                .map(|c| (c.cards.as_ptr() as usize, c.cards.capacity())),
+            state
+                .finish_combat
+                .as_ref()
+                .map(|c| (c.players.as_ptr() as usize, c.players.capacity())),
+            state.finish_run.as_ref().map(|r| {
+                (
+                    r.context.players.as_ptr() as usize,
+                    r.context.players.capacity(),
+                )
+            }),
+            state
+                .self_test_leases
+                .as_ref()
+                .map(|l| (l.as_ptr() as usize, l.capacity())),
+        ]
+    })
+}
+
+pub fn replace_run_for_allocation_probe(
+    run: &crate::data::state::RunSnapshot,
+    players: &[crate::data::state::RunPlayer],
+) -> bool {
+    crate::data::state::STATE.with(|cell| cell.borrow_mut().replace_run(run, players))
+}
+
+pub fn finish_run_for_allocation_probe(
+    outcome: crate::data::state::RunOutcome,
+) -> Option<crate::data::events::FinishedRun> {
+    crate::data::events::FinishedRun::take(outcome)
 }
 
 #[cfg(test)]

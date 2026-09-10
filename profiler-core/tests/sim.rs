@@ -79,7 +79,7 @@ impl RowKey {
     fn from_card(card: &CardStat) -> Self {
         Self {
             slot: card.player,
-            id: card.id.clone(),
+            id: card.id.to_string(),
             kind: card.kind as u8,
         }
     }
@@ -616,7 +616,7 @@ impl LedgerModel {
     fn row(&mut self, key: &RowKey) -> &mut CardStat {
         self.rows.entry(key.clone()).or_insert_with(|| CardStat {
             player: key.slot,
-            id: key.id.clone(),
+            id: profiler_core::test_util::text(&key.id),
             kind: SourceKind::from(key.kind),
             ..CardStat::default()
         })

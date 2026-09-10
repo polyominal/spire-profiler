@@ -52,8 +52,8 @@
 //! interval.
 //!
 //! The target contract gives every retained table a named cardinality and byte
-//! bound. The existing `caps` are cardinality bounds; they do not by
-//! themselves establish byte bounds or zero allocator calls. Admission checks
+//! bound. Cardinality bounds alone do not establish byte bounds or zero
+//! allocator calls. Admission checks
 //! a cap before writing; an overflow returns the operation's failure value and
 //! reports it. Under this target, a reset qualifies as zero-allocation only
 //! when it clears logical occupancy and recycles capacity. It does not replace
@@ -75,7 +75,10 @@
 //! samples; its nonzero gameplay counts are measurements, not zero-operation
 //! assertions. Mixed lifecycle rows are whole-call measurements; pure finish
 //! and merge samples do not imply that a resume rebuild is physically split.
-//! Sink probes assert zero only for their warmed diagnostic paths.
+//! Sink probes assert zero for warmed diagnostics. Lifecycle probes assert zero
+//! for combat start and roster copies, pure run publication, finish leases,
+//! empty-source resets, metadata rejection, and repeated initialization.
+//! Populated source clearing and transaction staging remain measured in baselines.
 //!
 //! Expected failure means a bounded result such as a rejected wire packet,
 //! stale token, full table, arithmetic overflow, malformed input, or failed

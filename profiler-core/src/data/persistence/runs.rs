@@ -46,7 +46,7 @@ pub fn rebuild_run_accumulator(seq: u32) -> (u32, u32) {
         let mut state = s.borrow_mut();
         state.run_turns += turns;
         state.run_combats += count;
-        state.run_cards = cards;
+        state.run_cards.clone_from(&cards);
     });
     (count, turns)
 }
@@ -125,7 +125,9 @@ fn upsert_card_stat(cards: &mut Vec<CardStat>, card: &CardStat, key: CardStatKey
             cards[index].merged(card).map(|row| (Some(index), row))
         } else if cards.len() < state::caps::RUN_CARDS {
             let mut unknown = card.clone();
-            unknown.id = "UNATTRIBUTED".to_owned();
+            unknown.id = "UNATTRIBUTED"
+                .try_into()
+                .expect("the reserved Unknown ID fits the input policy");
             unknown.kind = state::SourceKind::Unknown;
             unknown.player = slot;
             Some((None, unknown))
@@ -162,7 +164,7 @@ impl CardStat {
             crate::fail!("run row update exceeds representable ledger totals");
             return false;
         }
-        *cards = staged;
+        cards.clone_from(&staged);
         true
     }
 
@@ -200,7 +202,8 @@ mod tests {
             s.borrow_mut().run_ctx = Some(RunContext {
                 run: synthetic_run(seq),
                 ..RunContext::default()
-            });
+            })
+            .into();
         });
     }
 
@@ -210,18 +213,18 @@ mod tests {
         c.players = vec![
             RunPlayer {
                 slot: 0,
-                net_id: "1".to_owned(),
-                character: "IRONCLAD".to_owned(),
+                net_id: crate::test_util::text("1"),
+                character: crate::test_util::text("IRONCLAD"),
             },
             RunPlayer {
                 slot: 1,
-                net_id: "2".to_owned(),
-                character: "SILENT".to_owned(),
+                net_id: crate::test_util::text("2"),
+                character: crate::test_util::text("SILENT"),
             },
         ];
         c.cards = vec![
             CardStat {
-                id: "STRIKE".to_owned(),
+                id: crate::test_util::text("STRIKE"),
                 kind: SourceKind::Card,
                 player: 0,
                 plays: 2,
@@ -229,7 +232,7 @@ mod tests {
                 ..CardStat::default()
             },
             CardStat {
-                id: "STRIKE".to_owned(),
+                id: crate::test_util::text("STRIKE"),
                 kind: SourceKind::Card,
                 player: 1,
                 plays: 1,
@@ -384,7 +387,7 @@ mod tests {
             let mut run = synthetic_run(5);
             run.profile = profile;
             run.started_at = start;
-            run.seed = seed.to_owned();
+            run.seed = crate::test_util::text(seed);
             foreign.run = Some(run);
             write_store_file(&data, 5, id, &build_combat_json(&foreign));
         }
@@ -516,7 +519,7 @@ mod tests {
     #[test]
     fn upsert_key_chooses_whether_player_splits_rows() {
         let row = |player: u8| CardStat {
-            id: "STRIKE".to_owned(),
+            id: crate::test_util::text("STRIKE"),
             kind: SourceKind::Card,
             player,
             plays: 1,
@@ -555,12 +558,12 @@ mod tests {
                 let mut combat = synthetic_combat();
                 combat.cards = vec![
                     CardStat {
-                        id: "A".to_owned(),
+                        id: crate::test_util::text("A"),
                         mitigate_buff: i64::MAX - 1,
                         ..CardStat::default()
                     },
                     CardStat {
-                        id: "NEGATIVE".to_owned(),
+                        id: crate::test_util::text("NEGATIVE"),
                         player: 2,
                         block_effective: negative,
                         ..CardStat::default()
@@ -570,13 +573,13 @@ mod tests {
                 let before = STATE.with(|s| s.borrow().run_cards.clone());
                 combat.cards = vec![
                     CardStat {
-                        id: "EARLY".to_owned(),
+                        id: crate::test_util::text("EARLY"),
                         damage_dealt: 3,
                         dmg_direct: 3,
                         ..CardStat::default()
                     },
                     CardStat {
-                        id: id.to_owned(),
+                        id: crate::test_util::text(id),
                         kind,
                         player,
                         mitigate_debuff: 2,
@@ -617,7 +620,7 @@ mod tests {
     fn defense_overflow_cannot_spill_into_a_reserved_unknown_row() {
         let mut rows: Vec<_> = (0..caps::RUN_CARDS - caps::UNKNOWN_ROWS)
             .map(|index| CardStat {
-                id: format!("C{index}"),
+                id: crate::test_util::text(&format!("C{index}")),
                 ..CardStat::default()
             })
             .collect();
@@ -625,14 +628,14 @@ mod tests {
         let before = rows.clone();
         let incoming = [
             CardStat {
-                id: "EARLY".to_owned(),
+                id: crate::test_util::text("EARLY"),
                 player: 3,
                 damage_dealt: 2,
                 dmg_direct: 2,
                 ..CardStat::default()
             },
             CardStat {
-                id: "LATE".to_owned(),
+                id: crate::test_util::text("LATE"),
                 player: 3,
                 mitigate_debuff: 2,
                 ..CardStat::default()
@@ -669,19 +672,19 @@ mod tests {
     fn team_merge_rejects_combined_defense_and_late_rows_transactionally() {
         for id in ["A", "B"] {
             let mut rows = vec![CardStat {
-                id: "A".to_owned(),
+                id: crate::test_util::text("A"),
                 mitigate_buff: i64::MAX - 1,
                 ..CardStat::default()
             }];
             let before = rows.clone();
             let incoming = [
                 CardStat {
-                    id: "EARLY".to_owned(),
+                    id: crate::test_util::text("EARLY"),
                     damage_dealt: 1,
                     ..CardStat::default()
                 },
                 CardStat {
-                    id: id.to_owned(),
+                    id: crate::test_util::text(id),
                     player: 1,
                     mitigate_debuff: 2,
                     ..CardStat::default()
@@ -705,7 +708,7 @@ mod tests {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
             st.run_cards = vec![CardStat {
-                id: "A".to_owned(),
+                id: crate::test_util::text("A"),
                 mitigate_buff: i64::MAX - 1,
                 ..CardStat::default()
             }];
@@ -716,13 +719,13 @@ mod tests {
         combat.seq = 1;
         combat.cards = vec![
             CardStat {
-                id: "EARLY".to_owned(),
+                id: crate::test_util::text("EARLY"),
                 damage_dealt: 1,
                 dmg_direct: 1,
                 ..CardStat::default()
             },
             CardStat {
-                id: "B".to_owned(),
+                id: crate::test_util::text("B"),
                 player: 1,
                 mitigate_debuff: 2,
                 ..CardStat::default()
@@ -749,7 +752,7 @@ mod tests {
     #[test]
     fn run_cap_preserves_each_creditor_in_reserved_unknown_rows() {
         let row = |id: String, player| CardStat {
-            id,
+            id: crate::test_util::text(&id),
             kind: SourceKind::Card,
             player,
             plays: 1,

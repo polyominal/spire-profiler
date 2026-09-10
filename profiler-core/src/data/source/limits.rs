@@ -6,7 +6,8 @@ fn fixture() -> State {
         current: Some(Combat {
             seq: 7,
             ..Combat::default()
-        }),
+        })
+        .into(),
         ..State::default()
     }
 }
@@ -241,7 +242,7 @@ fn defense_totals_reject_overflow_without_materializing_unknown_rows() {
             let combat = state.current.as_mut().expect("fixture combat exists");
             combat.cards[0].mitigate_debuff = i64::MAX - 1;
             combat.cards.push(CardStat {
-                id: "NEGATIVE".to_owned(),
+                id: crate::test_util::text("NEGATIVE"),
                 player: 2,
                 block_effective: negative,
                 ..CardStat::default()

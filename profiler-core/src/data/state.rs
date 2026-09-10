@@ -21,6 +21,18 @@
 //! failure returns the event's failure value and leaves the state valid; it is
 //! not a reason to grow a table or panic.
 //!
+//! Initialization has one attempt per owner: reservation failure leaves it
+//! disabled, and repeated initialization never retries. Logical combat/run
+//! presence is independent of retained row and roster buffers. Finish writers
+//! lease separate staging buffers and restore them after releasing State guards.
+//! Identity limits apply when retaining an identity; unused wire text never
+//! replaces trustworthy captured supplier facts. Model IDs, joined rosters,
+//! labels, seeds, and network IDs use the byte caps below, reject NUL, and never
+//! truncate. Invalid metadata rejects the lifecycle event before any mutation.
+//! Model IDs and custom seeds have no hard bound across game/mod inputs, so
+//! their caps are profiler policy. The label budget covers the pinned v0.111.0
+//! encounter-kind and game-mode enums; network IDs fit decimal u64.
+//!
 //! # The game facts the model relies on
 //!
 //! Co-op fully replicates the simulation on every peer: only actions cross
@@ -95,6 +107,15 @@
 //! simulation never depends on them).
 
 use std::cell::{Cell, RefCell};
+use std::collections::TryReserveError;
+
+pub use super::text::Text;
+
+pub type ModelId = Text<{ caps::MODEL_ID_BYTES }>;
+pub type RunCharacter = Text<{ caps::RUN_CHARACTER_BYTES }>;
+pub type Seed = Text<{ caps::SEED_BYTES }>;
+pub type Label = Text<{ caps::LABEL_BYTES }>;
+pub type NetId = Text<{ caps::NET_ID_BYTES }>;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -214,7 +235,7 @@ impl PlayerFilter {
 pub struct CardStat {
     /// First so the serialized identity group mirrors this order.
     pub player: SourceSlot,
-    pub id: String,
+    pub id: ModelId,
     pub kind: SourceKind,
     /// Own triggers, so `contribution / plays` is the expected value.
     pub plays: u32,
@@ -283,12 +304,12 @@ pub enum CombatPhase {
     Finished(CombatResult),
 }
 
-#[derive(Clone, Default)]
+#[derive(Default)]
 pub struct Combat {
     pub(crate) row_capacity_logged: bool,
     pub seq: u32,
-    pub encounter_id: String,
-    pub encounter_type: String,
+    pub encounter_id: ModelId,
+    pub encounter_type: Label,
     pub started_at: i64,
     /// The record stays available for the panel after the fight.
     pub phase: CombatPhase,
@@ -313,13 +334,13 @@ impl Combat {
     /// Liveness for gameplay events: present and not finished. The record
     /// stays in `current` after combat end so the panel keeps showing it,
     /// but its file is already on disk, so events must not mutate it.
-    pub fn active(current: &Option<Combat>) -> Option<&Combat> {
+    pub fn active(current: &Retained<Combat>) -> Option<&Combat> {
         current
             .as_ref()
             .filter(|combat| combat.phase == CombatPhase::Active)
     }
 
-    pub fn active_mut(current: &mut Option<Combat>) -> Option<&mut Combat> {
+    pub fn active_mut(current: &mut Retained<Combat>) -> Option<&mut Combat> {
         current
             .as_mut()
             .filter(|combat| combat.phase == CombatPhase::Active)
@@ -338,10 +359,10 @@ impl Combat {
 #[derive(Clone)]
 pub struct RunSnapshot {
     pub seq: u32,
-    pub character: String,
+    pub character: RunCharacter,
     pub ascension: i32,
-    pub game_mode: String,
-    pub seed: String,
+    pub game_mode: Label,
+    pub seed: Seed,
     pub profile: i32,
     /// Original game StartTime in epoch seconds; 0 means unknown.
     pub started_at: i64,
@@ -351,11 +372,11 @@ impl Default for RunSnapshot {
     fn default() -> Self {
         RunSnapshot {
             seq: 0,
-            character: String::new(),
+            character: Default::default(),
             // -1 means "the shim never reported an ascension".
             ascension: -1,
-            game_mode: String::new(),
-            seed: String::new(),
+            game_mode: Default::default(),
+            seed: Default::default(),
             profile: -1,
             started_at: 0,
         }
@@ -363,11 +384,11 @@ impl Default for RunSnapshot {
 }
 
 /// The run record carries slot + character; the net id stays in-memory.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct RunPlayer {
     pub slot: u8,
-    pub net_id: String,
-    pub character: String,
+    pub net_id: NetId,
+    pub character: ModelId,
 }
 
 #[repr(i32)]
@@ -474,7 +495,11 @@ pub struct State {
     /// incremented at each combat start, so the first new combat takes
     /// max+1. None means the store's highest id could not be established.
     pub next_combat_id: Option<u32>,
-    pub current: Option<Combat>,
+    pub current: Retained<Combat>,
+    pub(crate) initialization: Initialization,
+    pub(crate) finish_combat: Option<Combat>,
+    pub(crate) finish_run: Option<EndedRun>,
+    pub(crate) self_test_leases: Option<Vec<u64>>,
     pub(super) source_transfers: super::source::SourceTransfers,
     pub(super) provenance: super::source::Provenance,
     /// Run-level accumulator for the Run Summary tab, merged at combat
@@ -486,7 +511,7 @@ pub struct State {
     pub run_profile: i32,
     pub player_filter: PlayerFilter,
 
-    pub run_ctx: Option<RunContext>,
+    pub run_ctx: Retained<RunContext>,
 
     /// Death flags start with the combat roster; observed slots can extend it.
     pub per_player: Vec<PlayerSlotState>,
@@ -510,6 +535,18 @@ impl State {
 }
 
 pub mod caps {
+    /// Exact profiler input policy; mod IDs exceeding this byte limit are rejected.
+    pub const MODEL_ID_BYTES: usize = 128;
+    /// Four bounded model IDs joined with three commas.
+    pub const RUN_CHARACTER_BYTES: usize = MAX_PLAYERS * MODEL_ID_BYTES + MAX_PLAYERS - 1;
+    /// Profiler input policy for arbitrary custom run seeds.
+    pub const SEED_BYTES: usize = 256;
+    /// Profiler input policy for encounter kinds and game modes.
+    pub const LABEL_BYTES: usize = 32;
+    /// Decimal u64 network identity width.
+    pub const NET_ID_BYTES: usize = 20;
+    /// The synthetic pipeline captures eight simultaneous sources.
+    pub const SELF_TEST_LEASES: usize = 8;
     /// Synchronous nested source copy/upload adapters, never suspended operations.
     pub const SOURCE_TRANSFERS: usize = 16;
     /// Distinct credited roots inherited by one effect.
@@ -581,4 +618,175 @@ pub mod caps {
 thread_local! {
     /// The process's profiler state, single-threaded by contract.
     pub static STATE: RefCell<State> = RefCell::new(State::default());
+}
+
+#[derive(Default)]
+pub(crate) enum Initialization {
+    #[default]
+    Uninitialized,
+    Disabled,
+    Ready,
+}
+
+#[derive(Clone, Copy, Default)]
+enum Occupancy {
+    #[default]
+    Inactive,
+    Present,
+}
+
+/// Logical absence does not release the lifetime owner's storage.
+#[derive(Default)]
+pub struct Retained<T> {
+    pub(crate) storage: T,
+    occupancy: Occupancy,
+}
+
+impl<T> Retained<T> {
+    pub fn as_ref(&self) -> Option<&T> {
+        matches!(self.occupancy, Occupancy::Present).then_some(&self.storage)
+    }
+
+    pub fn as_mut(&mut self) -> Option<&mut T> {
+        matches!(self.occupancy, Occupancy::Present).then_some(&mut self.storage)
+    }
+
+    pub fn is_none(&self) -> bool {
+        self.as_ref().is_none()
+    }
+    pub fn is_some(&self) -> bool {
+        self.as_ref().is_some()
+    }
+}
+
+impl<T: Clone + Default> Retained<T> {
+    pub(crate) fn set(&mut self, value: &T) {
+        self.storage.clone_from(value);
+        self.occupancy = Occupancy::Present;
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.occupancy = Occupancy::Inactive;
+        self.storage.clone_from(&T::default());
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl<T: Default> From<Option<T>> for Retained<T> {
+    fn from(value: Option<T>) -> Self {
+        match value {
+            Some(storage) => Self {
+                storage,
+                occupancy: Occupancy::Present,
+            },
+            None => Self::default(),
+        }
+    }
+}
+
+impl Clone for Combat {
+    fn clone(&self) -> Self {
+        let mut cloned = Self::default();
+        cloned.clone_from(self);
+        cloned
+    }
+
+    fn clone_from(&mut self, source: &Self) {
+        self.cards.clone_from(&source.cards);
+        self.players.clone_from(&source.players);
+        self.row_capacity_logged = source.row_capacity_logged;
+        self.seq = source.seq;
+        self.encounter_id.clone_from(&source.encounter_id);
+        self.encounter_type.clone_from(&source.encounter_type);
+        self.started_at = source.started_at;
+        self.phase = source.phase;
+        self.plays = source.plays;
+        self.generated_plays = source.generated_plays;
+        self.generation_triggers = source.generation_triggers;
+        self.turns = source.turns;
+        self.damage_received = source.damage_received;
+        self.block_total = source.block_total;
+        self.potions_used = source.potions_used;
+        self.run.clone_from(&source.run);
+    }
+}
+
+impl Clone for RunContext {
+    fn clone(&self) -> Self {
+        let mut cloned = Self::default();
+        cloned.clone_from(self);
+        cloned
+    }
+
+    fn clone_from(&mut self, source: &Self) {
+        self.run.clone_from(&source.run);
+        self.players.clone_from(&source.players);
+    }
+}
+
+impl State {
+    pub(crate) fn ready(&self) -> bool {
+        matches!(self.initialization, Initialization::Ready)
+    }
+
+    pub(crate) fn reserve_lifecycle(&mut self) -> Result<(), TryReserveError> {
+        self.current
+            .storage
+            .cards
+            .try_reserve_exact(caps::COMBAT_CARDS)?;
+        self.current
+            .storage
+            .players
+            .try_reserve_exact(caps::MAX_PLAYERS)?;
+        self.run_ctx
+            .storage
+            .players
+            .try_reserve_exact(caps::MAX_PLAYERS)?;
+        self.run_cards.try_reserve_exact(caps::RUN_CARDS)?;
+        self.per_player.try_reserve_exact(caps::MAX_PLAYER_SLOTS)?;
+        #[cfg(any(test, feature = "test-support"))]
+        if FAIL_LIFECYCLE_INITIALIZATION.with(|fail| fail.replace(false)) {
+            self.run_cards.try_reserve_exact(usize::MAX)?;
+        }
+        let combat = self.finish_combat.get_or_insert_with(Combat::default);
+        combat.cards.try_reserve_exact(caps::COMBAT_CARDS)?;
+        combat.players.try_reserve_exact(caps::MAX_PLAYERS)?;
+        let run = self.finish_run.get_or_insert_with(|| EndedRun {
+            context: RunContext::default(),
+            outcome: RunOutcome::Defeat,
+            ended_at: 0,
+        });
+        run.context.players.try_reserve_exact(caps::MAX_PLAYERS)?;
+        self.self_test_leases
+            .get_or_insert_with(Vec::new)
+            .try_reserve_exact(caps::SELF_TEST_LEASES)?;
+        Ok(())
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    pub(crate) static FAIL_LIFECYCLE_INITIALIZATION: Cell<bool> = const { Cell::new(false) };
+}
+
+impl State {
+    pub(crate) fn replace_run(&mut self, run: &RunSnapshot, players: &[RunPlayer]) -> bool {
+        if !self.ready() || players.len() > caps::MAX_PLAYERS {
+            return false;
+        }
+        debug_assert!(
+            self.run_ctx.storage.players.capacity() >= caps::MAX_PLAYERS,
+            "initialized run storage must retain room for every roster slot"
+        );
+        self.run_cards.clear();
+        self.run_turns = 0;
+        self.run_combats = 0;
+        self.player_filter = PlayerFilter::All;
+        self.run_ctx.set(&RunContext {
+            run: run.clone(),
+            players: Vec::new(),
+        });
+        self.run_ctx.storage.players.extend_from_slice(players);
+        true
+    }
 }

@@ -337,8 +337,8 @@ fn resumed_run_discards_the_unfinished_combat() {
     card.finish(play);
     STATE.with(|s| {
         let mut st = s.borrow_mut();
-        st.run_ctx = None;
-        st.current = None;
+        st.run_ctx.clear();
+        st.current.clear();
     });
     run_started("DEFECT", 1, "Standard", "SEED_MID", 1, "", 0);
     let combats: Vec<CombatRec> = read_all_combats(&base)
@@ -413,13 +413,13 @@ fn roster_parses_from_net_ids_and_truncates() {
         vec![
             RunPlayer {
                 slot: 0,
-                net_id: "111".to_owned(),
-                character: "IRONCLAD".to_owned(),
+                net_id: crate::test_util::text("111"),
+                character: crate::test_util::text("IRONCLAD"),
             },
             RunPlayer {
                 slot: 1,
-                net_id: "222".to_owned(),
-                character: "SILENT".to_owned(),
+                net_id: crate::test_util::text("222"),
+                character: crate::test_util::text("SILENT"),
             },
         ]
     );
@@ -451,8 +451,8 @@ fn roster_parses_from_net_ids_and_truncates() {
         players,
         vec![RunPlayer {
             slot: 0,
-            net_id: String::new(),
-            character: "IRONCLAD".to_owned(),
+            net_id: Default::default(),
+            character: crate::test_util::text("IRONCLAD"),
         }]
     );
 }

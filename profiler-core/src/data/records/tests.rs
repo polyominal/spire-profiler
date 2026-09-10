@@ -2,7 +2,9 @@
 //! contract: parse tolerance and the run record's byte-for-byte schema.
 
 use super::*;
-use crate::data::state::{CombatResult, EndedRun, RunContext, RunOutcome, RunPlayer, RunSnapshot};
+use crate::data::state::{
+    CombatResult, EndedRun, RunContext, RunOutcome, RunPlayer, RunSnapshot, caps,
+};
 use crate::source_kind::SourceKind;
 
 fn run_context() -> EndedRun {
@@ -10,23 +12,23 @@ fn run_context() -> EndedRun {
         context: RunContext {
             run: RunSnapshot {
                 seq: 9,
-                character: "IRONCLAD".to_owned(),
+                character: crate::test_util::text("IRONCLAD"),
                 ascension: 3,
-                game_mode: "standard".to_owned(),
-                seed: "SEED123".to_owned(),
+                game_mode: crate::test_util::text("standard"),
+                seed: crate::test_util::text("SEED123"),
                 profile: 2,
                 started_at: 1_786_579_200,
             },
             players: vec![
                 RunPlayer {
                     slot: 0,
-                    net_id: "1".to_owned(),
-                    character: "IRONCLAD".to_owned(),
+                    net_id: crate::test_util::text("1"),
+                    character: crate::test_util::text("IRONCLAD"),
                 },
                 RunPlayer {
                     slot: 1,
-                    net_id: "2".to_owned(),
-                    character: "SILENT".to_owned(),
+                    net_id: crate::test_util::text("2"),
+                    character: crate::test_util::text("SILENT"),
                 },
             ],
         },
@@ -86,7 +88,7 @@ fn parse_combat_doc_ignores_unknown_fields_and_fills_defaults() {
     assert_eq!(
         c.cards[1],
         CardRec {
-            id: "C2".to_owned(),
+            id: crate::test_util::text("C2"),
             ..CardRec::default()
         }
     );
@@ -130,6 +132,55 @@ fn parse_combat_doc_rejects_wrong_types_and_malformed_json() {
 }
 
 #[test]
+fn stored_identity_limits_apply_after_json_escape_decoding() {
+    for (pointer, capacity) in [
+        ("/encounter_id", caps::MODEL_ID_BYTES),
+        ("/cards/0/id", caps::MODEL_ID_BYTES),
+        ("/run/character", caps::RUN_CHARACTER_BYTES),
+        ("/run/game_mode", caps::LABEL_BYTES),
+        ("/run/seed", caps::SEED_BYTES),
+    ] {
+        let mut doc = serde_json::json!({
+            "encounter_id": "", "cards": [{"id": ""}],
+            "run": {"character": "", "game_mode": "", "seed": ""}
+        });
+        let identity = format!("{}{}", "é".repeat(capacity / 2), "x".repeat(capacity % 2));
+        *doc.pointer_mut(pointer)
+            .expect("fixture identity field exists") = identity.clone().into();
+        let encoded = doc.to_string().replace('é', "\\u00e9");
+        assert!(parse_combat_doc(&encoded).is_ok(), "{pointer} at capacity");
+        *doc.pointer_mut(pointer)
+            .expect("fixture identity field exists") = format!("{identity}x").into();
+        assert!(
+            parse_combat_doc(&doc.to_string()).is_err(),
+            "{pointer} over capacity"
+        );
+        *doc.pointer_mut(pointer)
+            .expect("fixture identity field exists") = "a\0b".into();
+        assert!(
+            parse_combat_doc(&doc.to_string()).is_err(),
+            "{pointer} contains NUL"
+        );
+    }
+}
+
+#[test]
+fn stored_roster_character_must_fit_one_model_identity() {
+    let character = "x".repeat(caps::MODEL_ID_BYTES);
+    let valid = serde_json::json!({"slot": 0, "character": character});
+    let player: PlayerRec = serde_json::from_value(valid).expect("maximum character ID fits");
+    assert_eq!(player.character.as_str(), character);
+    for invalid in [format!("{character}x"), "a\0b".to_owned()] {
+        assert!(
+            serde_json::from_value::<PlayerRec>(
+                serde_json::json!({"slot": 0, "character": invalid})
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
 fn parse_combat_doc_clamps_an_unknown_result() {
     let c = parse_combat_doc(r#"{"combat_id":2,"result":"defeated"}"#).expect("clamped");
     assert_eq!(c.result, CombatResult::Completed);
@@ -140,6 +191,37 @@ fn parse_combat_doc_clamps_an_unknown_result() {
 #[test]
 fn build_run_json_matches_the_documented_schema() {
     insta::assert_snapshot!(build_run_json(&run_context()));
+}
+
+#[test]
+fn run_json_budget_covers_full_field_widths_and_escaping() {
+    let ended = EndedRun {
+        context: RunContext {
+            run: RunSnapshot {
+                seq: u32::MAX,
+                character: crate::test_util::text(&"\u{1}".repeat(caps::RUN_CHARACTER_BYTES)),
+                ascension: i32::MIN,
+                game_mode: crate::test_util::text(&"\u{1}".repeat(caps::LABEL_BYTES)),
+                seed: crate::test_util::text(&"\u{1}".repeat(caps::SEED_BYTES)),
+                profile: i32::MIN,
+                started_at: i64::MIN,
+            },
+            players: vec![
+                RunPlayer {
+                    slot: u8::MAX,
+                    net_id: Default::default(),
+                    character: crate::test_util::text(&"\u{1}".repeat(caps::MODEL_ID_BYTES)),
+                };
+                caps::MAX_PLAYERS
+            ],
+        },
+        outcome: RunOutcome::Abandoned,
+        ended_at: i64::MIN,
+    };
+    assert_eq!(
+        build_run_json(&ended).len(),
+        crate::data::persistence::MAX_RUN_JSON_BYTES
+    );
 }
 
 #[test]

@@ -4,7 +4,7 @@
 use super::*;
 use crate::data::state::{CombatResult, PlayerFilter, RunOutcome};
 use crate::source_kind::SourceKind;
-use crate::test_util::unique_dir;
+use crate::test_util::{lifecycle_storage_snapshot, unique_dir};
 use crate::ui::ui_model::{Section, Segment, UiRow, UiTab};
 
 fn assert_self_test_combat(combat: &CombatRec, combat_json: &serde_json::Value) {
@@ -70,7 +70,10 @@ fn self_test_pipeline_writes_combat_and_run_files() {
     let base = unique_dir("spire-profiler-test");
     test_reset();
     init(&base);
+    let storage = lifecycle_storage_snapshot();
+    assert!(storage.iter().all(Option::is_some));
     self_test();
+    assert_eq!(lifecycle_storage_snapshot(), storage);
 
     let (combat_rec, combat_doc) = read_all_combats(&base)
         .into_iter()
@@ -90,6 +93,15 @@ fn self_test_pipeline_writes_combat_and_run_files() {
     let snap_json: serde_json::Value = serde_json::from_str(&snap).expect("store file parses");
     assert_eq!(snap_json["combat_id"], 1);
     assert!(!base.join("runs").join("profile-1").exists());
+
+    self_test();
+    assert_eq!(lifecycle_storage_snapshot(), storage);
+    assert_eq!(combat_ids(&base.join("runs")), [(1, 1), (2, 2)]);
+    let runs = read_all_runs(&base);
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[0]["run_id"], 1);
+    assert_eq!(runs[1]["run_id"], 2);
+    assert_eq!(runs[1]["outcome"], "victory");
 }
 
 #[test]

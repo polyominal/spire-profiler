@@ -5,13 +5,15 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::data::state::{CombatResult, EndedRun, RunOutcome, RunPlayer};
+use crate::data::state::{
+    CombatResult, EndedRun, Label, ModelId, RunCharacter, RunOutcome, RunPlayer, Seed,
+};
 use crate::source_kind::SourceKind;
 
 #[derive(Debug, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct CardRec {
-    pub id: String,
+    pub id: ModelId,
     pub kind: SourceKind,
     pub player: u8,
     pub plays: u32,
@@ -34,7 +36,7 @@ pub struct CardRec {
 #[serde(default)]
 pub struct PlayerRec {
     pub slot: u8,
-    pub character: String,
+    pub character: ModelId,
 }
 
 /// Enough to rejoin a resumed run's fragments and synthesize the fallback
@@ -43,10 +45,10 @@ pub struct PlayerRec {
 #[serde(default)]
 pub struct RunRec {
     pub seq: u32,
-    pub character: String,
+    pub character: RunCharacter,
     pub ascension: i32,
-    pub game_mode: String,
-    pub seed: String,
+    pub game_mode: Label,
+    pub seed: Seed,
     pub profile: i32,
     pub started_at: i64,
 }
@@ -55,11 +57,11 @@ impl Default for RunRec {
     fn default() -> Self {
         RunRec {
             seq: 0,
-            character: String::new(),
+            character: RunCharacter::default(),
             // -1 means "the shim never reported an ascension".
             ascension: -1,
-            game_mode: String::new(),
-            seed: String::new(),
+            game_mode: Label::default(),
+            seed: Seed::default(),
             profile: -1,
             started_at: 0,
         }
@@ -83,7 +85,7 @@ impl RunRec {
 pub struct CombatRec {
     pub combat_id: u32,
     pub started_at: i64,
-    pub encounter_id: String,
+    pub encounter_id: ModelId,
     pub result: CombatResult,
     pub turns: u32,
     pub damage_received: i64,
@@ -141,11 +143,11 @@ struct RunDoc<'a> {
 struct RunDocOwned {
     run_id: u32,
     profile: i32,
-    character: String,
+    character: RunCharacter,
     ascension: i32,
-    game_mode: String,
+    game_mode: Label,
     outcome: RunOutcome,
-    seed: String,
+    seed: Seed,
     started_at: i64,
     ended_at: i64,
     /// The emission omits the field when the roster is empty.

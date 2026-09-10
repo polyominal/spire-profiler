@@ -15,7 +15,8 @@
 //! accumulator combines store reads, parsing, and merge computation. Its
 //! whole call remains a valid baseline, while a pure merge sample supplies
 //! separate computation evidence where a helper boundary exists.
-//! [`run_ended`] takes the live run before writing it, and [`run_suspended`]
+//! [`run_ended`] stages the run and clears its logical presence before writing,
+//! and [`run_suspended`]
 //! clears live state before its trace line. [`run_history_select`] separates
 //! store loading from matching, view construction, and selection retention.
 //! These are scope requirements, not permission to exclude a whole call
@@ -26,7 +27,7 @@ use std::path::Path;
 use crate::data::persistence::{
     bind_log_path, ensure_data_dir, event_log, max_combat_id, reset_log_sink,
 };
-use crate::data::state::{PlayerFilter, STATE, State, StorePaths};
+use crate::data::state::{Initialization, PlayerFilter, STATE, State, StorePaths};
 use crate::marker;
 
 mod combat;
@@ -35,26 +36,41 @@ mod self_test;
 #[cfg(test)]
 mod tests;
 
-pub use combat::{combat_ended, combat_started};
+pub use combat::{FinishedCombat, combat_ended, combat_started};
 pub use run::{
-    run_ended, run_history_clear, run_history_select, run_started, run_suspended, set_run_meta,
+    FinishedRun, run_ended, run_history_clear, run_history_select, run_started, run_suspended,
+    set_run_meta,
 };
 pub use self_test::self_test;
 
 pub fn init(data_dir: &Path) {
-    if STATE.with(|cell| cell.borrow().store_paths.is_some()) {
-        return;
-    }
-    STATE.with(|cell| {
+    let reserved = STATE.with(|cell| {
         let mut state = cell.borrow_mut();
+        if !matches!(state.initialization, Initialization::Uninitialized) {
+            return false;
+        }
+        state.initialization = Initialization::Disabled;
+        if state.reserve_lifecycle().is_err() {
+            crate::fail!("lifecycle reservation failed; profiler disabled");
+            return false;
+        }
         state.store_paths = Some(StorePaths::new(data_dir));
         state.run_profile = -1;
+        true
     });
+    if !reserved {
+        return;
+    }
     bind_log_path(&data_dir.join("profiler.log"));
     let _ = ensure_data_dir();
     // Seeded at the store's highest id; combat start increments before
     // taking it, so the first new combat gets max+1.
-    STATE.with(|cell| cell.borrow_mut().next_combat_id = max_combat_id());
+    let next_combat_id = max_combat_id();
+    STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        state.next_combat_id = next_combat_id;
+        state.initialization = Initialization::Ready;
+    });
     event_log!(
         "profiler core initialized; data dir: {}",
         data_dir.display()

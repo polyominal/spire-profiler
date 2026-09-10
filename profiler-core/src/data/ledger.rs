@@ -1,7 +1,7 @@
 //! Append-only `(player, id, kind)` rows. Ordinary rows cannot consume the
 //! five reserved Unknown slots; capacity loss preserves the known creditor.
 
-use super::state::{CardStat, Combat, SourceKind, SourceSlot, caps};
+use super::state::{CardStat, Combat, ModelId, SourceKind, SourceSlot, caps};
 
 impl CardStat {
     // Bound positive and negative subtotals separately: filtering players or
@@ -74,6 +74,13 @@ pub(super) fn get_or_create_card_kind(
     } else {
         id
     };
+    let Ok(id) = ModelId::try_from(id) else {
+        crate::fail!(
+            "invalid model ID: {} bytes; using credited-slot Unknown",
+            id.len()
+        );
+        return get_or_create_card_kind(combat, slot, "UNATTRIBUTED", SourceKind::Unknown);
+    };
     if let Some(index) = combat
         .cards
         .iter()
@@ -102,7 +109,7 @@ pub(super) fn get_or_create_card_kind(
     let index = combat.cards.len();
     combat.cards.push(CardStat {
         player: slot,
-        id: id.to_owned(),
+        id,
         kind,
         ..CardStat::default()
     });

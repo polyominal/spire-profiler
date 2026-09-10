@@ -22,7 +22,7 @@
 //! Both allocate through `u32::MAX`, then fail-log and refuse fresh starts
 //! without wrapping or reusing an ID; exact run continuation still works.
 //! Missing storage is empty; failed reads or directory scans cannot seed IDs.
-//! A failed boot scan disables combat starts until reinitialization; fresh run
+//! A failed boot scan disables combat starts for this State owner; fresh run
 //! starts retry their ID scan each time.
 //!
 //! # On-disk formats
@@ -127,6 +127,15 @@
 //! after a successful write is a lifecycle reset and remains observable by the
 //! computation accounting. A mixed event cannot be wrapped in one ignored
 //! region merely because it eventually writes a file.
+//!
+//! Bounded identity fields in [`super::state::caps`] also bound emitted JSON.
+//! The budgets below enumerate every emitted field, including quotes, keys,
+//! separators, full-width numbers, and worst-case text escaping. Arrays use
+//! their maximum row and player counts. Schema-envelope tests pin the resulting
+//! lengths, excluding the JSONL newline; the 64 MiB input file limit remains
+//! independent of these smaller output bounds.
+
+use super::state::caps;
 
 mod combat_doc;
 mod combats;
@@ -151,6 +160,112 @@ pub use writes::write_run_record;
 /// Hard cap on one JSON document (read and write).
 const MAX_JSON_SIZE: usize = 64 * 1024 * 1024;
 
+const fn json_unsigned_bytes(value: u64) -> usize {
+    if value == 0 {
+        1
+    } else {
+        value.ilog10() as usize + 1
+    }
+}
+
+const fn json_text_bytes(input_bytes: usize) -> usize {
+    // An ASCII control byte expands to six bytes, for example \u0001.
+    "\"\"".len() + "\\u0001".len() * input_bytes
+}
+
+const fn json_object_bytes(fields: &[(&str, usize)]) -> usize {
+    let mut bytes = "{}".len();
+    let mut index = 0;
+    while index < fields.len() {
+        if index > 0 {
+            bytes += ",".len();
+        }
+        bytes += "\"\":".len() + fields[index].0.len() + fields[index].1;
+        index += 1;
+    }
+    bytes
+}
+
+const fn json_array_bytes(element_bytes: usize, count: usize) -> usize {
+    "[]".len() + count * element_bytes + count.saturating_sub(1) * ",".len()
+}
+
+const JSON_U8_BYTES: usize = json_unsigned_bytes(u8::MAX as u64);
+const JSON_U32_BYTES: usize = json_unsigned_bytes(u32::MAX as u64);
+const JSON_I32_BYTES: usize = "-".len() + json_unsigned_bytes(i32::MIN.unsigned_abs() as u64);
+const JSON_I64_BYTES: usize = "-".len() + json_unsigned_bytes(i64::MIN.unsigned_abs());
+
+const MAX_CARD_JSON_BYTES: usize = json_object_bytes(&[
+    ("id", json_text_bytes(caps::MODEL_ID_BYTES)),
+    (
+        "kind",
+        json_unsigned_bytes(crate::source_kind::SourceKind::Unknown as u64),
+    ),
+    ("plays", JSON_U32_BYTES),
+    ("damage_dealt", JSON_I64_BYTES),
+    ("damage_blocked", JSON_I64_BYTES),
+    ("block_gained", JSON_I64_BYTES),
+    ("block_effective", JSON_I64_BYTES),
+    ("forge", JSON_I64_BYTES),
+    ("dmg_direct", JSON_I64_BYTES),
+    ("dmg_attributed", JSON_I64_BYTES),
+    ("dmg_modifier", JSON_I64_BYTES),
+    ("blk_modifier", JSON_I64_BYTES),
+    ("mitigate_debuff", JSON_I64_BYTES),
+    ("mitigate_buff", JSON_I64_BYTES),
+    ("mitigate_str", JSON_I64_BYTES),
+    ("self_damage", JSON_I64_BYTES),
+    ("player", JSON_U8_BYTES),
+]);
+
+const MAX_RUN_SNAPSHOT_JSON_BYTES: usize = json_object_bytes(&[
+    ("seq", JSON_U32_BYTES),
+    ("character", json_text_bytes(caps::RUN_CHARACTER_BYTES)),
+    ("ascension", JSON_I32_BYTES),
+    ("game_mode", json_text_bytes(caps::LABEL_BYTES)),
+    ("seed", json_text_bytes(caps::SEED_BYTES)),
+    ("profile", JSON_I32_BYTES),
+    ("started_at", JSON_I64_BYTES),
+]);
+
+pub(crate) const MAX_COMBAT_JSON_BYTES: usize = json_object_bytes(&[
+    ("combat_id", JSON_U32_BYTES),
+    ("started_at", JSON_I64_BYTES),
+    ("encounter_id", json_text_bytes(caps::MODEL_ID_BYTES)),
+    ("result", "\"interrupted\"".len()),
+    ("turns", JSON_U32_BYTES),
+    ("damage_received", JSON_I64_BYTES),
+    ("run", MAX_RUN_SNAPSHOT_JSON_BYTES),
+    (
+        "cards",
+        json_array_bytes(MAX_CARD_JSON_BYTES, caps::COMBAT_CARDS),
+    ),
+]);
+
+const MAX_PLAYER_JSON_BYTES: usize = json_object_bytes(&[
+    ("slot", JSON_U8_BYTES),
+    ("character", json_text_bytes(caps::MODEL_ID_BYTES)),
+]);
+
+pub(crate) const MAX_RUN_JSON_BYTES: usize = json_object_bytes(&[
+    ("run_id", JSON_U32_BYTES),
+    ("profile", JSON_I32_BYTES),
+    ("character", json_text_bytes(caps::RUN_CHARACTER_BYTES)),
+    ("ascension", JSON_I32_BYTES),
+    ("game_mode", json_text_bytes(caps::LABEL_BYTES)),
+    ("outcome", "\"abandoned\"".len()),
+    ("seed", json_text_bytes(caps::SEED_BYTES)),
+    ("started_at", JSON_I64_BYTES),
+    ("ended_at", JSON_I64_BYTES),
+    (
+        "players",
+        json_array_bytes(MAX_PLAYER_JSON_BYTES, caps::MAX_PLAYERS),
+    ),
+]);
+
+const _: () = assert!(MAX_COMBAT_JSON_BYTES < MAX_JSON_SIZE);
+const _: () = assert!(MAX_RUN_JSON_BYTES + 1 < MAX_JSON_SIZE);
+
 #[cfg(test)]
 pub(crate) mod test_support {
     // The shared fixtures for the persistence submodule suites: the STATE
@@ -161,6 +276,7 @@ pub(crate) mod test_support {
         CardStat, Combat, CombatPhase, CombatResult, RunPlayer, RunSnapshot, STATE,
     };
     use crate::source_kind::SourceKind;
+    use crate::test_util::text;
     pub(crate) use crate::test_util::unique_dir;
 
     /// Configures the store and log paths without creating their directories.
@@ -177,18 +293,18 @@ pub(crate) mod test_support {
     pub(crate) fn synthetic_roster() -> Vec<RunPlayer> {
         vec![RunPlayer {
             slot: 0,
-            net_id: "1".to_owned(),
-            character: "SHROUD".to_owned(),
+            net_id: text("1"),
+            character: text("SHROUD"),
         }]
     }
 
     pub(crate) fn synthetic_run(seq: u32) -> RunSnapshot {
         RunSnapshot {
             seq,
-            character: "SHROUD".to_owned(),
+            character: text("SHROUD"),
             ascension: 5,
-            game_mode: "standard".to_owned(),
-            seed: "S".to_owned(),
+            game_mode: text("standard"),
+            seed: text("S"),
             profile: 2,
             started_at: 1000,
         }
@@ -199,8 +315,8 @@ pub(crate) mod test_support {
     pub(crate) fn synthetic_combat() -> Combat {
         Combat {
             seq: 7,
-            encounter_id: "BYGONE_EFFIGY".to_owned(),
-            encounter_type: "Elite".to_owned(),
+            encounter_id: text("BYGONE_EFFIGY"),
+            encounter_type: text("Elite"),
             started_at: 1_786_624_000,
             phase: CombatPhase::Finished(CombatResult::Completed),
             turns: 5,
@@ -209,7 +325,7 @@ pub(crate) mod test_support {
             players: synthetic_roster(),
             cards: vec![
                 CardStat {
-                    id: "OMNI_CARD".to_owned(),
+                    id: text("OMNI_CARD"),
                     kind: SourceKind::Card,
                     player: 0,
                     plays: 4,
@@ -228,7 +344,7 @@ pub(crate) mod test_support {
                     self_damage: 3,
                 },
                 CardStat {
-                    id: "ANCHOR".to_owned(),
+                    id: text("ANCHOR"),
                     kind: SourceKind::Relic,
                     block_gained: 10,
                     ..CardStat::default()

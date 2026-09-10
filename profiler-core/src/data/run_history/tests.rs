@@ -67,6 +67,23 @@ fn reset_discards_cached_store_on_selection() {
     );
 }
 
+#[test]
+fn rejected_stored_seeds_cannot_match_a_supported_prefix() {
+    let data = unique_dir("run-history-seed-capacity");
+    let seed = "x".repeat(crate::data::state::caps::SEED_BYTES);
+    let overlong = format!("{seed}x");
+    let nul = format!("{}\0", &seed[..seed.len() - 1]);
+    let runs = serde_json::json!([
+        {"run_id": 1, "profile": 2, "seed": seed, "started_at": 123},
+        {"run_id": 2, "profile": 2, "seed": overlong, "started_at": 123},
+        {"run_id": 3, "profile": 2, "seed": nul, "started_at": 123}
+    ]);
+    seed_data(&data, &runs.to_string(), "[]");
+    assert_eq!(selected(&seed, 123, 2).run_id, 1);
+    assert!(matches!(select_run(&overlong, 123, 2), RunSelection::Empty));
+    assert!(matches!(select_run(&nul, 123, 2), RunSelection::Empty));
+}
+
 const DAILY_RUNS: &str = r#"[
         {"run_id":1,"profile":2,"character":"A","ascension":0,"game_mode":"Daily","outcome":"victory",
          "seed":"DAILY","started_at":1786579200,"ended_at":1786579800,"combats":0},
@@ -667,8 +684,11 @@ fn rollup_keys_on_id_and_kind_and_teams_merge() {
     seed_data(data, runs, combats);
 
     let view = selected("K", 1_786_579_200, 2);
-    let ids: Vec<(String, SourceKind)> =
-        view.rollup.iter().map(|r| (r.id.clone(), r.kind)).collect();
+    let ids: Vec<(String, SourceKind)> = view
+        .rollup
+        .iter()
+        .map(|r| (r.id.to_string(), r.kind))
+        .collect();
     assert_eq!(
         ids,
         vec![
@@ -725,7 +745,7 @@ fn view_fingerprint_tracks_every_view_field() {
         }],
         rollup: vec![
             CardStat {
-                id: "STRIKE".to_owned(),
+                id: crate::test_util::text("STRIKE"),
                 kind: SourceKind::Card,
                 player: TEAM_SLOT,
                 plays: 4,
@@ -733,7 +753,7 @@ fn view_fingerprint_tracks_every_view_field() {
                 ..CardStat::default()
             },
             CardStat {
-                id: "DEMON_FORM".to_owned(),
+                id: crate::test_util::text("DEMON_FORM"),
                 kind: SourceKind::Power,
                 player: TEAM_SLOT,
                 plays: 1,
@@ -758,7 +778,7 @@ fn view_fingerprint_tracks_every_view_field() {
     let mut changed = synthetic();
     changed.players.push(PlayerRec {
         slot: 1,
-        character: "SILENT".to_owned(),
+        character: crate::test_util::text("SILENT"),
     });
     assert_ne!(view_fingerprint(&changed), base);
     let mut changed = synthetic();

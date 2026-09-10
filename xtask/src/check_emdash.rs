@@ -27,7 +27,7 @@ const EM_DASH: char = '\u{2014}';
 /// descends: reword instead of raising, and delete the entry at zero.
 const PINS: &[(&str, usize)] = &[
     ("profiler-core/src/abi.rs", 8),
-    ("profiler-core/src/data/events/run.rs", 1),
+    ("profiler-core/src/data/events/run.rs", 0),
     ("profiler-core/src/data/persistence.rs", 6),
     ("profiler-core/src/data/persistence/time.rs", 1),
     ("profiler-core/src/data/run_history.rs", 1),

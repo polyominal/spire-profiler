@@ -492,7 +492,7 @@ impl SpireProfilerPanel {
     fn avatar_facts(&self) -> Vec<chart_layout::AvatarFact> {
         STATE.with(|s| {
             let st = s.borrow();
-            let Some(c) = &st.current else {
+            let Some(c) = st.current.as_ref() else {
                 return Vec::new();
             };
             c.players
@@ -784,7 +784,7 @@ fn cheap_state_signature(tab: UiTab) -> u64 {
         (tab as u8).hash(&mut hasher);
         match tab {
             UiTab::Combat => {
-                let Some(c) = &st.current else {
+                let Some(c) = st.current.as_ref() else {
                     return;
                 };
                 st.player_filter.hash(&mut hasher);
@@ -854,7 +854,7 @@ mod tests {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
             st.store_paths = Some(StorePaths::new(&unique_dir("ui-store")));
-            st.run_ctx = Some(Default::default());
+            st.run_ctx = Some(Default::default()).into();
         });
         VISIBLE.with(|v| v.set(false));
         assert!(!visible());
@@ -875,12 +875,12 @@ mod tests {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
             st.store_paths = Some(StorePaths::new(&unique_dir("ui-store")));
-            st.run_ctx = None;
+            st.run_ctx = None.into();
         });
         VISIBLE.with(|v| v.set(false));
         toggle();
         assert!(!visible(), "F8 outside a run must not turn the panel on");
-        STATE.with(|s| s.borrow_mut().run_ctx = Some(Default::default()));
+        STATE.with(|s| s.borrow_mut().run_ctx = Some(Default::default()).into());
         toggle();
         assert!(visible(), "F8 inside a run must turn the panel on");
     }
@@ -890,7 +890,7 @@ mod tests {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
             st.store_paths = Some(StorePaths::new(&unique_dir("ui-store")));
-            st.run_ctx = Some(Default::default());
+            st.run_ctx = Some(Default::default()).into();
         });
         VISIBLE.with(|v| v.set(true));
         queue_scroll(60.0);
@@ -906,19 +906,19 @@ mod tests {
 
     #[test]
     fn scroll_input_discards_queue_while_run_is_effectively_hidden() {
-        STATE.with(|s| s.borrow_mut().run_ctx = Some(Default::default()));
+        STATE.with(|s| s.borrow_mut().run_ctx = Some(Default::default()).into());
         SELFTEST_FORCE.set(false);
         VISIBLE.set(true);
         take_queued_scroll();
         queue_scroll(60.0);
-        STATE.with(|s| s.borrow_mut().run_ctx = None);
+        STATE.with(|s| s.borrow_mut().run_ctx = None.into());
         assert!(
             visible(),
             "the user's visibility preference survives run end"
         );
         assert!(!shown());
         queue_scroll(15.0);
-        STATE.with(|s| s.borrow_mut().run_ctx = Some(Default::default()));
+        STATE.with(|s| s.borrow_mut().run_ctx = Some(Default::default()).into());
         assert!(shown());
         assert_eq!(take_queued_scroll(), 0.0);
         queue_scroll(12.5);
@@ -1072,16 +1072,17 @@ mod tests {
             st.store_paths = Some(StorePaths::new(&unique_dir("ui-store")));
             st.current = Some(Combat {
                 seq: 1,
-                encounter_id: "BYGONE_EFFIGY".to_owned(),
+                encounter_id: crate::test_util::text("BYGONE_EFFIGY"),
                 plays: 2,
                 turns: 1,
                 cards: vec![CardStat {
-                    id: "STRIKE".to_owned(),
+                    id: crate::test_util::text("STRIKE"),
                     damage_dealt: 9,
                     ..CardStat::default()
                 }],
                 ..Combat::default()
-            });
+            })
+            .into();
         });
         let base = cheap_state_signature(UiTab::Combat);
         assert_eq!(cheap_state_signature(UiTab::Combat), base);

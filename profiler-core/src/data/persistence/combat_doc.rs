@@ -151,6 +151,54 @@ pub(crate) fn card_stat_from_rec(rec: &records::CardRec) -> CardStat {
 mod tests {
     use super::*;
     use crate::data::persistence::test_support::*;
+    use crate::data::state::{CombatPhase, RunSnapshot, caps};
+
+    #[test]
+    fn combat_json_budget_covers_full_field_widths_and_escaping() {
+        // This codec envelope bounds field widths, not a valid gameplay ledger.
+        let row = CardStat {
+            player: u8::MAX,
+            id: crate::test_util::text(&"\u{1}".repeat(caps::MODEL_ID_BYTES)),
+            kind: SourceKind::Unknown,
+            plays: u32::MAX,
+            damage_dealt: i64::MIN,
+            damage_blocked: i64::MIN,
+            block_gained: i64::MIN,
+            block_effective: i64::MIN,
+            dmg_direct: i64::MIN,
+            dmg_attributed: i64::MIN,
+            dmg_modifier: i64::MIN,
+            blk_modifier: i64::MIN,
+            mitigate_debuff: i64::MIN,
+            mitigate_buff: i64::MIN,
+            mitigate_str: i64::MIN,
+            self_damage: i64::MIN,
+            forge: i64::MIN,
+        };
+        let combat = Combat {
+            seq: u32::MAX,
+            encounter_id: crate::test_util::text(&"\u{1}".repeat(caps::MODEL_ID_BYTES)),
+            started_at: i64::MIN,
+            phase: CombatPhase::Finished(CombatResult::Interrupted),
+            cards: vec![row; caps::COMBAT_CARDS],
+            turns: u32::MAX,
+            damage_received: i64::MIN,
+            run: Some(RunSnapshot {
+                seq: u32::MAX,
+                character: crate::test_util::text(&"\u{1}".repeat(caps::RUN_CHARACTER_BYTES)),
+                ascension: i32::MIN,
+                game_mode: crate::test_util::text(&"\u{1}".repeat(caps::LABEL_BYTES)),
+                seed: crate::test_util::text(&"\u{1}".repeat(caps::SEED_BYTES)),
+                profile: i32::MIN,
+                started_at: i64::MIN,
+            }),
+            ..Combat::default()
+        };
+        assert_eq!(
+            build_combat_json(&combat).len(),
+            crate::data::persistence::MAX_COMBAT_JSON_BYTES
+        );
+    }
 
     #[test]
     fn build_combat_json_matches_the_documented_schema() {
@@ -176,7 +224,7 @@ mod tests {
     fn all_zero_card_rows_round_trip_as_identity_only() {
         let mut c = synthetic_combat();
         c.cards = vec![CardStat {
-            id: "ZERO_ROW".to_owned(),
+            id: crate::test_util::text("ZERO_ROW"),
             kind: SourceKind::Potion,
             player: 2,
             ..CardStat::default()
@@ -197,7 +245,7 @@ mod tests {
         assert_eq!(
             combat.cards[0],
             records::CardRec {
-                id: "ZERO_ROW".to_owned(),
+                id: crate::test_util::text("ZERO_ROW"),
                 kind: SourceKind::Potion,
                 player: 2,
                 ..records::CardRec::default()
@@ -215,7 +263,7 @@ mod tests {
         write_store_file(&data, 42, 7, &entry1);
         let mut c2 = synthetic_combat();
         c2.seq = 8;
-        c2.encounter_id = "FROZEN_COUNCIL".to_owned();
+        c2.encounter_id = crate::test_util::text("FROZEN_COUNCIL");
         let entry2 = build_combat_json(&c2);
         write_store_file(&data, 42, 8, &entry2);
 

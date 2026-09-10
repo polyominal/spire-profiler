@@ -367,7 +367,9 @@ pub(crate) fn ui_snapshot_meta(tab: UiTab) -> UiMeta {
         if tab == UiTab::Run {
             return ui_snapshot_meta_from_run(&st.run_cards, st.run_turns, st.run_combats, 0);
         }
-        let Some(c) = &st.current else { return m };
+        let Some(c) = st.current.as_ref() else {
+            return m;
+        };
         m.turns = c.turns;
         m.plays = c.plays;
         // Headline totals stay TEAM-wide even under a filter.
@@ -448,7 +450,7 @@ pub fn ui_footer_text(tab: UiTab) -> String {
                 damage, st.run_turns, st.run_combats, block,
             );
         }
-        let Some(c) = &st.current else {
+        let Some(c) = st.current.as_ref() else {
             return String::new();
         };
         format!(

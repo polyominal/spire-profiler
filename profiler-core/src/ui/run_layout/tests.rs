@@ -22,7 +22,7 @@ fn view() -> RunSummaryView {
             .collect()
     };
     let card = |id: &str, kind: SourceKind, plays: u32, dmg: i64, blk: i64| CardStat {
-        id: id.to_owned(),
+        id: crate::test_util::text(id),
         kind,
         plays,
         damage_dealt: dmg,
@@ -142,7 +142,7 @@ fn layout_renders_full_lists_without_caps() {
         .collect();
     v.rollup = (0..20)
         .map(|i| CardStat {
-            id: format!("CARD{i}"),
+            id: crate::test_util::text(&format!("CARD{i}")),
             damage_dealt: 100 - i as i64,
             dmg_direct: 100 - i as i64,
             ..CardStat::default()
@@ -377,17 +377,17 @@ fn roster_entries_carry_slots_and_character_icon_paths_mirror_the_game() {
     );
     mp.players = vec![crate::data::records::PlayerRec {
         slot: 0,
-        character: "SILENT".to_owned(),
+        character: crate::test_util::text("SILENT"),
     }];
     assert_eq!(roster_entries(&mp), vec![(0, "SILENT")]);
     mp.players = vec![
         crate::data::records::PlayerRec {
             slot: 2,
-            character: "SHROUD".to_owned(),
+            character: crate::test_util::text("SHROUD"),
         },
         crate::data::records::PlayerRec {
             slot: 0,
-            character: "".to_owned(),
+            character: crate::test_util::text(""),
         },
     ];
     assert_eq!(

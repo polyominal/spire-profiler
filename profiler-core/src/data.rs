@@ -10,3 +10,5 @@ pub mod records;
 pub mod run_history;
 mod source;
 pub mod state;
+
+mod text;

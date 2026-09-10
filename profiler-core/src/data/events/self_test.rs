@@ -11,6 +11,10 @@ struct Script {
 
 impl Script {
     fn source(&mut self, instance: u64, id: &str, kind: i32, generation: i32) -> u64 {
+        if self.leases.len() >= crate::data::state::caps::SELF_TEST_LEASES {
+            crate::fail!("self-test source lease capacity exhausted");
+            return 0;
+        }
         let capture = if kind == 0 { 1 } else { 4 };
         let transfer = source_capture(self.epoch, capture, instance, id, kind, 0, generation);
         self.leases.push(transfer);
@@ -36,17 +40,25 @@ impl Script {
 
 impl Drop for Script {
     fn drop(&mut self) {
-        for transfer in &self.leases {
-            source_transfer_release(*transfer);
+        for transfer in self.leases.drain(..) {
+            source_transfer_release(transfer);
         }
+        STATE.with(|cell| {
+            cell.borrow_mut().self_test_leases = Some(std::mem::take(&mut self.leases))
+        });
     }
 }
 
 #[allow(clippy::too_many_lines)]
 pub fn self_test() {
-    if STATE.with(|cell| cell.borrow().store_paths.is_none()) {
+    if !STATE.with(|cell| cell.borrow().ready()) {
         return;
     }
+    let Some(leases) = STATE.with(|cell| cell.borrow_mut().self_test_leases.take()) else {
+        crate::fail!("self-test lease storage is already in use");
+        return;
+    };
+    let mut script = Script { epoch: 0, leases };
     set_run_meta(1);
     run_started(
         "SELF_TEST_CHAR",
@@ -59,10 +71,7 @@ pub fn self_test() {
     );
     let epoch = combat_started("SELF_TEST", "test");
     crate::ui::panel::enable_for_selftest();
-    let mut script = Script {
-        epoch,
-        leases: Vec::new(),
-    };
+    script.epoch = epoch;
     let cracked = script.source(0, "CRACKED_CORE", 1, 0);
     orb_channeled(epoch, 1002, cracked);
     turn_started(epoch);
