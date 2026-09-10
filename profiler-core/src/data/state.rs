@@ -462,8 +462,8 @@ pub struct State {
     pub(crate) store_paths: Option<StorePaths>,
     /// The combat-id counter: seeded at boot to the store's highest id and
     /// incremented at each combat start, so the first new combat takes
-    /// max+1.
-    pub next_combat_id: u32,
+    /// max+1. None means the store's highest id could not be established.
+    pub next_combat_id: Option<u32>,
     pub current: Option<Combat>,
     pub(super) source_transfers: super::source::SourceTransfers,
     pub(super) provenance: super::source::Provenance,

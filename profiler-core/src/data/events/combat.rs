@@ -27,11 +27,15 @@ pub fn combat_started(encounter_id: &str, encounter_type: &str) -> u64 {
         let mut state = cell.borrow_mut();
         state.discard_combat();
         state.per_player.clear();
-        let Some(seq) = state.next_combat_id.checked_add(1) else {
+        let Some(previous) = state.next_combat_id else {
+            fail!("combat ID scan failed; combat not started");
+            return 0;
+        };
+        let Some(seq) = previous.checked_add(1) else {
             fail!("combat IDs exhausted; combat not started");
             return 0;
         };
-        state.next_combat_id = seq;
+        state.next_combat_id = Some(seq);
         let players = state
             .run_ctx
             .as_ref()

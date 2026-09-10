@@ -158,9 +158,12 @@ thread_local! {
 }
 
 /// One JSON object per line; one bad line never hides the rest.
-fn load_runs(path: &Path) -> Vec<RunEntry> {
-    let Some(content) = crate::data::persistence::read_file(path).content() else {
-        return Vec::new();
+fn load_runs(path: &Path) -> Option<Vec<RunEntry>> {
+    use crate::data::persistence::{ReadFile, read_file};
+    let content = match read_file(path) {
+        ReadFile::Content(content) => content,
+        ReadFile::Missing => return Some(Vec::new()),
+        ReadFile::Failed => return None,
     };
     let mut runs = Vec::new();
     for line in content.lines() {
@@ -172,7 +175,7 @@ fn load_runs(path: &Path) -> Vec<RunEntry> {
             Err(err) => crate::fail!("cannot parse a runs.jsonl line: {err}"),
         }
     }
-    runs
+    Some(runs)
 }
 
 fn load_combats(dir: &Path) -> Vec<CombatRec> {
@@ -187,7 +190,7 @@ pub(crate) fn continued_run_id(
     profile: i32,
 ) -> Option<u32> {
     matching_run_id(
-        &load_runs(runs_path),
+        &load_runs(runs_path)?,
         &load_combats(runs_dir),
         seed,
         start_time,
@@ -198,19 +201,15 @@ pub(crate) fn continued_run_id(
 /// An abandoned run leaves its directory but no entry, so the directory
 /// name reserves the id; `runs/0/` never counts.
 pub(crate) fn next_run_id(runs_path: &Path, runs_dir: &Path) -> Option<u32> {
-    let runs_max = load_runs(runs_path)
+    let runs_max = load_runs(runs_path)?
         .iter()
         .map(|entry| entry.run_id)
         .max()
         .unwrap_or(0);
-    let dirs_max = std::fs::read_dir(runs_dir)
-        .map(|entries| {
-            entries
-                .flatten()
-                .filter_map(|entry| entry.file_name().to_string_lossy().parse::<u32>().ok())
-                .max()
-                .unwrap_or(0)
-        })
+    let dirs_max = crate::data::persistence::read_dir(runs_dir)?
+        .iter()
+        .filter_map(|entry| entry.file_name().to_string_lossy().parse::<u32>().ok())
+        .max()
         .unwrap_or(0);
     runs_max.max(dirs_max).checked_add(1)
 }
@@ -234,7 +233,7 @@ fn ensure_loaded() {
     if hit {
         return;
     }
-    let runs = load_runs(&runs_path);
+    let runs = load_runs(&runs_path).unwrap_or_default();
     let combats = load_combats(&runs_dir);
     CACHE.with(|cell| {
         *cell.borrow_mut() = Some(Cache {

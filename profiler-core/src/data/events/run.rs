@@ -75,7 +75,7 @@ pub fn run_started(
         state.player_filter = state::PlayerFilter::All;
         let Some(seq) = seq else {
             state.discard_combat();
-            fail!("run IDs exhausted; run not started");
+            fail!("run ID allocation failed; run not started");
             return None;
         };
         state.run_ctx = Some(RunContext {

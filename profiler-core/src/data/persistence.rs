@@ -21,6 +21,9 @@
 //! rejoins only a unique exact (profile, seed, original StartTime) identity.
 //! Both allocate through `u32::MAX`, then fail-log and refuse fresh starts
 //! without wrapping or reusing an ID; exact run continuation still works.
+//! Missing storage is empty; failed reads or directory scans cannot seed IDs.
+//! A failed boot scan disables combat starts until reinitialization; fresh run
+//! starts retry their ID scan each time.
 //!
 //! # On-disk formats
 //!
@@ -116,7 +119,7 @@ pub use combat_doc::build_combat_json;
 pub(crate) use combat_doc::card_stat_from_rec;
 pub use combats::write_combat_file;
 pub(crate) use combats::{load_combat_docs_from, max_combat_id, parse_combat_docs};
-pub(crate) use io::read_file;
+pub(crate) use io::{ReadFile, read_dir, read_file};
 pub use io::{ensure_data_dir, write_file};
 pub(crate) use log::{append_log, bind_log_path, event_log, reset_log_sink};
 pub(crate) use runs::CardStatKey;

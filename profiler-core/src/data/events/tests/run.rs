@@ -52,10 +52,17 @@ fn failed_init_keeps_the_first_store() {
     init(&second);
     std::fs::remove_file(&first).expect("allow the first store to recover");
 
-    combat_started("RECOVERED", "test");
-    combat_ended(combat_epoch());
-
-    assert_eq!(read_combat(&first).0.encounter_id, "RECOVERED");
+    assert_eq!(combat_started("RECOVERED", "test"), 0);
+    STATE.with(|s| {
+        assert_eq!(
+            s.borrow()
+                .store_paths
+                .as_ref()
+                .expect("first store is bound")
+                .runs_dir,
+            first.join("runs")
+        );
+    });
     assert!(
         !second.exists(),
         "failed initialization must still be idempotent"

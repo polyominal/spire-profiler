@@ -80,11 +80,19 @@ pub(crate) enum ReadFile {
     Failed,
 }
 
-impl ReadFile {
-    pub(crate) fn content(self) -> Option<String> {
-        match self {
-            ReadFile::Content(content) => Some(content),
-            ReadFile::Missing | ReadFile::Failed => None,
+/// Missing directories are empty; every other scan failure rejects the
+/// whole listing so an incomplete scan cannot seed record IDs.
+pub(crate) fn read_dir(path: &Path) -> Option<Vec<fs::DirEntry>> {
+    let result = match fs::read_dir(path) {
+        Ok(entries) => entries.collect::<std::io::Result<Vec<_>>>(),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Some(Vec::new()),
+        Err(err) => Err(err),
+    };
+    match result {
+        Ok(entries) => Some(entries),
+        Err(err) => {
+            fail!("cannot scan '{}': {err}", path.display());
+            None
         }
     }
 }
@@ -162,10 +170,10 @@ mod tests {
         let dir = unique_dir("write");
         let path = dir.join("f.json");
         assert!(write_file(&path, "hello"));
-        assert_eq!(read_file(&path).content().unwrap(), "hello");
+        assert!(matches!(read_file(&path), ReadFile::Content(text) if text == "hello"));
         assert!(!dir.join("f.json.tmp").exists());
         assert!(write_file(&path, "bye"));
-        assert_eq!(read_file(&path).content().unwrap(), "bye");
+        assert!(matches!(read_file(&path), ReadFile::Content(text) if text == "bye"));
         assert!(!dir.join("f.json.tmp").exists());
     }
 
@@ -197,7 +205,9 @@ mod tests {
             ReadFile::Missing
         ));
         fs::write(dir.join("empty.json"), "").unwrap();
-        assert_eq!(read_file(&dir.join("empty.json")).content().unwrap(), "");
+        assert!(
+            matches!(read_file(&dir.join("empty.json")), ReadFile::Content(text) if text.is_empty())
+        );
     }
 
     #[test]

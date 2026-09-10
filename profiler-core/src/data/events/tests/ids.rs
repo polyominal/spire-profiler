@@ -4,6 +4,66 @@ use crate::data::state::RunOutcome;
 use crate::test_util::{SourceFixture, combat_epoch};
 
 #[test]
+fn failed_combat_id_scan_stays_unavailable_after_storage_recovers() {
+    for blocked in ["runs", "runs/0"] {
+        let base = unique_dir("combat-id-scan-failure");
+        let path = base.join(blocked);
+        std::fs::create_dir_all(path.parent().expect("test storage has a parent"))
+            .expect("test storage is writable");
+        std::fs::write(&path, "not a directory").expect("test obstruction is writable");
+        test_reset();
+        init(&base);
+        assert_eq!(combat_started("BLOCKED", "test"), 0);
+
+        std::fs::remove_file(&path).expect("test owns the obstruction");
+        write_store_file(&base, 0, 1, "existing combat");
+        assert_eq!(combat_started("RECOVERED", "test"), 0);
+        assert_eq!(combat_ended(0), 0);
+        assert_eq!(read_test_file(&base, "runs/0/1.json"), "existing combat");
+        assert!(STATE.with(|s| s.borrow().current.is_none()));
+
+        test_reset();
+        init(&base);
+        assert_eq!(combat_started("RESCANNED", "test"), 2);
+    }
+}
+
+#[test]
+fn failed_run_id_scan_refuses_start_and_can_retry_after_storage_recovers() {
+    for blocked in ["runs", "runs.jsonl"] {
+        let base = unique_dir("run-id-scan-failure");
+        test_reset();
+        init(&base);
+        let path = base.join(blocked);
+        if blocked == "runs" {
+            std::fs::remove_dir(&path).expect("fresh runs directory is empty");
+            std::fs::write(&path, "not a directory").expect("test obstruction is writable");
+        } else {
+            std::fs::create_dir(&path).expect("test obstruction is writable");
+        }
+        run_started("IRONCLAD", 0, "Standard", "BLOCKED", 0, "", 1000);
+        assert!(STATE.with(|s| s.borrow().run_ctx.is_none()));
+
+        if blocked == "runs" {
+            std::fs::remove_file(&path).expect("test owns the obstruction");
+        } else {
+            std::fs::remove_dir(&path).expect("test owns the empty obstruction");
+        }
+        write_store_file(&base, 12, 1, "existing combat");
+        std::fs::write(base.join("runs.jsonl"), r#"{"run_id":20}"#)
+            .expect("test run record is writable");
+        run_started("IRONCLAD", 0, "Standard", "RECOVERED", 0, "", 1000);
+        STATE.with(|s| {
+            assert_eq!(
+                s.borrow().run_ctx.as_ref().expect("run started").run.seq,
+                21
+            );
+        });
+        assert_eq!(read_test_file(&base, "runs/12/1.json"), "existing combat");
+    }
+}
+
+#[test]
 fn exhausted_combat_ids_preserve_records_and_clear_active_state() {
     for ending in ["empty", "interrupted", "completed"] {
         let written = ending != "empty";
@@ -42,7 +102,7 @@ fn exhausted_combat_ids_preserve_records_and_clear_active_state() {
             combat_started("EXHAUSTED", "test");
             STATE.with(|cell| {
                 let state = cell.borrow();
-                assert_eq!(state.next_combat_id, u32::MAX);
+                assert_eq!(state.next_combat_id, Some(u32::MAX));
                 assert!(state.current.is_none());
                 assert!(state.per_player.is_empty());
                 assert_eq!(state.run_combats, u32::from(written));
