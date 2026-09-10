@@ -68,8 +68,8 @@
 //!   provenance owner.
 //! * Team semantics: combat totals (damage_received, plays, block_total, ...) are TEAM totals, and
 //!   the turn counter counts ROUNDS (the shim hooks the side-level boundary once per round,
-//!   matching the game's RoundNumber). combat_ended marks the record "defeat" iff every
-//!   participating slot's died flag is set.
+//!   matching the game's RoundNumber). combat_ended marks the record "defeat" iff every roster
+//!   slot's died flag is set; without a roster, it uses observed player slots.
 //! * Roster: run_started parses slot → net id + character from the two comma-joined ABI lists;
 //!   single-player reports the one slot-0 entry even with an empty net_ids. The run record carries
 //!   slot + character; the net id stays in-memory.
@@ -469,8 +469,7 @@ pub struct State {
 
     pub run_ctx: Option<RunContext>,
 
-    /// Per-slot transient state; sized on first slot sight and cleared at
-    /// the combat boundary.
+    /// Death flags start with the combat roster; observed slots can extend it.
     pub per_player: Vec<PlayerSlotState>,
 }
 

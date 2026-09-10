@@ -32,17 +32,21 @@ pub fn combat_started(encounter_id: &str, encounter_type: &str) -> u64 {
             return 0;
         };
         state.next_combat_id = seq;
+        let players = state
+            .run_ctx
+            .as_ref()
+            .map(|run| run.players.clone())
+            .unwrap_or_default();
+        for player in &players {
+            state.slot_index(i32::from(player.slot));
+        }
         state.current = Some(Combat {
             seq,
             encounter_id: encounter_id.to_owned(),
             encounter_type: encounter_type.to_owned(),
             started_at: now_seconds(),
             run: state.run_ctx.as_ref().map(|run| run.run.clone()),
-            players: state
-                .run_ctx
-                .as_ref()
-                .map(|run| run.players.clone())
-                .unwrap_or_default(),
+            players,
             ..Combat::default()
         });
         event_log!("combat {seq} started: {encounter_id} ({encounter_type})");

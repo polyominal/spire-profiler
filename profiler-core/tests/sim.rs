@@ -1251,17 +1251,23 @@ fn randomized_combat_lifecycle_invariants() {
         events::test_reset();
         events::init(&base);
         events::set_run_meta(7);
+        let (characters, net_ids, player_count) = if scenario % 2 == 0 {
+            ("SIM_CHAR,SIM_CHAR,SIM_CHAR", "10,20,30", 3)
+        } else {
+            ("SIM_CHAR,SIM_CHAR,SIM_CHAR,SIM_CHAR", "10,20,30,40", 4)
+        };
         events::run_started(
-            "SIM_CHAR",
+            characters,
             rng.range_i32(0, 20),
             "Standard",
             "SIM_SEED",
             rng.range_i32(0, 1),
-            "SIM_NET",
+            net_ids,
             1_786_579_200,
         );
         events::combat_started("SIM_ENCOUNTER", "test");
         let mut walk = Walk::new();
+        walk.ledger.players = vec![false; player_count];
         for step in 0..EVENTS_PER_SCENARIO {
             walk.event(&mut rng);
             walk.check(&repro, step);

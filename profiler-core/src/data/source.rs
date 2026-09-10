@@ -923,13 +923,21 @@ impl State {
 
     pub(crate) fn finished_combat(&mut self, combat_seq: u64) -> Option<Combat> {
         self.provenance_epoch(combat_seq).ok()?;
-        let defeated = !self.per_player.is_empty()
-            && self
-                .per_player
-                .iter()
-                .take(caps::MAX_PLAYERS)
-                .all(|player| player.died);
         let combat = Combat::active_mut(&mut self.current)?;
+        let defeated = if combat.players.is_empty() {
+            !self.per_player.is_empty()
+                && self
+                    .per_player
+                    .iter()
+                    .take(caps::MAX_PLAYERS)
+                    .all(|player| player.died)
+        } else {
+            combat.players.iter().all(|player| {
+                self.per_player
+                    .get(usize::from(player.slot))
+                    .is_some_and(|tracked| tracked.died)
+            })
+        };
         combat.phase = super::state::CombatPhase::Finished(if defeated {
             super::state::CombatResult::Defeat
         } else {
