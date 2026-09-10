@@ -18,9 +18,12 @@
   mandates that all commits and PRs are made by humans.
 - `profiler-core` is not a public library: prefer private visibility, `pub` only
   where an item needs it.
-- Markdown docs wrap at 80 columns via `cargo xtask fmt-md` (the wrapped set is
-  pinned in [md.rs](xtask/src/md.rs)); run it after doc edits, never reflow by
-  hand. `smoke` runs `fmt-md --check`.
+- `cargo xtask fmt` formats Rust, handwritten C\# (including fixtures), and
+  Markdown. `smoke` runs the same formatter with `--check`; it needs the pinned
+  .NET SDK, bootstrapped automatically, but no installed game.
+- Markdown docs wrap at 80 columns via the docs-only `cargo xtask fmt-md` (the
+  wrapped set is pinned in [md.rs](xtask/src/md.rs)); run it after doc edits,
+  never reflow by hand.
 - Prefer long options when invoking external commands; use short options only
   when the tool has no long equivalent.
 

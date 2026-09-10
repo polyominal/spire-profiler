@@ -71,7 +71,7 @@ fn track_inset(plate: bool) -> f32 {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy)]
 pub(crate) struct ScrollbarGeom {
     pub track: Rect2,
     pub body: Rect2,

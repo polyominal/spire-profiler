@@ -7,7 +7,7 @@
 use crate::source_kind::SourceKind;
 
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub enum UiTab {
     #[default]
     Combat = 0,
@@ -28,7 +28,7 @@ impl UiTab {
 const _: () = assert!(UiTab::ALL.len() == 2);
 
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Hash)]
 pub enum Section {
     Damage = 0,
     Defense = 1,
@@ -46,7 +46,7 @@ impl Section {
 }
 
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Segment {
     Direct = 0,
     Attributed = 1,
@@ -86,7 +86,7 @@ pub const MAX_ROWS_PER_SECTION: usize = 128;
 /// The buffer must hold every candidate row: 128 × 2 = 256.
 pub const MAX_UI_ROWS: usize = 256;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 pub struct UiRow {
     pub section: Section,
     pub kind: SourceKind,
@@ -129,7 +129,7 @@ impl UiRow {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 pub(crate) struct UiMeta {
     pub turns: u32,
     pub plays: u32,

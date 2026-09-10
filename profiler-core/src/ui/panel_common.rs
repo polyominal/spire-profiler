@@ -172,7 +172,7 @@ pub(crate) fn scrollbar_geom(
 }
 
 /// The scrollbar track is not a zone — it is hit-tested in screen space.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 pub(crate) enum PressZone {
     Tab(UiTab),
     Avatar(u8),
@@ -202,7 +202,7 @@ pub(crate) fn interaction_step(
     InteractionStep { pressed, on_track }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Default)]
 pub(crate) struct InteractionState {
     pub scrollbar: bool,
     pub mouse_down: bool,
@@ -220,7 +220,7 @@ const AVATAR_ALL_SCALE: f32 = 1.0;
 const AVATAR_SELECTED_SCALE: f32 = 1.1;
 const AVATAR_EXCLUDED_SCALE: f32 = 0.95;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 struct AvatarScaleTransition {
     current: f32,
     from: f32,
@@ -262,7 +262,6 @@ impl AvatarScaleTransition {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
 struct AvatarScaleEntry {
     slot: u8,
     transition: AvatarScaleTransition,

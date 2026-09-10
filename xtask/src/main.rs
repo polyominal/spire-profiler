@@ -23,6 +23,7 @@ mod game_version;
 mod git;
 mod headless;
 mod install;
+mod managed;
 mod md;
 mod release;
 mod scan;
@@ -37,7 +38,7 @@ mod flags {
         src "./src/main.rs"
 
         cmd xtask {
-            /// The commit gate: format checks (rust + markdown), citation,
+            /// The commit gate: format checks (Rust + C# + Markdown), citation,
             /// em-dash, ABI, and doc checks, clippy, and nextest.
             cmd smoke {}
             /// Install the pinned toolchain and verify the dev tools.
@@ -50,6 +51,8 @@ mod flags {
             cmd install-mod {}
             /// Install the mod and boot the game headless (self-test verdict).
             cmd headless-test {}
+            /// Run shared production capture fixtures against the pinned game assemblies.
+            cmd managed-test {}
             /// Check shim<->core ABI conformance.
             cmd check-abi {}
             /// Fail on cargo doc warnings and report the comment-density budget.
@@ -61,6 +64,11 @@ mod flags {
             cmd check-citations {}
             /// Fail on em dashes beyond the pinned per-file ceilings.
             cmd check-emdash {}
+            /// Format Rust, handwritten C#, and the project Markdown docs.
+            cmd fmt {
+                /// Check for formatting drift without rewriting.
+                optional --check
+            }
             /// Reflow the project markdown docs to the pinned width.
             cmd fmt-md {
                 /// Check for wrapping drift without rewriting.
@@ -94,10 +102,12 @@ mod flags {
         Release(Release),
         InstallMod(InstallMod),
         HeadlessTest(HeadlessTest),
+        ManagedTest(ManagedTest),
         CheckAbi(CheckAbi),
         CheckDocs(CheckDocs),
         CheckCitations(CheckCitations),
         CheckEmdash(CheckEmdash),
+        Fmt(Fmt),
         FmtMd(FmtMd),
         Decompile(Decompile),
         CheckCatalog(CheckCatalog),
@@ -122,6 +132,9 @@ mod flags {
     pub struct HeadlessTest;
 
     #[derive(Debug)]
+    pub struct ManagedTest;
+
+    #[derive(Debug)]
     pub struct CheckAbi;
 
     #[derive(Debug)]
@@ -134,6 +147,11 @@ mod flags {
 
     #[derive(Debug)]
     pub struct CheckEmdash;
+
+    #[derive(Debug)]
+    pub struct Fmt {
+        pub check: bool,
+    }
 
     #[derive(Debug)]
     pub struct FmtMd {
@@ -180,11 +198,13 @@ fn main() -> Result<()> {
         flags::XtaskCmd::Release(_) => release::release(&shell),
         flags::XtaskCmd::InstallMod(_) => install::install_mod(&shell).map(|_| ()),
         flags::XtaskCmd::HeadlessTest(_) => headless::headless_test(&shell),
+        flags::XtaskCmd::ManagedTest(_) => managed::run(&shell),
         flags::XtaskCmd::CheckAbi(_) => check_abi::run(),
         flags::XtaskCmd::CheckCatalog(_) => check_catalog::run(),
         flags::XtaskCmd::CheckDocs(flags) => check_docs::check_docs(&shell, flags.top),
         flags::XtaskCmd::CheckCitations(_) => check_citations::run(),
         flags::XtaskCmd::CheckEmdash(_) => check_emdash::run(),
+        flags::XtaskCmd::Fmt(flags) => fmt(&shell, flags.check),
         flags::XtaskCmd::FmtMd(flags) => md::fmt_md(flags.check),
         flags::XtaskCmd::Decompile(flags) => {
             decompile::decompile(&shell, flags.output_dir, flags.yes)
@@ -252,9 +272,32 @@ pub(crate) fn ensure_cli(shell: &Shell, tool: &str, probe_arg: &str, purpose: &s
     Ok(())
 }
 
+fn fmt(shell: &Shell, check: bool) -> Result<()> {
+    let rust_check: &[&str] = if check { &["--", "--check"] } else { &[] };
+    cmd!(shell, "cargo fmt --all {rust_check...}").run()?;
+
+    let binary = dotnet::resolve_dotnet(shell)?;
+    let shim = workspace_root().join("shim");
+    let _telemetry = shell.push_env("DOTNET_CLI_TELEMETRY_OPTOUT", "1");
+    let _logo = shell.push_env("DOTNET_NOLOGO", "1");
+    let _first_run = shell.push_env("DOTNET_SKIP_FIRST_TIME_EXPERIENCE", "1");
+    let _sdk_root = shell.push_env(
+        "DOTNET_ROOT",
+        binary
+            .parent()
+            .expect("the bootstrapped dotnet binary has a parent"),
+    );
+    let cs_check: &[&str] = if check { &["--verify-no-changes"] } else { &[] };
+    cmd!(
+        shell,
+        "{binary} format whitespace {shim} --folder {cs_check...}"
+    )
+    .run()?;
+    md::fmt_md(check)
+}
+
 fn smoke(shell: &Shell) -> Result<()> {
-    cmd!(shell, "cargo fmt --all -- --check").run()?;
-    md::fmt_md(true)?;
+    fmt(shell, true)?;
     check_citations::run()?;
     check_emdash::run()?;
     check_abi::run()?;

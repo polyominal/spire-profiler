@@ -44,25 +44,21 @@ pub fn build(shell: &Shell) -> Result<discover::GamePaths> {
 
 fn build_host_project(shell: &Shell, root: &Path, game: &discover::GamePaths) -> Result<PathBuf> {
     let gen_dir = root.join("target/xtask-gen");
-    std::fs::create_dir_all(&gen_dir)?;
-    write_if_changed(&gen_dir.join("shim.cs"), &shim::build_shim_cs())?;
-    write_if_changed(
+    shim::write_sources(&gen_dir, shim::ProjectKind::Mod)?;
+    shim::write_if_changed(
         &gen_dir.join(CSPROJ_NAME),
-        &shim::build_csproj(&game.sts2_dll, &game.harmony_dll, &game.godot_sharp_dll),
+        &shim::build_csproj(
+            &game.sts2_dll,
+            &game.harmony_dll,
+            &game.godot_sharp_dll,
+            shim::ProjectKind::Mod,
+        ),
     )?;
     run_dotnet_build(shell, &gen_dir)?;
     Ok(gen_dir)
 }
 
 const CSPROJ_NAME: &str = "SpireProfiler.csproj";
-
-/// Keeps mtime, so MSBuild treats the build as up to date.
-fn write_if_changed(path: &Path, content: &str) -> Result<()> {
-    match std::fs::read_to_string(path) {
-        Ok(existing) if existing == content => Ok(()),
-        _ => Ok(std::fs::write(path, content)?),
-    }
-}
 
 fn run_dotnet_build(shell: &Shell, gen_dir: &Path) -> Result<()> {
     let binary = crate::dotnet::resolve_dotnet(shell)?;

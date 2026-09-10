@@ -94,12 +94,12 @@ fn parse_combat_doc_ignores_unknown_fields_and_fills_defaults() {
 }
 
 #[test]
-fn parse_combat_doc_preserves_potion_and_osty_and_defaults_unknown_kinds_to_osty() {
+fn parse_combat_doc_preserves_known_kinds_and_marks_unknown_suppliers() {
     let c = parse_combat_doc(r#"{"cards":[{"kind":3},{"kind":4},{"kind":255}]}"#)
         .expect("stored Potion, Osty, and unknown kinds must remain readable");
     assert_eq!(
         c.cards.iter().map(|card| card.kind).collect::<Vec<_>>(),
-        [SourceKind::Potion, SourceKind::Osty, SourceKind::Osty]
+        [SourceKind::Potion, SourceKind::Osty, SourceKind::Unknown]
     );
 }
 

@@ -21,6 +21,9 @@
 //! rejoins only a unique exact (profile, seed, original StartTime) identity.
 //! Both allocate through `u32::MAX`, then fail-log and refuse fresh starts
 //! without wrapping or reusing an ID; exact run continuation still works.
+//! Missing storage is empty; failed reads or directory scans cannot seed IDs.
+//! A failed boot scan disables combat starts until reinitialization; fresh run
+//! starts retry their ID scan each time.
 //!
 //! # On-disk formats
 //!
@@ -30,6 +33,10 @@
 //! seconds serialized straight from the in-memory value. There is no
 //! `damage_unblocked`: `blocked + unblocked == dealt` is sim-pinned, so
 //! readers derive it.
+//!
+//! Source kinds encode Card=0, Relic=1, Power=2, Potion=3, Osty=4, and
+//! Unknown=5. Unknown rows use `UNATTRIBUTED` with an explicit creditor slot;
+//! their reserved capacity preserves totals when ordinary rows cannot fit.
 //!
 //! Combat record:
 //!
@@ -112,18 +119,16 @@ pub use combat_doc::build_combat_json;
 pub(crate) use combat_doc::card_stat_from_rec;
 pub use combats::write_combat_file;
 pub(crate) use combats::{load_combat_docs_from, max_combat_id, parse_combat_docs};
-pub(crate) use io::read_file;
+pub(crate) use io::{ReadFile, read_dir, read_file};
 pub use io::{ensure_data_dir, write_file};
 pub(crate) use log::{append_log, bind_log_path, event_log, reset_log_sink};
-pub(crate) use runs::{CardStatKey, upsert_card_stat};
+pub(crate) use runs::CardStatKey;
 pub use runs::{merge_into_run, rebuild_run_accumulator};
 pub use time::now_seconds;
 pub use writes::write_run_record;
 
 /// Hard cap on one JSON document (read and write).
 const MAX_JSON_SIZE: usize = 64 * 1024 * 1024;
-
-const RUNS_DIR_NAME: &str = "runs";
 
 #[cfg(test)]
 pub(crate) mod test_support {
@@ -137,14 +142,11 @@ pub(crate) mod test_support {
     use crate::source_kind::SourceKind;
     pub(crate) use crate::test_util::unique_dir;
 
-    /// Points the test process's STATE at `data` (creating it), with the
-    /// file paths derived the way init derives them.
+    /// Configures the store and log paths without creating their directories.
     pub(crate) fn init_state(data: &std::path::Path) {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
-            st.data_dir = data.to_path_buf();
-            st.runs_dir_full = data.join("runs");
-            st.runs_path_full = data.join("runs.jsonl");
+            st.store_paths = Some(crate::data::state::StorePaths::new(data));
         });
         bind_log_path(&data.join("profiler.log"));
     }

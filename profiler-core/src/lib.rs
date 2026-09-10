@@ -1,7 +1,7 @@
 //! Spire Profiler — the native core of a per-source combat profiler for
 //! Slay the Spire 2.
 //!
-//! The game's mod loader accepts only .NET assemblies, so a generated C#
+//! The game's mod loader accepts only .NET assemblies, so a C#
 //! shim owns the entry point and the Harmony patches and stays dumb: every
 //! line of profiler logic lives in this crate. The shim forwards game
 //! events across the `spire_profiler_*` C exports; the core records,

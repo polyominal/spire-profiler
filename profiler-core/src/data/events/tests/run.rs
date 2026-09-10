@@ -5,7 +5,7 @@
 use super::*;
 use crate::data::records::CombatRec;
 use crate::data::state::{self, RunOutcome, RunPlayer};
-use crate::test_util::unique_dir;
+use crate::test_util::{SourceFixture, combat_epoch, unique_dir};
 
 fn read_run(base: &Path) -> serde_json::Value {
     let runs = read_all_runs(base);
@@ -22,7 +22,11 @@ fn repeated_init_keeps_the_first_data_dir() {
     init(&second);
 
     assert!(
-        STATE.with(|cell| cell.borrow().data_dir == first),
+        STATE.with(|cell| cell
+            .borrow()
+            .store_paths
+            .as_ref()
+            .is_some_and(|paths| paths.runs_dir == first.join("runs"))),
         "the second data dir must not replace the initialized one"
     );
     let log = read_test_file(&first, "profiler.log");
@@ -38,13 +42,67 @@ fn repeated_init_keeps_the_first_data_dir() {
 }
 
 #[test]
+fn failed_init_keeps_the_first_store() {
+    let base = unique_dir("spire-profiler-test-init-failed");
+    let first = base.join("blocked");
+    let second = base.join("other");
+    std::fs::write(&first, "blocker").expect("block directory creation");
+    test_reset();
+    init(&first);
+    init(&second);
+    std::fs::remove_file(&first).expect("allow the first store to recover");
+
+    assert_eq!(combat_started("RECOVERED", "test"), 0);
+    STATE.with(|s| {
+        assert_eq!(
+            s.borrow()
+                .store_paths
+                .as_ref()
+                .expect("first store is bound")
+                .runs_dir,
+            first.join("runs")
+        );
+    });
+    assert!(
+        !second.exists(),
+        "failed initialization must still be idempotent"
+    );
+}
+
+#[test]
+fn reset_then_init_routes_records_to_the_new_store() {
+    let first = unique_dir("spire-profiler-test-reset-first");
+    let second = unique_dir("spire-profiler-test-reset-second");
+    test_reset();
+    init(&first);
+    run_started("IRONCLAD", 0, "Standard", "FIRST", 0, "", 1000);
+    combat_started("FIRST", "test");
+    combat_ended(combat_epoch());
+    run_ended(RunOutcome::Victory);
+    let first_log = read_test_file(&first, "profiler.log");
+
+    test_reset();
+    init(&second);
+    run_started("IRONCLAD", 0, "Standard", "SECOND", 0, "", 2000);
+    combat_started("SECOND", "test");
+    combat_ended(combat_epoch());
+    run_ended(RunOutcome::Defeat);
+
+    assert_eq!(read_combat(&first).0.encounter_id, "FIRST");
+    assert_eq!(read_run(&first)["seed"], "FIRST");
+    assert_eq!(read_test_file(&first, "profiler.log"), first_log);
+    assert_eq!(read_combat(&second).0.encounter_id, "SECOND");
+    assert_eq!(read_run(&second)["seed"], "SECOND");
+}
+
+#[test]
 fn resumed_run_records_the_seed() {
     let base = unique_dir("spire-profiler-test-resume");
     test_reset();
     init(&base);
     run_started("IRONCLAD", 7, "Standard", "SEED_123", 1, "", 0);
     combat_started("SELF_TEST", "test");
-    combat_ended();
+    combat_ended(combat_epoch());
     run_ended(RunOutcome::Defeat);
 
     let run = read_run(&base);
@@ -59,7 +117,7 @@ fn suspend_clears_active_without_writing_a_run_record() {
     init(&base);
     run_started("IRONCLAD", 0, "Standard", "SEED_SUSPEND", 0, "", 0);
     combat_started("SUSPEND_TEST", "test");
-    combat_ended();
+    combat_ended(combat_epoch());
     run_suspended();
 
     assert!(STATE.with(|s| s.borrow().run_ctx.is_none()));
@@ -104,7 +162,7 @@ fn suspend_without_an_active_run_is_a_no_op() {
     );
     run_started("IRONCLAD", 0, "Standard", "SEED_ENDED", 0, "", 0);
     combat_started("ENDED_TEST", "test");
-    combat_ended();
+    combat_ended(combat_epoch());
     run_ended(RunOutcome::Defeat);
     run_suspended();
     assert!(STATE.with(|s| s.borrow().run_ctx.is_none()));
@@ -122,14 +180,11 @@ fn suspend_then_continue_rejoins_without_a_spurious_defeat() {
     set_run_meta(2);
     run_started("DEFECT", 1, "Standard", "SEED_SUSPEND_RESUME", 0, "", 1000);
     combat_started("FRAG_ONE", "test");
-    card_play_started("STRIKE", 0, 1, 0, 0);
-    damage_dealt(DamageDealt {
-        total: 6,
-        unblocked: 6,
-        ..DamageDealt::default()
-    });
-    card_play_finished(0);
-    combat_ended();
+    let card = SourceFixture::card("STRIKE", 0);
+    let play = card.play();
+    card.deal(6, 0);
+    card.finish(play);
+    combat_ended(combat_epoch());
     run_suspended();
     assert!(STATE.with(|s| s.borrow().run_ctx.is_none()));
 
@@ -145,10 +200,11 @@ fn suspend_then_continue_rejoins_without_a_spurious_defeat() {
     );
 
     combat_started("FRAG_TWO", "test");
-    card_play_started("DEFEND", 0, 1, 0, 0);
-    block_gained(5, "DEFEND", 0, 0);
-    card_play_finished(0);
-    combat_ended();
+    let card = SourceFixture::card("DEFEND", 0);
+    let play = card.play();
+    card.block(5, 0);
+    card.finish(play);
+    combat_ended(combat_epoch());
     run_ended(RunOutcome::Abandoned); // the run really ends now
     let run = read_run(&base);
     assert_eq!(run["outcome"], "abandoned");
@@ -167,27 +223,21 @@ fn resumed_run_rejoins_its_fragment_and_rebuilds_the_summary() {
     set_run_meta(2);
     run_started("DEFECT", 1, "Standard", "SEED_FRAG", 0, "", 1000);
     combat_started("FRAG_ONE", "test");
-    card_play_started("STRIKE", 0, 1, 0, 0);
-    damage_dealt(DamageDealt {
-        total: 6,
-        unblocked: 6,
-        ..DamageDealt::default()
-    });
-    card_play_finished(0);
-    combat_ended();
+    let card = SourceFixture::card("STRIKE", 0);
+    let play = card.play();
+    card.deal(6, 0);
+    card.finish(play);
+    combat_ended(combat_epoch());
     run_suspended();
     for (profile, start, damage) in [(3, 1000, 60), (2, 1001, 90)] {
         set_run_meta(profile);
         run_started("DEFECT", 1, "Standard", "SEED_FRAG", 0, "", start);
         combat_started("OTHER_RUN", "test");
-        card_play_started("STRIKE", 0, 1, 0, 0);
-        damage_dealt(DamageDealt {
-            total: damage,
-            unblocked: damage,
-            ..DamageDealt::default()
-        });
-        card_play_finished(0);
-        combat_ended();
+        let card = SourceFixture::card("STRIKE", 0);
+        let play = card.play();
+        card.deal(damage, 0);
+        card.finish(play);
+        combat_ended(combat_epoch());
         run_suspended();
     }
     test_reset();
@@ -208,10 +258,11 @@ fn resumed_run_rejoins_its_fragment_and_rebuilds_the_summary() {
         );
     });
     combat_started("FRAG_TWO", "test");
-    card_play_started("DEFEND", 0, 1, 0, 0);
-    block_gained(5, "DEFEND", 0, 0);
-    card_play_finished(0);
-    combat_ended();
+    let card = SourceFixture::card("DEFEND", 0);
+    let play = card.play();
+    card.block(5, 0);
+    card.finish(play);
+    combat_ended(combat_epoch());
     run_ended(RunOutcome::Abandoned); // abandoned after the resumed fragment
     let run = read_run(&base);
     assert_eq!(run["outcome"], "abandoned");
@@ -239,9 +290,10 @@ fn resumed_run_log_lines_keep_their_legacy_order() {
     set_run_meta(2);
     run_started("DEFECT", 1, "Standard", "SEED_LOG_ORDER", 0, "", 1000);
     combat_started("FRAG_ONE", "test");
-    card_play_started("STRIKE", 0, 1, 0, 0);
-    card_play_finished(0);
-    combat_ended();
+    let card = SourceFixture::card("STRIKE", 0);
+    let play = card.play();
+    card.finish(play);
+    combat_ended(combat_epoch());
 
     run_started(
         "DEFECT,DEFECT",
@@ -279,13 +331,10 @@ fn resumed_run_discards_the_unfinished_combat() {
     init(&base);
     run_started("DEFECT", 1, "Standard", "SEED_MID", 0, "", 0);
     combat_started("MID_COMBAT", "test");
-    card_play_started("STRIKE", 0, 1, 0, 0);
-    damage_dealt(DamageDealt {
-        total: 6,
-        unblocked: 6,
-        ..DamageDealt::default()
-    });
-    card_play_finished(0);
+    let card = SourceFixture::card("STRIKE", 0);
+    let play = card.play();
+    card.deal(6, 0);
+    card.finish(play);
     STATE.with(|s| {
         let mut st = s.borrow_mut();
         st.run_ctx = None;
@@ -302,14 +351,11 @@ fn resumed_run_discards_the_unfinished_combat() {
     );
     assert_eq!(STATE.with(|s| s.borrow().run_combats), 0);
     combat_started("MID_COMBAT", "test");
-    card_play_started("STRIKE", 0, 1, 0, 0);
-    damage_dealt(DamageDealt {
-        total: 9,
-        unblocked: 9,
-        ..DamageDealt::default()
-    });
-    card_play_finished(0);
-    combat_ended();
+    let card = SourceFixture::card("STRIKE", 0);
+    let play = card.play();
+    card.deal(9, 0);
+    card.finish(play);
+    combat_ended(combat_epoch());
     run_ended(RunOutcome::Defeat);
     read_run(&base);
     let combats: Vec<CombatRec> = read_all_combats(&base)
@@ -328,23 +374,13 @@ fn player_death_marks_the_combat_and_run_as_defeat() {
     init(&base);
     run_started("IRONCLAD", 0, "Standard", "SEED_DEFEAT", 0, "", 0);
     combat_started("DEFEAT_TEST", "test");
-    card_play_started("STRIKE", 0, 1, 0, 0);
-    damage_dealt(DamageDealt {
-        total: 6,
-        unblocked: 6,
-        ..DamageDealt::default()
-    });
-    card_play_finished(0);
-    damage_dealt(DamageDealt {
-        total: 12,
-        unblocked: 12,
-        to_player: 1,
-        receiver_hash: 999,
-        dealer_hash: 42,
-        ..DamageDealt::default()
-    });
-    player_died(0);
-    combat_ended();
+    let card = SourceFixture::card("STRIKE", 0);
+    let play = card.play();
+    card.deal(6, 0);
+    card.finish(play);
+    damage_unattributed(combat_epoch(), 12, 12, 0, 1, 0, 0);
+    player_died(combat_epoch(), 0);
+    combat_ended(combat_epoch());
     run_ended(RunOutcome::Defeat);
 
     let (combat, _) = read_combat(&base);
@@ -398,7 +434,7 @@ fn roster_parses_from_net_ids_and_truncates() {
     });
     assert_eq!(stamped.len(), 2);
     assert_eq!(stamped[1].slot, 1);
-    combat_ended();
+    combat_ended(combat_epoch());
     run_ended(RunOutcome::Victory);
     run_started("A,B,C", 0, "Standard", "SEED_TRUNC", 0, "1,2", 0);
     let players = STATE
@@ -473,7 +509,7 @@ fn later_metadata_cannot_relabel_the_previous_run() {
     set_run_meta(2);
     run_started("IRONCLAD", 0, "Standard", "SAME", 0, "", 1000);
     combat_started("FIRST", "test");
-    combat_ended();
+    combat_ended(combat_epoch());
     set_run_meta(3);
     run_started("IRONCLAD", 0, "Standard", "SAME", 0, "", 1000);
     let previous = read_run(&base);
@@ -482,7 +518,7 @@ fn later_metadata_cannot_relabel_the_previous_run() {
     let (combat, _) = read_combat(&base);
     assert_eq!(combat.run.unwrap().profile, 2);
     combat_started("SECOND", "test");
-    combat_ended();
+    combat_ended(combat_epoch());
     set_run_meta(4);
     run_ended(RunOutcome::Victory);
     let runs = read_all_runs(&base);
@@ -508,7 +544,7 @@ fn unknown_run_identity_never_rejoins() {
         }
         run_started("IRONCLAD", 0, "Standard", seed, 0, "", start);
         combat_started("UNKNOWN", "test");
-        combat_ended();
+        combat_ended(combat_epoch());
         run_suspended();
         run_started("IRONCLAD", 0, "Standard", seed, 1, "", start);
         STATE.with(|s| {
@@ -528,12 +564,12 @@ fn combat_after_run_end_joins_no_run() {
     init(&base);
     run_started("IRONCLAD", 0, "Standard", "SEED_POST", 0, "", 0);
     combat_started("FIRST", "test");
-    combat_ended();
+    combat_ended(combat_epoch());
     run_ended(RunOutcome::Victory);
 
     // No active run remains, so the next combat cannot reuse its stamp.
     combat_started("SECOND", "test");
-    combat_ended();
+    combat_ended(combat_epoch());
 
     let mut ids = crate::test_util::combat_ids(&base.join("runs"));
     ids.sort();

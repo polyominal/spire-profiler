@@ -12,7 +12,7 @@ use crate::{fail, marker};
 pub fn set_run_meta(profile_id: i32) {
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
-        if !state.initialized {
+        if state.store_paths.is_none() {
             return;
         }
         let profile_id = if profile_id < -1 {
@@ -37,7 +37,7 @@ pub fn run_started(
     net_ids: &str,
     start_time: i64,
 ) {
-    if !STATE.with(|cell| cell.borrow().initialized) {
+    if STATE.with(|cell| cell.borrow().store_paths.is_none()) {
         fail!("run_started called before init");
         return;
     }
@@ -51,17 +51,20 @@ pub fn run_started(
     }
     let Some((seq, resumed_seq)) = STATE.with(|cell| {
         let mut state = cell.borrow_mut();
+        let paths = state.store_paths.as_ref()?;
         let resumed = (continued != 0)
             .then(|| {
                 crate::data::run_history::continued_run_id(
-                    &state.runs_path_full,
-                    &state.runs_dir_full,
+                    &paths.runs_path,
+                    &paths.runs_dir,
                     seed,
                     start_time,
                     state.run_profile,
                 )
             })
             .flatten();
+        let seq = resumed
+            .or_else(|| crate::data::run_history::next_run_id(&paths.runs_path, &paths.runs_dir));
         // Fresh run: the accumulator starts over. The player filter
         // resets too — the avatar row only ever lists the current
         // roster, so a slot from a previous run's roster would strand
@@ -70,12 +73,9 @@ pub fn run_started(
         state.run_turns = 0;
         state.run_combats = 0;
         state.player_filter = state::PlayerFilter::All;
-        // Exact continuation remains valid when fresh IDs are exhausted.
-        let Some(seq) = resumed.or_else(|| {
-            crate::data::run_history::next_run_id(&state.runs_path_full, &state.runs_dir_full)
-        }) else {
-            state.current = None;
-            fail!("run IDs exhausted; run not started");
+        let Some(seq) = seq else {
+            state.discard_combat();
+            fail!("run ID allocation failed; run not started");
             return None;
         };
         state.run_ctx = Some(RunContext {
@@ -107,8 +107,7 @@ pub fn run_started(
         if continued != 0 { ", continued" } else { "" }
     );
     STATE.with(|cell| {
-        let state = cell.borrow();
-        if let Some(run) = state.run_ctx.as_ref()
+        if let Some(run) = cell.borrow().run_ctx.as_ref()
             && run.players.len() > 1
         {
             event_log!("{}", RosterLog(&run.players));
@@ -119,9 +118,7 @@ pub fn run_started(
 fn take_ended_run(outcome: RunOutcome) -> Option<EndedRun> {
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
-        if !state.initialized {
-            return None;
-        }
+        state.store_paths.as_ref()?;
         state.run_ctx.take().map(|context| EndedRun {
             context,
             outcome,
@@ -191,13 +188,11 @@ fn parse_roster(character_ids: &str, net_ids: &str) -> Vec<RunPlayer> {
 pub fn run_suspended() {
     let suspended_seq = STATE.with(|cell| {
         let mut state = cell.borrow_mut();
-        if !state.initialized {
-            return None;
-        }
+        state.store_paths.as_ref()?;
         // A save+quit mid-combat discards that combat.
         // otherwise the restart's combat_started would flush it as
         // "interrupted".
-        state.current = None;
+        state.discard_combat();
         // Without a combat there is no avatar row, so a selected filter
         // would strand the run tab with no way back to All.
         state.player_filter = state::PlayerFilter::All;
@@ -219,7 +214,7 @@ pub fn run_ended(outcome: RunOutcome) {
 
 /// The shim forwards the displayed run's seed, `StartTime`, and profile.
 pub fn run_history_select(seed: &str, start_time: i64, profile: i32) {
-    let initialized = STATE.with(|cell| cell.borrow().initialized);
+    let initialized = STATE.with(|cell| cell.borrow().store_paths.is_some());
     let matched = if initialized {
         crate::data::run_history::select(seed, start_time, profile)
     } else {

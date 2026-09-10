@@ -69,6 +69,10 @@ update runbook lives in AGENTS.md.
 decompiled relic and power classes. The check is syntax-based: read the hook
 bodies before changing the catalog.
 
+`cargo xtask managed-test` additionally checks the installed assembly
+identities, producer definition inventory, and exact patch bridges. The catalog
+is a body-review baseline; runtime producer coverage is broader.
+
 The findings below are the traps check-catalog cannot see (dead hook bodies,
 renamed parameter types). Verified against the v0.111.0 snapshot.
 
@@ -81,6 +85,17 @@ renamed parameter types). Verified against the v0.111.0 snapshot.
   `ICombatState`; do not copy older parameter types blindly.
 - Turn hooks are side-based: older mods' `BeforeTurnEnd` is now
   `BeforeSideTurnEnd`.
+- The canonical `CreatureCmd.Damage` overload has seven arguments and an
+  `IEnumerable<Creature>` target parameter. Its state machine has two
+  result-list enumerators: the first follows the completed target group; the
+  second runs aggregate late hooks. The managed gate verifies the exact
+  replacement sites.
+- Reflection can return an inherited `MethodInfo` with a different reflected
+  type from its declaring type. Harmony requires the declared method;
+  deduplicate by module/metadata token and resolve that definition on its
+  declaring type.
+- .NET's async task builders have internal overloads of `SetResult` and
+  `SetException`. Bridge lookup requires the exact public instance signature.
 
 ## Decompiling the game source
 

@@ -109,9 +109,7 @@ const INITIAL_BOX_H: f32 = 300.0;
 pub(crate) struct SpireProfilerRunPanel {
     object: Object,
     children: panel_body::PanelChildren,
-    view_fp: u64,
-    /// False until the first build, so the empty notice renders initially.
-    layout_valid: bool,
+    view_fp: Option<u64>,
     layout: RunLayout,
     /// Kept so a hover change resolves the row's detail text without
     /// rebuilding the snapshot.
@@ -156,8 +154,7 @@ impl SpireProfilerRunPanel {
         Self {
             object,
             children: panel_body::PanelChildren::default(),
-            view_fp: 0,
-            layout_valid: false,
+            view_fp: None,
             layout: RunLayout::default(),
             rows: [UiRow::default(); ui_model::MAX_UI_ROWS],
             hover_row: None,
@@ -200,14 +197,14 @@ impl SpireProfilerRunPanel {
     /// silent (no boot markers).
     pub(crate) fn draw(&mut self) {
         if self.theme.resolve() {
-            self.layout_valid = false;
+            self.view_fp = None;
         }
         let mut icons_changed = false;
         for path in &self.layout.portrait_paths {
             icons_changed |= self.theme.resolve_dynamic(path);
         }
         if icons_changed {
-            self.layout_valid = false;
+            self.view_fp = None;
         }
         // The dim mask is parallel to the icon row: excluded players
         // render at the game's deselect modulate. Runs before `fonts`
@@ -418,7 +415,7 @@ impl SpireProfilerRunPanel {
             self.legend = None;
             self.tip = None;
             self.tip_lines.clear();
-            self.layout_valid = false;
+            self.view_fp = None;
             self.avatar_animation.clear();
             return;
         }
@@ -438,7 +435,7 @@ impl SpireProfilerRunPanel {
         );
         if gutter != self.gutter {
             self.gutter = gutter;
-            self.layout_valid = false;
+            self.view_fp = None;
         }
         panel_common::viewport_mouse(&self.object, &mut self.mouse);
         let mouse = self.mouse;
@@ -470,11 +467,10 @@ impl SpireProfilerRunPanel {
 
         let fp = crate::data::run_history::selected_view_fingerprint().unwrap_or(0)
             ^ crate::data::run_history::run_filter_fingerprint();
-        if self.layout_valid && fp == self.view_fp && hover == self.hover_row {
+        if self.view_fp == Some(fp) && hover == self.hover_row {
             return;
         }
-        self.view_fp = fp;
-        self.layout_valid = true;
+        self.view_fp = Some(fp);
         self.hover_row = hover;
         self.rebuild(hover);
     }

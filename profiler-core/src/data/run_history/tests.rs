@@ -12,8 +12,7 @@ use crate::test_util::unique_dir;
 fn seed_data(data: &Path, runs_text: &str, combats_text: &str) {
     STATE.with(|s| {
         let mut st = s.borrow_mut();
-        st.runs_path_full = data.join("runs.jsonl");
-        st.runs_dir_full = data.join("runs");
+        st.store_paths = Some(crate::data::state::StorePaths::new(data));
     });
     invalidate();
     clear();
@@ -50,6 +49,22 @@ fn write_combats_fixture(data: &Path, combats_text: &str) {
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join(format!("{id}.json")), combat.to_string()).unwrap();
     }
+}
+
+#[test]
+fn reset_discards_cached_store_on_selection() {
+    let data = unique_dir("run-history-reset");
+    seed_data(&data, RUNS, COMBATS);
+    assert!(select("ALPHA", 1_786_579_200, 2));
+
+    crate::data::events::test_reset();
+
+    assert!(!select("ALPHA", 1_786_579_200, 2));
+    assert!(selected_view().is_none());
+    assert!(
+        screen_open(),
+        "an unmatched selection still opens the screen"
+    );
 }
 
 const DAILY_RUNS: &str = r#"[
@@ -592,8 +607,7 @@ fn unknown_runs_select_empty() {
     let fresh_data = std::path::Path::new(&fresh);
     STATE.with(|s| {
         let mut st = s.borrow_mut();
-        st.runs_path_full = fresh_data.join("runs.jsonl");
-        st.runs_dir_full = fresh_data.join("runs");
+        st.store_paths = Some(crate::data::state::StorePaths::new(fresh_data));
     });
     invalidate();
     assert!(matches!(

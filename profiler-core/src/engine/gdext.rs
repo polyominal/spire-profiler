@@ -386,7 +386,6 @@ unsafe fn lookup<T>(get: GetProcAddressFn, name: &'static CStr) -> Option<T> {
 // ── C structs (from gdextension_interface.h) ────────────────────────────────
 
 #[repr(C)]
-#[derive(Clone, Copy)]
 pub(crate) struct CallError {
     pub(crate) error: c_int,
     pub(crate) argument: i32,
@@ -474,7 +473,6 @@ const _: () = assert!(
 
 /// One engine singleton's resolve cache: unresolved until the first [`get`](Self::get),
 /// then resolved or failed (warned once, never retried).
-#[derive(Default)]
 struct SingletonCache {
     ptr: ObjectPtr,
     failed: bool,
@@ -499,7 +497,6 @@ impl SingletonCache {
 
 /// Mutable extension state, accessed only from the game thread. Interned
 /// StringNames and the Input singleton/mouse cache are process-lifetime.
-#[derive(Default)]
 pub(crate) struct Global {
     library: ClassLibraryPtr,
     pub(crate) sn_control: StringNamePtr,

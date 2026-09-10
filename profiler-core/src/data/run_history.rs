@@ -44,13 +44,13 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::data::persistence::{
-    CardStatKey, card_stat_from_rec, load_combat_docs_from, parse_combat_docs, upsert_card_stat,
+    CardStatKey, card_stat_from_rec, load_combat_docs_from, parse_combat_docs,
 };
 use crate::data::records::{CombatRec, PlayerRec};
 use crate::data::state::{CardStat, CombatResult, PlayerFilter, RunOutcome, STATE, TEAM_SLOT};
 
 /// Roll-ups are undeclared on purpose: the view recomputes them.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(default)]
 pub struct RunEntry {
     pub run_id: u32,
@@ -95,7 +95,7 @@ impl RunEntry {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct CombatView {
     pub seq: u32,
     pub encounter: String,
@@ -105,7 +105,7 @@ pub struct CombatView {
     pub turns: u32,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PlayerRollup {
     pub slot: u8,
     pub character: String,
@@ -133,7 +133,6 @@ pub struct RunSummaryView {
     pub player_rollups: Vec<PlayerRollup>,
 }
 
-#[derive(Clone, Debug)]
 pub enum RunSelection {
     Selected(Box<RunSummaryView>),
     Empty,
@@ -158,17 +157,13 @@ thread_local! {
     static RUN_FILTER: Cell<PlayerFilter> = const { Cell::new(PlayerFilter::All) };
 }
 
-fn store_paths() -> (PathBuf, PathBuf) {
-    STATE.with(|s| {
-        let st = s.borrow();
-        (st.runs_path_full.clone(), st.runs_dir_full.clone())
-    })
-}
-
 /// One JSON object per line; one bad line never hides the rest.
-fn load_runs(path: &Path) -> Vec<RunEntry> {
-    let Some(content) = crate::data::persistence::read_file(path).content() else {
-        return Vec::new();
+fn load_runs(path: &Path) -> Option<Vec<RunEntry>> {
+    use crate::data::persistence::{ReadFile, read_file};
+    let content = match read_file(path) {
+        ReadFile::Content(content) => content,
+        ReadFile::Missing => return Some(Vec::new()),
+        ReadFile::Failed => return None,
     };
     let mut runs = Vec::new();
     for line in content.lines() {
@@ -180,7 +175,7 @@ fn load_runs(path: &Path) -> Vec<RunEntry> {
             Err(err) => crate::fail!("cannot parse a runs.jsonl line: {err}"),
         }
     }
-    runs
+    Some(runs)
 }
 
 fn load_combats(dir: &Path) -> Vec<CombatRec> {
@@ -195,7 +190,7 @@ pub(crate) fn continued_run_id(
     profile: i32,
 ) -> Option<u32> {
     matching_run_id(
-        &load_runs(runs_path),
+        &load_runs(runs_path)?,
         &load_combats(runs_dir),
         seed,
         start_time,
@@ -206,25 +201,29 @@ pub(crate) fn continued_run_id(
 /// An abandoned run leaves its directory but no entry, so the directory
 /// name reserves the id; `runs/0/` never counts.
 pub(crate) fn next_run_id(runs_path: &Path, runs_dir: &Path) -> Option<u32> {
-    let runs_max = load_runs(runs_path)
+    let runs_max = load_runs(runs_path)?
         .iter()
         .map(|entry| entry.run_id)
         .max()
         .unwrap_or(0);
-    let dirs_max = std::fs::read_dir(runs_dir)
-        .map(|entries| {
-            entries
-                .flatten()
-                .filter_map(|entry| entry.file_name().to_string_lossy().parse::<u32>().ok())
-                .max()
-                .unwrap_or(0)
-        })
+    let dirs_max = crate::data::persistence::read_dir(runs_dir)?
+        .iter()
+        .filter_map(|entry| entry.file_name().to_string_lossy().parse::<u32>().ok())
+        .max()
         .unwrap_or(0);
     runs_max.max(dirs_max).checked_add(1)
 }
 
 fn ensure_loaded() {
-    let (runs_path, runs_dir) = store_paths();
+    let Some((runs_path, runs_dir)) = STATE.with(|s| {
+        s.borrow()
+            .store_paths
+            .as_ref()
+            .map(|paths| (paths.runs_path.clone(), paths.runs_dir.clone()))
+    }) else {
+        invalidate();
+        return;
+    };
     let hit = CACHE.with(|cell| {
         let cache = cell.borrow();
         cache
@@ -234,7 +233,7 @@ fn ensure_loaded() {
     if hit {
         return;
     }
-    let runs = load_runs(&runs_path);
+    let runs = load_runs(&runs_path).unwrap_or_default();
     let combats = load_combats(&runs_dir);
     CACHE.with(|cell| {
         *cell.borrow_mut() = Some(Cache {
@@ -323,11 +322,12 @@ fn roll_up_cards(combats: &[CombatRec], entry: &RunEntry) -> Vec<CardStat> {
         if !entry.contains(combat) {
             continue;
         }
-        for rec in &combat.cards {
+        let rows = combat.cards.iter().map(|rec| {
             let mut row = card_stat_from_rec(rec);
             row.player = TEAM_SLOT;
-            upsert_card_stat(&mut rollup, &row, CardStatKey::TeamMerged);
-        }
+            row
+        });
+        CardStat::merge_rows(&mut rollup, rows, CardStatKey::TeamMerged);
     }
     rollup
 }
@@ -339,13 +339,12 @@ fn roll_up_cards_for_slot(combats: &[CombatRec], entry: &RunEntry, slot: u8) -> 
         if !entry.contains(combat) {
             continue;
         }
-        for rec in &combat.cards {
-            let src = card_stat_from_rec(rec);
-            if src.player != slot {
-                continue;
-            }
-            upsert_card_stat(&mut rollup, &src, CardStatKey::TeamMerged);
-        }
+        let rows = combat
+            .cards
+            .iter()
+            .map(card_stat_from_rec)
+            .filter(|row| row.player == slot);
+        CardStat::merge_rows(&mut rollup, rows, CardStatKey::TeamMerged);
     }
     rollup
 }
@@ -368,9 +367,9 @@ pub fn select_run(seed: &str, start_time: i64, profile: i32) -> RunSelection {
     ensure_loaded();
     CACHE.with(|cell| {
         let cache = cell.borrow();
-        let cache = cache
-            .as_ref()
-            .expect("ensure_loaded just populated the cache");
+        let Some(cache) = cache.as_ref() else {
+            return RunSelection::Empty;
+        };
         let Some(run_id) = matching_run_id(&cache.runs, &cache.combats, seed, start_time, profile)
         else {
             return RunSelection::Empty;
