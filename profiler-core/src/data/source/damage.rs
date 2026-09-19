@@ -62,7 +62,12 @@ impl LedgerStage {
         Ok(())
     }
 
-    fn apply_group(&mut self, calculation: &DamageCalculation) -> Result<(), SourceFailure> {
+    fn apply_group(&mut self, calculation: &DamageGroup) -> Result<(), SourceFailure> {
+        debug_assert_eq!(
+            calculation.source.epoch().0.get(),
+            self.combat.seq,
+            "damage groups must belong to the ledger's active combat"
+        );
         let outgoing: Vec<_> = calculation
             .results
             .iter()
@@ -76,8 +81,7 @@ impl LedgerStage {
             &outgoing,
         )?;
         let mut outgoing_credits = allocated.into_iter();
-        let epoch = CombatEpoch::from_wire(u64::from(self.combat.seq))?;
-        let unknown = SourceSnapshot::unknown(epoch);
+        let unknown = SourceSnapshot::unknown(calculation.source.epoch());
         let weak = calculation.weak.as_ref().unwrap_or(&unknown);
         let mut strength = calculation.strength.as_slice();
         for result in &calculation.results {
@@ -144,7 +148,7 @@ impl State {
             if original_target == 0 {
                 return Err(SourceFailure::Packet);
             }
-            let mut source = self.source_snapshot(combat_seq, transfer)?;
+            let mut source = self.source_snapshot(epoch, transfer)?;
             if role == ProducerRole::Unknown {
                 source = SourceSnapshot::unknown(epoch);
                 segment = ProducerSegment::Attributed;
@@ -165,15 +169,16 @@ impl State {
             let serial = self.provenance.calculation_serial + 1;
             self.provenance.calculations.push(DamageCalculation {
                 serial,
-                source,
-                producer_role: role,
-                segment,
-                original_target,
-                modifiers: Vec::new(),
-                results: Vec::new(),
-                weak: None,
-                strength: Vec::new(),
-                complete: true,
+                group: Some(DamageGroup {
+                    source,
+                    producer_role: role,
+                    segment,
+                    original_target,
+                    modifiers: Vec::new(),
+                    results: Vec::new(),
+                    weak: None,
+                    strength: Vec::new(),
+                }),
             });
             self.provenance.calculation_serial = serial;
             Ok(Token {
@@ -195,7 +200,7 @@ impl State {
     fn calculation_mutation(
         &mut self,
         calculation: u64,
-        mutation: impl FnOnce(&mut State, usize) -> Result<(), SourceFailure>,
+        mutation: impl FnOnce(&mut State, &mut DamageGroup) -> Result<(), SourceFailure>,
     ) -> i32 {
         let result = (|| {
             let token = self.provenance_token(calculation, TokenKind::DamageCalculation)?;
@@ -205,12 +210,12 @@ impl State {
                 .iter()
                 .position(|entry| entry.serial == token.payload)
                 .ok_or(SourceFailure::Token)?;
-            if !self.provenance.calculations[index].complete {
-                return Err(SourceFailure::Packet);
-            }
-            self.provenance.calculations[index].complete = false;
-            mutation(self, index)?;
-            self.provenance.calculations[index].complete = true;
+            let mut group = self.provenance.calculations[index]
+                .group
+                .take()
+                .ok_or(SourceFailure::Packet)?;
+            mutation(self, &mut group)?;
+            self.provenance.calculations[index].group = Some(group);
             Ok(())
         })();
         self.source_status(result)
@@ -222,13 +227,12 @@ impl State {
         transfer: u64,
         amount: i32,
     ) -> i32 {
-        self.calculation_mutation(calculation, |state, index| {
+        self.calculation_mutation(calculation, |state, calculation| {
             if amount < 0 {
                 return Err(SourceFailure::Packet);
             }
-            let epoch = state.provenance.calculations[index].source.combat_seq();
-            let source = state.source_snapshot(u64::from(epoch), transfer)?;
-            let calculation = &mut state.provenance.calculations[index];
+            let epoch = calculation.source.epoch();
+            let source = state.source_snapshot(epoch, transfer)?;
             if calculation.modifiers.len() == caps::DAMAGE_MODIFIERS {
                 return Err(SourceFailure::Capacity);
             }
@@ -247,10 +251,10 @@ impl State {
         calculation: u64,
         transfer: u64,
     ) -> i32 {
-        self.calculation_mutation(calculation, |state, index| {
-            let epoch = state.provenance.calculations[index].source.combat_seq();
-            let source = state.source_snapshot(u64::from(epoch), transfer)?;
-            state.provenance.calculations[index].weak = Some(source);
+        self.calculation_mutation(calculation, |state, calculation| {
+            let epoch = calculation.source.epoch();
+            let source = state.source_snapshot(epoch, transfer)?;
+            calculation.weak = Some(source);
             Ok(())
         })
     }
@@ -262,7 +266,7 @@ impl State {
         base: i32,
         strength: i32,
     ) -> i32 {
-        self.calculation_mutation(calculation, |state, index| {
+        self.calculation_mutation(calculation, |state, calculation| {
             if dealer == 0 {
                 return Err(SourceFailure::Packet);
             }
@@ -295,7 +299,7 @@ impl State {
                     }
                 }
             }
-            state.provenance.calculations[index].strength = shares;
+            calculation.strength = shares;
             Ok(())
         })
     }
@@ -311,7 +315,7 @@ impl State {
         receiver: i32,
         weak_prevented: i32,
     ) -> i32 {
-        self.calculation_mutation(calculation, |state, index| {
+        self.calculation_mutation(calculation, |state, calculation| {
             let result = ObservedDamage::from_wire(
                 total,
                 unblocked,
@@ -321,7 +325,6 @@ impl State {
                 weak_prevented,
                 &mut state.source_transfers.diagnostics,
             )?;
-            let calculation = &mut state.provenance.calculations[index];
             if calculation.results.len() == caps::DAMAGE_RESULTS {
                 return Err(SourceFailure::Capacity);
             }
@@ -339,10 +342,12 @@ impl State {
                 .iter()
                 .position(|entry| entry.serial == token.payload)
                 .ok_or(SourceFailure::Token)?;
-            let calculation = self.provenance.calculations.remove(index);
-            if !calculation.complete {
-                return Err(SourceFailure::Packet);
-            }
+            let calculation = self
+                .provenance
+                .calculations
+                .remove(index)
+                .group
+                .ok_or(SourceFailure::Packet)?;
             crate::data::persistence::event_log!(
                 "  damage group: target {}, producer role {:?}",
                 calculation.original_target,
@@ -406,8 +411,7 @@ impl State {
                 result.kind,
                 ResultKind::Incoming | ResultKind::SelfDamage | ResultKind::OstyAbsorbed
             );
-            let calculation = DamageCalculation {
-                serial: 0,
+            let calculation = DamageGroup {
                 source: SourceSnapshot::unknown(epoch),
                 producer_role: ProducerRole::Unknown,
                 segment: ProducerSegment::Attributed,
@@ -416,7 +420,6 @@ impl State {
                 results: vec![result],
                 weak: None,
                 strength: Vec::new(),
-                complete: true,
             };
             let mut stage = LedgerStage::new(self)?;
             stage.apply_group(&calculation)?;

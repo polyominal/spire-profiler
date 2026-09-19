@@ -145,16 +145,16 @@ impl LedgerStage {
         blocked: u64,
     ) -> Result<(), SourceFailure> {
         let mut remaining = blocked;
-        let mut index = 0;
-        while remaining > 0 && index < self.pool(slot)?.blocks.len() {
-            let block = &mut self.pool(slot)?.blocks[index];
+        while remaining > 0 {
+            let pool = self.pool(slot)?;
+            let Some(block) = pool.blocks.first_mut() else {
+                break;
+            };
             let take = remaining.min(block.remaining);
             let credits = block.consume(take)?;
             remaining -= take;
             if block.remaining == 0 {
-                self.pool(slot)?.blocks.remove(index);
-            } else {
-                index += 1;
+                pool.blocks.remove(0);
             }
             for (destination, field, amount) in credits {
                 self.credit(
@@ -174,18 +174,17 @@ impl LedgerStage {
         amount: u64,
     ) -> Result<(), SourceFailure> {
         let mut remaining = amount;
-        while remaining > 0 && !self.pool(slot)?.osty.is_empty() {
-            let entry = self
-                .pool(slot)?
-                .osty
-                .last_mut()
-                .ok_or(SourceFailure::Packet)?;
+        while remaining > 0 {
+            let pool = self.pool(slot)?;
+            let Some(entry) = pool.osty.last_mut() else {
+                break;
+            };
             let take = remaining.min(entry.remaining);
             let credits = entry.source.credit(take)?;
             entry.remaining -= take;
             remaining -= take;
             if entry.remaining == 0 {
-                self.pool(slot)?.osty.pop();
+                pool.osty.pop();
             }
             for (destination, share) in credits {
                 self.credit(
@@ -222,8 +221,8 @@ impl State {
         receiver_slot: i32,
     ) -> i32 {
         let result = (|| {
-            self.provenance_epoch(combat_seq)?;
-            let source = self.source_snapshot(combat_seq, transfer)?;
+            let epoch = self.provenance_epoch(combat_seq)?;
+            let source = self.source_snapshot(epoch, transfer)?;
             if amount < 0 {
                 return Err(SourceFailure::Packet);
             }
@@ -250,8 +249,8 @@ impl State {
         receiver_slot: i32,
     ) -> i32 {
         let result = (|| {
-            self.provenance_epoch(combat_seq)?;
-            let source = self.source_snapshot(combat_seq, transfer)?;
+            let epoch = self.provenance_epoch(combat_seq)?;
+            let source = self.source_snapshot(epoch, transfer)?;
             if amount < 0 {
                 return Err(SourceFailure::Packet);
             }
@@ -282,11 +281,11 @@ impl State {
         field: CreditField,
     ) -> i32 {
         let result = (|| {
-            self.provenance_epoch(combat_seq)?;
+            let epoch = self.provenance_epoch(combat_seq)?;
             if amount < 0 {
                 return Err(SourceFailure::Packet);
             }
-            let source = self.source_snapshot(combat_seq, transfer)?;
+            let source = self.source_snapshot(epoch, transfer)?;
             let mut stage = LedgerStage::new(self)?;
             stage.source_credit(&source, field, amount as u64)?;
             stage.commit(self)?;
@@ -316,11 +315,11 @@ impl State {
         owner_slot: i32,
     ) -> i32 {
         let result = (|| {
-            self.provenance_epoch(combat_seq)?;
+            let epoch = self.provenance_epoch(combat_seq)?;
             if amount < 0 {
                 return Err(SourceFailure::Packet);
             }
-            let source = self.source_snapshot(combat_seq, transfer)?;
+            let source = self.source_snapshot(epoch, transfer)?;
             let slot = super::super::state::clamp_source_slot(owner_slot);
             let mut stage = LedgerStage::new(self)?;
             let pool = stage.pool(slot)?;

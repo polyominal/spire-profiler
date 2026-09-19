@@ -169,8 +169,15 @@ fn failed_capture_invalidates_group_and_classified_fallback_books_once() {
     let mut state = fixture();
     let a = card(&mut state, "A", 0);
     let calculation = state.damage_calculation_begin(7, a, 1, 0, 999);
+    assert_eq!(state.damage_result_append(calculation, 2, 2, 0, 0, 4, 0), 1);
     assert_eq!(
         state.damage_modifier_contribution(calculation, u64::MAX, 3),
+        0
+    );
+    assert_eq!(state.damage_modifier_contribution(calculation, a, 1), 0);
+    assert_eq!(state.damage_calculation_weak_source(calculation, a), 0);
+    assert_eq!(
+        state.damage_calculation_enemy_hit(calculation, 900, 4, 0),
         0
     );
     assert_eq!(state.damage_result_append(calculation, 7, 3, 4, 0, 4, 0), 0);

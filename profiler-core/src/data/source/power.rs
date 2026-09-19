@@ -27,14 +27,16 @@ impl PowerProvenance {
         if self.grants.is_empty() {
             return;
         }
-        let mixed = SourceSnapshot::mixture(epoch, rows, &self.grants, diagnostics);
-        if mixed == SourceSnapshot::unknown(epoch)
-            && self.grants.iter().any(|grant| grant.source() != &mixed)
-        {
-            let remaining = self.grants.iter().map(|grant| grant.remaining()).sum();
-            self.grants = vec![PowerGrant::new(remaining, mixed.clone())];
-        }
-        self.source = mixed;
+        self.source = match SourceSnapshot::mixture(epoch, rows, &self.grants) {
+            Ok(mixed) => mixed,
+            Err(failure) => {
+                diagnostics.report(failure);
+                let unknown = SourceSnapshot::unknown(epoch);
+                let remaining = self.grants.iter().map(|grant| grant.remaining()).sum();
+                self.grants = vec![PowerGrant::new(remaining, unknown.clone())];
+                unknown
+            }
+        };
     }
 }
 
@@ -109,7 +111,7 @@ impl State {
         }
         let kind = CreatureKind::decode(owner_kind, &mut self.source_transfers.diagnostics);
         let slot = super::super::state::clamp_source_slot(owner_slot);
-        let incoming = self.source_snapshot(combat_seq, transfer)?;
+        let incoming = self.source_snapshot(epoch, transfer)?;
         let index = self
             .provenance
             .powers
@@ -312,8 +314,7 @@ impl State {
         let serial = self.provenance.doom_serial + 1;
         self.provenance.doom_batches.push(DoomBatch {
             serial,
-            targets: Vec::new(),
-            complete: true,
+            targets: Some(Vec::new()),
         });
         self.provenance.doom_serial = serial;
         Token {
@@ -339,14 +340,13 @@ impl State {
                 .iter()
                 .position(|entry| entry.serial == token.payload)
                 .ok_or(SourceFailure::Token)?;
-            if !self.provenance.doom_batches[index].complete {
-                return Err(SourceFailure::Packet);
-            }
-            self.provenance.doom_batches[index].complete = false;
+            let mut targets = self.provenance.doom_batches[index]
+                .targets
+                .take()
+                .ok_or(SourceFailure::Packet)?;
             if creature == 0 || hp < 0 {
                 return Err(SourceFailure::Packet);
             }
-            let targets = &self.provenance.doom_batches[index].targets;
             if targets.len() == caps::DOOM_TARGETS
                 || targets.iter().any(|target| target.creature == creature)
             {
@@ -372,14 +372,13 @@ impl State {
             if remaining > 0 {
                 allocations.push((Destination::Unknown(TEAM_SLOT), remaining));
             }
-            let batch = &mut self.provenance.doom_batches[index];
-            batch.targets.push(DoomCapture {
+            targets.push(DoomCapture {
                 creature,
                 power_instance: instance,
                 debit,
                 allocations,
             });
-            batch.complete = true;
+            self.provenance.doom_batches[index].targets = Some(targets);
             Ok(())
         })();
         self.source_status(result)
@@ -394,19 +393,21 @@ impl State {
                 .iter()
                 .position(|entry| entry.serial == token.payload)
                 .ok_or(SourceFailure::Token)?;
-            let batch = self.provenance.doom_batches.remove(index);
-            if !batch.complete {
-                return Err(SourceFailure::Packet);
-            }
+            let targets = self
+                .provenance
+                .doom_batches
+                .remove(index)
+                .targets
+                .ok_or(SourceFailure::Packet)?;
             let mut stage = LedgerStage::new(self)?;
-            for target in &batch.targets {
+            for target in &targets {
                 for (destination, amount) in &target.allocations {
                     stage.damage(*destination, DamageSegment::Attributed, *amount, 0)?;
                 }
             }
             stage.commit(self)?;
             let rows = self.current.as_ref().map_or(0, |combat| combat.cards.len());
-            for target in batch.targets {
+            for target in targets {
                 if let Some(power) = self.provenance.powers.iter_mut().find(|power| {
                     power.instance == target.power_instance && power.owner == target.creature
                 }) {

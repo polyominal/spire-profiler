@@ -3,9 +3,7 @@
 
 use std::rc::Rc;
 
-use super::{
-    CombatEpoch, Destination, PAYLOAD_MAX, SourceDiagnostics, SourceFailure, TEAM_SLOT, caps,
-};
+use super::{CombatEpoch, Destination, PAYLOAD_MAX, SourceFailure, TEAM_SLOT, caps};
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct WeightedDestination {
@@ -15,13 +13,13 @@ pub(super) struct WeightedDestination {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct SourceSnapshot {
-    combat_seq: u32,
+    epoch: CombatEpoch,
     shares: Rc<[WeightedDestination]>,
 }
 
 impl SourceSnapshot {
-    pub(super) fn combat_seq(&self) -> u32 {
-        self.combat_seq
+    pub(super) fn epoch(&self) -> CombatEpoch {
+        self.epoch
     }
     pub(super) fn shares(&self) -> &[WeightedDestination] {
         &self.shares
@@ -67,7 +65,7 @@ impl SourceSnapshot {
             total = total.checked_add(weight).ok_or(SourceFailure::Arithmetic)?;
         }
         Ok(Self {
-            combat_seq: epoch.0.get(),
+            epoch,
             shares: merged
                 .into_iter()
                 .map(|(destination, weight)| WeightedDestination {
@@ -87,7 +85,7 @@ impl SourceSnapshot {
 
     pub(super) fn unknown(epoch: CombatEpoch) -> Self {
         Self {
-            combat_seq: epoch.0.get(),
+            epoch,
             shares: Rc::from([WeightedDestination {
                 destination: Destination::Unknown(TEAM_SLOT),
                 weight: 1,
@@ -99,71 +97,61 @@ impl SourceSnapshot {
         epoch: CombatEpoch,
         rows: usize,
         grants: &[PowerGrant],
-        diagnostics: &mut SourceDiagnostics,
-    ) -> Self {
-        let result = (|| {
-            if grants.len() > caps::POWER_GRANTS_TOTAL {
-                return Err(SourceFailure::Capacity);
+    ) -> Result<Self, SourceFailure> {
+        if grants.len() > caps::POWER_GRANTS_TOTAL {
+            return Err(SourceFailure::Capacity);
+        }
+        let mut entries: Vec<(Destination, u128)> = Vec::new();
+        let mut denominator = 1_u128;
+        for grant in grants.iter().filter(|grant| grant.remaining > 0) {
+            if grant.source.epoch != epoch {
+                return Err(SourceFailure::Epoch);
             }
-            let mut entries: Vec<(Destination, u128)> = Vec::new();
-            let mut denominator = 1_u128;
-            for grant in grants.iter().filter(|grant| grant.remaining > 0) {
-                if grant.source.combat_seq != epoch.0.get() {
-                    return Err(SourceFailure::Epoch);
-                }
-                let total = grant
-                    .source
-                    .shares
-                    .iter()
-                    .map(|share| u128::from(share.weight))
-                    .sum();
-                let divisor = Self::gcd(denominator, total);
-                let old_scale = total / divisor;
-                let new_scale = denominator / divisor;
-                denominator = denominator
+            let total = grant
+                .source
+                .shares
+                .iter()
+                .map(|share| u128::from(share.weight))
+                .sum();
+            let divisor = Self::gcd(denominator, total);
+            let old_scale = total / divisor;
+            let new_scale = denominator / divisor;
+            denominator = denominator
+                .checked_mul(old_scale)
+                .ok_or(SourceFailure::Arithmetic)?;
+            for (_, weight) in &mut entries {
+                *weight = weight
                     .checked_mul(old_scale)
                     .ok_or(SourceFailure::Arithmetic)?;
-                for (_, weight) in &mut entries {
-                    *weight = weight
-                        .checked_mul(old_scale)
+            }
+            for share in grant.source.shares.iter() {
+                let weight = u128::from(share.weight)
+                    .checked_mul(u128::from(grant.remaining))
+                    .and_then(|value| value.checked_mul(new_scale))
+                    .ok_or(SourceFailure::Arithmetic)?;
+                if let Some((_, existing)) = entries
+                    .iter_mut()
+                    .find(|(key, _)| *key == share.destination)
+                {
+                    *existing = existing
+                        .checked_add(weight)
                         .ok_or(SourceFailure::Arithmetic)?;
-                }
-                for share in grant.source.shares.iter() {
-                    let weight = u128::from(share.weight)
-                        .checked_mul(u128::from(grant.remaining))
-                        .and_then(|value| value.checked_mul(new_scale))
-                        .ok_or(SourceFailure::Arithmetic)?;
-                    if let Some((_, existing)) = entries
-                        .iter_mut()
-                        .find(|(key, _)| *key == share.destination)
-                    {
-                        *existing = existing
-                            .checked_add(weight)
-                            .ok_or(SourceFailure::Arithmetic)?;
-                    } else {
-                        if entries.len() == caps::SOURCE_DESTINATIONS {
-                            return Err(SourceFailure::Capacity);
-                        }
-                        entries.push((share.destination, weight));
+                } else {
+                    if entries.len() == caps::SOURCE_DESTINATIONS {
+                        return Err(SourceFailure::Capacity);
                     }
-                }
-                let common = entries
-                    .iter()
-                    .fold(denominator, |gcd, (_, weight)| Self::gcd(gcd, *weight));
-                denominator /= common;
-                for (_, weight) in &mut entries {
-                    *weight /= common;
+                    entries.push((share.destination, weight));
                 }
             }
-            Self::normalized(epoch, rows, entries)
-        })();
-        match result {
-            Ok(snapshot) => snapshot,
-            Err(failure) => {
-                diagnostics.report(failure);
-                Self::unknown(epoch)
+            let common = entries
+                .iter()
+                .fold(denominator, |gcd, (_, weight)| Self::gcd(gcd, *weight));
+            denominator /= common;
+            for (_, weight) in &mut entries {
+                *weight /= common;
             }
         }
+        Self::normalized(epoch, rows, entries)
     }
 
     pub(super) fn prefix(&self) -> SourcePrefix {
