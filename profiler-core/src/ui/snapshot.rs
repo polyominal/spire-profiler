@@ -416,7 +416,7 @@ pub fn ui_row_detail_from_cards(
     let player = row.player;
     cards
         .iter()
-        .find(|card| card.player == player && card.id == name)
+        .find(|card| card.player == player && card.id.as_ref() == name)
         .map_or_else(RowDetail::default, format_card_detail)
 }
 

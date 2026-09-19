@@ -70,30 +70,40 @@ struct CombatDoc<'a> {
     damage_received: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     run: Option<RunDoc<'a>>,
-    cards: Vec<CardDoc<'a>>,
+    #[serde(serialize_with = "CardDoc::serialize_cards")]
+    cards: &'a [CardStat],
 }
 
-/// The per-card row serialization, split out so the field list stays out
-/// of [`build_combat_json`].
-fn card_doc(card: &crate::data::state::CardStat) -> CardDoc<'_> {
-    CardDoc {
-        id: &card.id,
-        kind: card.kind,
-        plays: card.plays,
-        damage_dealt: card.damage_dealt,
-        damage_blocked: card.damage_blocked,
-        block_gained: card.block_gained,
-        block_effective: card.block_effective,
-        forge: card.forge,
-        dmg_direct: card.dmg_direct,
-        dmg_attributed: card.dmg_attributed,
-        dmg_modifier: card.dmg_modifier,
-        blk_modifier: card.blk_modifier,
-        mitigate_debuff: card.mitigate_debuff,
-        mitigate_buff: card.mitigate_buff,
-        mitigate_str: card.mitigate_str,
-        self_damage: card.self_damage,
-        player: card.player,
+impl CardDoc<'_> {
+    fn serialize_cards<S: serde::Serializer>(
+        cards: &[CardStat],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(cards.iter().map(CardDoc::from))
+    }
+}
+
+impl<'a> From<&'a CardStat> for CardDoc<'a> {
+    fn from(card: &'a CardStat) -> Self {
+        Self {
+            id: &card.id,
+            kind: card.kind,
+            plays: card.plays,
+            damage_dealt: card.damage_dealt,
+            damage_blocked: card.damage_blocked,
+            block_gained: card.block_gained,
+            block_effective: card.block_effective,
+            forge: card.forge,
+            dmg_direct: card.dmg_direct,
+            dmg_attributed: card.dmg_attributed,
+            dmg_modifier: card.dmg_modifier,
+            blk_modifier: card.blk_modifier,
+            mitigate_debuff: card.mitigate_debuff,
+            mitigate_buff: card.mitigate_buff,
+            mitigate_str: card.mitigate_str,
+            self_damage: card.self_damage,
+            player: card.player,
+        }
     }
 }
 
@@ -108,7 +118,6 @@ pub fn build_combat_json(c: &Combat) -> String {
         profile: run.profile,
         started_at: run.started_at,
     });
-    let cards = c.cards.iter().map(card_doc).collect();
     let doc = CombatDoc {
         combat_id: c.seq,
         started_at: c.started_at,
@@ -119,7 +128,7 @@ pub fn build_combat_json(c: &Combat) -> String {
         turns: c.turns,
         damage_received: c.damage_received,
         run,
-        cards,
+        cards: &c.cards,
     };
     serde_json::to_string(&doc).expect("combat document cannot fail to serialize")
 }
@@ -161,7 +170,7 @@ mod tests {
     fn build_combat_json_omits_run_when_absent() {
         let mut c = synthetic_combat();
         c.run = None;
-        c.players.clear();
+        c.players = Box::default();
         let json = build_combat_json(&c);
         assert!(!json.contains(r#""run":"#));
         assert!(!json.contains(r#""origin""#));
@@ -176,7 +185,7 @@ mod tests {
     fn all_zero_card_rows_round_trip_as_identity_only() {
         let mut c = synthetic_combat();
         c.cards = vec![CardStat {
-            id: "ZERO_ROW".to_owned(),
+            id: "ZERO_ROW".into(),
             kind: SourceKind::Potion,
             player: 2,
             ..CardStat::default()
@@ -197,7 +206,7 @@ mod tests {
         assert_eq!(
             combat.cards[0],
             records::CardRec {
-                id: "ZERO_ROW".to_owned(),
+                id: "ZERO_ROW".into(),
                 kind: SourceKind::Potion,
                 player: 2,
                 ..records::CardRec::default()
@@ -215,7 +224,7 @@ mod tests {
         write_store_file(&data, 42, 7, &entry1);
         let mut c2 = synthetic_combat();
         c2.seq = 8;
-        c2.encounter_id = "FROZEN_COUNCIL".to_owned();
+        c2.encounter_id = "FROZEN_COUNCIL".into();
         let entry2 = build_combat_json(&c2);
         write_store_file(&data, 42, 8, &entry2);
 
@@ -227,23 +236,23 @@ mod tests {
 
         let c = &combats[0];
         assert_eq!(c.combat_id, 7);
-        assert_eq!(c.encounter_id, "BYGONE_EFFIGY");
+        assert_eq!(c.encounter_id.as_ref(), "BYGONE_EFFIGY");
         assert_eq!(c.result, CombatResult::Completed);
         assert_eq!(c.turns, 5);
         assert_eq!(c.damage_received, 33);
         let run = c.run.as_ref().expect("run present");
         assert_eq!(run.seq, 42);
-        assert_eq!(run.character, "SHROUD");
+        assert_eq!(run.character.as_ref(), "SHROUD");
         assert_eq!(run.ascension, 5);
-        assert_eq!(run.game_mode, "standard");
+        assert_eq!(run.game_mode.as_ref(), "standard");
         assert_eq!(c.cards.len(), 2);
-        assert_eq!(c.cards[0].id, "OMNI_CARD");
+        assert_eq!(c.cards[0].id.as_ref(), "OMNI_CARD");
         assert_eq!(c.cards[0].player, 0, "single-player rows read as slot 0");
         assert_eq!(c.cards[0].plays, 4);
         assert_eq!(c.cards[0].damage_dealt, 21);
-        assert_eq!(c.cards[1].id, "ANCHOR");
+        assert_eq!(c.cards[1].id.as_ref(), "ANCHOR");
         assert_eq!(c.cards[1].block_gained, 10);
         assert_eq!(combats[1].combat_id, 8);
-        assert_eq!(combats[1].encounter_id, "FROZEN_COUNCIL");
+        assert_eq!(combats[1].encounter_id.as_ref(), "FROZEN_COUNCIL");
     }
 }

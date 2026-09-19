@@ -10,25 +10,25 @@ fn run_context() -> EndedRun {
         context: RunContext {
             run: RunSnapshot {
                 seq: 9,
-                character: "IRONCLAD".to_owned(),
+                character: "IRONCLAD".into(),
                 ascension: 3,
-                game_mode: "standard".to_owned(),
-                seed: "SEED123".to_owned(),
+                game_mode: "standard".into(),
+                seed: "SEED123".into(),
                 profile: 2,
                 started_at: 1_786_579_200,
             },
-            players: vec![
+            players: Box::new([
                 RunPlayer {
                     slot: 0,
-                    net_id: "1".to_owned(),
-                    character: "IRONCLAD".to_owned(),
+                    net_id: "1".into(),
+                    character: "IRONCLAD".into(),
                 },
                 RunPlayer {
                     slot: 1,
-                    net_id: "2".to_owned(),
-                    character: "SILENT".to_owned(),
+                    net_id: "2".into(),
+                    character: "SILENT".into(),
                 },
-            ],
+            ]),
         },
         outcome: RunOutcome::Victory,
         ended_at: 1_786_597_200, // 2026-08-13T00:30:00Z
@@ -59,18 +59,18 @@ fn parse_combat_doc_ignores_unknown_fields_and_fills_defaults() {
     let c = parse_combat_doc(doc).expect("parses");
 
     assert_eq!(c.combat_id, 1);
-    assert_eq!(c.encounter_id, "A");
+    assert_eq!(c.encounter_id.as_ref(), "A");
     assert_eq!(c.result, CombatResult::Completed);
     assert_eq!(c.turns, 1);
     assert_eq!(c.damage_received, 4);
     assert_eq!(c.started_at, 1_786_622_400);
     let run = c.run.as_ref().expect("run decoded");
     assert_eq!(run.seq, 5);
-    assert_eq!(run.character, "X");
+    assert_eq!(run.character.as_ref(), "X");
     assert_eq!(run.ascension, 12);
-    assert_eq!(run.game_mode, "gm");
+    assert_eq!(run.game_mode.as_ref(), "gm");
     assert_eq!(c.cards.len(), 2);
-    assert_eq!(c.cards[0].id, "C1");
+    assert_eq!(c.cards[0].id.as_ref(), "C1");
     assert_eq!(c.cards[0].kind, SourceKind::Power);
     assert_eq!(c.cards[0].plays, 1);
     assert_eq!(c.cards[0].damage_dealt, 5);
@@ -86,7 +86,7 @@ fn parse_combat_doc_ignores_unknown_fields_and_fills_defaults() {
     assert_eq!(
         c.cards[1],
         CardRec {
-            id: "C2".to_owned(),
+            id: "C2".into(),
             ..CardRec::default()
         }
     );
@@ -107,7 +107,7 @@ fn parse_combat_doc_preserves_known_kinds_and_marks_unknown_suppliers() {
 fn parse_combat_doc_decodes_minimal_records() {
     let c = parse_combat_doc(r#"{"combat_id":2,"encounter_id":"B"}"#).expect("parses");
     assert_eq!(c.combat_id, 2);
-    assert_eq!(c.encounter_id, "B");
+    assert_eq!(c.encounter_id.as_ref(), "B");
     assert!(c.run.is_none());
     assert!(c.cards.is_empty());
 }
@@ -118,8 +118,8 @@ fn parse_combat_doc_run_defaults_ascension_to_minus_one() {
     let run = c.run.as_ref().expect("run present");
     assert_eq!(run.seq, 3);
     assert_eq!(run.ascension, -1);
-    assert_eq!(run.character, "");
-    assert_eq!(run.game_mode, "");
+    assert_eq!(run.character.as_ref(), "");
+    assert_eq!(run.game_mode.as_ref(), "");
 }
 
 #[test]
@@ -151,22 +151,22 @@ fn build_run_json_round_trips_through_the_parser() {
     let parsed: RunDocOwned = serde_json::from_str(&json).expect("parses back");
     assert_eq!(parsed.run_id, run.run.seq);
     assert_eq!(parsed.profile, 7);
-    assert_eq!(parsed.character, run.run.character);
+    assert_eq!(parsed.character, run.run.character.as_ref());
     assert_eq!(parsed.ascension, run.run.ascension);
-    assert_eq!(parsed.game_mode, run.run.game_mode);
+    assert_eq!(parsed.game_mode, run.run.game_mode.as_ref());
     assert_eq!(parsed.outcome, RunOutcome::Victory);
-    assert_eq!(parsed.seed, run.run.seed);
+    assert_eq!(parsed.seed, run.run.seed.as_ref());
     assert_eq!(parsed.started_at, run.run.started_at);
     assert_eq!(parsed.ended_at, ended.ended_at);
     assert_eq!(parsed.players.len(), 2);
     assert_eq!(parsed.players[1].slot, 1);
-    assert_eq!(parsed.players[1].character, "SILENT");
+    assert_eq!(parsed.players[1].character.as_ref(), "SILENT");
 }
 
 #[test]
 fn build_run_json_omits_an_empty_roster() {
     let mut ended = run_context();
-    ended.context.players = Vec::new();
+    ended.context.players = Box::default();
     let json = build_run_json(&ended);
     assert!(!json.contains(r#""players""#));
     let parsed: RunDocOwned = serde_json::from_str(&json).expect("parses back");

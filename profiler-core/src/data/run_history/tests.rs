@@ -22,7 +22,7 @@ fn seed_data(data: &Path, runs_text: &str, combats_text: &str) {
 
 /// These tests seed a match, so Empty is a broken fixture, not a branch:
 /// unwrap the view or name the seed that failed.
-fn selected(seed: &str, started_at: i64, profile: i32) -> Box<RunSummaryView> {
+fn selected(seed: &str, started_at: i64, profile: i32) -> Rc<RunSummaryView> {
     match select_run(seed, started_at, profile) {
         RunSelection::Selected(view) => view,
         RunSelection::Empty => panic!("{seed} must match"),
@@ -240,20 +240,20 @@ fn select_by_seed_assembles_the_full_view() {
 
     let view = selected("BETA", BETA_START, 2);
     assert_eq!(view.run_id, 2);
-    assert_eq!(view.character, "IRONCLAD");
+    assert_eq!(view.character.as_ref(), "IRONCLAD");
     assert_eq!(view.ascension, 7);
-    assert_eq!(view.game_mode, "Standard");
+    assert_eq!(view.game_mode.as_ref(), "Standard");
     assert_eq!(view.outcome, Some(RunOutcome::Defeat));
-    assert_eq!(view.seed, "BETA");
+    assert_eq!(view.seed.as_ref(), "BETA");
     assert_eq!(view.started_at, BETA_START);
     assert_eq!(view.players.len(), 2);
     assert_eq!(view.players[0].slot, 0);
-    assert_eq!(view.players[0].character, "IRONCLAD");
-    assert_eq!(view.players[1].character, "SILENT");
+    assert_eq!(view.players[0].character.as_ref(), "IRONCLAD");
+    assert_eq!(view.players[1].character.as_ref(), "SILENT");
 
     assert_eq!(view.combats.len(), 2);
     assert_eq!(view.combats[0].seq, 2);
-    assert_eq!(view.combats[0].encounter, "B");
+    assert_eq!(view.combats[0].encounter.as_ref(), "B");
     assert_eq!(view.combats[0].result, CombatResult::Completed);
     assert_eq!(view.combats[0].damage_dealt, 40);
     assert_eq!(view.combats[0].damage_taken, 15);
@@ -264,17 +264,17 @@ fn select_by_seed_assembles_the_full_view() {
     assert_eq!(view.combats[1].damage_taken, 25);
 
     assert_eq!(view.rollup.len(), 3);
-    assert_eq!(view.rollup[0].id, "STRIKE");
+    assert_eq!(view.rollup[0].id.as_ref(), "STRIKE");
     assert_eq!(view.rollup[0].kind, SourceKind::Card);
     assert_eq!(view.rollup[0].damage_dealt, 70);
     assert_eq!(view.rollup[0].plays, 4);
     assert_eq!(view.rollup[0].dmg_direct, 50);
     assert_eq!(view.rollup[0].dmg_attributed, 10);
     assert_eq!(view.rollup[0].dmg_modifier, 5);
-    assert_eq!(view.rollup[1].id, "DEFEND");
+    assert_eq!(view.rollup[1].id.as_ref(), "DEFEND");
     assert_eq!(view.rollup[1].damage_dealt, 0);
     assert_eq!(view.rollup[1].block_effective, 15);
-    assert_eq!(view.rollup[2].id, "NOT_YET");
+    assert_eq!(view.rollup[2].id.as_ref(), "NOT_YET");
     assert_eq!(view.rollup[2].damage_dealt, 0);
 }
 
@@ -286,10 +286,10 @@ fn combat_only_runs_fall_back_to_a_synthesized_view() {
 
     let view = selected("GAMMA", 1000, 4);
     assert_eq!(view.run_id, 3);
-    assert_eq!(view.character, "SHROUD");
+    assert_eq!(view.character.as_ref(), "SHROUD");
     assert_eq!(view.ascension, 1);
-    assert_eq!(view.game_mode, "Standard");
-    assert_eq!(view.seed, "GAMMA");
+    assert_eq!(view.game_mode.as_ref(), "Standard");
+    assert_eq!(view.seed.as_ref(), "GAMMA");
     assert_eq!(view.profile, 4, "the stored profile carries onto the view");
     assert!(
         view.outcome.is_none(),
@@ -303,10 +303,10 @@ fn combat_only_runs_fall_back_to_a_synthesized_view() {
     assert_eq!(view.combats[0].damage_dealt, 35);
     assert_eq!(view.combats[1].seq, 11);
     assert_eq!(view.rollup.len(), 2);
-    assert_eq!(view.rollup[0].id, "STRIKE");
+    assert_eq!(view.rollup[0].id.as_ref(), "STRIKE");
     assert_eq!(view.rollup[0].damage_dealt, 30);
     assert_eq!(view.rollup[0].plays, 3);
-    assert_eq!(view.rollup[1].id, "DASH");
+    assert_eq!(view.rollup[1].id.as_ref(), "DASH");
     assert_eq!(view.rollup[1].damage_dealt, 15);
     assert_eq!(view.rollup[1].block_effective, 5);
 }
@@ -504,7 +504,7 @@ fn fallback_views_flow_through_the_selection_plumbing() {
     assert!(screen_open(), "select marks the screen open");
     let expected = selected("GAMMA", 1000, 4);
     let stored = selected_view().expect("fallback selection stored");
-    assert_eq!(&*expected, &stored);
+    assert_eq!(expected, stored);
     assert_eq!(stored.outcome, None);
     let fp = selected_view_fingerprint().expect("fingerprint present");
     assert!(select("GAMMA", 1000, 4));
@@ -535,7 +535,7 @@ fn fallback_disambiguates_same_seed_replays_by_start_time() {
         view.run_id, 4,
         "the original run start selects the exact replay"
     );
-    assert_eq!(view.character, "DEFECT");
+    assert_eq!(view.character.as_ref(), "DEFECT");
     assert_eq!(view.combats.len(), 1, "replays never merge");
     assert_eq!(view.combats[0].seq, 1);
     let view = selected("OMEGA", 101, 2);
@@ -563,7 +563,7 @@ fn seed_match_with_exact_start_time_wins() {
 
     let view = selected("DAILY", 1_786_579_200, 2);
     assert_eq!(view.run_id, 1);
-    assert_eq!(view.character, "A");
+    assert_eq!(view.character.as_ref(), "A");
 }
 
 #[test]
@@ -667,15 +667,18 @@ fn rollup_keys_on_id_and_kind_and_teams_merge() {
     seed_data(data, runs, combats);
 
     let view = selected("K", 1_786_579_200, 2);
-    let ids: Vec<(String, SourceKind)> =
-        view.rollup.iter().map(|r| (r.id.clone(), r.kind)).collect();
+    let ids: Vec<(&str, SourceKind)> = view
+        .rollup
+        .iter()
+        .map(|r| (r.id.as_ref(), r.kind))
+        .collect();
     assert_eq!(
         ids,
-        vec![
-            ("DUPE".to_owned(), SourceKind::Card),
-            ("ZERO_A".to_owned(), SourceKind::Card),
-            ("DUPE".to_owned(), SourceKind::Power),
-            ("ZERO_B".to_owned(), SourceKind::Relic),
+        [
+            ("DUPE", SourceKind::Card),
+            ("ZERO_A", SourceKind::Card),
+            ("DUPE", SourceKind::Power),
+            ("ZERO_B", SourceKind::Relic),
         ]
     );
     assert_eq!(view.rollup[0].plays, 3);
@@ -694,8 +697,23 @@ fn select_stores_and_clear_drops_the_panel_view() {
     assert!(select("BETA", BETA_START, 2));
     assert!(screen_open(), "select marks the screen open");
     let view = selected_view().expect("selection stored");
-    assert_eq!(view.seed, "BETA");
+    assert_eq!(view.seed.as_ref(), "BETA");
     assert_eq!(view.combats.len(), 2);
+    assert!(Rc::ptr_eq(
+        &view,
+        &selected_view().expect("panel reads the same selection")
+    ));
+
+    assert!(select("ALPHA", 1_786_579_200, 2));
+    assert_eq!(
+        selected_view().expect("new selection stored").seed.as_ref(),
+        "ALPHA"
+    );
+    assert_eq!(
+        view.seed.as_ref(),
+        "BETA",
+        "an in-flight panel keeps its own snapshot"
+    );
 
     clear();
     assert!(selected_view().is_none());
@@ -710,22 +728,22 @@ fn select_stores_and_clear_drops_the_panel_view() {
 fn view_fingerprint_tracks_every_view_field() {
     let synthetic = || RunSummaryView {
         run_id: 2,
-        character: "IRONCLAD".to_owned(),
+        character: "IRONCLAD".into(),
         ascension: 7,
-        game_mode: "Standard".to_owned(),
+        game_mode: "Standard".into(),
         outcome: Some(RunOutcome::Defeat),
-        seed: "BETA".to_owned(),
-        combats: vec![CombatView {
+        seed: "BETA".into(),
+        combats: Box::new([CombatView {
             seq: 1,
-            encounter: "ENC0".to_owned(),
+            encounter: "ENC0".into(),
             result: CombatResult::Completed,
             damage_dealt: 30,
             damage_taken: 10,
             turns: 3,
-        }],
-        rollup: vec![
+        }]),
+        rollup: Box::new([
             CardStat {
-                id: "STRIKE".to_owned(),
+                id: "STRIKE".into(),
                 kind: SourceKind::Card,
                 player: TEAM_SLOT,
                 plays: 4,
@@ -733,7 +751,7 @@ fn view_fingerprint_tracks_every_view_field() {
                 ..CardStat::default()
             },
             CardStat {
-                id: "DEMON_FORM".to_owned(),
+                id: "DEMON_FORM".into(),
                 kind: SourceKind::Power,
                 player: TEAM_SLOT,
                 plays: 1,
@@ -741,25 +759,25 @@ fn view_fingerprint_tracks_every_view_field() {
                 dmg_direct: 35,
                 ..CardStat::default()
             },
-        ],
+        ]),
         ..RunSummaryView::default()
     };
     let base = view_fingerprint(&synthetic());
     assert_eq!(view_fingerprint(&synthetic()), base);
     let mut changed = synthetic();
-    changed.character = "DEFECT".to_owned();
+    changed.character = "DEFECT".into();
     assert_ne!(view_fingerprint(&changed), base);
     let mut changed = synthetic();
     changed.outcome = None;
     assert_ne!(view_fingerprint(&changed), base);
     let mut changed = synthetic();
-    changed.seed = "OTHER".to_owned();
+    changed.seed = "OTHER".into();
     assert_ne!(view_fingerprint(&changed), base);
     let mut changed = synthetic();
-    changed.players.push(PlayerRec {
+    changed.players = Box::new([PlayerRec {
         slot: 1,
-        character: "SILENT".to_owned(),
-    });
+        character: "SILENT".into(),
+    }]);
     assert_ne!(view_fingerprint(&changed), base);
     let mut changed = synthetic();
     changed.combats[0].turns += 1;
@@ -787,7 +805,7 @@ fn per_player_rollups_split_the_run() {
                            "cards":[
                             {"id":"STRIKE","kind":0,"player":0,"plays":1,"damage_dealt":5,"block_gained":0,"block_effective":0,"heal":0},
                             {"id":"STRIKE","kind":0,"player":1,"plays":2,"damage_dealt":7,"block_gained":0,"block_effective":0,"heal":0},
-                            {"id":"THORNS_POWER","kind":2,"player":4,"plays":0,"damage_dealt":3,"block_gained":0,"block_effective":0,"heal":0}
+                            {"id":"THORNS_POWER","kind":2,"player":255,"plays":0,"damage_dealt":3,"block_gained":0,"block_effective":0,"heal":0}
                            ]}]"#;
     seed_data(data, runs, combats);
 
@@ -795,16 +813,24 @@ fn per_player_rollups_split_the_run() {
     assert_eq!(view.player_rollups.len(), 2);
     assert_eq!(view.player_rollups[0].slot, 0);
     assert_eq!(view.player_rollups[0].cards.len(), 1);
-    assert_eq!(view.player_rollups[0].cards[0].id, "STRIKE");
+    assert_eq!(view.player_rollups[0].cards[0].id.as_ref(), "STRIKE");
     assert_eq!(view.player_rollups[0].cards[0].damage_dealt, 5);
     assert_eq!(view.player_rollups[1].slot, 1);
+    assert_eq!(view.player_rollups[1].cards.len(), 1);
     assert_eq!(view.player_rollups[1].cards[0].damage_dealt, 7);
     // The team-merged rollup folds both players' STRIKEs and carries the
     // ownerless THORNS_POWER; there is no separate TEAM-scope rollup.
     assert_eq!(view.rollup.len(), 2);
-    assert_eq!(view.rollup[0].id, "STRIKE");
+    assert_eq!(view.rollup[0].id.as_ref(), "STRIKE");
     assert_eq!(view.rollup[0].player, TEAM_SLOT);
     assert_eq!(view.rollup[0].damage_dealt, 12);
+    let entries: Vec<RunEntry> = serde_json::from_str(runs).expect("fixture run parses");
+    let combats: Vec<CombatRec> = serde_json::from_str(combats).expect("fixture combats parse");
+    let ownerless = roll_up_cards_for_slot(&combats, &entries[0], TEAM_SLOT);
+    assert_eq!(ownerless.len(), 1);
+    assert_eq!(ownerless[0].id.as_ref(), "THORNS_POWER");
+    assert_eq!(ownerless[0].player, TEAM_SLOT);
+    assert_eq!(ownerless[0].damage_dealt, 3);
 }
 
 #[test]
@@ -855,6 +881,15 @@ fn run_filter_heals_when_the_roster_lacks_the_selected_slot() {
         "a slot the view cannot render heals to All"
     );
     // The All filter is untouched by the heal.
+    heal_run_filter();
+    assert_eq!(run_filter(), PlayerFilter::All);
+
+    toggle_run_filter(0);
+    heal_run_filter();
+    assert_eq!(run_filter(), PlayerFilter::Player(0));
+
+    assert!(!select("MISSING", 1_786_579_200, 2));
+    assert_eq!(run_filter(), PlayerFilter::Player(0));
     heal_run_filter();
     assert_eq!(run_filter(), PlayerFilter::All);
 }

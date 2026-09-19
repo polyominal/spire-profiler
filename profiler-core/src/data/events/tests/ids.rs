@@ -148,7 +148,7 @@ fn exhausted_combat_ids_from_store_preserve_the_existing_file() {
         assert_eq!(combat_ended(epoch), 0);
         assert!(STATE.with(|s| s.borrow().current.is_none()));
     }
-    assert_eq!(combat_ids(&base.join("runs")), vec![(0, u32::MAX)]);
+    assert_eq!(combat_ids(&base.join("runs")), [(0, u32::MAX)]);
     assert_eq!(
         read_test_file(&base, &format!("runs/0/{}.json", u32::MAX)),
         "reserved filename, corrupt content"
@@ -199,7 +199,7 @@ fn exhausted_run_ids_close_previous_run_and_discard_stale_data() {
             run_ended(RunOutcome::Victory);
         }
         assert_eq!(read_test_file(&base, "runs/1/1.json"), saved);
-        assert_eq!(combat_ids(&base.join("runs")), vec![(1, 1)]);
+        assert_eq!(combat_ids(&base.join("runs")), [(1, 1)]);
         let runs = read_all_runs(&base);
         assert_eq!(runs.len(), if source == "record" { 2 } else { 1 });
         assert_eq!(runs.last().unwrap()["run_id"], 1);
@@ -275,7 +275,7 @@ fn final_run_id_resumes_after_fresh_allocation_exhaustion() {
     assert_eq!(runs[0]["run_id"], u32::MAX);
     assert_eq!(
         combat_ids(&base.join("runs")),
-        vec![(u32::MAX, 1), (0, 2), (u32::MAX, 3)]
+        [(u32::MAX, 1), (0, 2), (u32::MAX, 3)]
     );
     let outside: serde_json::Value =
         serde_json::from_str(&read_test_file(&base, "runs/0/2.json")).unwrap();

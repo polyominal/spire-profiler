@@ -13,7 +13,7 @@ fn view() -> RunSummaryView {
         (0..n)
             .map(|i| CombatView {
                 seq: i + 1,
-                encounter: format!("ENC{i}"),
+                encounter: format!("ENC{i}").into(),
                 result: CombatResult::Completed,
                 damage_dealt: 30,
                 damage_taken: 10,
@@ -22,7 +22,7 @@ fn view() -> RunSummaryView {
             .collect()
     };
     let card = |id: &str, kind: SourceKind, plays: u32, dmg: i64, blk: i64| CardStat {
-        id: id.to_owned(),
+        id: id.into(),
         kind,
         plays,
         damage_dealt: dmg,
@@ -33,17 +33,17 @@ fn view() -> RunSummaryView {
     };
     RunSummaryView {
         run_id: 2,
-        character: "IRONCLAD".to_owned(),
+        character: "IRONCLAD".into(),
         ascension: 7,
-        game_mode: "Standard".to_owned(),
+        game_mode: "Standard".into(),
         outcome: Some(RunOutcome::Defeat),
-        seed: "BETA".to_owned(),
+        seed: "BETA".into(),
         combats: combats(2),
-        rollup: vec![
+        rollup: Box::new([
             card("STRIKE", SourceKind::Card, 4, 70, 0),
             card("DEMON_FORM", SourceKind::Power, 1, 35, 0),
             card("DEFEND", SourceKind::Card, 2, 0, 15),
-        ],
+        ]),
         ..RunSummaryView::default()
     }
 }
@@ -64,7 +64,7 @@ fn identity_line_omits_the_character_and_pins_the_rest() {
     // still renders.
     let unfinished = RunSummaryView {
         ascension: -1,
-        character: "SHROUD".to_owned(),
+        character: "SHROUD".into(),
         ..RunSummaryView::default()
     };
     assert_eq!(identity_line(&unfinished), "Unfinished");
@@ -115,7 +115,7 @@ fn layout_renders_the_full_chart_and_the_empty_state_notice() {
     assert!(l.height > 0.0);
 
     let mut unfinished = view();
-    unfinished.character = "SHROUD".to_owned();
+    unfinished.character = "SHROUD".into();
     unfinished.outcome = None;
     let l = layout_of(Some(&unfinished));
     let header: Vec<&str> = texts(&l.header_cmds).collect();
@@ -133,7 +133,7 @@ fn layout_renders_full_lists_without_caps() {
     v.combats = (0..30)
         .map(|i| CombatView {
             seq: i + 1,
-            encounter: format!("ENC{i}"),
+            encounter: format!("ENC{i}").into(),
             result: CombatResult::Completed,
             damage_dealt: 10,
             damage_taken: 2,
@@ -142,7 +142,7 @@ fn layout_renders_full_lists_without_caps() {
         .collect();
     v.rollup = (0..20)
         .map(|i| CardStat {
-            id: format!("CARD{i}"),
+            id: format!("CARD{i}").into(),
             damage_dealt: 100 - i as i64,
             dmg_direct: 100 - i as i64,
             ..CardStat::default()
@@ -370,26 +370,26 @@ fn roster_entries_carry_slots_and_character_icon_paths_mirror_the_game() {
     assert_eq!(character_icon_path("ironclad"), None);
 
     let mut mp = view();
-    mp.character = "IRONCLAD, SILENT, DEFECT, REGENT, NECROBINDER".to_owned();
+    mp.character = "IRONCLAD, SILENT, DEFECT, REGENT, NECROBINDER".into();
     assert_eq!(
         roster_entries(&mp),
         vec![(0, "IRONCLAD"), (1, "SILENT"), (2, "DEFECT"), (3, "REGENT")]
     );
-    mp.players = vec![crate::data::records::PlayerRec {
+    mp.players = Box::new([crate::data::records::PlayerRec {
         slot: 0,
-        character: "SILENT".to_owned(),
-    }];
+        character: "SILENT".into(),
+    }]);
     assert_eq!(roster_entries(&mp), vec![(0, "SILENT")]);
-    mp.players = vec![
+    mp.players = Box::new([
         crate::data::records::PlayerRec {
             slot: 2,
-            character: "SHROUD".to_owned(),
+            character: "SHROUD".into(),
         },
         crate::data::records::PlayerRec {
             slot: 0,
-            character: "".to_owned(),
+            character: "".into(),
         },
-    ];
+    ]);
     assert_eq!(
         roster_entries(&mp),
         vec![(2, "SHROUD")],

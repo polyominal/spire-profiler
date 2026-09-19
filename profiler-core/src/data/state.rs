@@ -85,7 +85,7 @@
 //! simulation never depends on them).
 
 use std::cell::{Cell, RefCell};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -204,7 +204,7 @@ impl PlayerFilter {
 pub struct CardStat {
     /// First so the serialized identity group mirrors this order.
     pub player: SourceSlot,
-    pub id: String,
+    pub id: Box<str>,
     pub kind: SourceKind,
     /// Own triggers, so `contribution / plays` is the expected value.
     pub plays: u32,
@@ -277,8 +277,8 @@ pub enum CombatPhase {
 pub struct Combat {
     pub(crate) row_capacity_logged: bool,
     pub seq: u32,
-    pub encounter_id: String,
-    pub encounter_type: String,
+    pub encounter_id: Box<str>,
+    pub encounter_type: Box<str>,
     pub started_at: i64,
     /// The record stays available for the panel after the fight.
     pub phase: CombatPhase,
@@ -296,7 +296,7 @@ pub struct Combat {
     /// The run identity stamped at combat start; `None` outside a run.
     pub run: Option<RunSnapshot>,
     /// In-memory only.
-    pub players: Vec<RunPlayer>,
+    pub players: Box<[RunPlayer]>,
 }
 
 impl Combat {
@@ -328,10 +328,10 @@ impl Combat {
 #[derive(Clone)]
 pub struct RunSnapshot {
     pub seq: u32,
-    pub character: String,
+    pub character: Box<str>,
     pub ascension: i32,
-    pub game_mode: String,
-    pub seed: String,
+    pub game_mode: Box<str>,
+    pub seed: Box<str>,
     pub profile: i32,
     /// Original game StartTime in epoch seconds; 0 means unknown.
     pub started_at: i64,
@@ -341,11 +341,11 @@ impl Default for RunSnapshot {
     fn default() -> Self {
         RunSnapshot {
             seq: 0,
-            character: String::new(),
+            character: Box::default(),
             // -1 means "the shim never reported an ascension".
             ascension: -1,
-            game_mode: String::new(),
-            seed: String::new(),
+            game_mode: Box::default(),
+            seed: Box::default(),
             profile: -1,
             started_at: 0,
         }
@@ -356,8 +356,8 @@ impl Default for RunSnapshot {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RunPlayer {
     pub slot: u8,
-    pub net_id: String,
-    pub character: String,
+    pub net_id: Box<str>,
+    pub character: Box<str>,
 }
 
 #[repr(i32)]
@@ -428,7 +428,7 @@ where
 pub struct RunContext {
     pub run: RunSnapshot,
     /// Serialized as runs.jsonl's `"players"`.
-    pub players: Vec<RunPlayer>,
+    pub players: Box<[RunPlayer]>,
 }
 
 pub struct EndedRun {
@@ -444,15 +444,15 @@ pub struct PlayerSlotState {
 }
 
 pub(crate) struct StorePaths {
-    pub(super) runs_dir: PathBuf,
-    pub(super) runs_path: PathBuf,
+    pub(super) runs_dir: Box<Path>,
+    pub(super) runs_path: Box<Path>,
 }
 
 impl StorePaths {
     pub(crate) fn new(data_dir: &Path) -> Self {
         Self {
-            runs_dir: data_dir.join("runs"),
-            runs_path: data_dir.join("runs.jsonl"),
+            runs_dir: data_dir.join("runs").into_boxed_path(),
+            runs_path: data_dir.join("runs.jsonl").into_boxed_path(),
         }
     }
 }

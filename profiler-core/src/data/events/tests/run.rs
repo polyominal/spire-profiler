@@ -26,7 +26,7 @@ fn repeated_init_keeps_the_first_data_dir() {
             .borrow()
             .store_paths
             .as_ref()
-            .is_some_and(|paths| paths.runs_dir == first.join("runs"))),
+            .is_some_and(|paths| paths.runs_dir.as_ref() == first.join("runs"))),
         "the second data dir must not replace the initialized one"
     );
     let log = read_test_file(&first, "profiler.log");
@@ -59,7 +59,8 @@ fn failed_init_keeps_the_first_store() {
                 .store_paths
                 .as_ref()
                 .expect("first store is bound")
-                .runs_dir,
+                .runs_dir
+                .as_ref(),
             first.join("runs")
         );
     });
@@ -88,10 +89,10 @@ fn reset_then_init_routes_records_to_the_new_store() {
     combat_ended(combat_epoch());
     run_ended(RunOutcome::Defeat);
 
-    assert_eq!(read_combat(&first).0.encounter_id, "FIRST");
+    assert_eq!(read_combat(&first).0.encounter_id.as_ref(), "FIRST");
     assert_eq!(read_run(&first)["seed"], "FIRST");
     assert_eq!(read_test_file(&first, "profiler.log"), first_log);
-    assert_eq!(read_combat(&second).0.encounter_id, "SECOND");
+    assert_eq!(read_combat(&second).0.encounter_id.as_ref(), "SECOND");
     assert_eq!(read_run(&second)["seed"], "SECOND");
 }
 
@@ -254,7 +255,7 @@ fn resumed_run_rejoins_its_fragment_and_rebuilds_the_summary() {
         assert!(
             st.run_cards
                 .iter()
-                .any(|c| c.id == "STRIKE" && c.damage_dealt == 6)
+                .any(|c| c.id.as_ref() == "STRIKE" && c.damage_dealt == 6)
         );
     });
     combat_started("FRAG_TWO", "test");
@@ -346,7 +347,9 @@ fn resumed_run_discards_the_unfinished_combat() {
         .map(|(r, _)| r)
         .collect();
     assert!(
-        combats.iter().all(|c| c.encounter_id != "MID_COMBAT"),
+        combats
+            .iter()
+            .all(|c| c.encounter_id.as_ref() != "MID_COMBAT"),
         "the unfinished combat must not be persisted"
     );
     assert_eq!(STATE.with(|s| s.borrow().run_combats), 0);
@@ -409,17 +412,17 @@ fn roster_parses_from_net_ids_and_truncates() {
         .with(|s| s.borrow().run_ctx.as_ref().map(|run| run.players.clone()))
         .expect("active run roster");
     assert_eq!(
-        players,
-        vec![
+        players.as_ref(),
+        &[
             RunPlayer {
                 slot: 0,
-                net_id: "111".to_owned(),
-                character: "IRONCLAD".to_owned(),
+                net_id: "111".into(),
+                character: "IRONCLAD".into(),
             },
             RunPlayer {
                 slot: 1,
-                net_id: "222".to_owned(),
-                character: "SILENT".to_owned(),
+                net_id: "222".into(),
+                character: "SILENT".into(),
             },
         ]
     );
@@ -441,18 +444,18 @@ fn roster_parses_from_net_ids_and_truncates() {
         .with(|s| s.borrow().run_ctx.as_ref().map(|run| run.players.clone()))
         .expect("active run roster");
     assert_eq!(players.len(), 2);
-    assert_eq!(players[0].character, "A");
-    assert_eq!(players[1].character, "B");
+    assert_eq!(players[0].character.as_ref(), "A");
+    assert_eq!(players[1].character.as_ref(), "B");
     run_started("IRONCLAD", 0, "Standard", "SEED_SOLO", 0, "", 0);
     let players = STATE
         .with(|s| s.borrow().run_ctx.as_ref().map(|run| run.players.clone()))
         .expect("active run roster");
     assert_eq!(
-        players,
-        vec![RunPlayer {
+        players.as_ref(),
+        &[RunPlayer {
             slot: 0,
-            net_id: String::new(),
-            character: "IRONCLAD".to_owned(),
+            net_id: Box::default(),
+            character: "IRONCLAD".into(),
         }]
     );
 }

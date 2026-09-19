@@ -39,7 +39,8 @@
 //! run writes.
 
 use std::cell::{Cell, RefCell};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::rc::Rc;
 
 use serde::Deserialize;
 
@@ -55,17 +56,17 @@ use crate::data::state::{CardStat, CombatResult, PlayerFilter, RunOutcome, STATE
 pub struct RunEntry {
     pub run_id: u32,
     pub profile: i32,
-    pub character: String,
+    pub character: Box<str>,
     pub ascension: i32,
-    pub game_mode: String,
+    pub game_mode: Box<str>,
     /// The view's result label derives from it.
     pub outcome: RunOutcome,
-    pub seed: String,
+    pub seed: Box<str>,
     /// Original game StartTime in epoch seconds.
     pub started_at: i64,
     pub ended_at: i64,
     /// Empty on pre-roster records.
-    pub players: Vec<PlayerRec>,
+    pub players: Box<[PlayerRec]>,
 }
 
 impl Default for RunEntry {
@@ -74,14 +75,14 @@ impl Default for RunEntry {
         RunEntry {
             run_id: 0,
             profile: -1,
-            character: String::new(),
+            character: Box::default(),
             ascension: -1,
-            game_mode: String::new(),
+            game_mode: Box::default(),
             outcome: RunOutcome::Defeat,
-            seed: String::new(),
+            seed: Box::default(),
             started_at: 0,
             ended_at: 0,
-            players: Vec::new(),
+            players: Box::default(),
         }
     }
 }
@@ -98,7 +99,7 @@ impl RunEntry {
 #[derive(Clone, Debug, PartialEq)]
 pub struct CombatView {
     pub seq: u32,
-    pub encounter: String,
+    pub encounter: Box<str>,
     pub result: CombatResult,
     pub damage_dealt: i64,
     pub damage_taken: i64,
@@ -108,46 +109,46 @@ pub struct CombatView {
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlayerRollup {
     pub slot: u8,
-    pub character: String,
-    pub cards: Vec<CardStat>,
+    pub character: Box<str>,
+    pub cards: Box<[CardStat]>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RunSummaryView {
     pub run_id: u32,
     pub profile: i32,
-    pub character: String,
+    pub character: Box<str>,
     pub ascension: i32,
-    pub game_mode: String,
+    pub game_mode: Box<str>,
     /// None on the combats-only fallback: the truth is unknown.
     pub outcome: Option<RunOutcome>,
-    pub seed: String,
+    pub seed: Box<str>,
     pub started_at: i64,
     pub ended_at: i64,
     /// Empty on pre-roster records.
-    pub players: Vec<PlayerRec>,
-    pub combats: Vec<CombatView>,
+    pub players: Box<[PlayerRec]>,
+    pub combats: Box<[CombatView]>,
     /// TEAM-merged; rows keep first-seen order.
-    pub rollup: Vec<CardStat>,
+    pub rollup: Box<[CardStat]>,
     /// Keyed by roster slot.
-    pub player_rollups: Vec<PlayerRollup>,
+    pub player_rollups: Box<[PlayerRollup]>,
 }
 
 pub enum RunSelection {
-    Selected(Box<RunSummaryView>),
+    Selected(Rc<RunSummaryView>),
     Empty,
 }
 
 struct Cache {
-    runs_path: PathBuf,
-    runs_dir: PathBuf,
-    runs: Vec<RunEntry>,
-    combats: Vec<CombatRec>,
+    runs_path: Box<Path>,
+    runs_dir: Box<Path>,
+    runs: Box<[RunEntry]>,
+    combats: Box<[CombatRec]>,
 }
 
 thread_local! {
     static CACHE: RefCell<Option<Cache>> = const { RefCell::new(None) };
-    static SELECTION: RefCell<Option<RunSummaryView>> = const { RefCell::new(None) };
+    static SELECTION: RefCell<Option<Rc<RunSummaryView>>> = const { RefCell::new(None) };
     /// Distinct from [`SELECTION`]: an open screen with no record must still
     /// render its empty-state notice.
     static SCREEN_OPEN: Cell<bool> = const { Cell::new(false) };
@@ -179,7 +180,7 @@ fn load_runs(path: &Path) -> Option<Vec<RunEntry>> {
 }
 
 fn load_combats(dir: &Path) -> Vec<CombatRec> {
-    parse_combat_docs(&load_combat_docs_from(dir))
+    parse_combat_docs(load_combat_docs_from(dir)).collect()
 }
 
 pub(crate) fn continued_run_id(
@@ -239,8 +240,8 @@ fn ensure_loaded() {
         *cell.borrow_mut() = Some(Cache {
             runs_path,
             runs_dir,
-            runs,
-            combats,
+            runs: runs.into_boxed_slice(),
+            combats: combats.into_boxed_slice(),
         });
     });
 }
@@ -264,7 +265,7 @@ fn matching_run_id(
         .filter(|run| {
             run.run_id != 0
                 && run.profile == profile
-                && run.seed == seed
+                && run.seed.as_ref() == seed
                 && run.started_at == start_time
         })
         .map(|run| run.run_id)
@@ -284,7 +285,7 @@ fn matching_run_id(
 }
 
 fn build_view(entry: &RunEntry, combats: &[CombatRec]) -> RunSummaryView {
-    let mut view = RunSummaryView {
+    RunSummaryView {
         run_id: entry.run_id,
         profile: entry.profile,
         character: entry.character.clone(),
@@ -295,28 +296,25 @@ fn build_view(entry: &RunEntry, combats: &[CombatRec]) -> RunSummaryView {
         started_at: entry.started_at,
         ended_at: entry.ended_at,
         players: entry.players.clone(),
-        ..RunSummaryView::default()
-    };
-    for combat in combats {
-        if !entry.contains(combat) {
-            continue;
-        }
-        view.combats.push(CombatView {
-            seq: combat.combat_id,
-            encounter: combat.encounter_id.clone(),
-            result: combat.result,
-            damage_dealt: combat.cards.iter().map(|c| c.damage_dealt).sum(),
-            damage_taken: combat.damage_received,
-            turns: combat.turns,
-        });
+        combats: combats
+            .iter()
+            .filter(|combat| entry.contains(combat))
+            .map(|combat| CombatView {
+                seq: combat.combat_id,
+                encounter: combat.encounter_id.clone(),
+                result: combat.result,
+                damage_dealt: combat.cards.iter().map(|c| c.damage_dealt).sum(),
+                damage_taken: combat.damage_received,
+                turns: combat.turns,
+            })
+            .collect(),
+        rollup: roll_up_cards(combats, entry),
+        player_rollups: build_player_rollups(entry, combats),
     }
-    view.rollup = roll_up_cards(combats, entry);
-    view.player_rollups = build_player_rollups(entry, combats);
-    view
 }
 
 /// TEAM-merged; rows keep first-seen order.
-fn roll_up_cards(combats: &[CombatRec], entry: &RunEntry) -> Vec<CardStat> {
+fn roll_up_cards(combats: &[CombatRec], entry: &RunEntry) -> Box<[CardStat]> {
     let mut rollup: Vec<CardStat> = Vec::new();
     for combat in combats {
         if !entry.contains(combat) {
@@ -329,11 +327,11 @@ fn roll_up_cards(combats: &[CombatRec], entry: &RunEntry) -> Vec<CardStat> {
         });
         CardStat::merge_rows(&mut rollup, rows, CardStatKey::TeamMerged);
     }
-    rollup
+    rollup.into_boxed_slice()
 }
 
 /// Merging same-id rows within that slot only.
-fn roll_up_cards_for_slot(combats: &[CombatRec], entry: &RunEntry, slot: u8) -> Vec<CardStat> {
+fn roll_up_cards_for_slot(combats: &[CombatRec], entry: &RunEntry, slot: u8) -> Box<[CardStat]> {
     let mut rollup: Vec<CardStat> = Vec::new();
     for combat in combats {
         if !entry.contains(combat) {
@@ -342,15 +340,15 @@ fn roll_up_cards_for_slot(combats: &[CombatRec], entry: &RunEntry, slot: u8) -> 
         let rows = combat
             .cards
             .iter()
-            .map(card_stat_from_rec)
-            .filter(|row| row.player == slot);
+            .filter(|row| crate::data::state::clamp_source_slot(i32::from(row.player)) == slot)
+            .map(card_stat_from_rec);
         CardStat::merge_rows(&mut rollup, rows, CardStatKey::TeamMerged);
     }
-    rollup
+    rollup.into_boxed_slice()
 }
 
 /// Players with no rows still get an empty entry.
-fn build_player_rollups(entry: &RunEntry, combats: &[CombatRec]) -> Vec<PlayerRollup> {
+fn build_player_rollups(entry: &RunEntry, combats: &[CombatRec]) -> Box<[PlayerRollup]> {
     entry
         .players
         .iter()
@@ -376,11 +374,11 @@ pub fn select_run(seed: &str, start_time: i64, profile: i32) -> RunSelection {
         };
         if let Some(entry) = cache.runs.iter().find(|run| {
             run.run_id == run_id
-                && run.seed == seed
+                && run.seed.as_ref() == seed
                 && run.started_at == start_time
                 && run.profile == profile
         }) {
-            return RunSelection::Selected(Box::new(build_view(entry, &cache.combats)));
+            return RunSelection::Selected(Rc::new(build_view(entry, &cache.combats)));
         }
         let run = cache
             .combats
@@ -407,7 +405,7 @@ pub fn select_run(seed: &str, start_time: i64, profile: i32) -> RunSelection {
             .unwrap_or(0);
         let mut view = build_view(&entry, &cache.combats);
         view.outcome = None;
-        RunSelection::Selected(Box::new(view))
+        RunSelection::Selected(Rc::new(view))
     })
 }
 
@@ -416,21 +414,21 @@ pub fn select(seed: &str, start_time: i64, profile: i32) -> bool {
     let selection = select_run(seed, start_time, profile);
     let matched = matches!(selection, RunSelection::Selected(_));
     match selection {
-        RunSelection::Selected(view) => SELECTION.with(|cell| *cell.borrow_mut() = Some(*view)),
+        RunSelection::Selected(view) => SELECTION.with(|cell| *cell.borrow_mut() = Some(view)),
         RunSelection::Empty => SELECTION.with(|cell| *cell.borrow_mut() = None),
     }
     SCREEN_OPEN.with(|cell| cell.set(true));
     matched
 }
 
-pub fn selected_view() -> Option<RunSummaryView> {
+pub fn selected_view() -> Option<Rc<RunSummaryView>> {
     SELECTION.with(|cell| cell.borrow().clone())
 }
 
 /// A `&RunSummaryView` cannot escape the `RefCell` guard, so the per-frame
 /// dirty check receives a u64 instead.
 pub fn selected_view_fingerprint() -> Option<u64> {
-    SELECTION.with(|cell| cell.borrow().as_ref().map(view_fingerprint))
+    SELECTION.with(|cell| cell.borrow().as_deref().map(view_fingerprint))
 }
 
 /// Compared as one u64 instead of a deep walk.
@@ -511,21 +509,17 @@ pub fn toggle_run_filter(slot: u8) {
 /// The avatar row only renders slots present in the displayed run; a
 /// stale filter (a different run selected mid-screen) self-heals to All.
 pub fn heal_run_filter() {
-    let mut slots: Vec<u8> = SELECTION.with(|cell| {
+    let PlayerFilter::Player(slot) = run_filter() else {
+        return;
+    };
+    let present = SELECTION.with(|cell| {
         cell.borrow()
             .as_ref()
-            .map(|view| view.players.iter().map(|p| p.slot).collect())
-            .unwrap_or_default()
+            .is_some_and(|view| view.players.iter().any(|player| player.slot == slot))
     });
-    slots.sort_unstable();
-    slots.dedup();
-    RUN_FILTER.with(|cell| {
-        if let PlayerFilter::Player(s) = cell.get()
-            && !slots.contains(&s)
-        {
-            cell.set(PlayerFilter::All);
-        }
-    });
+    if !present {
+        RUN_FILTER.with(|cell| cell.set(PlayerFilter::All));
+    }
 }
 
 pub fn clear() {

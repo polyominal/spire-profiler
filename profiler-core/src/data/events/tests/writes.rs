@@ -124,7 +124,7 @@ fn exercise_combat_write_failure(stage: &str, interrupted: bool) {
         assert_eq!((state.run_combats, state.run_turns), (2, 2));
         assert_eq!(state.run_cards[0].block_gained, 12);
     });
-    assert_eq!(combat_ids(&base.join("runs")), vec![(1, 2)]);
+    assert_eq!(combat_ids(&base.join("runs")), [(1, 2)]);
     assert_eq!(read_combat(&base).0.cards[0].block_gained, 7);
     assert!(run_history::select("CACHE", 3000, 2));
 }

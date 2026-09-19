@@ -10,7 +10,7 @@
 //! a measurable cost.
 
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::{fmt, fs};
 
 use crate::fail;
@@ -71,7 +71,7 @@ impl fmt::Write for LineBuffer {
 }
 
 struct LogSink {
-    path: Option<PathBuf>,
+    path: Option<Box<Path>>,
     file: Option<fs::File>,
     open_failure_logged: bool,
 }
@@ -92,7 +92,7 @@ pub(crate) fn bind_log_path(path: &Path) {
         if sink.path.as_deref() == Some(path) {
             return;
         }
-        sink.path = Some(path.to_path_buf());
+        sink.path = Some(path.into());
         sink.file = None;
         sink.open_failure_logged = false;
     });

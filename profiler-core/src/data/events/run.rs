@@ -81,10 +81,10 @@ pub fn run_started(
         state.run_ctx = Some(RunContext {
             run: RunSnapshot {
                 seq,
-                character: character_ids.to_owned(),
+                character: character_ids.into(),
                 ascension,
-                game_mode: game_mode.to_owned(),
-                seed: seed.to_owned(),
+                game_mode: game_mode.into(),
+                seed: seed.into(),
                 profile: state.run_profile,
                 started_at: start_time,
             },
@@ -159,16 +159,16 @@ impl fmt::Display for RosterLog<'_> {
 }
 
 /// `net_ids` pairs positionally with `character_ids`; mismatches truncate.
-fn parse_roster(character_ids: &str, net_ids: &str) -> Vec<RunPlayer> {
+fn parse_roster(character_ids: &str, net_ids: &str) -> Box<[RunPlayer]> {
     if net_ids.is_empty() {
         if character_ids.is_empty() {
-            return Vec::new();
+            return Box::default();
         }
-        return vec![RunPlayer {
+        return Box::new([RunPlayer {
             slot: 0,
-            net_id: String::new(),
-            character: character_ids.to_owned(),
-        }];
+            net_id: Box::default(),
+            character: character_ids.into(),
+        }]);
     }
     character_ids
         .split(',')
@@ -177,8 +177,8 @@ fn parse_roster(character_ids: &str, net_ids: &str) -> Vec<RunPlayer> {
         .enumerate()
         .map(|(slot, (character, net_id))| RunPlayer {
             slot: slot as u8,
-            net_id: net_id.to_owned(),
-            character: character.to_owned(),
+            net_id: net_id.into(),
+            character: character.into(),
         })
         .collect()
 }

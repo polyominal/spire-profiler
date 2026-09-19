@@ -77,7 +77,7 @@ pub(super) fn get_or_create_card_kind(
     if let Some(index) = combat
         .cards
         .iter()
-        .position(|row| row.player == slot && row.id == id && row.kind == kind)
+        .position(|row| row.player == slot && row.id.as_ref() == id && row.kind == kind)
     {
         return Some(index);
     }
@@ -102,7 +102,7 @@ pub(super) fn get_or_create_card_kind(
     let index = combat.cards.len();
     combat.cards.push(CardStat {
         player: slot,
-        id: id.to_owned(),
+        id: id.into(),
         kind,
         ..CardStat::default()
     });

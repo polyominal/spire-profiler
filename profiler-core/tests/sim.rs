@@ -69,7 +69,7 @@ fn sim_seed() -> u64 {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct RowKey {
     slot: u8,
-    id: String,
+    id: Box<str>,
     kind: u8,
 }
 
@@ -87,7 +87,7 @@ impl RowKey {
     fn unknown() -> Self {
         Self {
             slot: state::TEAM_SLOT,
-            id: "UNATTRIBUTED".to_owned(),
+            id: "UNATTRIBUTED".into(),
             kind: SourceKind::Unknown as u8,
         }
     }
@@ -140,7 +140,7 @@ impl SimSource {
             roots: vec![(
                 RowKey {
                     slot: slot as u8,
-                    id: id.to_owned(),
+                    id: id.into(),
                     kind: 0,
                 },
                 1,
@@ -156,7 +156,7 @@ impl SimSource {
             roots: vec![(
                 RowKey {
                     slot: slot as u8,
-                    id: id.to_owned(),
+                    id: id.into(),
                     kind: 1,
                 },
                 1,
@@ -379,7 +379,7 @@ struct NaiveChunk {
     base: NaivePrefix,
     base_original: u64,
     remaining: u64,
-    mods: Vec<NaiveModifier>,
+    mods: Box<[NaiveModifier]>,
 }
 #[derive(Default)]
 struct NaivePool {
@@ -401,7 +401,7 @@ impl NaivePool {
         if self.chunks.len() == state::caps::BLOCK_POOL {
             return;
         }
-        let mods: Vec<_> = modifiers
+        let mods: Box<[_]> = modifiers
             .into_iter()
             .take(MAX_BLOCK_MODIFIERS)
             .map(|(roots, original)| NaiveModifier {
@@ -487,7 +487,7 @@ struct DamageShare {
 }
 
 impl DamageShare {
-    fn append(credits: &mut Vec<Self>, roots: &Roots, segment: i32, amount: u64) {
+    fn append(credits: &mut Vec<Self>, roots: &[(RowKey, u64)], segment: i32, amount: u64) {
         let weights: Vec<_> = roots.iter().map(|(_, weight)| *weight).collect();
         for ((key, _), amount) in roots.iter().zip(proportional_units(amount, &weights)) {
             if amount == 0 {
@@ -513,7 +513,7 @@ struct PendingHit {
     calculation: u64,
     source: Rc<SimSource>,
     segment: i32,
-    modifiers: Vec<(Rc<SimSource>, u64)>,
+    modifiers: Box<[(Rc<SimSource>, u64)]>,
     total: i32,
     blocked: i32,
 }
@@ -523,7 +523,7 @@ impl PendingHit {
         source: &Rc<SimSource>,
         total: i32,
         blocked: i32,
-        modifiers: Vec<(Rc<SimSource>, u64)>,
+        modifiers: Box<[(Rc<SimSource>, u64)]>,
         target: u64,
     ) -> Self {
         let (role, segment) = match source.origin {
@@ -574,8 +574,8 @@ impl PendingHit {
 
 struct LedgerModel {
     rows: BTreeMap<RowKey, CardStat>,
-    pools: Vec<NaivePool>,
-    osty: Vec<Vec<NaiveSummon>>,
+    pools: [NaivePool; 5],
+    osty: [Vec<NaiveSummon>; 5],
     players: Vec<bool>,
     plays: u32,
     generated_plays: u32,
@@ -592,8 +592,8 @@ impl LedgerModel {
     fn new(sources: &[Rc<SimSource>]) -> Self {
         let mut model = Self {
             rows: BTreeMap::new(),
-            pools: (0..5).map(|_| NaivePool::default()).collect(),
-            osty: (0..5).map(|_| Vec::new()).collect(),
+            pools: std::array::from_fn(|_| NaivePool::default()),
+            osty: std::array::from_fn(|_| Vec::new()),
             players: Vec::new(),
             plays: 0,
             generated_plays: 0,
@@ -643,7 +643,7 @@ impl LedgerModel {
         *value += amount;
     }
 
-    fn credit(&mut self, roots: &Roots, field: Field, amount: u64) {
+    fn credit(&mut self, roots: &[(RowKey, u64)], field: Field, amount: u64) {
         let weights: Vec<_> = roots.iter().map(|(_, weight)| *weight).collect();
         for ((key, _), amount) in roots.iter().zip(proportional_units(amount, &weights)) {
             self.add(key, field, amount as i64);
@@ -775,7 +775,7 @@ impl LedgerModel {
             }
             let key = RowKey {
                 slot: state::TEAM_SLOT,
-                id: "OSTY".to_owned(),
+                id: "OSTY".into(),
                 kind: SourceKind::Osty as u8,
             };
             self.add(&key, Field::BlockEffective, remaining as i64);
@@ -917,12 +917,13 @@ impl Walk {
     fn damage(&mut self, rng: &mut Rng, source: &Rc<SimSource>) {
         let total = rng.range_i32(0, 30);
         let blocked = rng.range_i32(0, total);
-        let mut modifiers = Vec::new();
-        for _ in 0..rng.below(4) {
-            let modifier = self.source(rng);
-            let amount = rng.range_i32(0, 8);
-            modifiers.push((modifier, amount as u64));
-        }
+        let modifiers = (0..rng.below(4))
+            .map(|_| {
+                let modifier = self.source(rng);
+                let amount = rng.range_i32(0, 8);
+                (modifier, amount as u64)
+            })
+            .collect();
         PendingHit::begin(source, total, blocked, modifiers, 900).commit(&mut self.ledger);
     }
 
@@ -1198,7 +1199,7 @@ fn randomized_nested_hits_keep_frozen_suppliers_and_per_target_budgets() {
         model.gain(defend, block as u64, &[], 0);
         model.check(&format!("{repro} before parent"), step);
         let total = rng.range_i32(1, 30);
-        let modifiers = vec![(Rc::clone(modifier), rng.range_i32(1, 8) as u64)];
+        let modifiers = Box::new([(Rc::clone(modifier), rng.range_i32(1, 8) as u64)]);
         let parent = PendingHit::begin(attack, total, rng.range_i32(0, total), modifiers, 900);
         model.check(&format!("{repro} pending parent"), step);
 
@@ -1216,7 +1217,7 @@ fn randomized_nested_hits_keep_frozen_suppliers_and_per_target_budgets() {
             &frozen,
             power.observed,
             rng.range_i32(0, power.observed),
-            Vec::new(),
+            Box::default(),
             900,
         );
         let incoming = if rng.below(2) == 0 {
@@ -1232,7 +1233,7 @@ fn randomized_nested_hits_keep_frozen_suppliers_and_per_target_budgets() {
         model.check(&format!("{repro} after parent"), step);
 
         let total = rng.range_i32(0, 5);
-        let modifiers = vec![(Rc::clone(modifier), rng.range_i32(9, 16) as u64)];
+        let modifiers = Box::new([(Rc::clone(modifier), rng.range_i32(9, 16) as u64)]);
         PendingHit::begin(attack, total, rng.range_i32(0, total), modifiers, 901)
             .commit(&mut model);
         attack.actual.finish(play);
@@ -1393,7 +1394,7 @@ fn block_pool_consume_matches_naive_model() {
         SimSource::card("BODYGUARD", 0),
         SimSource::card("CRIMSON_MANTLE", 1),
     ];
-    let modifiers = vec![
+    let modifiers = [
         SimSource::card("FOOTWORK", 0),
         SimSource::card("TEMPORARY_DEXTERITY", 2),
         SimSource::relic("SMOOTH_STONE", 1),
