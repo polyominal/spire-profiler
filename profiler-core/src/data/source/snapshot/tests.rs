@@ -163,8 +163,8 @@ fn exact_grant_mixtures_match_independent_common_unit_model() {
                     u128::from(grant.remaining) * u128::from(share.weight) * (unit / total);
             }
         }
-        let actual =
-            SourceSnapshot::mixture(epoch(), 5, &grants, &mut SourceDiagnostics::default());
+        let actual = SourceSnapshot::mixture(epoch(), 5, &grants)
+            .expect("small grants have representable exact mixtures");
         let actual_total: u128 = actual
             .shares
             .iter()
@@ -194,7 +194,8 @@ fn one_point_mixed_grants_remain_mixed_before_final_allocation() {
             source: source(&[(0, 1), (2, 2)]),
         },
     ];
-    let actual = SourceSnapshot::mixture(epoch(), 3, &grants, &mut SourceDiagnostics::default());
+    let actual = SourceSnapshot::mixture(epoch(), 3, &grants)
+        .expect("small grants have a representable exact mixture");
     assert_eq!(
         actual
             .shares
@@ -258,8 +259,19 @@ fn fixed_root_budgets_survive_nonmonotone_proportional_prefixes() {
 }
 
 #[test]
-fn mixture_failure_collapses_the_whole_vector_to_unknown() {
-    let mut diagnostics = SourceDiagnostics::default();
+fn mixtures_distinguish_unknown_roots_from_invalid_grants() {
+    let unknown = SourceSnapshot::unknown(epoch());
+    assert_eq!(
+        SourceSnapshot::mixture(
+            epoch(),
+            0,
+            &[
+                PowerGrant::new(2, unknown.clone()),
+                PowerGrant::new(3, unknown.clone())
+            ]
+        ),
+        Ok(unknown)
+    );
     let huge = [u64::MAX, u64::MAX - 2, u64::MAX - 4];
     let grants: Vec<_> = huge
         .iter()
@@ -269,12 +281,9 @@ fn mixture_failure_collapses_the_whole_vector_to_unknown() {
         })
         .collect();
     assert_eq!(
-        SourceSnapshot::mixture(epoch(), 2, &grants, &mut diagnostics),
-        SourceSnapshot::unknown(epoch())
+        SourceSnapshot::mixture(epoch(), 2, &grants),
+        Err(SourceFailure::Arithmetic)
     );
-    let first_diagnostic = diagnostics.reported;
-    SourceSnapshot::mixture(epoch(), 2, &grants, &mut diagnostics);
-    assert_eq!(diagnostics.reported, first_diagnostic);
     let grants: Vec<_> = (0..=caps::SOURCE_DESTINATIONS)
         .map(|row| PowerGrant {
             remaining: 1,
@@ -282,11 +291,11 @@ fn mixture_failure_collapses_the_whole_vector_to_unknown() {
         })
         .collect();
     assert_eq!(
-        SourceSnapshot::mixture(epoch(), caps::COMBAT_CARDS, &grants, &mut diagnostics),
-        SourceSnapshot::unknown(epoch())
+        SourceSnapshot::mixture(epoch(), caps::COMBAT_CARDS, &grants),
+        Err(SourceFailure::Capacity)
     );
     let mut stale = source(&[(0, 1)]);
-    stale.combat_seq += 1;
+    stale.epoch = CombatEpoch::from_wire(8).expect("fixture epoch is nonzero");
     assert_eq!(
         SourceSnapshot::mixture(
             epoch(),
@@ -294,10 +303,9 @@ fn mixture_failure_collapses_the_whole_vector_to_unknown() {
             &[PowerGrant {
                 remaining: 1,
                 source: stale
-            }],
-            &mut diagnostics
+            }]
         ),
-        SourceSnapshot::unknown(epoch())
+        Err(SourceFailure::Epoch)
     );
 }
 
@@ -481,8 +489,9 @@ fn token_kind_epoch_membership_and_serial_exhaustion_are_checked() {
 #[test]
 fn synchronous_source_copy_survives_release_without_retargeting_an_epoch() {
     let mut state = state(0);
+    let current = state.provenance_epoch(7).expect("fixture combat is active");
     assert_eq!(
-        state.source_snapshot(7, 0),
+        state.source_snapshot(current, 0),
         Ok(SourceSnapshot::unknown(epoch()))
     );
     let transfer = state.source_transfer_begin(7);
@@ -490,7 +499,7 @@ fn synchronous_source_copy_survives_release_without_retargeting_an_epoch() {
     assert_eq!(state.source_transfer_add(transfer, unknown(3), 2), 1);
     assert_eq!(state.source_transfer_seal(transfer), 1);
     let saved = state
-        .source_snapshot(7, transfer)
+        .source_snapshot(current, transfer)
         .expect("sealed live lease can be copied");
     assert_eq!(state.source_transfer_release(transfer), 1);
     assert_eq!(
@@ -502,17 +511,23 @@ fn synchronous_source_copy_survives_release_without_retargeting_an_epoch() {
         [1, 2]
     );
     assert_eq!(
-        state.source_snapshot(7, transfer),
+        state.source_snapshot(current, transfer),
         Err(SourceFailure::Token)
     );
     state.current.as_mut().expect("fixture combat exists").seq = 8;
-    assert_eq!(state.source_snapshot(7, 0), Err(SourceFailure::Epoch));
+    assert_eq!(state.provenance_epoch(7), Err(SourceFailure::Epoch));
+    let replacement = state
+        .provenance_epoch(8)
+        .expect("replacement combat is active");
     assert_eq!(
-        state.source_snapshot(8, transfer),
+        state.source_snapshot(replacement, transfer),
         Err(SourceFailure::Epoch)
     );
     let forged = transfer ^ (7_u64 << 32) ^ (8_u64 << 32);
-    assert_eq!(state.source_snapshot(8, forged), Err(SourceFailure::Token));
+    assert_eq!(
+        state.source_snapshot(replacement, forged),
+        Err(SourceFailure::Token)
+    );
 }
 
 #[test]

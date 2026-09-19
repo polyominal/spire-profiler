@@ -64,7 +64,7 @@ impl DamageAllocation {
         }
         let mut destinations = Vec::new();
         for source in std::iter::once(producer).chain(modifiers.iter().map(|event| &event.source)) {
-            if source.combat_seq() != producer.combat_seq() {
+            if source.epoch() != producer.epoch() {
                 return Err(SourceFailure::Epoch);
             }
             for share in source.shares() {

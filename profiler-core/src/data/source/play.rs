@@ -69,12 +69,12 @@ impl State {
         producer_role: i32,
     ) -> i32 {
         let result = (|| {
-            self.provenance_epoch(combat_seq)?;
+            let epoch = self.provenance_epoch(combat_seq)?;
             self.provenance
                 .generated
                 .retain(|entry| entry.instance != instance);
             let role = ProducerRole::decode(producer_role, &mut self.source_transfers.diagnostics);
-            let source = self.source_snapshot(combat_seq, transfer)?;
+            let source = self.source_snapshot(epoch, transfer)?;
             let mut stage = LedgerStage::new(self)?;
             for share in source.shares() {
                 let row = stage.row(share.destination())?;
@@ -122,7 +122,7 @@ impl State {
             let owner = super::super::state::clamp_source_slot(player_slot);
             let generation =
                 GenerationState::decode(generation_state, &mut self.source_transfers.diagnostics);
-            let source = self.source_snapshot(combat_seq, transfer)?;
+            let source = self.source_snapshot(epoch, transfer)?;
             let source = self.card_source(epoch, instance, id, owner, generation, Some(source));
             let mut stage = LedgerStage::new(self)?;
             stage.combat.plays = stage
@@ -219,11 +219,11 @@ impl State {
 
     pub(crate) fn orb_channeled(&mut self, combat_seq: u64, instance: u64, transfer: u64) -> i32 {
         let result = (|| {
-            self.provenance_epoch(combat_seq)?;
+            let epoch = self.provenance_epoch(combat_seq)?;
             self.provenance
                 .orbs
                 .retain(|entry| entry.instance != instance);
-            let source = self.source_snapshot(combat_seq, transfer)?;
+            let source = self.source_snapshot(epoch, transfer)?;
             if instance == 0 || self.provenance.orbs.len() == caps::ORB_SOURCES {
                 return Err(SourceFailure::Capacity);
             }

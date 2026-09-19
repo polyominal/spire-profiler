@@ -30,7 +30,7 @@ const _: () = assert!(caps::POWER_GRANTS_PER_INSTANCE <= caps::POWER_GRANTS_TOTA
 const _: () = assert!(caps::DAMAGE_RESULTS == 2);
 const _: () = assert!(caps::DAMAGE_DESTINATIONS >= caps::SOURCE_DESTINATIONS);
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct CombatEpoch(NonZeroU32);
 
 impl CombatEpoch {
@@ -248,10 +248,14 @@ impl State {
 
     fn source_snapshot(
         &mut self,
-        combat_seq: u64,
+        epoch: CombatEpoch,
         transfer: u64,
     ) -> Result<SourceSnapshot, SourceFailure> {
-        let epoch = self.source_epoch(combat_seq)?;
+        debug_assert_eq!(
+            self.provenance.epoch,
+            Some(epoch),
+            "source requests must use the provenance epoch checked at the event boundary"
+        );
         if transfer == 0 {
             return Ok(SourceSnapshot::unknown(epoch));
         }
@@ -389,8 +393,7 @@ impl State {
                 .ok()
                 .and_then(|index| snapshot.shares().get(index))
                 .ok_or(SourceFailure::Packet)?;
-            let epoch = CombatEpoch::from_wire(u64::from(snapshot.combat_seq()))?;
-            Ok(share.destination().token(epoch))
+            Ok(share.destination().token(snapshot.epoch()))
         });
         match result {
             Ok(destination) => destination,
@@ -499,6 +502,10 @@ impl From<ProducerSegment> for DamageSegment {
 
 struct DamageCalculation {
     serial: u32,
+    group: Option<DamageGroup>,
+}
+
+struct DamageGroup {
     source: SourceSnapshot,
     producer_role: ProducerRole,
     segment: ProducerSegment,
@@ -507,7 +514,6 @@ struct DamageCalculation {
     results: Vec<ObservedDamage>,
     weak: Option<SourceSnapshot>,
     strength: Vec<(SourceSnapshot, u64)>,
-    complete: bool,
 }
 
 struct ObservedDamage {
@@ -521,8 +527,7 @@ struct ObservedDamage {
 
 struct DoomBatch {
     serial: u32,
-    targets: Vec<DoomCapture>,
-    complete: bool,
+    targets: Option<Vec<DoomCapture>>,
 }
 
 struct DoomCapture {
@@ -610,7 +615,7 @@ impl State {
     }
 
     fn source_export(&mut self, source: SourceSnapshot) -> u64 {
-        let transfer = self.source_transfer_begin(u64::from(source.combat_seq()));
+        let transfer = self.source_transfer_begin(u64::from(source.epoch().0.get()));
         if transfer == 0 {
             return 0;
         }
@@ -808,7 +813,7 @@ impl LedgerStage {
         field: CreditField,
         amount: u64,
     ) -> Result<(), SourceFailure> {
-        if source.combat_seq() != self.combat.seq {
+        if source.epoch().0.get() != self.combat.seq {
             return Err(SourceFailure::Epoch);
         }
         for (destination, share) in source.budgets(amount).take(amount)? {

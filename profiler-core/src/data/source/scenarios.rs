@@ -223,9 +223,13 @@ impl Scenario {
     }
 
     fn assert_source(&mut self, transfer: u64, expected: &[(&str, SourceSlot, u64)]) {
+        let epoch = self
+            .state
+            .provenance_epoch(7)
+            .expect("fixture combat is active");
         let snapshot = self
             .state
-            .source_snapshot(7, transfer)
+            .source_snapshot(epoch, transfer)
             .expect("fixture transfer belongs to this combat");
         let actual: Vec<_> = snapshot
             .shares()
@@ -1282,6 +1286,58 @@ fn ordinary_hit_on_poisoned_target_does_not_consume_poison_suppliers() {
         13,
         2,
     );
+}
+
+#[test]
+fn unrepresentable_power_mixture_collapses_all_grants_before_consumption() {
+    let mut case = Scenario::new();
+    let first = case.card(10, "FIRST", 0);
+    let second = case.card(11, "SECOND", 1);
+    let mixed_first = case.mix(&[(first, 1), (second, u64::MAX - 1)]);
+    let mixed_second = case.mix(&[(first, 1), (second, u64::MAX - 3)]);
+    case.attach(201, "STRENGTH_POWER", PLAYER_A, 1, mixed_first);
+    case.change(201, "STRENGTH_POWER", PLAYER_A, (1, 2), mixed_second);
+    let lost = case.capture(2, 201);
+    case.assert_source(lost, &[("UNATTRIBUTED", TEAM_SLOT, 1)]);
+    let first_diagnostic = case.state.source_transfers.diagnostics.reported;
+
+    case.change(201, "STRENGTH_POWER", PLAYER_A, (2, 3), mixed_first);
+    assert_eq!(
+        case.state.source_transfers.diagnostics.reported,
+        first_diagnostic
+    );
+    case.change(201, "STRENGTH_POWER", PLAYER_A, (3, 1), 0);
+    let consumed = case.capture(2, 201);
+    case.assert_source(consumed, &[("UNATTRIBUTED", TEAM_SLOT, 1)]);
+    case.change(201, "STRENGTH_POWER", PLAYER_A, (1, 2), first);
+    let mixed = case.capture(2, 201);
+    case.assert_source(mixed, &[("UNATTRIBUTED", TEAM_SLOT, 1), ("FIRST", 0, 1)]);
+    case.change(201, "STRENGTH_POWER", PLAYER_A, (2, 1), 0);
+    let known = case.capture(2, 201);
+    case.assert_source(known, &[("FIRST", 0, 1)]);
+}
+
+#[test]
+fn failed_doom_capture_cannot_publish_or_debit_an_earlier_target() {
+    for (creature, hp) in [(900, 2), (901, -1)] {
+        let mut case = Scenario::new();
+        let source = case.card(10, "DOOM", 0);
+        case.attach(201, "DOOM_POWER", ENEMY, 5, source);
+        let failed = case.state.doom_batch_begin(7);
+        assert_ne!(failed, 0);
+        assert_eq!(case.state.doom_target_capture(failed, 900, 201, 3), 1);
+        assert_eq!(case.state.doom_target_capture(failed, creature, 201, hp), 0);
+        assert_eq!(case.state.doom_target_capture(failed, 902, 0, 1), 0);
+        assert_eq!(case.state.doom_kills_completed(failed), 0);
+        assert_eq!(case.state.doom_kills_completed(failed), 0);
+        case.assert_damage(&[], 0, 0);
+
+        let accepted = case.state.doom_batch_begin(7);
+        assert_ne!(accepted, 0);
+        assert_eq!(case.state.doom_target_capture(accepted, 900, 201, 5), 1);
+        assert_eq!(case.state.doom_kills_completed(accepted), 1);
+        case.assert_damage(&[("DOOM", 0, [0, 5, 0], 0)], 5, 0);
+    }
 }
 
 #[test]
