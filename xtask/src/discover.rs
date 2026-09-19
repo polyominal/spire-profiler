@@ -518,7 +518,7 @@ mod tests {
         let vdf = "\"libraryfolders\"\r\n{\r\n\t\"0\"\r\n\t{\r\n\t\t\"path\"\t\t\"/home/tester/.local/share/Steam\"\r\n\t\t\"label\"\t\t\"\"\r\n\t}\r\n\t\"1\"\r\n\t{\r\n\t\t\"path\"\t\t\"/mnt/games/SteamLibrary\"\r\n\t}\r\n}\r\n";
         assert_eq!(
             libraryfolders_paths(vdf),
-            vec![
+            [
                 PathBuf::from("/home/tester/.local/share/Steam"),
                 PathBuf::from("/mnt/games/SteamLibrary"),
             ]

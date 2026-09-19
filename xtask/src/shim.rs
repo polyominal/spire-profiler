@@ -299,21 +299,21 @@ mod tests {
             let compiled = compile_inputs(kind);
             assert!(!compiled.iter().any(|source| source == "shim.cs"));
             let digests = fs::read_to_string(project.join("source-digests.txt"))?;
-            let hashed: Vec<_> = digests
-                .lines()
-                .map(|line| {
-                    line.split_once("  ")
-                        .expect("digest lines separate hash and filename")
-                })
-                .collect();
-            assert_eq!(
-                hashed.iter().map(|(_, name)| *name).collect::<Vec<_>>(),
-                compiled
+            let hashed = digests.lines().map(|line| {
+                line.split_once("  ")
+                    .expect("digest lines separate hash and filename")
+            });
+            assert!(
+                hashed
+                    .clone()
+                    .map(|(_, name)| name)
+                    .eq(compiled.iter().map(String::as_str)),
+                "digest sources must follow the compiler input order"
             );
-            for (hash, source) in &hashed {
+            for (hash, source) in hashed {
                 let path = project.join(source);
-                assert_eq!(*hash, sha256_file(&path)?);
-                if *source != "NativeLibrarySelector.g.cs" {
+                assert_eq!(hash, sha256_file(&path)?);
+                if source != "NativeLibrarySelector.g.cs" {
                     assert_eq!(fs::read(&path)?, fs::read(root.join("shim").join(source))?);
                 }
             }

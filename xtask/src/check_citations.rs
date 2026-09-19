@@ -3,7 +3,7 @@
 //! Vendored upstream trees are exempt; every other UTF-8 file is scanned.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
@@ -29,25 +29,14 @@ const CITATION_EXTENSIONS: &[&str] = &[
 ];
 
 pub fn run() -> Result<()> {
-    let mut files = Vec::new();
-    collect_text(workspace_root(), &mut files)?;
     let mut hits = Vec::new();
-    for (path, content) in &files {
-        for (index, line) in content.lines().enumerate() {
-            if let Some(column) = citation_column(line) {
-                hits.push((path, index + 1, column + 1, line));
-            }
-        }
-    }
+    collect_citations(workspace_root(), &mut hits)?;
     if hits.is_empty() {
         println!("no file:line citations");
         return Ok(());
     }
-    for (path, line, column, text) in &hits {
-        eprintln!(
-            "check-citations: ERROR: {}:{line}:{column}: {text}",
-            path.display()
-        );
+    for hit in &hits {
+        eprintln!("check-citations: ERROR: {hit}");
     }
     bail!(
         "{} file:line citation(s): name the method and game version instead",
@@ -55,7 +44,7 @@ pub fn run() -> Result<()> {
     );
 }
 
-fn collect_text(dir: &Path, out: &mut Vec<(PathBuf, String)>) -> Result<()> {
+fn collect_citations(dir: &Path, out: &mut Vec<String>) -> Result<()> {
     let entries =
         fs::read_dir(dir).with_context(|| format!("while attempting to list {}", dir.display()))?;
     for entry in entries {
@@ -65,10 +54,19 @@ fn collect_text(dir: &Path, out: &mut Vec<(PathBuf, String)>) -> Result<()> {
         if path.is_dir() {
             let name = entry.file_name();
             if !SKIP_DIRS.contains(&name.to_string_lossy().as_ref()) {
-                collect_text(&path, out)?;
+                collect_citations(&path, out)?;
             }
         } else if let Ok(content) = fs::read_to_string(&path) {
-            out.push((path, content));
+            for (index, line) in content.lines().enumerate() {
+                if let Some(column) = citation_column(line) {
+                    out.push(format!(
+                        "{}:{}:{}: {line}",
+                        path.display(),
+                        index + 1,
+                        column + 1
+                    ));
+                }
+            }
         }
     }
     Ok(())
@@ -104,7 +102,54 @@ fn citation_column(line: &str) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::citation_column;
+    use super::*;
+
+    #[test]
+    fn traversal_keeps_first_hit_per_line_and_skips_non_authored_text() -> Result<()> {
+        let scratch_root = workspace_root().join("tmp/xtask-citation-tests");
+        fs::create_dir_all(&scratch_root)?;
+        let mut serial = 0_u32;
+        let scratch = loop {
+            let candidate = scratch_root.join(format!("{}-{serial}", std::process::id()));
+            match fs::create_dir(&candidate) {
+                Ok(()) => break candidate,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    serial = serial
+                        .checked_add(1)
+                        .context("test directory serial exhausted")?;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        };
+        let nested = scratch.join("nested");
+        fs::create_dir(&nested)?;
+        let first = "first.cs";
+        let second = "second.rs";
+        let third = "third.gd";
+        let content = format!("plain\n// {first}:12 and {second}:99\né // {third}:20-24\r\n");
+        let authored = nested.join("notes.bin");
+        fs::write(&authored, &content)?;
+        fs::write(scratch.join("clean.md"), "CombatManager.StartTurn\n")?;
+        let mut invalid_utf8 = content.as_bytes().to_vec();
+        invalid_utf8.push(0xff);
+        fs::write(nested.join("invalid.rs"), invalid_utf8)?;
+        for skipped in SKIP_DIRS {
+            let path = nested.join(skipped);
+            fs::create_dir(&path)?;
+            fs::write(path.join("upstream.md"), &content)?;
+        }
+        let mut hits = Vec::new();
+        collect_citations(&scratch, &mut hits)?;
+        assert_eq!(
+            hits,
+            [
+                format!("{}:2:4: // {first}:12 and {second}:99", authored.display()),
+                format!("{}:3:7: é // {third}:20-24", authored.display()),
+            ]
+        );
+        fs::remove_dir_all(scratch)?;
+        Ok(())
+    }
 
     #[test]
     fn catches_simple_line_and_range_citations() {
