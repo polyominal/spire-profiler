@@ -13,6 +13,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::Path;
+use std::sync::LazyLock;
 
 use anyhow::{Context, Result, bail};
 use regex::Regex;
@@ -51,11 +52,15 @@ const HOOK_DECL_RE: &str =
     r"(?m)^[ \t]*public virtual\s+(?:async\s+)?[\w<>,.\[\]? ]+?\s+(\w+)\s*\(";
 
 struct ClassFile {
-    /// Hook overrides only: the candidate scan walks these.
-    overrides: Vec<String>,
     /// Every declared method with its brace-matched body: existence checks
     /// and one level of private-helper following.
-    methods: Vec<(String, String)>,
+    methods: Vec<Method>,
+}
+
+struct Method {
+    name: String,
+    body: String,
+    is_override: bool,
 }
 
 fn tracked_regexes() -> Vec<(&'static str, Regex)> {
@@ -139,27 +144,25 @@ impl Review {
                     .push(format!("{ns}: {class} no longer exists"));
                 continue;
             };
-            if file
+            let mut declarations = file
                 .methods
                 .iter()
-                .filter(|(name, _)| name == method)
-                .count()
-                != 1
-            {
+                .filter(|declaration| declaration.name == *method);
+            let (Some(declaration), None) = (declarations.next(), declarations.next()) else {
                 self.failures.push(format!(
                     "{ns}: {class}.{method} is missing or overloaded — moved, renamed, or \
                      ambiguous?"
                 ));
                 continue;
-            }
-            if !file.overrides.iter().any(|name| name == method) {
+            };
+            if !declaration.is_override {
                 self.check_non_hook(ns, class, method);
             } else if !universe.contains(*method) {
                 self.failures.push(format!(
                     "{ns}: {class}.{method} overrides a method outside the hook universe — new \
                      hook type?"
                 ));
-            } else if effects_in(file, method, tracked).is_empty() {
+            } else if declaration.effects(&file.methods, tracked).is_empty() {
                 self.failures.push(format!(
                     "{ns}: {class}.{method} shows no tracked effect (body or private helpers) — \
                      bookkeeping wrap or stale entry?"
@@ -187,7 +190,7 @@ impl Review {
     ) {
         let mut matched = vec![false; tracked.len()];
         for file in files.iter().flat_map(|files| files.values()) {
-            for body in file.methods.iter().map(|(_, body)| body) {
+            for body in file.methods.iter().map(|method| &method.body) {
                 for (seen, (_, pattern)) in matched.iter_mut().zip(tracked) {
                     *seen |= pattern.is_match(body);
                 }
@@ -292,18 +295,18 @@ fn candidate_hooks<'a>(
     let mut candidates = Vec::new();
     for (label, files) in [("Relics", relic_files), ("Powers", power_files)] {
         for (class, file) in files {
-            for method in &file.overrides {
-                if !universe.contains(method)
-                    || catalogued.contains(&(class.as_str(), method.as_str()))
+            for method in file.methods.iter().filter(|method| method.is_override) {
+                if !universe.contains(&method.name)
+                    || catalogued.contains(&(class.as_str(), method.name.as_str()))
                 {
                     continue;
                 }
-                let effects = effects_in(file, method, tracked);
+                let effects = method.effects(&file.methods, tracked);
                 if !effects.is_empty() {
                     candidates.push(Candidate {
                         namespace: label,
                         class,
-                        method,
+                        method: &method.name,
                         effects,
                     });
                 }
@@ -334,32 +337,26 @@ impl std::fmt::Display for Candidate<'_> {
     }
 }
 
-/// The tracked-effect buckets a hook can produce, unioned in TRACKED order
-/// over its body and one level of private-helper indirection
-/// (PoisonPower's Trigger, Bound Phylactery's SummonPet, ...).
-fn effects_in(
-    file: &ClassFile,
-    method: &str,
-    tracked: &[(&'static str, Regex)],
-) -> Vec<&'static str> {
-    let Some((_, body)) = file.methods.iter().find(|(name, _)| name == method) else {
-        return Vec::new();
-    };
-    let mut bodies = vec![body.as_str()];
-    let calls = Regex::new(CALL_RE).expect("the call pattern is a static literal");
-    for call in calls.captures_iter(body) {
-        bodies.extend(
-            file.methods
-                .iter()
-                .filter(|(name, _)| name == &call[1])
-                .map(|(_, helper)| helper.as_str()),
-        );
+impl Method {
+    /// TRACKED order, including one level of helper calls (Poison's Trigger).
+    fn effects(&self, methods: &[Method], tracked: &[(&'static str, Regex)]) -> Vec<&'static str> {
+        static CALLS: LazyLock<Regex> =
+            LazyLock::new(|| Regex::new(CALL_RE).expect("the call pattern is a static literal"));
+        let mut bodies = vec![self.body.as_str()];
+        for call in CALLS.captures_iter(&self.body) {
+            bodies.extend(
+                methods
+                    .iter()
+                    .filter(|method| method.name == call[1])
+                    .map(|method| method.body.as_str()),
+            );
+        }
+        tracked
+            .iter()
+            .filter(|(_, re)| bodies.iter().any(|body| re.is_match(body)))
+            .map(|(label, _)| *label)
+            .collect()
     }
-    tracked
-        .iter()
-        .filter(|(_, re)| bodies.iter().any(|body| re.is_match(body)))
-        .map(|(label, _)| *label)
-        .collect()
 }
 
 fn hook_universe(models: &Path) -> Result<HashSet<String>> {
@@ -421,14 +418,19 @@ fn parse_class_file(
     text: &str,
     expected_namespace: &str,
 ) -> Result<Option<(String, ClassFile)>> {
-    let class_re = Regex::new(r"(?m)^public (?:sealed |abstract )?class\s+(\w+)")
-        .expect("the class pattern is a static literal");
-    let namespace_re = Regex::new(NAMESPACE_RE).expect("the namespace pattern is a static literal");
-    let decl_re = Regex::new(DECL_RE).expect("the declaration pattern is a static literal");
-    let Some(class) = class_re.captures(text).map(|capture| capture[1].to_owned()) else {
+    static CLASS: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?m)^public (?:sealed |abstract )?class\s+(\w+)")
+            .expect("the class pattern is a static literal")
+    });
+    static NAMESPACE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(NAMESPACE_RE).expect("the namespace pattern is a static literal")
+    });
+    static DECLARATION: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(DECL_RE).expect("the declaration pattern is a static literal"));
+    let Some(class) = CLASS.captures(text).map(|capture| capture[1].to_owned()) else {
         return Ok(None);
     };
-    let namespace = namespace_re
+    let namespace = NAMESPACE
         .captures(text)
         .and_then(|capture| capture.get(1))
         .map(|namespace| namespace.as_str())
@@ -439,9 +441,8 @@ fn parse_class_file(
             path.display()
         );
     }
-    let mut overrides = Vec::new();
     let mut methods = Vec::new();
-    for capture in decl_re.captures_iter(text) {
+    for capture in DECLARATION.captures_iter(text) {
         let name = capture[2].to_owned();
         let body = brace_body(
             text,
@@ -457,12 +458,13 @@ fn parse_class_file(
             )
         })?
         .to_owned();
-        methods.push((name, body));
-        if capture.get(1).is_some() {
-            overrides.push(capture[2].to_owned());
-        }
+        methods.push(Method {
+            name,
+            body,
+            is_override: capture.get(1).is_some(),
+        });
     }
-    Ok(Some((class, ClassFile { overrides, methods })))
+    Ok(Some((class, ClassFile { methods })))
 }
 
 /// The brace-matched block opening after `from`; decompiled methods always
@@ -560,67 +562,70 @@ mod tests {
     #[test]
     fn card_generation_follows_the_game_hooks_not_object_creation() {
         let file = ClassFile {
-            overrides: vec!["AfterPlayerTurnStart".to_owned()],
             methods: vec![
-                (
-                    "AfterPlayerTurnStart".to_owned(),
-                    r#"CardCmd.TransformToRandom(card, rng);"#.to_owned(),
-                ),
-                (
-                    "AfterObtained".to_owned(),
-                    r#"RunState.CreateCard<Apotheosis>(owner); CardPileCmd.Add(card, PileType.Deck);"#
+                Method {
+                    name: "AfterPlayerTurnStart".to_owned(),
+                    body: r#"CardCmd.TransformToRandom(card, rng);"#.to_owned(),
+                    is_override: true,
+                },
+                Method {
+                    name: "AfterObtained".to_owned(),
+                    body: r#"RunState.CreateCard<Apotheosis>(owner); CardPileCmd.Add(card, PileType.Deck);"#
                         .to_owned(),
-                ),
+                    is_override: false,
+                },
             ],
         };
         let tracked = tracked_regexes();
 
         assert_eq!(
-            effects_in(&file, "AfterPlayerTurnStart", &tracked),
+            file.methods[0].effects(&file.methods, &tracked),
             ["cardgen"]
         );
-        assert!(effects_in(&file, "AfterObtained", &tracked).is_empty());
+        assert!(file.methods[1].effects(&file.methods, &tracked).is_empty());
     }
 
     #[test]
     fn power_application_covers_generic_and_plain_apply() {
         let file = ClassFile {
-            overrides: Vec::new(),
             methods: vec![
-                (
-                    "Generic".to_owned(),
-                    "await PowerCmd.Apply<StrengthPower>(ctx, target, 1);".to_owned(),
-                ),
-                (
-                    "Plain".to_owned(),
-                    "await PowerCmd.Apply(ctx, power, target, 1);".to_owned(),
-                ),
+                Method {
+                    name: "Generic".to_owned(),
+                    body: "await PowerCmd.Apply<StrengthPower>(ctx, target, 1);".to_owned(),
+                    is_override: false,
+                },
+                Method {
+                    name: "Plain".to_owned(),
+                    body: "await PowerCmd.Apply(ctx, power, target, 1);".to_owned(),
+                    is_override: false,
+                },
             ],
         };
         let tracked = tracked_regexes();
 
-        assert_eq!(effects_in(&file, "Generic", &tracked), ["power"]);
-        assert_eq!(effects_in(&file, "Plain", &tracked), ["power"]);
+        assert_eq!(file.methods[0].effects(&file.methods, &tracked), ["power"]);
+        assert_eq!(file.methods[1].effects(&file.methods, &tracked), ["power"]);
     }
 
     #[test]
     fn effect_detection_follows_one_helper_level() {
         let file = ClassFile {
-            overrides: vec!["AfterSideTurnStart".to_owned()],
             methods: vec![
-                (
-                    "AfterSideTurnStart".to_owned(),
-                    "await Trigger();".to_owned(),
-                ),
-                (
-                    "Trigger".to_owned(),
-                    "await CreatureCmd.Damage(ctx, target, 1);".to_owned(),
-                ),
+                Method {
+                    name: "AfterSideTurnStart".to_owned(),
+                    body: "await Trigger();".to_owned(),
+                    is_override: true,
+                },
+                Method {
+                    name: "Trigger".to_owned(),
+                    body: "await CreatureCmd.Damage(ctx, target, 1);".to_owned(),
+                    is_override: false,
+                },
             ],
         };
 
         assert_eq!(
-            effects_in(&file, "AfterSideTurnStart", &tracked_regexes()),
+            file.methods[0].effects(&file.methods, &tracked_regexes()),
             ["damage"]
         );
     }
@@ -656,23 +661,60 @@ mod tests {
     }
 
     #[test]
+    fn parsed_overloads_keep_their_own_bodies_and_catalog_entries_require_one_method() {
+        let source = "namespace MegaCrit.Sts2.Core.Models.Powers;\n\
+                      public sealed class NewPower\n{\n\
+                          public override void AfterSideTurnStart() {}\n\
+                          public override void AfterSideTurnStart(int amount) { PowerCmd.Apply(amount); }\n\
+                          private void Helper() { CreatureCmd.Damage(); }\n}\n";
+        let (name, file) = parse_class_file(
+            Path::new("NewPower.cs"),
+            source,
+            "MegaCrit.Sts2.Core.Models.Powers",
+        )
+        .expect("fixture is a complete class")
+        .expect("fixture declares NewPower");
+        let files = BTreeMap::from([(name, file)]);
+        let universe = HashSet::from(["AfterSideTurnStart".to_owned()]);
+        let tracked = tracked_regexes();
+        let relics = BTreeMap::new();
+        let candidates = candidate_hooks(&relics, &files, &universe, &tracked);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].method, "AfterSideTurnStart");
+        assert_eq!(candidates[0].effects, ["power"]);
+
+        let mut review = Review::default();
+        review.check_entries(
+            &[("NewPower", "AfterSideTurnStart"), ("NewPower", "Missing")],
+            &files,
+            "Powers",
+            &universe,
+            &tracked,
+        );
+        assert_eq!(review.failures.len(), 2);
+        assert!(review.failures[0].contains("AfterSideTurnStart is missing or overloaded"));
+        assert!(review.failures[1].contains("Missing is missing or overloaded"));
+    }
+
+    #[test]
     fn effect_detection_unions_direct_and_helper_effects() {
         let file = ClassFile {
-            overrides: vec!["AfterSideTurnStart".to_owned()],
             methods: vec![
-                (
-                    "AfterSideTurnStart".to_owned(),
-                    "await CreatureCmd.Damage(ctx, target, 1); await Buff();".to_owned(),
-                ),
-                (
-                    "Buff".to_owned(),
-                    "await PowerCmd.Apply<StrengthPower>(ctx, target, 1);".to_owned(),
-                ),
+                Method {
+                    name: "AfterSideTurnStart".to_owned(),
+                    body: "await CreatureCmd.Damage(ctx, target, 1); await Buff();".to_owned(),
+                    is_override: true,
+                },
+                Method {
+                    name: "Buff".to_owned(),
+                    body: "await PowerCmd.Apply<StrengthPower>(ctx, target, 1);".to_owned(),
+                    is_override: false,
+                },
             ],
         };
 
         assert_eq!(
-            effects_in(&file, "AfterSideTurnStart", &tracked_regexes()),
+            file.methods[0].effects(&file.methods, &tracked_regexes()),
             ["damage", "power"]
         );
     }
