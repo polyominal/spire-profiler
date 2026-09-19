@@ -58,9 +58,18 @@ internal static class CaptureRuntime
     internal static CaptureEpoch EntryEpoch(CaptureEpoch saved = default)
     {
         if (Stale(saved)) return saved;
-        foreach (var inherited in new[] { FlowCapture.Current.Epoch, ProvenanceCapture.Pending.Epoch,
-            PlayCapture.Execution.Epoch, PlayCapture.Current?.Epoch ?? default, DamageCapture.Current.Epoch, CommandCapture.Current.Epoch })
-            if (Stale(inherited)) return inherited;
+        var producer = FlowCapture.Current.Epoch;
+        var pending = ProvenanceCapture.Pending.Epoch;
+        var execution = PlayCapture.Execution.Epoch;
+        var play = PlayCapture.Current?.Epoch ?? default;
+        var damage = DamageCapture.Current.Epoch;
+        var command = CommandCapture.Current.Epoch;
+        if (Stale(producer)) return producer;
+        if (Stale(pending)) return pending;
+        if (Stale(execution)) return execution;
+        if (Stale(play)) return play;
+        if (Stale(damage)) return damage;
+        if (Stale(command)) return command;
         return Epoch;
     }
     internal static bool Valid(CaptureEpoch epoch)
@@ -85,7 +94,7 @@ internal static class CaptureRuntime
             if (lease == 0) return SourceSnapshot.Unavailable;
             int count = Backend.SourceCount(lease);
             if (count < 1 || count > SourceSnapshot.MaxDestinations) throw new InvalidOperationException("Invalid source count");
-            var entries = new SourceShare[count];
+            Span<SourceShare> entries = stackalloc SourceShare[count];
             for (int i = 0; i < count; i++) entries[i] = new(Backend.SourceDestination(lease, i), Backend.SourceWeight(lease, i));
             return SourceSnapshot.Create(epoch.Sequence, entries);
         }

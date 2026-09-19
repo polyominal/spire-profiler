@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 
 namespace SpireProfiler;
 
@@ -14,13 +13,13 @@ internal sealed class SourceSnapshot
     internal SourceShare this[int index] => shares[index];
     internal static readonly SourceSnapshot Unavailable = new(0, Array.Empty<SourceShare>());
     private SourceSnapshot(ulong epoch, SourceShare[] entries) { Epoch = epoch; shares = entries; }
-    internal static SourceSnapshot Create(ulong epoch, IReadOnlyList<SourceShare> entries)
+    internal static SourceSnapshot Create(ulong epoch, ReadOnlySpan<SourceShare> entries)
     {
-        if (epoch == 0 || epoch > uint.MaxValue || entries.Count < 1 || entries.Count > MaxDestinations)
+        if (epoch == 0 || epoch > uint.MaxValue || entries.Length < 1 || entries.Length > MaxDestinations)
             throw new InvalidOperationException("Invalid source shape");
-        var copy = new SourceShare[entries.Count];
+        var copy = new SourceShare[entries.Length];
         ulong total = 0, gcd = 0;
-        for (int i = 0; i < entries.Count; i++)
+        for (int i = 0; i < entries.Length; i++)
         {
             var share = entries[i];
             var tag = share.Destination & 7;
@@ -37,5 +36,5 @@ internal sealed class SourceSnapshot
         return new SourceSnapshot(epoch, copy);
     }
     internal static ulong Gcd(ulong a, ulong b) { while (b != 0) { (a, b) = (b, a % b); } return a; }
-    internal static SourceSnapshot Unknown(ulong epoch) => Create(epoch, new[] { new SourceShare((epoch << 32) | 33, 1) });
+    internal static SourceSnapshot Unknown(ulong epoch) => Create(epoch, stackalloc[] { new SourceShare((epoch << 32) | 33, 1) });
 }
