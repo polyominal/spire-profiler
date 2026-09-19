@@ -114,26 +114,26 @@ impl LedgerStage {
             return Ok(());
         }
         let lost = pending.len() > SourceBlock::MAX_MODS;
-        let mut entry = SourceBlock {
-            base: source.prefix(),
-            base_original: base,
-            base_consumed: 0,
-            remaining: base,
-            mods: Vec::new(),
-        };
+        let mut remaining = base;
+        let mut mods = Vec::with_capacity(pending.len().min(SourceBlock::MAX_MODS));
         for (source, amount) in pending.into_iter().take(SourceBlock::MAX_MODS) {
-            entry.remaining = entry
-                .remaining
+            remaining = remaining
                 .checked_add(amount)
                 .ok_or(SourceFailure::Arithmetic)?;
-            entry.mods.push(SourceBlockMod {
+            mods.push(SourceBlockMod {
                 source: source.prefix(),
                 original: amount,
                 consumed: 0,
             });
         }
-        if entry.remaining > 0 {
-            pool.blocks.push(entry);
+        if remaining > 0 {
+            pool.blocks.push(SourceBlock {
+                base: source.prefix(),
+                base_original: base,
+                base_consumed: 0,
+                remaining,
+                mods: mods.into_boxed_slice(),
+            });
         }
         self.capacity_lost |= lost;
         Ok(())
@@ -204,7 +204,7 @@ impl LedgerStage {
             )
             .ok_or(SourceFailure::Capacity)?;
             self.credit(
-                Destination::Row(row),
+                Destination::Row(row as u32),
                 CreditField::BlockEffective,
                 i64::try_from(remaining).map_err(|_| SourceFailure::Arithmetic)?,
             )?;

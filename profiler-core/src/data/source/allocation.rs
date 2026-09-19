@@ -47,10 +47,9 @@ impl AllocatedCredit {
 pub(super) struct DamageAllocation;
 
 impl DamageAllocation {
-    fn sum(weights: &[u64]) -> Result<u64, SourceFailure> {
+    fn sum(mut weights: impl Iterator<Item = u64>) -> Result<u64, SourceFailure> {
         weights
-            .iter()
-            .try_fold(0_u64, |total, weight| total.checked_add(*weight))
+            .try_fold(0_u64, |total, weight| total.checked_add(weight))
             .ok_or(SourceFailure::Arithmetic)
     }
 
@@ -59,7 +58,7 @@ impl DamageAllocation {
         segment: ProducerSegment,
         modifiers: &[ModifierContribution],
         results: &[(u64, u64)],
-    ) -> Result<Vec<Vec<AllocatedCredit>>, SourceFailure> {
+    ) -> Result<Box<[Vec<AllocatedCredit>]>, SourceFailure> {
         if results.len() > caps::DAMAGE_RESULTS || modifiers.len() > caps::DAMAGE_MODIFIERS {
             return Err(SourceFailure::Capacity);
         }
@@ -80,22 +79,24 @@ impl DamageAllocation {
         if results.iter().any(|(total, blocked)| blocked > total) {
             return Err(SourceFailure::Packet);
         }
-        let totals: Vec<_> = results.iter().map(|(total, _)| *total).collect();
-        let contributions: Vec<_> = modifiers.iter().map(|event| event.amount).collect();
-        let total = Self::sum(&totals)?;
-        let modifier_total = Self::sum(&contributions)?.min(total);
-        let budgets = RootBudgets::proportional(modifier_total, &contributions)?;
-        let mut roots: Vec<_> = modifiers
+        let totals = results.iter().map(|(total, _)| *total);
+        let contributions = modifiers.iter().map(|event| event.amount);
+        let total = Self::sum(totals.clone())?;
+        let modifier_total = Self::sum(contributions.clone())?.min(total);
+        let budgets = RootBudgets::proportional(modifier_total, contributions)?;
+        let mut roots: Box<[_]> = modifiers
             .iter()
             .zip(budgets)
             .map(|(event, amount)| event.source.budgets(amount))
             .collect();
         let mut producer_roots = producer.budgets(total - modifier_total);
-        let result_budgets = RootBudgets::proportional(modifier_total, &totals)?;
+        let result_budgets = RootBudgets::proportional(modifier_total, totals)?;
         let mut allocated = Vec::with_capacity(results.len());
         for ((total, blocked), modifier_amount) in results.iter().zip(result_budgets) {
-            let remaining: Vec<_> = roots.iter().map(|roots| roots.remaining()).collect();
-            let portions = RootBudgets::proportional(modifier_amount, &remaining)?;
+            let portions = RootBudgets::proportional(
+                modifier_amount,
+                roots.iter().map(|roots| roots.remaining()),
+            )?;
             let mut credits = Vec::new();
             for (roots, amount) in roots.iter_mut().zip(portions) {
                 AllocatedCredit::append(
@@ -109,16 +110,14 @@ impl DamageAllocation {
                 segment.into(),
                 producer_roots.take(total - modifier_amount)?,
             )?;
-            let weights: Vec<_> = credits.iter().map(|credit| credit.damage).collect();
-            for (credit, blocked) in credits
-                .iter_mut()
-                .zip(RootBudgets::proportional(*blocked, &weights)?)
-            {
+            let blocked =
+                RootBudgets::proportional(*blocked, credits.iter().map(|credit| credit.damage))?;
+            for (credit, blocked) in credits.iter_mut().zip(blocked) {
                 credit.blocked = blocked;
             }
             allocated.push(credits);
         }
-        Ok(allocated)
+        Ok(allocated.into_boxed_slice())
     }
 }
 
@@ -133,7 +132,7 @@ mod tests {
             caps::COMBAT_CARDS,
             weights
                 .iter()
-                .map(|(row, weight)| (Destination::Row(*row), u128::from(*weight)))
+                .map(|(row, weight)| (Destination::Row(*row as u32), u128::from(*weight)))
                 .collect(),
         )
         .expect("fixture roots and weights fit source bounds")
@@ -184,12 +183,12 @@ mod tests {
             assert!(amount <= self.0.len() as u64, "budgets never go negative");
             let positions = Self::indices(amount, self.0.len());
             let drawn = positions.iter().map(|index| self.0[*index]).collect();
-            self.0 = self
-                .0
-                .iter()
-                .enumerate()
-                .filter_map(|(index, key)| (!positions.contains(&index)).then_some(*key))
-                .collect();
+            let mut index = 0;
+            self.0.retain(|_| {
+                let keep = !positions.contains(&index);
+                index += 1;
+                keep
+            });
             drawn
         }
     }
@@ -237,7 +236,7 @@ mod tests {
                 })
                 .collect();
             let mut producer = Units::source(total - bound, producer);
-            let mut output = Vec::new();
+            let mut output = Vec::with_capacity(results.len());
             for (i, (total, blocked)) in results.iter().enumerate() {
                 let modifier_amount = result_units.0.iter().filter(|r| **r == i).count() as u64;
                 let selected = events.take(modifier_amount);
@@ -317,7 +316,7 @@ mod tests {
             let actual = DamageAllocation::build(&sources[0], segment, &modifiers, &results)
                 .expect("bounded unit-model fixtures are valid groups");
             assert_eq!(
-                actual,
+                actual.as_ref(),
                 UnitModel::build(&sources[0], segment, &modifiers, &results)
             );
             for (credits, (total, blocked)) in actual.iter().zip(&results) {
@@ -345,19 +344,19 @@ mod tests {
         let actual =
             DamageAllocation::build(&producer, ProducerSegment::Direct, &modifiers, &results)
                 .expect("four actual points exhaust two producer and two modifier roots");
-        let expected = vec![
-            vec![
+        let expected = [
+            &[
                 credit(Destination::Row(3), DamageSegment::Modifier, 1, 0),
                 credit(Destination::Row(1), DamageSegment::Direct, 1, 1),
-            ],
-            vec![
+            ][..],
+            &[
                 credit(Destination::Row(2), DamageSegment::Modifier, 1, 1),
                 credit(Destination::Row(0), DamageSegment::Direct, 1, 1),
-            ],
+            ][..],
         ];
-        assert_eq!(actual, expected);
+        assert_eq!(actual.as_ref(), expected);
         assert_eq!(
-            actual,
+            actual.as_ref(),
             UnitModel::build(&producer, ProducerSegment::Direct, &modifiers, &results)
         );
     }
@@ -380,18 +379,18 @@ mod tests {
             DamageAllocation::build(&producer, ProducerSegment::Direct, &modifiers, &results)
                 .expect("overlapping roots retain separate damage segments");
         assert_eq!(
-            actual,
-            vec![
-                vec![
+            actual.as_ref(),
+            [
+                &[
                     credit(Destination::Row(1), DamageSegment::Modifier, 2, 1),
                     credit(Destination::Row(2), DamageSegment::Modifier, 1, 0),
                     credit(Destination::Row(1), DamageSegment::Direct, 1, 1),
-                ],
-                vec![],
+                ][..],
+                &[][..],
             ]
         );
         assert_eq!(
-            actual,
+            actual.as_ref(),
             UnitModel::build(&producer, ProducerSegment::Direct, &modifiers, &results)
         );
     }
@@ -413,14 +412,14 @@ mod tests {
         )
         .expect("modifier claims are capped by the one actual lethal point");
         assert_eq!(
-            lethal,
-            vec![
-                vec![credit(Destination::Row(1), DamageSegment::Modifier, 1, 1)],
-                vec![]
+            lethal.as_ref(),
+            [
+                &[credit(Destination::Row(1), DamageSegment::Modifier, 1, 1)][..],
+                &[][..]
             ]
         );
         assert_eq!(
-            lethal,
+            lethal.as_ref(),
             UnitModel::build(
                 &unknown,
                 ProducerSegment::Attributed,
@@ -432,7 +431,10 @@ mod tests {
             let results = [(0, 0), (3, 3)];
             let actual = DamageAllocation::build(&unknown, segment, &[], &results)
                 .expect("explicit unknown preserves the known producer segment");
-            assert_eq!(actual, UnitModel::build(&unknown, segment, &[], &results));
+            assert_eq!(
+                actual.as_ref(),
+                UnitModel::build(&unknown, segment, &[], &results)
+            );
             assert_eq!(
                 actual[1][0].destination,
                 Destination::Unknown(super::super::TEAM_SLOT)
@@ -538,9 +540,9 @@ mod tests {
         )
         .expect("widened products preserve a representable u64 total");
         assert_eq!(
-            actual,
-            vec![
-                vec![
+            actual.as_ref(),
+            [
+                &[
                     credit(
                         Destination::Row(0),
                         DamageSegment::Attributed,
@@ -548,8 +550,8 @@ mod tests {
                         u64::MAX - 2
                     ),
                     credit(Destination::Row(1), DamageSegment::Attributed, 1, 1),
-                ],
-                vec![credit(Destination::Row(0), DamageSegment::Attributed, 1, 0)],
+                ][..],
+                &[credit(Destination::Row(0), DamageSegment::Attributed, 1, 0)][..],
             ]
         );
     }

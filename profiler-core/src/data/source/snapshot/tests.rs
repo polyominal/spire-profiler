@@ -12,7 +12,7 @@ fn source(weights: &[(usize, u64)]) -> SourceSnapshot {
         caps::COMBAT_CARDS,
         weights
             .iter()
-            .map(|(row, weight)| (Destination::Row(*row), u128::from(*weight)))
+            .map(|(row, weight)| (Destination::Row(*row as u32), u128::from(*weight)))
             .collect(),
     )
     .expect("fixture rows and positive weights fit the source bounds")
@@ -42,7 +42,7 @@ fn normalization_merges_roots_without_losing_small_suppliers() {
             .iter()
             .map(|share| (share.destination, share.weight))
             .collect::<Vec<_>>(),
-        vec![
+        [
             (Destination::Row(3), 4),
             (Destination::Row(1), 3),
             (Destination::Row(5), 1)
@@ -71,7 +71,7 @@ fn proportional_allocation_matches_naive_unit_threshold_model() {
                 let weights = [a, b, c];
                 let total: u64 = weights.iter().sum();
                 for amount in 0..=32_u64 {
-                    let mut expected = vec![0_u64; weights.len()];
+                    let mut expected = [0_u64; 3];
                     if total > 0 {
                         // Count integer quota boundaries inside each root's interval.
                         for unit in 1..=amount {
@@ -85,9 +85,13 @@ fn proportional_allocation_matches_naive_unit_threshold_model() {
                             }
                         }
                     }
-                    let actual = RootBudgets::proportional(amount, &weights)
+                    let actual = RootBudgets::proportional(amount, weights.into_iter())
                         .expect("small fixture totals fit");
-                    assert_eq!(actual, expected, "amount={amount}, weights={weights:?}");
+                    assert_eq!(
+                        actual.as_ref(),
+                        expected,
+                        "amount={amount}, weights={weights:?}"
+                    );
                     if amount <= total {
                         assert!(
                             actual
@@ -101,11 +105,11 @@ fn proportional_allocation_matches_naive_unit_threshold_model() {
         }
     }
     assert_eq!(
-        RootBudgets::proportional(u64::MAX, &[u64::MAX - 1, 1]),
-        Ok(vec![u64::MAX - 1, 1])
+        RootBudgets::proportional(u64::MAX, [u64::MAX - 1, 1].into_iter()),
+        Ok(Box::from([u64::MAX - 1, 1]))
     );
     assert_eq!(
-        RootBudgets::proportional(1, &[u64::MAX, 1]),
+        RootBudgets::proportional(1, [u64::MAX, 1].into_iter()),
         Err(SourceFailure::Arithmetic)
     );
 }
@@ -148,14 +152,14 @@ fn exact_grant_mixtures_match_independent_common_unit_model() {
         let mut model = [0_u128; 5];
         let mut order = Vec::new();
         for (grant, total) in grants.iter().zip(totals) {
-            for share in &grant.source.shares {
+            for share in grant.source.shares.iter() {
                 let Destination::Row(row) = share.destination else {
                     panic!("fixture uses rows")
                 };
-                if model[row] == 0 {
+                if model[row as usize] == 0 {
                     order.push(row);
                 }
-                model[row] +=
+                model[row as usize] +=
                     u128::from(grant.remaining) * u128::from(share.weight) * (unit / total);
             }
         }
@@ -172,7 +176,7 @@ fn exact_grant_mixtures_match_independent_common_unit_model() {
             assert_eq!(share.destination, Destination::Row(row));
             assert_eq!(
                 u128::from(share.weight) * model_total,
-                model[row] * actual_total
+                model[row as usize] * actual_total
             );
         }
     }
@@ -207,7 +211,7 @@ fn one_point_mixed_grants_remain_mixed_before_final_allocation() {
             let Destination::Row(row) = destination else {
                 panic!("fixture uses rows")
             };
-            actual[row] += amount;
+            actual[row as usize] += amount;
         }
     }
     assert_eq!(actual, [1, 1]);
@@ -217,11 +221,15 @@ fn one_point_mixed_grants_remain_mixed_before_final_allocation() {
 fn fixed_root_budgets_survive_nonmonotone_proportional_prefixes() {
     let snapshot = source(&[(0, 2), (1, 3), (2, 5)]);
     assert_eq!(
-        RootBudgets::proportional(4, &[2, 3, 5]).expect("small weights fit"),
+        RootBudgets::proportional(4, [2, 3, 5].into_iter())
+            .expect("small weights fit")
+            .as_ref(),
         [0, 2, 2]
     );
     assert_eq!(
-        RootBudgets::proportional(5, &[2, 3, 5]).expect("small weights fit"),
+        RootBudgets::proportional(5, [2, 3, 5].into_iter())
+            .expect("small weights fit")
+            .as_ref(),
         [1, 1, 3]
     );
     for total in 0..=32 {
@@ -235,12 +243,14 @@ fn fixed_root_budgets_survive_nonmonotone_proportional_prefixes() {
                 let Destination::Row(row) = destination else {
                     panic!("fixture uses rows")
                 };
-                credited[row] += amount;
+                credited[row as usize] += amount;
             }
         }
         assert_eq!(
-            credited.to_vec(),
-            RootBudgets::proportional(total, &[2, 3, 5]).expect("small weights fit")
+            credited,
+            RootBudgets::proportional(total, [2, 3, 5].into_iter())
+                .expect("small weights fit")
+                .as_ref()
         );
         assert_eq!(budgets.take(1), Err(SourceFailure::Packet));
         assert_eq!(budgets.take(0), Ok(Vec::new()));
@@ -376,7 +386,7 @@ fn capacity_and_representation_failures_invalidate_then_release() {
     let transfer = state.source_transfer_begin(7);
     for row in 0..caps::SOURCE_DESTINATIONS {
         assert_eq!(
-            state.source_transfer_add(transfer, Destination::Row(row).token(epoch()), 1),
+            state.source_transfer_add(transfer, Destination::Row(row as u32).token(epoch()), 1),
             1
         );
     }
@@ -387,7 +397,7 @@ fn capacity_and_representation_failures_invalidate_then_release() {
     assert_eq!(
         state.source_transfer_add(
             transfer,
-            Destination::Row(caps::SOURCE_DESTINATIONS).token(epoch()),
+            Destination::Row(caps::SOURCE_DESTINATIONS as u32).token(epoch()),
             1
         ),
         0
@@ -407,6 +417,23 @@ fn capacity_and_representation_failures_invalidate_then_release() {
 
 #[test]
 fn token_kind_epoch_membership_and_serial_exhaustion_are_checked() {
+    let last_row = Destination::Row(PAYLOAD_MAX);
+    assert_eq!(
+        Destination::from_token(last_row.token(epoch()), epoch(), PAYLOAD_MAX as usize + 1),
+        Ok(last_row)
+    );
+    assert_eq!(
+        Destination::from_token(last_row.token(epoch()), epoch(), PAYLOAD_MAX as usize),
+        Err(SourceFailure::Token)
+    );
+    assert_eq!(
+        SourceSnapshot::normalized(
+            epoch(),
+            PAYLOAD_MAX as usize + 2,
+            vec![(Destination::Row(PAYLOAD_MAX + 1), 1)]
+        ),
+        Err(SourceFailure::Token)
+    );
     let mut state = state(1);
     for wire in [0, u64::from(u32::MAX) + 1, u64::MAX, 6, 8] {
         assert_eq!(state.source_transfer_begin(wire), 0);
@@ -515,7 +542,7 @@ fn monotone_prefixes_match_independent_per_seat_quotient_model() {
                 let Destination::Row(row) = destination else {
                     panic!("fixture uses rows")
                 };
-                credited[row] += amount;
+                credited[row as usize] += amount;
             }
             assert_eq!(credited, model, "weights={weights:?}, total={total}");
         }
@@ -532,7 +559,7 @@ fn partial_pool_prefixes_keep_their_weights_when_more_credit_arrives() {
             let Destination::Row(row) = destination else {
                 panic!("fixture uses rows")
             };
-            actual[row] += amount;
+            actual[row as usize] += amount;
         }
     }
     assert_eq!(actual, [50, 50]);
@@ -541,16 +568,19 @@ fn partial_pool_prefixes_keep_their_weights_when_more_credit_arrives() {
         let Destination::Row(row) = destination else {
             panic!("fixture uses rows")
         };
-        actual[row] += amount;
+        actual[row as usize] += amount;
     }
     assert_eq!(actual, [101, 102]);
-    assert_eq!(prefix.credit(0), Ok(Vec::new()));
+    assert_eq!(prefix.credit(0).as_deref(), Ok([].as_slice()));
     assert_eq!(prefix.source, snapshot);
     let mut prefix = source(&[(0, 2), (1, 3), (2, 5)]).prefix();
     prefix.credit(4).expect("four-point cursor fits");
-    assert_eq!(prefix.credits, [1, 1, 2]);
-    assert_eq!(prefix.credit(1), Ok(vec![(Destination::Row(2), 1)]));
-    assert_eq!(prefix.credits, [1, 1, 3]);
+    assert_eq!(*prefix.credits, [1, 1, 2]);
+    assert_eq!(
+        prefix.credit(1).as_deref(),
+        Ok([(Destination::Row(2), 1)].as_slice())
+    );
+    assert_eq!(*prefix.credits, [1, 1, 3]);
 }
 
 #[test]
@@ -563,16 +593,16 @@ fn wide_prefixes_are_monotone_and_cursor_overflow_is_transactional() {
     );
     let second = prefix.credit(1).expect("last representable credit fits");
     assert_eq!(second.iter().map(|(_, amount)| amount).sum::<u64>(), 1);
-    assert_eq!(prefix.credits, [u64::MAX - 2, 1, 1]);
+    assert_eq!(*prefix.credits, [u64::MAX - 2, 1, 1]);
     let before = prefix.credits.clone();
     assert_eq!(prefix.credit(1), Err(SourceFailure::Arithmetic));
     assert_eq!(prefix.credits, before);
     assert_eq!(prefix.credited_total, u64::MAX);
-    assert_eq!(prefix.credit(0), Ok(Vec::new()));
+    assert_eq!(prefix.credit(0).as_deref(), Ok([].as_slice()));
     let mut single = source(&[(0, 1)]).prefix();
     assert_eq!(
-        single.credit(u64::MAX),
-        Ok(vec![(Destination::Row(0), u64::MAX)])
+        single.credit(u64::MAX).as_deref(),
+        Ok([(Destination::Row(0), u64::MAX)].as_slice())
     );
 }
 
