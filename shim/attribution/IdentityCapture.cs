@@ -20,25 +20,24 @@ internal static class IdentityCapture
     private static ulong nextIdentity, nextExecution;
     private static int allocated, executions;
     private static object pendingPreparation, activePreparation;
-    internal static bool Preparing { get; private set; }
+    internal static bool Preparing => pendingPreparation != null;
     internal static void PrepareCombat()
     {
         if (!CaptureRuntime.OnThread) return;
-        Preparing = true;
         allocated = 0;
         executions = 0;
         pendingPreparation = new object();
     }
-    internal static void CancelPreparation() { Preparing = false; pendingPreparation = null; }
+    internal static void CancelPreparation() => pendingPreparation = null;
     internal static void NewEpoch()
     {
-        activePreparation = Preparing ? pendingPreparation : null;
+        activePreparation = pendingPreparation;
         if (!Preparing) { allocated = 0; executions = 0; }
         CancelPreparation();
     }
     internal static void GeneratedBeforeReady(object card)
     {
-        if (card == null || !Preparing || pendingPreparation == null || !CaptureRuntime.OnThread) return;
+        if (card == null || !Preparing || !CaptureRuntime.OnThread) return;
         if (!identities.TryGetValue(card, out var metadata))
         {
             if (allocated == PerCombat || nextIdentity == ulong.MaxValue) { CaptureRuntime.Fail("identity-cap"); return; }
