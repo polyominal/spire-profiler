@@ -47,7 +47,7 @@ use serde::Deserialize;
 use crate::data::persistence::{
     CardStatKey, card_stat_from_rec, load_combat_docs_from, parse_combat_docs,
 };
-use crate::data::records::{CombatRec, PlayerRec};
+use crate::data::records::{CombatRec, PlayerRec, RunRec};
 use crate::data::state::{CardStat, CombatResult, PlayerFilter, RunOutcome, STATE, TEAM_SLOT};
 
 /// Roll-ups are undeclared on purpose: the view recomputes them.
@@ -84,15 +84,6 @@ impl Default for RunEntry {
             ended_at: 0,
             players: Box::default(),
         }
-    }
-}
-
-impl RunEntry {
-    fn contains(&self, combat: &CombatRec) -> bool {
-        combat.run.as_ref().is_some_and(|run| {
-            run.seq == self.run_id
-                && run.matches_identity(&self.seed, self.started_at, self.profile)
-        })
     }
 }
 
@@ -134,9 +125,92 @@ pub struct RunSummaryView {
     pub player_rollups: Box<[PlayerRollup]>,
 }
 
+impl RunSummaryView {
+    fn with_combats(mut self, combats: &[CombatRec]) -> Self {
+        let mut combat_views = Vec::new();
+        let mut rollup = Vec::new();
+        let mut player_cards: Vec<Vec<CardStat>> = vec![Vec::new(); self.players.len()];
+        let mut latest_combat = None;
+        for combat in combats {
+            if !combat.run.as_ref().is_some_and(|run| {
+                run.seq == self.run_id
+                    && run.matches_identity(&self.seed, self.started_at, self.profile)
+            }) {
+                continue;
+            }
+            latest_combat = Some(
+                latest_combat.map_or(combat.started_at, |time: i64| time.max(combat.started_at)),
+            );
+            combat_views.push(CombatView {
+                seq: combat.combat_id,
+                encounter: combat.encounter_id.clone(),
+                result: combat.result,
+                damage_dealt: combat.cards.iter().map(|card| card.damage_dealt).sum(),
+                damage_taken: combat.damage_received,
+                turns: combat.turns,
+            });
+            // Preserve each combat's transaction boundary independently in every rollup.
+            for (player, cards) in self.players.iter().zip(&mut player_cards) {
+                CardStat::merge_rows(
+                    cards,
+                    combat
+                        .cards
+                        .iter()
+                        .filter(|row| {
+                            crate::data::state::clamp_source_slot(i32::from(row.player))
+                                == player.slot
+                        })
+                        .map(card_stat_from_rec),
+                    CardStatKey::TeamMerged,
+                );
+            }
+            CardStat::merge_rows(
+                &mut rollup,
+                combat.cards.iter().map(|rec| {
+                    let mut row = card_stat_from_rec(rec);
+                    row.player = TEAM_SLOT;
+                    row
+                }),
+                CardStatKey::TeamMerged,
+            );
+        }
+        if self.outcome.is_none() {
+            self.ended_at = latest_combat.unwrap_or(0);
+        }
+        self.combats = combat_views.into_boxed_slice();
+        self.rollup = rollup.into_boxed_slice();
+        self.player_rollups = self
+            .players
+            .iter()
+            .zip(player_cards)
+            .map(|(player, cards)| PlayerRollup {
+                slot: player.slot,
+                character: player.character.clone(),
+                cards: cards.into_boxed_slice(),
+            })
+            .collect();
+        self
+    }
+}
+
 pub enum RunSelection {
     Selected(Rc<RunSummaryView>),
     Empty,
+}
+
+#[derive(Clone, Copy)]
+enum MatchedRun<'a> {
+    Ended(&'a RunEntry),
+    Unfinished(&'a RunRec),
+}
+
+impl MatchedRun<'_> {
+    fn id(self) -> u32 {
+        match self {
+            Self::Ended(run) => run.run_id,
+            Self::Unfinished(run) => run.seq,
+        }
+    }
 }
 
 struct Cache {
@@ -190,13 +264,14 @@ pub(crate) fn continued_run_id(
     start_time: i64,
     profile: i32,
 ) -> Option<u32> {
-    matching_run_id(
+    matching_run(
         &load_runs(runs_path)?,
         &load_combats(runs_dir),
         seed,
         start_time,
         profile,
     )
+    .map(MatchedRun::id)
 }
 
 /// An abandoned run leaves its directory but no entry, so the directory
@@ -250,17 +325,17 @@ pub fn invalidate() {
     CACHE.with(|cell| *cell.borrow_mut() = None);
 }
 
-fn matching_run_id(
-    runs: &[RunEntry],
-    combats: &[CombatRec],
+fn matching_run<'a>(
+    runs: &'a [RunEntry],
+    combats: &'a [CombatRec],
     seed: &str,
     start_time: i64,
     profile: i32,
-) -> Option<u32> {
+) -> Option<MatchedRun<'a>> {
     if seed.is_empty() || start_time <= 0 || profile < 0 {
         return None;
     }
-    let mut ids = runs
+    let mut matches = runs
         .iter()
         .filter(|run| {
             run.run_id != 0
@@ -268,96 +343,21 @@ fn matching_run_id(
                 && run.seed.as_ref() == seed
                 && run.started_at == start_time
         })
-        .map(|run| run.run_id)
+        .map(MatchedRun::Ended)
         .chain(
             combats
                 .iter()
+                .rev()
                 .filter_map(|combat| combat.run.as_ref())
                 .filter(|run| run.matches_identity(seed, start_time, profile))
-                .map(|run| run.seq),
+                .map(MatchedRun::Unfinished),
         );
-    let id = ids.next()?;
-    if ids.any(|other| other != id) {
+    let matched = matches.next()?;
+    if matches.any(|other| other.id() != matched.id()) {
         crate::fail!("multiple run IDs share profile {profile}, seed '{seed}', start {start_time}");
         return None;
     }
-    Some(id)
-}
-
-fn build_view(entry: &RunEntry, combats: &[CombatRec]) -> RunSummaryView {
-    RunSummaryView {
-        run_id: entry.run_id,
-        profile: entry.profile,
-        character: entry.character.clone(),
-        ascension: entry.ascension,
-        game_mode: entry.game_mode.clone(),
-        outcome: Some(entry.outcome),
-        seed: entry.seed.clone(),
-        started_at: entry.started_at,
-        ended_at: entry.ended_at,
-        players: entry.players.clone(),
-        combats: combats
-            .iter()
-            .filter(|combat| entry.contains(combat))
-            .map(|combat| CombatView {
-                seq: combat.combat_id,
-                encounter: combat.encounter_id.clone(),
-                result: combat.result,
-                damage_dealt: combat.cards.iter().map(|c| c.damage_dealt).sum(),
-                damage_taken: combat.damage_received,
-                turns: combat.turns,
-            })
-            .collect(),
-        rollup: roll_up_cards(combats, entry),
-        player_rollups: build_player_rollups(entry, combats),
-    }
-}
-
-/// TEAM-merged; rows keep first-seen order.
-fn roll_up_cards(combats: &[CombatRec], entry: &RunEntry) -> Box<[CardStat]> {
-    let mut rollup: Vec<CardStat> = Vec::new();
-    for combat in combats {
-        if !entry.contains(combat) {
-            continue;
-        }
-        let rows = combat.cards.iter().map(|rec| {
-            let mut row = card_stat_from_rec(rec);
-            row.player = TEAM_SLOT;
-            row
-        });
-        CardStat::merge_rows(&mut rollup, rows, CardStatKey::TeamMerged);
-    }
-    rollup.into_boxed_slice()
-}
-
-/// Merging same-id rows within that slot only.
-fn roll_up_cards_for_slot(combats: &[CombatRec], entry: &RunEntry, slot: u8) -> Box<[CardStat]> {
-    let mut rollup: Vec<CardStat> = Vec::new();
-    for combat in combats {
-        if !entry.contains(combat) {
-            continue;
-        }
-        let rows = combat
-            .cards
-            .iter()
-            .filter(|row| crate::data::state::clamp_source_slot(i32::from(row.player)) == slot)
-            .map(card_stat_from_rec);
-        CardStat::merge_rows(&mut rollup, rows, CardStatKey::TeamMerged);
-    }
-    rollup.into_boxed_slice()
-}
-
-/// Players with no rows still get an empty entry.
-fn build_player_rollups(entry: &RunEntry, combats: &[CombatRec]) -> Box<[PlayerRollup]> {
-    entry
-        .players
-        .iter()
-        .map(|player| PlayerRollup {
-            slot: player.slot,
-            character: player.character.clone(),
-            cards: roll_up_cards_for_slot(combats, entry, player.slot),
-        })
-        .collect()
+    Some(matched)
 }
 
 /// Exact runs.jsonl match, else the combats fallback, else Empty.
@@ -368,43 +368,37 @@ pub fn select_run(seed: &str, start_time: i64, profile: i32) -> RunSelection {
         let Some(cache) = cache.as_ref() else {
             return RunSelection::Empty;
         };
-        let Some(run_id) = matching_run_id(&cache.runs, &cache.combats, seed, start_time, profile)
+        let Some(matched) = matching_run(&cache.runs, &cache.combats, seed, start_time, profile)
         else {
             return RunSelection::Empty;
         };
-        if let Some(entry) = cache.runs.iter().find(|run| {
-            run.run_id == run_id
-                && run.seed.as_ref() == seed
-                && run.started_at == start_time
-                && run.profile == profile
-        }) {
-            return RunSelection::Selected(Rc::new(build_view(entry, &cache.combats)));
-        }
-        let run = cache
-            .combats
-            .iter()
-            .filter_map(|combat| combat.run.as_ref())
-            .rfind(|run| run.seq == run_id && run.matches_identity(seed, start_time, profile))
-            .expect("a matching ID without a run entry came from a combat");
-        let mut entry = RunEntry {
-            run_id,
-            profile: run.profile,
-            character: run.character.clone(),
-            ascension: run.ascension,
-            game_mode: run.game_mode.clone(),
-            seed: run.seed.clone(),
-            started_at: run.started_at,
-            ..RunEntry::default()
+        let view = match matched {
+            MatchedRun::Ended(entry) => RunSummaryView {
+                run_id: entry.run_id,
+                profile: entry.profile,
+                character: entry.character.clone(),
+                ascension: entry.ascension,
+                game_mode: entry.game_mode.clone(),
+                outcome: Some(entry.outcome),
+                seed: entry.seed.clone(),
+                started_at: entry.started_at,
+                ended_at: entry.ended_at,
+                players: entry.players.clone(),
+                ..RunSummaryView::default()
+            }
+            .with_combats(&cache.combats),
+            MatchedRun::Unfinished(run) => RunSummaryView {
+                run_id: run.seq,
+                profile: run.profile,
+                character: run.character.clone(),
+                ascension: run.ascension,
+                game_mode: run.game_mode.clone(),
+                seed: run.seed.clone(),
+                started_at: run.started_at,
+                ..RunSummaryView::default()
+            }
+            .with_combats(&cache.combats),
         };
-        entry.ended_at = cache
-            .combats
-            .iter()
-            .filter(|combat| entry.contains(combat))
-            .map(|combat| combat.started_at)
-            .max()
-            .unwrap_or(0);
-        let mut view = build_view(&entry, &cache.combats);
-        view.outcome = None;
         RunSelection::Selected(Rc::new(view))
     })
 }
