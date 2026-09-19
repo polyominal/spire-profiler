@@ -490,6 +490,62 @@ mod tests {
     use super::*;
 
     #[test]
+    fn font_plan_resolves_role_fallbacks_before_replay() {
+        use crate::engine::gdext::{OPAQUE_SIZE, Object, Opaque};
+        use crate::ui::panel_replay::{FontPlan, Fonts};
+
+        let resource = || RetainedVariant(Box::new(Opaque([0; OPAQUE_SIZE])));
+        let object = Object(std::ptr::null_mut());
+        for mask in 0..8 {
+            let theme = Theme {
+                font_title: if mask & 1 != 0 {
+                    AssetState::Loaded(resource())
+                } else {
+                    AssetState::Failed
+                },
+                font_body: if mask & 2 != 0 {
+                    AssetState::Loaded(resource())
+                } else {
+                    AssetState::Failed
+                },
+                ..Theme::new()
+            };
+            let mut default = if mask & 4 != 0 {
+                AssetState::Loaded(resource())
+            } else {
+                AssetState::Failed
+            };
+            let default_ptr = match &default {
+                AssetState::Loaded(font) => Some(font.const_ptr()),
+                _ => None,
+            };
+            for plan in [FontPlan::Kreon, FontPlan::Fallback] {
+                let fonts = Fonts::new(&object, &mut default, &theme, plan, "cached font");
+                for role in [TextRole::Title, TextRole::Body] {
+                    let expected = if matches!(plan, FontPlan::Fallback) {
+                        default_ptr
+                    } else {
+                        theme
+                            .face(role)
+                            .map(RetainedVariant::const_ptr)
+                            .or(default_ptr)
+                    };
+                    assert_eq!(
+                        fonts.for_role(role).map(RetainedVariant::const_ptr),
+                        expected,
+                        "asset mask {mask}, role {role:?}"
+                    );
+                }
+            }
+        }
+
+        let mut unfetched = AssetState::Unfetched;
+        let theme = Theme::new();
+        Fonts::new(&object, &mut unfetched, &theme, FontPlan::NoText, "no text");
+        assert!(matches!(unfetched, AssetState::Unfetched));
+    }
+
+    #[test]
     fn asset_table_paths_are_distinct_res_urls() {
         let paths = [
             FONT_TITLE_PATH,

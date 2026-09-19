@@ -6,30 +6,10 @@
 
 use crate::engine::gdext::{Object, RetainedVariant};
 use crate::engine::math::{Color, Rect2, Vector2};
-use crate::engine::object::TextAlign;
-use crate::ui::chart_layout::{Cmd, TextCmd};
+use crate::ui::chart_layout::{Cmd, TextCmd, TextEffect};
 use crate::ui::palette;
 use crate::ui::theme::{AssetState, IconId, Plate, ScrollbarSprites, TextRole, Theme};
 use crate::warn;
-
-/// A failed fetch disables text permanently.
-pub(crate) fn ensure_font(object: &Object, state: &mut AssetState, warning: &str) -> bool {
-    match state {
-        AssetState::Loaded(_) => true,
-        AssetState::Failed => false,
-        AssetState::Unfetched => match object.get_theme_default_font() {
-            Some(resolved) => {
-                *state = AssetState::Loaded(resolved);
-                true
-            }
-            None => {
-                *state = AssetState::Failed;
-                warn!("{warning}");
-                false
-            }
-        },
-    }
-}
 
 /// Verified against the shipped cmaps; the game swaps by locale, we fall
 /// back by measured coverage. Sorted and non-overlapping for binary search.
@@ -142,10 +122,8 @@ impl FontPlan {
 }
 
 pub(crate) struct Fonts<'a> {
-    default: Option<&'a RetainedVariant>,
     title: Option<&'a RetainedVariant>,
     body: Option<&'a RetainedVariant>,
-    force_default: bool,
 }
 
 impl<'a> Fonts<'a> {
@@ -156,116 +134,37 @@ impl<'a> Fonts<'a> {
         plan: FontPlan,
         warn: &str,
     ) -> Fonts<'a> {
-        if !matches!(plan, FontPlan::NoText) {
-            ensure_font(object, default_state, warn);
+        if !matches!(plan, FontPlan::NoText) && matches!(default_state, AssetState::Unfetched) {
+            *default_state = match object.get_theme_default_font() {
+                Some(font) => AssetState::Loaded(font),
+                None => {
+                    warn!("{warn}");
+                    AssetState::Failed
+                }
+            };
         }
         let default = match &*default_state {
             AssetState::Loaded(font) => Some(font),
             _ => None,
         };
-        Fonts {
-            default,
-            title: theme.face(TextRole::Title),
-            body: theme.face(TextRole::Body),
-            force_default: matches!(plan, FontPlan::Fallback),
+        match plan {
+            FontPlan::Fallback => Fonts {
+                title: default,
+                body: default,
+            },
+            FontPlan::NoText | FontPlan::Kreon => Fonts {
+                title: theme.face(TextRole::Title).or(default),
+                body: theme.face(TextRole::Body).or(default),
+            },
         }
     }
 
     pub(crate) fn for_role(&self, role: TextRole) -> Option<&RetainedVariant> {
-        if self.force_default {
-            return self.default;
-        }
         match role {
-            TextRole::Title => self.title.or(self.default),
-            TextRole::Body => self.body.or(self.default),
+            TextRole::Title => self.title,
+            TextRole::Body => self.body,
         }
     }
-}
-
-/// A (3,2)-offset 50%-black pass under the main pass; both passes share
-/// the alignment box so the shadow never drifts off the glyphs.
-#[allow(clippy::too_many_arguments)] // a draw call's full parameter list
-pub(crate) fn draw_shadowed_text(
-    object: &Object,
-    font: &RetainedVariant,
-    pos: Vector2,
-    text: &str,
-    align: TextAlign,
-    size: i32,
-    color: palette::Color,
-) -> usize {
-    let mut errors = 0;
-    let shadow = palette::COL_SHADOW;
-    if !object.draw_string(
-        font,
-        pos + Vector2::new(3.0, 2.0),
-        text,
-        align,
-        size,
-        Color::from_rgba(shadow[0], shadow[1], shadow[2], shadow[3]),
-    ) {
-        errors += 1;
-    }
-    if !object.draw_string(
-        font,
-        pos,
-        text,
-        align,
-        size,
-        Color::from_rgba(color[0], color[1], color[2], color[3]),
-    ) {
-        errors += 1;
-    }
-    errors
-}
-
-/// `draw_string` has no outline parameter, so the rim is four 1px diagonal
-/// passes under the main pass.
-#[allow(clippy::too_many_arguments)] // a draw call's full parameter list
-pub(crate) fn draw_outlined_text(
-    object: &Object,
-    font: &RetainedVariant,
-    pos: Vector2,
-    text: &str,
-    align: TextAlign,
-    size: i32,
-    color: palette::Color,
-) -> usize {
-    let mut errors = 0;
-    let shadow = palette::COL_HEADER_SHADOW;
-    if !object.draw_string(
-        font,
-        pos + Vector2::new(5.0, 4.0),
-        text,
-        align,
-        size,
-        Color::from_rgba(shadow[0], shadow[1], shadow[2], shadow[3]),
-    ) {
-        errors += 1;
-    }
-    let outline = palette::COL_HEADER_OUTLINE;
-    let outline_color = Color::from_rgba(outline[0], outline[1], outline[2], outline[3]);
-    for offset in [
-        Vector2::new(-1.0, -1.0),
-        Vector2::new(1.0, -1.0),
-        Vector2::new(-1.0, 1.0),
-        Vector2::new(1.0, 1.0),
-    ] {
-        if !object.draw_string(font, pos + offset, text, align, size, outline_color) {
-            errors += 1;
-        }
-    }
-    if !object.draw_string(
-        font,
-        pos,
-        text,
-        align,
-        size,
-        Color::from_rgba(color[0], color[1], color[2], color[3]),
-    ) {
-        errors += 1;
-    }
-    errors
 }
 
 /// `origin_x` is the plate box's x inside the Control (a flipped tooltip
@@ -494,24 +393,22 @@ fn replay_text_cmd(object: &Object, fonts: &Fonts, text: &TextCmd, offset: Vecto
         return 0;
     };
     let pos = Vector2::new(text.x + offset.x, text.y + offset.y);
-    if text.outline {
-        return draw_outlined_text(
-            object, font, pos, &text.text, text.align, text.size, text.color,
-        );
-    }
-    if text.shadow {
-        return draw_shadowed_text(
-            object, font, pos, &text.text, text.align, text.size, text.color,
-        );
-    }
-    usize::from(!object.draw_string(
-        font,
-        pos,
-        &text.text,
-        text.align,
-        text.size,
-        Color::from_rgba(text.color[0], text.color[1], text.color[2], text.color[3]),
-    ))
+    let color = |rgba: palette::Color| Color::from_rgba(rgba[0], rgba[1], rgba[2], rgba[3]);
+    let main = (Vector2::ZERO, color(text.color));
+    let passes: &[(Vector2, Color)] = match text.effect {
+        TextEffect::Plain => &[main],
+        TextEffect::Shadow => &[(Vector2::new(3.0, 2.0), color(palette::COL_SHADOW)), main],
+        // Godot exposes no outline argument: four diagonal passes form the rim.
+        TextEffect::Outline => &[
+            (Vector2::new(5.0, 4.0), color(palette::COL_HEADER_SHADOW)),
+            (Vector2::new(-1.0, -1.0), color(palette::COL_HEADER_OUTLINE)),
+            (Vector2::new(1.0, -1.0), color(palette::COL_HEADER_OUTLINE)),
+            (Vector2::new(-1.0, 1.0), color(palette::COL_HEADER_OUTLINE)),
+            (Vector2::new(1.0, 1.0), color(palette::COL_HEADER_OUTLINE)),
+            main,
+        ],
+    };
+    object.draw_text_passes(font, pos, &text.text, text.align, text.size, passes)
 }
 
 /// The bottom cap reuses the sprite unflipped: a flipped draw would need

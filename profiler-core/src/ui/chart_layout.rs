@@ -161,16 +161,20 @@ pub struct TextCmd {
     pub color: Color,
     /// The theme's title/body faces, falling back to the default font.
     pub role: TextRole,
-    /// The game's body-text shadow; per-row shadows would double the dense
-    /// rows' draw calls.
-    pub shadow: bool,
-    /// The 32px gold-header treatment: a #543F00 rim plus the (5,4) 12.5%
-    /// header shadow. The two panels' titles only.
-    pub outline: bool,
+    pub effect: TextEffect,
     /// Right/Center/LeftClipped replay over the box `[x, x + w]`; Left
     /// draws unconstrained.
     pub align: TextAlign,
     pub text: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TextEffect {
+    Plain,
+    /// The game's body-text shadow; dense chart rows omit this extra pass.
+    Shadow,
+    /// Gold-header rim plus the (5,4) 12.5% header shadow.
+    Outline,
 }
 
 /// The destination rect's aspect must match the icon's source region.
@@ -305,7 +309,7 @@ impl<'a> CmdSink<'a> {
     }
 
     pub(crate) fn text(&mut self, x: f32, y: f32, size: i32, color: Color, s: impl Into<String>) {
-        self.text_ex(x, y, size, color, TextRole::Body, false, s);
+        self.text_ex(x, y, size, color, TextRole::Body, TextEffect::Plain, s);
     }
 
     pub(crate) fn text_right(
@@ -328,8 +332,7 @@ impl<'a> CmdSink<'a> {
                 size,
                 color,
                 role: TextRole::Body,
-                shadow: false,
-                outline: false,
+                effect: TextEffect::Plain,
                 align: TextAlign::Right(width),
                 text: s,
             }),
@@ -361,8 +364,7 @@ impl<'a> CmdSink<'a> {
                 size,
                 color,
                 role,
-                shadow: false,
-                outline: false,
+                effect: TextEffect::Plain,
                 align: TextAlign::LeftClipped(width),
                 text: s,
             }),
@@ -378,7 +380,7 @@ impl<'a> CmdSink<'a> {
         size: i32,
         color: Color,
         role: TextRole,
-        shadow: bool,
+        effect: TextEffect,
         s: impl Into<String>,
     ) {
         let s = s.into();
@@ -393,8 +395,7 @@ impl<'a> CmdSink<'a> {
                 size,
                 color,
                 role,
-                shadow,
-                outline: false,
+                effect,
                 align: TextAlign::Left,
                 text: s,
             }),
@@ -415,8 +416,7 @@ impl<'a> CmdSink<'a> {
                 size: theme::SIZE_HEADER,
                 color: COL_GOLD,
                 role: TextRole::Title,
-                shadow: false,
-                outline: true,
+                effect: TextEffect::Outline,
                 align: TextAlign::Left,
                 text: s,
             }),
@@ -636,8 +636,7 @@ fn emit_tabs(l: &mut Layout, input: &BuildInput<'_>, g: &Geom, y_in: f32) {
                 size: theme::SIZE_HEADER,
                 color: if active { COL_CREAM } else { COL_DIM },
                 role: TextRole::Title,
-                shadow: true,
-                outline: false,
+                effect: TextEffect::Shadow,
                 align: TextAlign::Center(TAB_W),
                 text: tab.label().to_owned(),
             }),
@@ -724,7 +723,7 @@ fn emit_section_header(sink: &mut CmdSink, g: &Geom, y: f32, name: &str) {
         SIZE_BODY,
         COL_GOLD,
         TextRole::Title,
-        true,
+        TextEffect::Shadow,
         name,
     );
 }

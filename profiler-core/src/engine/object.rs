@@ -159,40 +159,46 @@ impl Object {
         ) == CALL_OK
     }
 
-    pub(crate) fn draw_string(
+    /// Passes share text, font, size, and alignment; each supplies its offset and color.
+    pub(crate) fn draw_text_passes(
         self,
         font: &RetainedVariant,
         pos: Vector2,
         text: &str,
         align: TextAlign,
         size: i32,
-        color: Color,
-    ) -> bool {
+        passes: &[(Vector2, Color)],
+    ) -> usize {
         let text_v = string_variant(text);
-        let pos_value = [pos.x, pos.y];
-        let pos_v = Variant::from_vector2(&pos_value);
         let (alignment, width) = align.engine_args();
-        let color_arr = color.as_array();
         let align_v = Variant::from_int(alignment);
         let width_v = Variant::from_float(width);
         let size_v = Variant::from_int(i64::from(size));
-        let color_v = Variant::from_color(&color_arr);
-        let mut ret = Variant::nil();
         let method = GLOBAL.with(|g| g.borrow().sn_draw_string);
-        self.call(
-            "draw_string",
-            method,
-            &[
-                font.const_ptr(),
-                pos_v.const_ptr(),
-                text_v.const_ptr(),
-                align_v.const_ptr(),
-                width_v.const_ptr(),
-                size_v.const_ptr(),
-                color_v.const_ptr(),
-            ],
-            &mut ret,
-        ) == CALL_OK
+        let mut errors = 0;
+        for &(offset, color) in passes {
+            let at = pos + offset;
+            let pos_v = Variant::from_vector2(&[at.x, at.y]);
+            let color_v = Variant::from_color(&color.as_array());
+            let mut ret = Variant::nil();
+            errors += usize::from(
+                self.call(
+                    "draw_string",
+                    method,
+                    &[
+                        font.const_ptr(),
+                        pos_v.const_ptr(),
+                        text_v.const_ptr(),
+                        align_v.const_ptr(),
+                        width_v.const_ptr(),
+                        size_v.const_ptr(),
+                        color_v.const_ptr(),
+                    ],
+                    &mut ret,
+                ) != CALL_OK,
+            );
+        }
+        errors
     }
 
     /// The engine slices the self-constructed StyleBoxTexture.
