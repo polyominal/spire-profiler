@@ -399,28 +399,23 @@ fn draw_text(
     color: palette::Color,
 ) -> usize {
     let shadow = palette::COL_TIP_SHADOW;
-    let mut errors = 0;
-    if !object.draw_string(
-        font,
-        pos + Vector2::new(3.0, 2.0),
-        text,
-        align,
-        theme::SIZE_TOOLTIP,
-        Color::from_rgba(shadow[0], shadow[1], shadow[2], shadow[3]),
-    ) {
-        errors += 1;
-    }
-    if !object.draw_string(
+    object.draw_text_passes(
         font,
         pos,
         text,
         align,
         theme::SIZE_TOOLTIP,
-        Color::from_rgba(color[0], color[1], color[2], color[3]),
-    ) {
-        errors += 1;
-    }
-    errors
+        &[
+            (
+                Vector2::new(3.0, 2.0),
+                Color::from_rgba(shadow[0], shadow[1], shadow[2], shadow[3]),
+            ),
+            (
+                Vector2::ZERO,
+                Color::from_rgba(color[0], color[1], color[2], color[3]),
+            ),
+        ],
+    )
 }
 
 #[cfg(test)]

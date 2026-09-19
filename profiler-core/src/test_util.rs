@@ -244,13 +244,16 @@ pub fn dump_cmds(cmds: &[Cmd]) -> String {
                     TextAlign::Left => String::new(),
                 };
                 out.push_str(&format!(
-                    "text x={:.1} y={:.1} size={} role={:?}{}{}{} {} {:?}\n",
+                    "text x={:.1} y={:.1} size={} role={:?}{}{} {} {:?}\n",
                     t.x,
                     t.y,
                     t.size,
                     t.role,
-                    if t.shadow { " shadow" } else { "" },
-                    if t.outline { " outline" } else { "" },
+                    match t.effect {
+                        crate::ui::chart_layout::TextEffect::Plain => "",
+                        crate::ui::chart_layout::TextEffect::Shadow => " shadow",
+                        crate::ui::chart_layout::TextEffect::Outline => " outline",
+                    },
                     align,
                     hex(t.color),
                     t.text
