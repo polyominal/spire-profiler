@@ -3,7 +3,7 @@
 //! one supported exception: the Windows install a WSL2 host sees over
 //! `/mnt/<drive>`, detected from its data dir — the managed assemblies and the
 //! version stamp the build consumes are platform-neutral. Native Windows
-//! hosts are rejected at [`Platform::detect`]. Every derived path is
+//! hosts are rejected at [`HostPlatform::detect`]. Every derived path is
 //! existence-checked, so a mis-set override or a renamed layout is
 //! diagnosed instead of guessed.
 
@@ -34,11 +34,21 @@ pub enum Platform {
     Linux,
 }
 
-impl Platform {
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum HostPlatform {
+    Macos,
+    Linux,
+}
+
+impl HostPlatform {
     pub fn detect() -> Result<Self> {
-        match std::env::consts::OS {
-            "macos" => Ok(Platform::Macos),
-            "linux" => Ok(Platform::Linux),
+        Self::parse(std::env::consts::OS)
+    }
+
+    fn parse(os: &str) -> Result<Self> {
+        match os {
+            "macos" => Ok(Self::Macos),
+            "linux" => Ok(Self::Linux),
             "windows" => bail!("native Windows hosts are unsupported; run cargo xtask inside WSL2"),
             _ => bail!("unknown host OS (supported: macOS, Linux)"),
         }
@@ -46,9 +56,8 @@ impl Platform {
 
     pub fn game_root_hint(self) -> &'static str {
         match self {
-            Platform::Macos => "the directory containing SlayTheSpire2.app",
-            Platform::Windows => "the directory containing SlayTheSpire2.exe",
-            Platform::Linux => "the directory containing the Slay the Spire 2 executable",
+            Self::Macos => "the directory containing SlayTheSpire2.app",
+            Self::Linux => "the directory containing the Slay the Spire 2 executable",
         }
     }
 }
@@ -77,7 +86,7 @@ impl Arch {
 }
 
 pub fn locate_game() -> Result<GamePaths> {
-    let host = Platform::detect()?;
+    let host = HostPlatform::detect()?;
     let arch = Arch::detect()?;
     match locate_game_in(host, arch) {
         Ok(game) => Ok(game),
@@ -89,7 +98,7 @@ pub fn locate_game() -> Result<GamePaths> {
     }
 }
 
-fn locate_game_in(host: Platform, arch: Arch) -> Result<GamePaths> {
+fn locate_game_in(host: HostPlatform, arch: Arch) -> Result<GamePaths> {
     // The override is authoritative and checked verbatim.
     if let Some(dir) = std::env::var_os("STS2_GAME_DIR") {
         return resolve_from_root_for(&PathBuf::from(dir), host, arch);
@@ -102,7 +111,7 @@ pub(crate) const STEAM_GAME_REL: &str = "steamapps/common/Slay the Spire 2";
 
 /// Every "path" entry of every libraryfolders.vdf, then the platform's
 /// default root (a healthy manifest already lists it).
-fn steam_library_roots(host: Platform) -> Result<Vec<PathBuf>> {
+fn steam_library_roots(host: HostPlatform) -> Result<Vec<PathBuf>> {
     let (_, mut roots) = vdf_library_roots(host)?;
     roots.push(default_library_root(host)?);
     Ok(roots)
@@ -111,13 +120,13 @@ fn steam_library_roots(host: Platform) -> Result<Vec<PathBuf>> {
 /// No default root is appended: only what a readable manifest enumerates
 /// is trusted. This is [`steam_library_roots`] minus the fallback, for
 /// consumers that must not accept an unmanifested install.
-pub(crate) fn vdf_library_roots(host: Platform) -> Result<(Vec<PathBuf>, Vec<PathBuf>)> {
+pub(crate) fn vdf_library_roots(host: HostPlatform) -> Result<(Vec<PathBuf>, Vec<PathBuf>)> {
     let mut vdf_paths = steam_vdf_candidates(host)?;
     let mut roots: Vec<PathBuf> = vdf_paths
         .iter()
         .flat_map(|vdf| vdf_library_paths(vdf).unwrap_or_default())
         .collect();
-    if host == Platform::Linux {
+    if host == HostPlatform::Linux {
         // WSL2: each mounted drive may carry a Windows Steam install, whose
         // own manifest enumerates the Windows-side libraries. Only those
         // entries are Windows-absolute, so only they get the drvfs
@@ -192,14 +201,13 @@ fn windows_path_to_wsl(value: &str) -> Option<PathBuf> {
 }
 
 /// Relative to home on both supported hosts (macOS/Linux).
-fn steam_vdf_candidates(host: Platform) -> Result<Vec<PathBuf>> {
+fn steam_vdf_candidates(host: HostPlatform) -> Result<Vec<PathBuf>> {
     let relative: &[&str] = match host {
-        Platform::Macos => &["Library/Application Support/Steam/steamapps/libraryfolders.vdf"],
-        Platform::Linux => &[
+        HostPlatform::Macos => &["Library/Application Support/Steam/steamapps/libraryfolders.vdf"],
+        HostPlatform::Linux => &[
             ".local/share/Steam/steamapps/libraryfolders.vdf",
             ".steam/steam/steamapps/libraryfolders.vdf",
         ],
-        Platform::Windows => unreachable!("Platform::detect rejects native Windows hosts"),
     };
     let home = std::env::var_os("HOME").ok_or_else(no_home)?;
     Ok(relative
@@ -208,12 +216,11 @@ fn steam_vdf_candidates(host: Platform) -> Result<Vec<PathBuf>> {
         .collect())
 }
 
-fn default_library_root(host: Platform) -> Result<PathBuf> {
+fn default_library_root(host: HostPlatform) -> Result<PathBuf> {
     let home = std::env::var_os("HOME").ok_or_else(no_home)?;
     match host {
-        Platform::Macos => Ok(PathBuf::from(home).join("Library/Application Support/Steam")),
-        Platform::Linux => Ok(PathBuf::from(home).join(".local/share/Steam")),
-        Platform::Windows => unreachable!("Platform::detect rejects native Windows hosts"),
+        HostPlatform::Macos => Ok(PathBuf::from(home).join("Library/Application Support/Steam")),
+        HostPlatform::Linux => Ok(PathBuf::from(home).join(".local/share/Steam")),
     }
 }
 
@@ -237,7 +244,7 @@ fn libraryfolders_paths(text: &str) -> Vec<PathBuf> {
 
 /// The error names every root searched and the final root's first missing
 /// piece.
-fn search_libraries(roots: &[PathBuf], host: Platform, arch: Arch) -> Result<GamePaths> {
+fn search_libraries(roots: &[PathBuf], host: HostPlatform, arch: Arch) -> Result<GamePaths> {
     let mut last_error = None;
     for root in roots {
         let game_root = root.join(STEAM_GAME_REL);
@@ -272,38 +279,33 @@ struct LayoutPaths {
 /// `SlayTheSpire2` (Windows adds `.exe`), and the pck is
 /// `SlayTheSpire2.pck` on both.
 fn layout_paths(game_root: &Path, platform: Platform, arch: Arch) -> LayoutPaths {
-    match platform {
+    let (data_os, exe_name) = match platform {
         Platform::Macos => {
             let macos_dir = game_root.join("SlayTheSpire2.app/Contents/MacOS");
             let resources = game_root.join("SlayTheSpire2.app/Contents/Resources");
-            LayoutPaths {
+            return LayoutPaths {
                 data_dir: resources.join(format!("data_sts2_macos_{}", arch.data_dir_suffix())),
                 mods_dir: macos_dir.join("mods"),
                 game_exe: macos_dir.join("Slay the Spire 2"),
                 release_info: resources.join("release_info.json"),
                 pck: resources.join("Slay the Spire 2.pck"),
-            }
-        }
-        Platform::Windows | Platform::Linux => {
-            let (data_os, exe_name) = match platform {
-                Platform::Windows => ("windows", "SlayTheSpire2.exe"),
-                Platform::Linux => ("linuxbsd", "SlayTheSpire2"),
-                Platform::Macos => unreachable!("the macOS arm is above"),
             };
-            LayoutPaths {
-                data_dir: game_root.join(format!("data_sts2_{data_os}_{}", arch.data_dir_suffix())),
-                mods_dir: game_root.join("mods"),
-                game_exe: game_root.join(exe_name),
-                release_info: game_root.join("release_info.json"),
-                pck: game_root.join("SlayTheSpire2.pck"),
-            }
         }
+        Platform::Windows => ("windows", "SlayTheSpire2.exe"),
+        Platform::Linux => ("linuxbsd", "SlayTheSpire2"),
+    };
+    LayoutPaths {
+        data_dir: game_root.join(format!("data_sts2_{data_os}_{}", arch.data_dir_suffix())),
+        mods_dir: game_root.join("mods"),
+        game_exe: game_root.join(exe_name),
+        release_info: game_root.join("release_info.json"),
+        pck: game_root.join("SlayTheSpire2.pck"),
     }
 }
 
 /// The pck path under a game root, layout-detected like discovery proper,
 /// without the per-file existence checks a full GamePaths resolve demands.
-pub(crate) fn pck_path_for(game_root: &Path, host: Platform, arch: Arch) -> PathBuf {
+pub(crate) fn pck_path_for(game_root: &Path, host: HostPlatform, arch: Arch) -> PathBuf {
     layout_paths(game_root, detect_layout(game_root, host, arch), arch).pck
 }
 
@@ -315,7 +317,11 @@ pub(crate) fn pck_path_for(game_root: &Path, host: Platform, arch: Arch) -> Path
 /// check: a dual-boot box pointing STS2_GAME_DIR at a mounted Windows
 /// install resolves the same way — build and install-mod work there, and
 /// only headless-test needs the interop the box then lacks.
-fn detect_layout(game_root: &Path, host: Platform, arch: Arch) -> Platform {
+fn detect_layout(game_root: &Path, host: HostPlatform, arch: Arch) -> Platform {
+    let host = match host {
+        HostPlatform::Macos => Platform::Macos,
+        HostPlatform::Linux => Platform::Linux,
+    };
     let has_layout = |platform: Platform| layout_paths(game_root, platform, arch).data_dir.is_dir();
     if host == Platform::Linux && !has_layout(host) && has_layout(Platform::Windows) {
         return Platform::Windows;
@@ -326,7 +332,7 @@ fn detect_layout(game_root: &Path, host: Platform, arch: Arch) -> Platform {
 /// Fixed order so the first missing piece is what the error names.
 pub(crate) fn resolve_from_root_for(
     game_root: &Path,
-    host: Platform,
+    host: HostPlatform,
     arch: Arch,
 ) -> Result<GamePaths> {
     let platform = detect_layout(game_root, host, arch);
@@ -373,6 +379,21 @@ pub(crate) fn resolve_from_root_for(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn supported_hosts_exclude_native_windows() {
+        assert_eq!(
+            HostPlatform::parse("macos").expect("macOS is supported"),
+            HostPlatform::Macos
+        );
+        assert_eq!(
+            HostPlatform::parse("linux").expect("Linux is supported"),
+            HostPlatform::Linux
+        );
+        let windows = HostPlatform::parse("windows").expect_err("Windows requires WSL2");
+        assert!(windows.to_string().contains("run cargo xtask inside WSL2"));
+        assert!(HostPlatform::parse("freebsd").is_err());
+    }
 
     struct FakeTree {
         root: PathBuf,
@@ -424,13 +445,13 @@ mod tests {
         let tree = FakeTree::new("windows-from-linux");
         tree.touch_windows_tree();
         // No mods/ on purpose: a never-modded install must still resolve.
-        let game = resolve_from_root_for(&tree.root, Platform::Linux, Arch::X86_64)
+        let game = resolve_from_root_for(&tree.root, HostPlatform::Linux, Arch::X86_64)
             .expect("a complete Windows tree resolves");
         assert_eq!(game.platform, Platform::Windows);
         assert_eq!(game.game_exe, tree.root.join("SlayTheSpire2.exe"));
         assert_eq!(game.mods_dir, tree.root.join("mods"));
         assert_eq!(
-            pck_path_for(&tree.root, Platform::Linux, Arch::X86_64),
+            pck_path_for(&tree.root, HostPlatform::Linux, Arch::X86_64),
             tree.root.join("SlayTheSpire2.pck")
         );
     }
@@ -443,15 +464,19 @@ mod tests {
         tree.touch("data_sts2_linuxbsd_x86_64/0Harmony.dll");
         tree.touch("data_sts2_linuxbsd_x86_64/GodotSharp.dll");
         tree.touch("SlayTheSpire2");
-        let game = resolve_from_root_for(&tree.root, Platform::Linux, Arch::X86_64)
+        let game = resolve_from_root_for(&tree.root, HostPlatform::Linux, Arch::X86_64)
             .expect("a complete Linux tree resolves");
+        assert_eq!(game.platform, Platform::Linux);
+        tree.touch_windows_tree();
+        let game = resolve_from_root_for(&tree.root, HostPlatform::Linux, Arch::X86_64)
+            .expect("the native layout wins when both game layouts exist");
         assert_eq!(game.platform, Platform::Linux);
     }
 
     #[test]
     fn an_unrelated_dir_reports_the_host_layouts_first_missing_piece() {
         let tree = FakeTree::new("unrelated");
-        let error = resolve_from_root_for(&tree.root, Platform::Linux, Arch::X86_64)
+        let error = resolve_from_root_for(&tree.root, HostPlatform::Linux, Arch::X86_64)
             .expect_err("an empty dir resolves no layout");
         assert!(
             error.to_string().contains(&format!(
@@ -469,7 +494,7 @@ mod tests {
         tree.touch("data_sts2_windows_x86_64/sts2.dll");
         tree.touch("data_sts2_windows_x86_64/0Harmony.dll");
         tree.touch("data_sts2_windows_x86_64/GodotSharp.dll");
-        let error = resolve_from_root_for(&tree.root, Platform::Linux, Arch::X86_64)
+        let error = resolve_from_root_for(&tree.root, HostPlatform::Linux, Arch::X86_64)
             .expect_err("a Windows tree without the exe is incomplete");
         assert!(
             error.to_string().contains("SlayTheSpire2.exe"),
@@ -505,7 +530,7 @@ mod tests {
     fn a_windows_tree_is_not_a_game_for_a_macos_host() {
         let tree = FakeTree::new("windows-from-macos");
         tree.touch_windows_tree();
-        let error = resolve_from_root_for(&tree.root, Platform::Macos, Arch::Arm64)
+        let error = resolve_from_root_for(&tree.root, HostPlatform::Macos, Arch::Arm64)
             .expect_err("WSL2 aside, foreign layouts are unsupported");
         assert!(
             error.to_string().contains("SlayTheSpire2.app"),

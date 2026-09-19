@@ -1,7 +1,7 @@
 //! `cargo xtask decompile`: recover the game's Godot source via GDRE Tools —
 //! locate the .pck, provision the pinned tool (download + SHA-256 verify),
 //! run it headless, verify the output, drop a provenance record. Hosts are
-//! macOS/Linux ([`discover::Platform::detect`]); a WSL2 host finds the
+//! macOS/Linux ([`discover::HostPlatform::detect`]); a WSL2 host finds the
 //! Windows
 //! install's .pck through the same layout detection as discovery.
 
@@ -29,7 +29,7 @@ pub(crate) fn default_output_dir(root: &Path) -> PathBuf {
 }
 
 pub fn decompile(shell: &Shell, output_dir: Option<PathBuf>, yes: bool) -> Result<()> {
-    let host = discover::Platform::detect()?;
+    let host = discover::HostPlatform::detect()?;
     let arch = discover::Arch::detect()?;
     let root = workspace_root();
     let output_dir = output_dir.unwrap_or_else(|| default_output_dir(root));
@@ -95,7 +95,7 @@ pub fn decompile(shell: &Shell, output_dir: Option<PathBuf>, yes: bool) -> Resul
 
 /// STS2_GAME_DIR first, else the Steam library list. Only roots a readable
 /// libraryfolders.vdf enumerates are trusted (no default-root fallback).
-fn locate_pck(host: discover::Platform, arch: discover::Arch) -> Result<PathBuf> {
+fn locate_pck(host: discover::HostPlatform, arch: discover::Arch) -> Result<PathBuf> {
     if let Some(dir) = std::env::var_os("STS2_GAME_DIR") {
         let candidate = discover::pck_path_for(Path::new(&dir), host, arch);
         if candidate.is_file() {
@@ -144,17 +144,14 @@ fn release_info_for_pck(pck: &Path) -> PathBuf {
 
 /// (os name, exe path within the extracted tools dir, asset SHA-256) per
 /// host; the release zip's asset name is `GDRE_tools-{GDRE_VERSION}-{os}.zip`.
-fn gdre_host(host: discover::Platform) -> (&'static str, &'static str, &'static str) {
+fn gdre_host(host: discover::HostPlatform) -> (&'static str, &'static str, &'static str) {
     match host {
-        discover::Platform::Macos => (
+        discover::HostPlatform::Macos => (
             "macos",
             "Godot RE Tools.app/Contents/MacOS/Godot RE Tools",
             GDRE_MACOS_SHA256,
         ),
-        discover::Platform::Linux => ("linux", "gdre_tools.x86_64", GDRE_LINUX_SHA256),
-        discover::Platform::Windows => {
-            unreachable!("Platform::detect rejects native Windows hosts")
-        }
+        discover::HostPlatform::Linux => ("linux", "gdre_tools.x86_64", GDRE_LINUX_SHA256),
     }
 }
 
@@ -168,11 +165,11 @@ fn chmod_executable(exe: &Path) -> Result<()> {
 
 #[cfg(not(unix))]
 fn chmod_executable(_exe: &Path) -> Result<()> {
-    unreachable!("Platform::detect rejects non-Unix hosts before any tool runs")
+    unreachable!("HostPlatform::detect rejects non-Unix hosts before any tool runs")
 }
 
 /// Idempotent: a rerun with the binary present skips the download.
-fn ensure_gdre_tools(shell: &Shell, host: discover::Platform, root: &Path) -> Result<PathBuf> {
+fn ensure_gdre_tools(shell: &Shell, host: discover::HostPlatform, root: &Path) -> Result<PathBuf> {
     let (os_name, exe_rel, checksum) = gdre_host(host);
     let tools_dir = gdre_tools_dir(root);
     let exe = tools_dir.join(exe_rel);
@@ -313,7 +310,7 @@ fn reset_child_signal_dispositions(command: &mut Command) {
 #[cfg(not(unix))]
 fn reset_child_signal_dispositions(_command: &mut Command) {}
 
-fn write_provenance(output: &Path, pck: &Path, host: discover::Platform) -> Result<()> {
+fn write_provenance(output: &Path, pck: &Path, host: discover::HostPlatform) -> Result<()> {
     let utc = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| anyhow::anyhow!("system clock before the epoch: {e}"))?

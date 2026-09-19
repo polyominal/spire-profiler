@@ -12,7 +12,7 @@ use crate::{bundle, check_abi, cross, discover, game_version, git, shim, workspa
 pub fn build(shell: &Shell) -> Result<discover::GamePaths> {
     let root = workspace_root();
     // Cheap host rejection before the expensive cross matrix runs.
-    discover::Platform::detect()?;
+    discover::HostPlatform::detect()?;
 
     check_abi::run()?;
 

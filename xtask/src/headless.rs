@@ -355,7 +355,7 @@ fn run_game_captured(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    // A Windows game means a WSL2 host (Platform::detect rejects native
+    // A Windows game means a WSL2 host (HostPlatform::detect rejects native
     // Windows). Without this bridge the shim would write self-test data
     // into the real play data dir.
     if game.platform == discover::Platform::Windows {
