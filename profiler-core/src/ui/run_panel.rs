@@ -138,7 +138,7 @@ pub(crate) struct SpireProfilerRunPanel {
     gutter: f32,
     /// Roster slots parallel to the layout's `portrait_paths`, for the
     /// per-frame dim mask.
-    avatar_slots: Vec<u8>,
+    avatar_slots: Box<[u8]>,
     avatar_animation: AvatarScaleAnimation,
     dimmed_scratch: Vec<bool>,
 }
@@ -175,7 +175,7 @@ impl SpireProfilerRunPanel {
             font_plan: panel_replay::FontPlan::default(),
             theme: crate::ui::theme::Theme::new(),
             gutter: 0.0,
-            avatar_slots: Vec::new(),
+            avatar_slots: Box::default(),
             avatar_animation: AvatarScaleAnimation::default(),
             dimmed_scratch: Vec::new(),
         }
@@ -388,7 +388,6 @@ impl SpireProfilerRunPanel {
     /// An unmapped id yields no portrait, never a guess.
     fn header_facts(&self, view: &RunSummaryView) -> HeaderFacts {
         let portraits = roster_entries(view)
-            .into_iter()
             .filter_map(|(slot, id)| {
                 let path = character_icon_path(id)?;
                 Some(PortraitFact {

@@ -695,8 +695,8 @@ mod tests {
         assert!(!dismiss_on_outside_press(true, true));
     }
 
-    fn hits() -> Vec<RowHit> {
-        vec![
+    fn hits() -> [RowHit; 3] {
+        [
             RowHit {
                 y0: 110.0,
                 y1: 120.0,

@@ -254,7 +254,7 @@ fn every_command_lies_inside_the_content_box() {
                 0.0,
             );
             let chrome: Vec<Cmd> = if flat_chrome {
-                panel_common::border_rects(l.width, l.height).to_vec()
+                panel_common::border_rects(l.width, l.height).into()
             } else {
                 Vec::new()
             };
@@ -344,18 +344,18 @@ fn header_carries_the_title_icon_row_and_meta_body_starts_at_the_chart() {
 
 fn loaded_header() -> HeaderFacts {
     HeaderFacts {
-        portraits: vec![PortraitFact {
+        portraits: Box::new([PortraitFact {
             slot: 0,
             path: character_icon_path("IRONCLAD").expect("a slug-shaped id maps"),
             loaded: true,
-        }],
+        }]),
     }
 }
 
 #[test]
 fn roster_entries_carry_slots_and_character_icon_paths_mirror_the_game() {
     let v = view();
-    assert_eq!(roster_entries(&v), vec![(0, "IRONCLAD")]);
+    assert!(roster_entries(&v).eq([(0, "IRONCLAD")]));
     assert_eq!(
         character_icon_path("IRONCLAD").as_deref(),
         Some("res://images/ui/top_panel/character_icon_ironclad.png")
@@ -364,6 +364,21 @@ fn roster_entries_carry_slots_and_character_icon_paths_mirror_the_game() {
         character_icon_path("NECROBINDER").as_deref(),
         Some("res://images/ui/top_panel/character_icon_necrobinder.png")
     );
+    assert_eq!(
+        character_icon_path("A_0123").as_deref(),
+        Some("res://images/ui/top_panel/character_icon_a_0123.png")
+    );
+    let long_id = "A_0123".repeat(200);
+    assert_eq!(
+        character_icon_path(&long_id).as_deref(),
+        Some(
+            format!(
+                "res://images/ui/top_panel/character_icon_{}.png",
+                long_id.to_lowercase()
+            )
+            .as_str()
+        )
+    );
     // A well-formed unknown id still maps: the load fails and skips.
     assert_eq!(character_icon_path("?"), None);
     assert_eq!(character_icon_path(""), None);
@@ -371,15 +386,12 @@ fn roster_entries_carry_slots_and_character_icon_paths_mirror_the_game() {
 
     let mut mp = view();
     mp.character = "IRONCLAD, SILENT, DEFECT, REGENT, NECROBINDER".into();
-    assert_eq!(
-        roster_entries(&mp),
-        vec![(0, "IRONCLAD"), (1, "SILENT"), (2, "DEFECT"), (3, "REGENT")]
-    );
+    assert!(roster_entries(&mp).eq([(0, "IRONCLAD"), (1, "SILENT"), (2, "DEFECT"), (3, "REGENT")]));
     mp.players = Box::new([crate::data::records::PlayerRec {
         slot: 0,
         character: "SILENT".into(),
     }]);
-    assert_eq!(roster_entries(&mp), vec![(0, "SILENT")]);
+    assert!(roster_entries(&mp).eq([(0, "SILENT")]));
     mp.players = Box::new([
         crate::data::records::PlayerRec {
             slot: 2,
@@ -390,9 +402,8 @@ fn roster_entries_carry_slots_and_character_icon_paths_mirror_the_game() {
             character: "".into(),
         },
     ]);
-    assert_eq!(
-        roster_entries(&mp),
-        vec![(2, "SHROUD")],
+    assert!(
+        roster_entries(&mp).eq([(2, "SHROUD")]),
         "record slots are kept verbatim; empty characters are skipped"
     );
 }
@@ -412,9 +423,11 @@ fn header_row_emits_loaded_icons_and_the_right_aligned_block() {
     assert_eq!(icons.len(), 1, "portrait only");
     assert_eq!(icons[0].icon, theme::IconId::Character(0));
     assert_eq!(icons[0].w, icons[0].h, "the portrait art is square");
-    assert_eq!(
-        l.portrait_paths,
-        vec!["res://images/ui/top_panel/character_icon_ironclad.png".to_owned()]
+    assert!(
+        l.portrait_paths
+            .iter()
+            .map(String::as_str)
+            .eq(["res://images/ui/top_panel/character_icon_ironclad.png"])
     );
     // The loaded portrait is pressable: one hit, keyed to its slot,
     // in the icon row below the title band.
@@ -456,11 +469,11 @@ fn header_row_emits_loaded_icons_and_the_right_aligned_block() {
 fn header_row_falls_back_without_loaded_icons() {
     let v = view();
     let partial = HeaderFacts {
-        portraits: vec![PortraitFact {
+        portraits: Box::new([PortraitFact {
             slot: 0,
             path: character_icon_path("IRONCLAD").expect("maps"),
             loaded: false,
-        }],
+        }]),
     };
     let l = layout_of_header(Some(&v), &partial);
     assert_eq!(l.portrait_paths.len(), 1, "the wanted path is recorded");

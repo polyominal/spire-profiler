@@ -189,7 +189,7 @@ fn rollup_card(id: &str, plays: u32, dmg: i64) -> CardStat {
 // still applies to the arbitrary dataset.
 #[test]
 fn rows_from_an_arbitrary_dataset_match_the_run_tab_shape() {
-    let cards = vec![
+    let cards = [
         rollup_card("STRIKE", 4, 70),
         rollup_card("DEMON_FORM", 1, 35),
         CardStat {
@@ -243,7 +243,7 @@ fn rows_from_cap_each_section_at_max_rows_per_section() {
 /// A self-only source keeps its name/plays, not a hanging label.
 #[test]
 fn self_only_defense_row_renders_as_standalone_self_damage() {
-    let cards = vec![
+    let cards = [
         CardStat {
             id: "DEFEND".into(),
             plays: 2,
@@ -292,7 +292,7 @@ fn defense_section_ranks_self_costs_below_contributors() {
         self_damage,
         ..CardStat::default()
     };
-    let cards = vec![
+    let cards = [
         card("DEFEND", 2, 15, 0),
         card("OFFERING", 1, 0, 30),
         card("CRIMSON_MANTLE", 1, 10, 3),
@@ -343,9 +343,9 @@ fn defense_section_ranks_self_costs_below_contributors() {
     assert_eq!(hanging_detail.title, "CRIMSON_MANTLE");
     assert_eq!(
         hanging_detail.stats,
-        vec![StatLine {
-            label: "self dmg".to_owned(),
-            value: "3".to_owned(),
+        [StatLine {
+            label: "self dmg".into(),
+            value: "3".into(),
             tone: StatTone::SelfDamage,
         }]
     );
@@ -353,7 +353,7 @@ fn defense_section_ranks_self_costs_below_contributors() {
 
 #[test]
 fn run_meta_from_rollup_and_combat_totals() {
-    let cards = vec![rollup_card("STRIKE", 4, 70), rollup_card("DEFEND", 2, 0)];
+    let cards = [rollup_card("STRIKE", 4, 70), rollup_card("DEFEND", 2, 0)];
     let m = ui_snapshot_meta_from_run(&cards, 6, 2, 15);
     assert_eq!(m.turns, 6);
     assert_eq!(m.plays, 6);
@@ -404,7 +404,7 @@ fn row_detail_matches_the_rows_player_slot() {
 /// Resolves against the caller's cards, never the live state.
 #[test]
 fn row_detail_from_cards_uses_the_given_dataset() {
-    let cards = vec![CardStat {
+    let cards = [CardStat {
         id: "STRIKE".into(),
         plays: 3,
         damage_dealt: 42,

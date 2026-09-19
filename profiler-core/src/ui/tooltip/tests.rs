@@ -144,8 +144,9 @@ fn shape_hard_breaks_overlong_title_slugs() {
     }
     let title: String = lines
         .iter()
-        .filter(|l| l.title)
-        .map(|l| l.text.replace(' ', ""))
+        .filter(|line| line.title)
+        .flat_map(|line| line.text.chars())
+        .filter(|&ch| ch != ' ')
         .collect();
     assert_eq!(title, format!("\"{id}\"x3"));
 }
@@ -172,7 +173,11 @@ fn shape_wraps_over_budget_stats_as_single_color_lines() {
         );
         assert!(chars(&line.text) <= BODY_BUDGET, "over budget: {line:?}");
     }
-    let joined: String = wrapped.iter().map(|l| l.text.replace(' ', "")).collect();
+    let joined: String = wrapped
+        .iter()
+        .flat_map(|line| line.text.chars())
+        .filter(|&ch| ch != ' ')
+        .collect();
     assert_eq!(joined, "dmg(999999999999unblk)999999999999");
 }
 

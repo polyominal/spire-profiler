@@ -162,7 +162,7 @@ pub(crate) struct Theme {
     scroll_train: AssetState,
     tab_plate: AssetState,
     tab_stroke: AssetState,
-    dynamic: Vec<(String, AssetState)>,
+    dynamic: Vec<(Box<str>, AssetState)>,
 }
 
 impl Theme {
@@ -282,7 +282,7 @@ impl Theme {
     /// None past the cap, fail-logged once per process. Split from the
     /// load so the map is unit-testable without an engine.
     fn dynamic_entry(&mut self, path: &str) -> Option<usize> {
-        if let Some(index) = self.dynamic.iter().position(|(p, _)| p == path) {
+        if let Some(index) = self.dynamic.iter().position(|(p, _)| p.as_ref() == path) {
             return Some(index);
         }
         if self.dynamic.len() >= DYNAMIC_CACHE_CAP {
@@ -296,7 +296,7 @@ impl Theme {
             });
             return None;
         }
-        self.dynamic.push((path.to_owned(), AssetState::Unfetched));
+        self.dynamic.push((path.into(), AssetState::Unfetched));
         Some(self.dynamic.len() - 1)
     }
 
@@ -316,7 +316,7 @@ impl Theme {
     pub(crate) fn dynamic(&self, path: &str) -> Option<&RetainedVariant> {
         self.dynamic
             .iter()
-            .find(|(p, _)| p == path)
+            .find(|(p, _)| p.as_ref() == path)
             .and_then(|(_, state)| match state {
                 AssetState::Loaded(texture) => Some(texture),
                 _ => None,

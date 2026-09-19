@@ -121,7 +121,7 @@ pub(crate) struct SpireProfilerPanel {
     gutter: f32,
     /// Roster slots parallel to the layout's `portrait_paths` (only the
     /// combat tab carries a row), for the per-frame dim mask.
-    avatar_slots: Vec<u8>,
+    avatar_slots: Box<[u8]>,
     avatar_animation: AvatarScaleAnimation,
     dimmed_scratch: Vec<bool>,
     logged_draw: bool,
@@ -166,7 +166,7 @@ impl SpireProfilerPanel {
             font_plan: panel_replay::FontPlan::default(),
             theme: crate::ui::theme::Theme::new(),
             gutter: 0.0,
-            avatar_slots: Vec::new(),
+            avatar_slots: Box::default(),
             avatar_animation: AvatarScaleAnimation::default(),
             dimmed_scratch: Vec::new(),
             logged_draw: false,
@@ -489,11 +489,11 @@ impl SpireProfilerPanel {
     }
 
     /// An unmapped character id yields no avatar, never a guess.
-    fn avatar_facts(&self) -> Vec<chart_layout::AvatarFact> {
+    fn avatar_facts(&self) -> Box<[chart_layout::AvatarFact]> {
         STATE.with(|s| {
             let st = s.borrow();
             let Some(c) = &st.current else {
-                return Vec::new();
+                return Box::default();
             };
             c.players
                 .iter()
@@ -965,7 +965,7 @@ mod tests {
             avatars: &[chart_layout::AvatarFact {
                 slot: 1,
                 loaded: true,
-                path: "res://images/ui/top_panel/character_icon_silent.png".to_owned(),
+                path: "res://images/ui/top_panel/character_icon_silent.png".into(),
             }],
             flat_chrome: true,
             tab_sprites: false,

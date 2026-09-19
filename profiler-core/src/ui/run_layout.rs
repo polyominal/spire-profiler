@@ -74,31 +74,29 @@ pub(crate) struct PortraitFact {
 pub(crate) struct HeaderFacts {
     /// One entry per roster character, capped at
     /// [`crate::data::state::caps::MAX_PLAYERS`].
-    pub portraits: Vec<PortraitFact>,
+    pub portraits: Box<[PortraitFact]>,
 }
 
 /// (slot, character) pairs in roster order, capped at the lobby max; the
 /// comma-joined field on pre-roster records falls back with implicit
 /// slot order.
-pub(crate) fn roster_entries(view: &RunSummaryView) -> Vec<(u8, &str)> {
+pub(crate) fn roster_entries(view: &RunSummaryView) -> impl Iterator<Item = (u8, &str)> {
     const CAP: usize = crate::data::state::caps::MAX_PLAYERS;
-    if !view.players.is_empty() {
-        return view
-            .players
-            .iter()
-            .take(CAP)
-            .filter(|p| !p.character.is_empty())
-            .map(|p| (p.slot, p.character.as_ref()))
-            .collect();
-    }
-    view.character
-        .split(',')
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
+    let fallback_cap = if view.players.is_empty() { CAP } else { 0 };
+    view.players
+        .iter()
         .take(CAP)
-        .enumerate()
-        .map(|(slot, id)| (slot as u8, id))
-        .collect()
+        .filter(|p| !p.character.is_empty())
+        .map(|p| (p.slot, p.character.as_ref()))
+        .chain(
+            view.character
+                .split(',')
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .take(fallback_cap)
+                .enumerate()
+                .map(|(slot, id)| (slot as u8, id)),
+        )
 }
 
 /// Mirrored defensively: non-slug ids return None so a bogus path never
@@ -111,10 +109,14 @@ pub(crate) fn character_icon_path(id: &str) -> Option<String> {
     {
         return None;
     }
-    Some(format!(
-        "res://images/ui/top_panel/character_icon_{}.png",
-        id.to_lowercase()
-    ))
+    const PREFIX: &str = "res://images/ui/top_panel/character_icon_";
+    const SUFFIX: &str = ".png";
+    let mut path = String::with_capacity(PREFIX.len() + id.len() + SUFFIX.len());
+    path.push_str(PREFIX);
+    path.push_str(id);
+    path.push_str(SUFFIX);
+    path.make_ascii_lowercase();
+    Some(path)
 }
 
 #[derive(Default)]
@@ -139,26 +141,17 @@ impl RunLayout {
         chart_layout::CmdSink::new(&mut self.cmds, "run panel")
     }
 
-    fn splice_chart(&mut self, chart: &chart_layout::Layout, y_offset: f32) {
-        for cmd in &chart.cmds {
-            let cmd = match cmd {
-                Cmd::Rect(r) => Cmd::Rect(chart_layout::RectCmd {
-                    y: r.y + y_offset,
-                    ..*r
-                }),
-                Cmd::Text(t) => Cmd::Text(chart_layout::TextCmd {
-                    y: t.y + y_offset,
-                    ..t.clone()
-                }),
-                Cmd::Texture(t) => Cmd::Texture(chart_layout::TextureCmd {
-                    y: t.y + y_offset,
-                    ..*t
-                }),
-            };
+    fn splice_chart(&mut self, chart: chart_layout::Layout, y_offset: f32) {
+        for mut cmd in chart.cmds {
+            match &mut cmd {
+                Cmd::Rect(r) => r.y += y_offset,
+                Cmd::Text(t) => t.y += y_offset,
+                Cmd::Texture(t) => t.y += y_offset,
+            }
             chart_layout::push_cmd(&mut self.cmds, cmd, "run panel");
         }
         self.row_hits
-            .extend(chart.row_hits.iter().map(|hit| chart_layout::RowHit {
+            .extend(chart.row_hits.into_iter().map(|hit| chart_layout::RowHit {
                 y0: hit.y0 + y_offset,
                 y1: hit.y1 + y_offset,
                 flat_index: hit.flat_index,
@@ -391,8 +384,9 @@ fn emit_chart(
         width,
         right_gutter,
     });
-    l.splice_chart(&chart, y_in);
-    y_in + chart.height
+    let height = chart.height;
+    l.splice_chart(chart, y_in);
+    y_in + height
 }
 
 #[cfg(test)]
