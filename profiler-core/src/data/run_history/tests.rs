@@ -408,6 +408,79 @@ fn multiple_matching_run_ids_cannot_select_or_resume() {
 }
 
 #[test]
+fn matching_retains_closed_header_priority_and_latest_unfinished_header() {
+    use serde_json::json;
+    let data = unique_dir("run-history-header-priority");
+    let identity = json!({"seq":7,"profile":2,"seed":"HEADERS","started_at":1000});
+    let mut combats = json!([
+        {"combat_id":1,"started_at":3000,"run":identity},
+        {"combat_id":2,"started_at":2000,"run":identity}
+    ]);
+    combats[0]["run"]["character"] = json!("EARLY");
+    combats[1]["run"]["character"] = json!("LATEST");
+    seed_data(&data, "[]", &combats.to_string());
+    let unfinished = selected("HEADERS", 1000, 2);
+    assert_eq!(unfinished.character.as_ref(), "LATEST");
+    assert_eq!(unfinished.ended_at, 3000);
+    assert_eq!(unfinished.outcome, None);
+
+    let runs = json!([
+        {"run_id":7,"profile":2,"seed":"HEADERS","started_at":1000,
+         "character":"CLOSED","ended_at":4000,"outcome":"victory"},
+        {"run_id":7,"profile":2,"seed":"HEADERS","started_at":1000,
+         "character":"DUPLICATE","ended_at":5000,"outcome":"defeat"}
+    ]);
+    seed_data(&data, &runs.to_string(), &combats.to_string());
+    let closed = selected("HEADERS", 1000, 2);
+    assert_eq!(closed.character.as_ref(), "CLOSED");
+    assert_eq!(closed.ended_at, 4000);
+    assert_eq!(closed.outcome, Some(RunOutcome::Victory));
+    assert_eq!(closed.combats, unfinished.combats);
+}
+
+#[test]
+fn batched_rollups_keep_per_combat_rejection_independent_for_each_player() {
+    use serde_json::json;
+    let data = unique_dir("run-history-batch-transactions");
+    let runs = json!([{
+        "run_id":7,"profile":2,"seed":"BATCH","started_at":1000,
+        "players":[{"slot":0},{"slot":1},{"slot":2}]
+    }]);
+    let identity = json!({"seq":7,"profile":2,"seed":"BATCH","started_at":1000});
+    let combats = json!([
+        {"combat_id":1,"run":identity,"cards":[
+            {"id":"DEFENSE","player":0,"mitigate_buff":i64::MAX - 1}
+        ]},
+        {"combat_id":2,"run":identity,"cards":[
+            {"id":"EARLY","player":1,"damage_dealt":1,"dmg_direct":1},
+            {"id":"DEFENSE","player":0,"mitigate_debuff":2}
+        ]},
+        {"combat_id":3,"run":identity,"cards":[
+            {"id":"DEFENSE","player":0,"mitigate_debuff":1}
+        ]}
+    ]);
+    seed_data(&data, &runs.to_string(), &combats.to_string());
+    let view = selected("BATCH", 1000, 2);
+    assert_eq!(
+        view.combats.iter().map(|c| c.seq).collect::<Vec<_>>(),
+        [1, 2, 3]
+    );
+    assert_eq!(
+        view.rollup.len(),
+        1,
+        "the rejected combat contributes no prefix"
+    );
+    assert_eq!(view.rollup[0].id.as_ref(), "DEFENSE");
+    assert_eq!(view.rollup[0].mitigate_debuff, 1);
+    assert_eq!(view.player_rollups[0].cards.len(), 1);
+    assert_eq!(view.player_rollups[0].cards[0].mitigate_debuff, 1);
+    assert_eq!(view.player_rollups[1].cards.len(), 1);
+    assert_eq!(view.player_rollups[1].cards[0].id.as_ref(), "EARLY");
+    assert_eq!(view.player_rollups[1].cards[0].damage_dealt, 1);
+    assert!(view.player_rollups[2].cards.is_empty());
+}
+
+#[test]
 fn shared_run_id_does_not_merge_different_identities() {
     use serde_json::json;
     let data = unique_dir("run-history-mixed-identities");
@@ -824,13 +897,10 @@ fn per_player_rollups_split_the_run() {
     assert_eq!(view.rollup[0].id.as_ref(), "STRIKE");
     assert_eq!(view.rollup[0].player, TEAM_SLOT);
     assert_eq!(view.rollup[0].damage_dealt, 12);
-    let entries: Vec<RunEntry> = serde_json::from_str(runs).expect("fixture run parses");
-    let combats: Vec<CombatRec> = serde_json::from_str(combats).expect("fixture combats parse");
-    let ownerless = roll_up_cards_for_slot(&combats, &entries[0], TEAM_SLOT);
-    assert_eq!(ownerless.len(), 1);
-    assert_eq!(ownerless[0].id.as_ref(), "THORNS_POWER");
-    assert_eq!(ownerless[0].player, TEAM_SLOT);
-    assert_eq!(ownerless[0].damage_dealt, 3);
+    let ownerless = &view.rollup[1];
+    assert_eq!(ownerless.id.as_ref(), "THORNS_POWER");
+    assert_eq!(ownerless.player, TEAM_SLOT);
+    assert_eq!(ownerless.damage_dealt, 3);
 }
 
 #[test]
