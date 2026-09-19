@@ -326,7 +326,7 @@ const INSTA_VERSION: &str = "1.48.0";
 /// optional up-front/offline path, not a prerequisite.
 fn install_tool(shell: &Shell) -> Result<()> {
     // Same host gate as build: the toolchain bootstraps are Unix-only.
-    discover::Platform::detect()?;
+    discover::HostPlatform::detect()?;
 
     let tool_checks: [(&[&str], &str, &str); 3] = [
         (
