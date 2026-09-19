@@ -104,6 +104,31 @@ comments or docs.
 - Cross-table references are indices into the owning `Vec`, not references; this
   is the safe-Rust way to avoid self-borrowing.
 
+## Memory
+
+These rules apply only to production code in `profiler-core/src`. Tests,
+test-support code, and developer tooling are outside this policy: prefer
+straightforward standard collections there, and do not freeze temporary `Vec`s
+or `String`s merely to remove capacity metadata. Use boxed fixtures when
+required by the production API.
+
+- Prefer `Box<str>` and `Box<[T]>` for retained owned data whose length stays
+  fixed, including arrays with mutable elements. Retain growable storage for
+  mutation, capacity reuse, API requirements, or measured gameplay costs; prefer
+  borrowing or arrays when heap ownership is unnecessary. Live growable tables
+  remain bounded `Vec`s.
+- Avoid repeated deep copies: borrow where possible, and use `Rc` when immutable
+  snapshots need independent owners on one thread.
+- Narrow indices only when the full validated domain fits. Pin bounds at compile
+  time and measure enclosing types: alignment can erase field savings.
+- For memory optimizations, compare retained and peak allocation bytes and
+  allocation counts on reproducible fixtures. Measure construction and
+  consumption time too: freezing formatted or filtered buffers can add shrink
+  reallocations. Prioritize combat attribution and repeated UI work; judge
+  infrequent runtime operations by their absolute latency. A temporary builder
+  does not need freezing before immediate consumption. Report allocation bytes
+  separately from process RSS. Preserve exact accounting and boundary behavior.
+
 ## Boundaries
 
 - **C ABI**: every export routes through `contain`, which catches a panic and
