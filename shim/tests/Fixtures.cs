@@ -5,6 +5,7 @@ using System.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using HarmonyLib;
@@ -395,6 +396,7 @@ internal sealed class FakeBackend : AttributionBackend
     internal string Failure;
     internal int FailureCount = 1;
     internal int FailObservationAfter = -1;
+    internal SourceShare[] CapturePacket;
     private ulong serial;
     internal int OpenLeases => leases.Count;
     internal int OpenCalculations => calculations.Count;
@@ -437,7 +439,7 @@ internal sealed class FakeBackend : AttributionBackend
         SourceSnapshot source = Sources.GetValueOrDefault(instance) ?? NamedSources.GetValueOrDefault(id) ?? SourceSnapshot.Unknown(epoch);
         if (generation is GenerationState.GeneratedUnavailable or GenerationState.Unclassified && kind == CaptureKind.CardInstance) source = SourceSnapshot.Unknown(epoch);
         ulong token = ++serial;
-        leases[token] = Enumerable.Range(0, source.Count).Select(i => source[i]).ToList();
+        leases[token] = CapturePacket?.ToList() ?? Enumerable.Range(0, source.Count).Select(i => source[i]).ToList();
         return token;
     }
     internal override int SourceCount(ulong transfer) => Reject("SourceCount") ? -1 : leases[transfer].Count;
@@ -447,7 +449,7 @@ internal sealed class FakeBackend : AttributionBackend
     internal override int TransferAdd(ulong transfer, ulong destination, ulong weight) { if (Reject("TransferAdd")) return 0; leases[transfer].Add(new(destination, weight)); return 1; }
     internal override int TransferSeal(ulong transfer) => Reject("TransferSeal") ? 0 : 1;
     internal override int TransferRelease(ulong transfer) { leases.Remove(transfer); Released++; Calls.Add("Release"); return 1; }
-    private SourceSnapshot Read(ulong transfer) => transfer == 0 ? SourceSnapshot.Unknown(CaptureRuntime.Epoch.Sequence) : SourceSnapshot.Create(CaptureRuntime.Epoch.Sequence, leases[transfer]);
+    private SourceSnapshot Read(ulong transfer) => transfer == 0 ? SourceSnapshot.Unknown(CaptureRuntime.Epoch.Sequence) : SourceSnapshot.Create(CaptureRuntime.Epoch.Sequence, CollectionsMarshal.AsSpan(leases[transfer]));
     internal override int PowerAttached(CaptureEpoch epoch, ulong identity, ulong owner, PowerObservation observed, ulong source)
     {
         if (Reject("PowerAttached")) return 0;
@@ -662,6 +664,8 @@ internal static class ManagedFixtures
         Test("Prefix/Finalizer synchronous restoration, barrier and original Task identity", ScopeBasics);
         Test("suspended, nested and overlapping flows on registered thread", AsyncScopes);
         Test("earlier Harmony skip preserves producer, pending, wrapper/orb and damage callers", SkippedPrefixes);
+        Test("inherited stale epochs retain precedence across every scope combination", EntryEpochPrecedence);
+        Test("source snapshots copy span ownership and reject malformed packets", SourcePackets);
         Test("source-copy and upload finally release on every failure", TransferFailures);
         Test("accepted first attachment, stack ordering and notification exceptions", PowerMutations);
         Test("Misery clone zero-delta attachment and temporary null-card forwarding", TemporaryAndClone);
@@ -857,6 +861,72 @@ internal static class ManagedFixtures
         context.Complete(Damage(enemy, player));
         DamageFixture.DuringLive = null;
         Check(backend.Committed.Count == 1 && backend.OpenCalculations == 0, "Caller damage still commits exactly once after skipped nested call");
+    }
+    private static void EntryEpochPrecedence()
+    {
+        var producer = FlowCapture.Current;
+        var pending = ProvenanceCapture.Pending;
+        var wrapper = new WrapperState(PlayCapture.Execution, PlayCapture.Current, producer);
+        var damage = DamageCapture.Current;
+        var command = new CommandState(CommandCapture.Current, producer);
+        var current = CaptureRuntime.Epoch;
+        var stale = Enumerable.Range(0, 6).Select(_ => new CaptureEpoch(current.Sequence, new object())).ToArray();
+        var saved = new CaptureEpoch(current.Sequence + 1, current.Combat);
+        try
+        {
+            for (int mask = 0; mask < 64; mask++)
+            {
+                var scopes = new CaptureEpoch[6];
+                var expected = current;
+                for (int i = 5; i >= 0; i--)
+                {
+                    scopes[i] = (mask & (1 << i)) != 0 ? stale[i] : i % 2 == 0 ? current : default;
+                    if ((mask & (1 << i)) != 0) expected = stale[i];
+                }
+                FlowCapture.Current = ProducerFrame.Barrier with { Epoch = scopes[0] };
+                ProvenanceCapture.CommandFinalizer(PendingPower.Barrier with { Epoch = scopes[1] });
+                PlayCapture.WrapperFinalizer(new(ExecutionFrame.Barrier with { Epoch = scopes[2] },
+                    new(scopes[3], 0, 0, null, 0, SourceSnapshot.Unavailable, null), FlowCapture.Current));
+                DamageCapture.Finalizer(DamageOperation.Barrier with { Epoch = scopes[4] });
+                CommandCapture.Finalizer(new(CommandFrame.Barrier with { Epoch = scopes[5] }, FlowCapture.Current));
+                Check(CaptureRuntime.EntryEpoch(current) == expected, "Earliest stale inherited scope wins: " + mask);
+                Check(CaptureRuntime.EntryEpoch(saved) == saved, "Saved stale epoch wins over all inherited scopes: " + mask);
+            }
+        }
+        finally
+        {
+            ProvenanceCapture.CommandFinalizer(pending);
+            PlayCapture.WrapperFinalizer(wrapper);
+            DamageCapture.Finalizer(damage);
+            CommandCapture.Finalizer(command);
+        }
+    }
+    private static void SourcePackets()
+    {
+        var entries = new[] { default(SourceShare), A[0], B[0], default(SourceShare) };
+        var snapshot = SourceSnapshot.Create(epoch, entries.AsSpan(1, 2));
+        Array.Clear(entries);
+        Check(snapshot.Count == 2 && snapshot[0] == A[0] && snapshot[1] == B[0], "Snapshot owns only the supplied span after its backing buffer is overwritten");
+        backend.CapturePacket = Enumerable.Range(0, SourceSnapshot.MaxDestinations).Select(i => new SourceShare((epoch << 32) | ((ulong)i << 3), 1)).ToArray();
+        var maximum = CaptureRuntime.Copy(CaptureRuntime.Epoch, CaptureKind.DirectModel, 0);
+        Check(maximum.Count == SourceSnapshot.MaxDestinations && Enumerable.Range(0, maximum.Count).All(i => maximum[i] == backend.CapturePacket[i]), "Maximum-size packet is fully copied before its lease is released");
+        Array.Clear(backend.CapturePacket);
+        Check(maximum[127] == new SourceShare((epoch << 32) | (127UL << 3), 1), "Captured snapshot survives later packet buffer reuse");
+        foreach (var packet in new SourceShare[][]
+        {
+            Array.Empty<SourceShare>(), new SourceShare[SourceSnapshot.MaxDestinations + 1],
+            new[] { A[0], A[0] }, new[] { new SourceShare(A[0].Destination, 0) },
+            new[] { new SourceShare((epoch << 32) | 2, 1) }, new[] { new SourceShare((epoch << 32) | 41, 1) },
+            new[] { new SourceShare((epoch + 1) << 32, 1) }, new[] { new SourceShare(A[0].Destination, 2) },
+            new[] { new SourceShare(A[0].Destination, ulong.MaxValue), B[0] }
+        })
+        {
+            backend.CapturePacket = packet;
+            int released = backend.Released;
+            Check(CaptureRuntime.Copy(CaptureRuntime.Epoch, CaptureKind.DirectModel, 0).Epoch == 0, "Malformed packet returns unavailable");
+            Check(backend.Released == released + 1 && backend.OpenLeases == 0, "Malformed packet releases its lease exactly once");
+        }
+        backend.CapturePacket = null;
     }
     private static void TransferFailures()
     {
