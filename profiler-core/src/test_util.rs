@@ -298,12 +298,12 @@ pub fn combat_epoch() -> u64 {
 pub struct SourceFixture {
     epoch: u64,
     instance: u64,
-    id: String,
+    id: Box<str>,
     slot: i32,
     generation: i32,
     role: i32,
     segment: i32,
-    shares: Vec<(u64, u64)>,
+    shares: Box<[(u64, u64)]>,
 }
 
 impl SourceFixture {
@@ -360,7 +360,7 @@ impl SourceFixture {
         Self {
             epoch,
             instance,
-            id: id.to_owned(),
+            id: id.into(),
             slot,
             generation,
             role,

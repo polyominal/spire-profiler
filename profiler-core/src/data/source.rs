@@ -111,7 +111,7 @@ impl Token {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Destination {
-    Row(usize),
+    Row(u32),
     Unknown(SourceSlot),
 }
 
@@ -123,7 +123,7 @@ impl Destination {
         }
         match token.kind {
             TokenKind::RowDestination if (token.payload as usize) < rows => {
-                Ok(Self::Row(token.payload as usize))
+                Ok(Self::Row(token.payload))
             }
             TokenKind::UnknownDestination => Ok(Self::Unknown(token.payload as SourceSlot)),
             _ => Err(SourceFailure::Token),
@@ -132,7 +132,7 @@ impl Destination {
 
     fn token(self, epoch: CombatEpoch) -> u64 {
         let (kind, payload) = match self {
-            Self::Row(row) => (TokenKind::RowDestination, row as u32),
+            Self::Row(row) => (TokenKind::RowDestination, row),
             Self::Unknown(slot) => (TokenKind::UnknownDestination, u32::from(slot)),
         };
         Token {
@@ -306,7 +306,7 @@ impl State {
             let destination = if let Destination::Row(row) = destination {
                 self.current
                     .as_ref()
-                    .and_then(|combat| combat.cards.get(row))
+                    .and_then(|combat| combat.cards.get(row as usize))
                     .filter(|row| row.kind == crate::source_kind::SourceKind::Unknown)
                     .map_or(destination, |row| Destination::Unknown(row.player))
             } else {
@@ -444,7 +444,7 @@ pub(super) struct Provenance {
 #[derive(Clone)]
 struct PowerProvenance {
     instance: u64,
-    id: String,
+    id: Box<str>,
     owner: u64,
     owner_kind: CreatureKind,
     owner_slot: SourceSlot,
@@ -545,7 +545,7 @@ struct SourceBlock {
     base_original: u64,
     base_consumed: i64,
     remaining: u64,
-    mods: Vec<SourceBlockMod>,
+    mods: Box<[SourceBlockMod]>,
 }
 
 impl SourceBlock {
@@ -663,7 +663,7 @@ impl State {
                 .find(|power| power.instance == instance && power.trusted)
                 .map(|power| {
                     if capture == SourceCaptureKind::WeakHead {
-                        if power.id == "WEAK_POWER" {
+                        if power.id.as_ref() == "WEAK_POWER" {
                             power
                                 .grants
                                 .first()
@@ -671,7 +671,7 @@ impl State {
                         } else {
                             unknown.clone()
                         }
-                    } else if power.id == "POISON_POWER"
+                    } else if power.id.as_ref() == "POISON_POWER"
                         && !power.grants.iter().any(|grant| grant.remaining() > 0)
                     {
                         unknown.clone()
@@ -714,7 +714,7 @@ impl State {
                 if combat.cards[row].kind == crate::source_kind::SourceKind::Unknown {
                     Destination::Unknown(slot)
                 } else {
-                    Destination::Row(row)
+                    Destination::Row(row as u32)
                 }
             });
         SourceSnapshot::normalized(epoch, combat.cards.len(), vec![(destination, 1)])
@@ -754,7 +754,7 @@ impl LedgerStage {
 
     fn row(&mut self, destination: Destination) -> Result<usize, SourceFailure> {
         match destination {
-            Destination::Row(row) if row < self.combat.cards.len() => Ok(row),
+            Destination::Row(row) if (row as usize) < self.combat.cards.len() => Ok(row as usize),
             Destination::Unknown(slot) if slot <= TEAM_SLOT => {
                 crate::data::ledger::get_or_create_card_kind(
                     &mut self.combat,

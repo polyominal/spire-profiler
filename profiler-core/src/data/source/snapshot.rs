@@ -1,6 +1,8 @@
 //! Immutable normalized supplier vectors. Representation fields stay private
 //! here; gameplay code can clone values and consume checked allocation cursors.
 
+use std::rc::Rc;
+
 use super::{
     CombatEpoch, Destination, PAYLOAD_MAX, SourceDiagnostics, SourceFailure, TEAM_SLOT, caps,
 };
@@ -14,7 +16,7 @@ pub(super) struct WeightedDestination {
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct SourceSnapshot {
     combat_seq: u32,
-    shares: Vec<WeightedDestination>,
+    shares: Rc<[WeightedDestination]>,
 }
 
 impl SourceSnapshot {
@@ -39,7 +41,7 @@ impl SourceSnapshot {
                 return Err(SourceFailure::Packet);
             }
             match destination {
-                Destination::Row(row) if row >= rows || row > PAYLOAD_MAX as usize => {
+                Destination::Row(row) if row as usize >= rows || row > PAYLOAD_MAX => {
                     return Err(SourceFailure::Token);
                 }
                 Destination::Unknown(slot) if slot > TEAM_SLOT => {
@@ -59,18 +61,20 @@ impl SourceSnapshot {
             .iter()
             .fold(0, |gcd, (_, weight)| Self::gcd(gcd, *weight));
         let mut total = 0_u64;
-        let mut shares = Vec::with_capacity(merged.len());
-        for (destination, weight) in merged {
-            let weight = u64::try_from(weight / divisor).map_err(|_| SourceFailure::Arithmetic)?;
+        for (_, weight) in &mut merged {
+            *weight /= divisor;
+            let weight = u64::try_from(*weight).map_err(|_| SourceFailure::Arithmetic)?;
             total = total.checked_add(weight).ok_or(SourceFailure::Arithmetic)?;
-            shares.push(WeightedDestination {
-                destination,
-                weight,
-            });
         }
         Ok(Self {
             combat_seq: epoch.0.get(),
-            shares,
+            shares: merged
+                .into_iter()
+                .map(|(destination, weight)| WeightedDestination {
+                    destination,
+                    weight: weight as u64,
+                })
+                .collect(),
         })
     }
 
@@ -84,10 +88,10 @@ impl SourceSnapshot {
     pub(super) fn unknown(epoch: CombatEpoch) -> Self {
         Self {
             combat_seq: epoch.0.get(),
-            shares: vec![WeightedDestination {
+            shares: Rc::from([WeightedDestination {
                 destination: Destination::Unknown(TEAM_SLOT),
                 weight: 1,
-            }],
+            }]),
         }
     }
 
@@ -124,7 +128,7 @@ impl SourceSnapshot {
                         .checked_mul(old_scale)
                         .ok_or(SourceFailure::Arithmetic)?;
                 }
-                for share in &grant.source.shares {
+                for share in grant.source.shares.iter() {
                     let weight = u128::from(share.weight)
                         .checked_mul(u128::from(grant.remaining))
                         .and_then(|value| value.checked_mul(new_scale))
@@ -166,14 +170,14 @@ impl SourceSnapshot {
         SourcePrefix {
             source: self.clone(),
             credited_total: 0,
-            credits: vec![0; self.shares.len()],
+            credits: vec![0; self.shares.len()].into_boxed_slice(),
         }
     }
 
     pub(super) fn budgets(&self, amount: u64) -> RootBudgets {
-        let weights: Vec<_> = self.shares.iter().map(|share| share.weight).collect();
-        let amounts = RootBudgets::proportional(amount, &weights)
-            .expect("normalized snapshots have a positive checked u64 weight total");
+        let amounts =
+            RootBudgets::proportional(amount, self.shares.iter().map(|share| share.weight))
+                .expect("normalized snapshots have a positive checked u64 weight total");
         RootBudgets {
             remaining: amount,
             shares: self
@@ -194,7 +198,7 @@ pub(super) struct PowerGrant {
 
 pub(super) struct RootBudgets {
     remaining: u64,
-    shares: Vec<(Destination, u64)>,
+    shares: Box<[(Destination, u64)]>,
 }
 
 impl RootBudgets {
@@ -202,13 +206,16 @@ impl RootBudgets {
         self.remaining
     }
 
-    pub(super) fn proportional(amount: u64, weights: &[u64]) -> Result<Vec<u64>, SourceFailure> {
+    pub(super) fn proportional(
+        amount: u64,
+        weights: impl ExactSizeIterator<Item = u64> + Clone,
+    ) -> Result<Box<[u64]>, SourceFailure> {
         let total = weights
-            .iter()
-            .try_fold(0_u64, |sum, weight| sum.checked_add(*weight))
+            .clone()
+            .try_fold(0_u64, |sum, weight| sum.checked_add(weight))
             .ok_or(SourceFailure::Arithmetic)?;
         if total == 0 {
-            return Ok(vec![0; weights.len()]);
+            return Ok(vec![0; weights.len()].into_boxed_slice());
         }
         let mut cumulative = 0_u64;
         let mut previous = 0_u64;
@@ -219,20 +226,20 @@ impl RootBudgets {
             allocation.push(next - previous);
             previous = next;
         }
-        Ok(allocation)
+        Ok(allocation.into_boxed_slice())
     }
 
     pub(super) fn take(&mut self, amount: u64) -> Result<Vec<(Destination, u64)>, SourceFailure> {
         if amount > self.remaining {
             return Err(SourceFailure::Packet);
         }
-        let weights: Vec<_> = self.shares.iter().map(|(_, amount)| *amount).collect();
+        let weights = self.shares.iter().map(|(_, amount)| *amount);
         debug_assert_eq!(
-            weights.iter().sum::<u64>(),
+            weights.clone().sum::<u64>(),
             self.remaining,
             "remaining roots must cover all future consumption"
         );
-        let portions = Self::proportional(amount, &weights)?;
+        let portions = Self::proportional(amount, weights)?;
         let mut result = Vec::new();
         for ((destination, remaining), portion) in self.shares.iter_mut().zip(portions) {
             *remaining -= portion;
@@ -249,7 +256,7 @@ impl RootBudgets {
 pub(super) struct SourcePrefix {
     source: SourceSnapshot,
     credited_total: u64,
-    credits: Vec<u64>,
+    credits: Box<[u64]>,
 }
 
 impl SourcePrefix {
@@ -257,9 +264,9 @@ impl SourcePrefix {
         &self.source
     }
 
-    fn allocation(&self, total: u64) -> Result<Vec<u64>, SourceFailure> {
+    fn allocation(&self, total: u64) -> Result<Box<[u64]>, SourceFailure> {
         let weight_total: u64 = self.source.shares.iter().map(|share| share.weight).sum();
-        let mut credits: Vec<u64> = self
+        let mut credits: Box<[u64]> = self
             .source
             .shares
             .iter()

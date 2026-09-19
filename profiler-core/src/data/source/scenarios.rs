@@ -233,7 +233,7 @@ impl Scenario {
             .map(|share| {
                 let (name, slot) = match share.destination() {
                     Destination::Row(index) => {
-                        let row = &self.combat().cards[index];
+                        let row = &self.combat().cards[index as usize];
                         (row.id.as_str(), row.player)
                     }
                     Destination::Unknown(slot) => ("UNATTRIBUTED", slot),

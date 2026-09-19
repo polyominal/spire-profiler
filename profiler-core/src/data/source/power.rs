@@ -5,7 +5,7 @@ use super::*;
 
 impl PowerProvenance {
     fn matches_owner(&self, id: &str, owner: u64, kind: CreatureKind) -> bool {
-        self.id == id && self.owner == owner && self.owner_kind == kind
+        self.id.as_ref() == id && self.owner == owner && self.owner_kind == kind
     }
 
     fn consume(&mut self, amount: u32) {
@@ -127,7 +127,7 @@ impl State {
             }
             PowerProvenance {
                 instance,
-                id: id.to_owned(),
+                id: id.into(),
                 owner,
                 owner_kind: kind,
                 owner_slot: slot,
@@ -151,8 +151,8 @@ impl State {
                 .report(SourceFailure::Packet);
         }
         self.update_power_grants(&mut power, before, new, incoming.clone(), epoch)?;
-        let mut reductions = self.provenance.reductions.clone();
         if id == "STRENGTH_POWER" && kind == CreatureKind::Enemy {
+            let mut reductions = self.provenance.reductions.clone();
             if !power.trusted || power.observed != before {
                 reductions.retain(|entry| entry.power_instance != instance);
             }
@@ -163,6 +163,7 @@ impl State {
                 i64::from(new) - i64::from(before),
                 incoming,
             )?;
+            self.provenance.reductions = reductions;
         }
         power.observed = new;
         power.trusted = true;
@@ -171,7 +172,6 @@ impl State {
         } else {
             self.provenance.powers.push(power);
         }
-        self.provenance.reductions = reductions;
         Ok(())
     }
 
