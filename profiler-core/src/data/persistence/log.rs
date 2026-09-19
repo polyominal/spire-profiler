@@ -115,44 +115,40 @@ pub(crate) fn append_log(args: fmt::Arguments<'_>) {
 
     LOG_SINK.with(|cell| {
         let mut sink = cell.borrow_mut();
-        if let Some(file) = sink.file.as_mut() {
-            if let Err(err) = file.write_all(line) {
-                fail!(
-                    "cannot write log line: {} (os error {})",
-                    err.kind(),
-                    err.raw_os_error().unwrap_or(-1)
-                );
-                sink.file = None;
+        let LogSink {
+            path,
+            file,
+            open_failure_logged,
+        } = &mut *sink;
+        let handle = match file {
+            Some(handle) => handle,
+            None => {
+                let Some(path) = path.as_deref() else {
+                    return;
+                };
+                match fs::OpenOptions::new().append(true).create(true).open(path) {
+                    Ok(handle) => file.insert(handle),
+                    Err(err) => {
+                        if !*open_failure_logged {
+                            *open_failure_logged = true;
+                            fail!(
+                                "cannot open log file: {} (os error {})",
+                                err.kind(),
+                                err.raw_os_error().unwrap_or(-1)
+                            );
+                        }
+                        return;
+                    }
+                }
             }
-            return;
-        }
-        // An open file implies a bound path, so the fast path runs first.
-        let Some(path) = sink.path.as_deref() else {
-            return;
         };
-        let opened = fs::OpenOptions::new().append(true).create(true).open(path);
-        match opened {
-            Ok(mut file) => {
-                if let Err(err) = file.write_all(line) {
-                    fail!(
-                        "cannot write log line: {} (os error {})",
-                        err.kind(),
-                        err.raw_os_error().unwrap_or(-1)
-                    );
-                } else {
-                    sink.file = Some(file);
-                }
-            }
-            Err(err) => {
-                if !sink.open_failure_logged {
-                    sink.open_failure_logged = true;
-                    fail!(
-                        "cannot open log file: {} (os error {})",
-                        err.kind(),
-                        err.raw_os_error().unwrap_or(-1)
-                    );
-                }
-            }
+        if let Err(err) = handle.write_all(line) {
+            fail!(
+                "cannot write log line: {} (os error {})",
+                err.kind(),
+                err.raw_os_error().unwrap_or(-1)
+            );
+            *file = None;
         }
     });
 }
@@ -169,6 +165,22 @@ pub(crate) use event_log;
 mod tests {
     use super::*;
     use crate::data::state::STATE;
+
+    #[test]
+    fn event_log_retries_opening_after_the_directory_becomes_available() {
+        let dir = crate::test_util::unique_dir("event-log-retry").join("data");
+        let path = dir.join("profiler.log");
+        bind_log_path(&path);
+        append_log(format_args!("unavailable"));
+        fs::create_dir(&dir).expect("the fixture's parent exists");
+        append_log(format_args!("first"));
+        append_log(format_args!("second"));
+        assert_eq!(
+            fs::read_to_string(path).expect("the retry opens the log"),
+            "first\nsecond\n"
+        );
+        reset_log_sink();
+    }
 
     #[test]
     fn event_log_appends_exact_lines() {
