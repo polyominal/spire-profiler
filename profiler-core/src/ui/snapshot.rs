@@ -146,43 +146,45 @@ fn cards_for_tab(st: &State, tab: UiTab) -> &[CardStat] {
     }
 }
 
-/// The avatar row filters both tabs: the combat's cards and the run
-/// accumulator carry per-player rows, and headline totals stay team-wide.
-fn chart_dataset(tab: UiTab) -> Vec<CardStat> {
-    STATE.with(|s| {
-        let st = s.borrow();
-        let filter = st.player_filter;
-        cards_for_tab(&st, tab)
-            .iter()
-            .filter(|card| player_filter_keeps(filter, card))
-            .cloned()
-            .collect()
-    })
-}
-
 /// Defense sorts standalone self-damage below every positive contributor:
 /// what protected the player first, then what it cost.
 pub fn ui_snapshot_rows(tab: UiTab, out: &mut [UiRow]) -> usize {
-    if STATE.with(|s| s.borrow().store_paths.is_none()) {
-        return 0;
-    }
-    let cards = chart_dataset(tab);
-    ui_snapshot_rows_from(&cards, out)
+    STATE.with(|s| {
+        let st = s.borrow();
+        if st.store_paths.is_none() {
+            return 0;
+        }
+        let cards = cards_for_tab(&st, tab)
+            .iter()
+            .filter(|card| player_filter_keeps(st.player_filter, card));
+        snapshot_rows(cards, out)
+    })
 }
 
 pub fn ui_snapshot_rows_from(cards: &[CardStat], out: &mut [UiRow]) -> usize {
+    snapshot_rows(cards.iter(), out)
+}
+
+fn snapshot_rows<'a>(
+    cards: impl Iterator<Item = &'a CardStat> + Clone,
+    out: &mut [UiRow],
+) -> usize {
     let mut n: usize = 0;
     for section in Section::ALL {
-        n += build_section_rows(section, cards, &mut out[n..]);
+        n += build_section_rows(section, cards.clone(), &mut out[n..]);
     }
     n
 }
 
-fn build_section_rows(section: Section, cards: &[CardStat], out: &mut [UiRow]) -> usize {
+fn build_section_rows<'a>(
+    section: Section,
+    cards: impl Iterator<Item = &'a CardStat> + Clone,
+    out: &mut [UiRow],
+) -> usize {
     if out.is_empty() {
         return 0;
     }
-    let kept = rank_rows(section, collect_candidates(section, cards));
+    let kept = rank_rows(section, collect_candidates(section, cards.clone()));
 
     let mut max_val: i64 = 0;
     for top in &kept {
@@ -209,7 +211,10 @@ fn build_section_rows(section: Section, cards: &[CardStat], out: &mut [UiRow]) -
     n
 }
 
-fn collect_candidates<'a>(section: Section, cards: &'a [CardStat]) -> Vec<RowCand<'a>> {
+fn collect_candidates<'a>(
+    section: Section,
+    cards: impl Iterator<Item = &'a CardStat>,
+) -> Vec<RowCand<'a>> {
     let mut kept: Vec<RowCand> = Vec::new();
     for card in cards {
         let view = section_view(section, card);

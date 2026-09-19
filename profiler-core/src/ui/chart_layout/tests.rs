@@ -440,17 +440,17 @@ fn title_band_never_renders_a_player_filter_label() {
     }
 }
 
-fn avatar_facts() -> Vec<AvatarFact> {
-    vec![
+fn avatar_facts() -> [AvatarFact; 2] {
+    [
         AvatarFact {
             slot: 0,
             loaded: true,
-            path: "res://images/ui/top_panel/character_icon_ironclad.png".to_owned(),
+            path: "res://images/ui/top_panel/character_icon_ironclad.png".into(),
         },
         AvatarFact {
             slot: 1,
             loaded: true,
-            path: "res://images/ui/top_panel/character_icon_silent.png".to_owned(),
+            path: "res://images/ui/top_panel/character_icon_silent.png".into(),
         },
     ]
 }
@@ -505,13 +505,7 @@ fn avatar_row_emits_textures_hits_and_paths_on_the_combat_tab() {
     assert_eq!(icons[0].w, icons[0].h, "the portrait art is square");
     assert_eq!(icons[0].w, AVATAR_H);
     assert_eq!(icons[1].x, icons[0].x + AVATAR_H + AVATAR_GAP);
-    assert_eq!(
-        l.portrait_paths,
-        avatar_facts()
-            .iter()
-            .map(|a| a.path.clone())
-            .collect::<Vec<_>>()
-    );
+    assert_eq!(l.portrait_paths, avatar_facts().map(|avatar| avatar.path));
     assert_eq!(l.avatar_hits.len(), 2);
     assert_eq!(
         l.avatar_hits[0],
@@ -566,13 +560,7 @@ fn avatar_row_renders_on_the_run_tab_too() {
     });
     assert_eq!(icons_of(&l).len(), 2, "the run tab carries the row");
     assert_eq!(l.avatar_hits.len(), 2);
-    assert_eq!(
-        l.portrait_paths,
-        avatar_facts()
-            .iter()
-            .map(|a| a.path.clone())
-            .collect::<Vec<_>>()
-    );
+    assert_eq!(l.portrait_paths, avatar_facts().map(|avatar| avatar.path));
     assert_eq!(l.avatar_hits[0].slot, 0);
     assert_eq!(l.avatar_hits[1].slot, 1);
     assert_eq!(l.header_bottom, bare_header_bottom(l.content) + AVATAR_H);
@@ -580,7 +568,7 @@ fn avatar_row_renders_on_the_run_tab_too() {
 
 #[test]
 fn avatar_row_skips_unloaded_avatars_but_records_their_paths() {
-    let facts = vec![avatar_fact(0, false), avatar_fact(1, true)];
+    let facts = [avatar_fact(0, false), avatar_fact(1, true)];
     let l = combat_build(&facts);
     assert_eq!(
         l.portrait_paths.len(),
@@ -933,7 +921,7 @@ fn every_command_lies_inside_the_content_box() {
     {
         let l = combat_tab_layout_mode(flat_chrome, tab_sprites, gutter);
         let chrome: Vec<Cmd> = if flat_chrome {
-            crate::ui::panel_common::border_rects(l.width, l.height).to_vec()
+            crate::ui::panel_common::border_rects(l.width, l.height).into()
         } else {
             Vec::new()
         };

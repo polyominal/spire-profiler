@@ -606,8 +606,8 @@ mod tests {
         let icons = IconTextures {
             theme: &theme,
             portraits: &[
-                "res://images/ui/top_panel/character_icon_ironclad.png".to_owned(),
-                "res://images/ui/top_panel/character_icon_silent.png".to_owned(),
+                "res://images/ui/top_panel/character_icon_ironclad.png".into(),
+                "res://images/ui/top_panel/character_icon_silent.png".into(),
             ],
             dimmed: &[true, false],
             scales: &[1.1, 0.95],
