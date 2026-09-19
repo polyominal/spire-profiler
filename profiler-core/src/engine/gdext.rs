@@ -473,24 +473,28 @@ const _: () = assert!(
 
 /// One engine singleton's resolve cache: unresolved until the first [`get`](Self::get),
 /// then resolved or failed (warned once, never retried).
-struct SingletonCache {
-    ptr: ObjectPtr,
-    failed: bool,
+enum SingletonCache {
+    Unfetched,
+    Failed,
+    Loaded(std::ptr::NonNull<c_void>),
 }
 
 impl SingletonCache {
     fn get(&mut self, name: ConstStringNamePtr, failure_warning: &str) -> Option<ObjectPtr> {
-        if self.ptr.is_null() && !self.failed {
-            self.ptr = global_get_singleton(name);
-            if self.ptr.is_null() {
-                self.failed = true;
-                warn!("{failure_warning}");
-            }
-        }
-        if self.ptr.is_null() {
-            None
-        } else {
-            Some(self.ptr)
+        match self {
+            Self::Loaded(ptr) => Some(ptr.as_ptr()),
+            Self::Failed => None,
+            Self::Unfetched => match std::ptr::NonNull::new(global_get_singleton(name)) {
+                Some(ptr) => {
+                    *self = Self::Loaded(ptr);
+                    Some(ptr.as_ptr())
+                }
+                None => {
+                    *self = Self::Failed;
+                    warn!("{failure_warning}");
+                    None
+                }
+            },
         }
     }
 }
@@ -570,14 +574,8 @@ impl Global {
             sn_set_modulate: ptr::null_mut(),
             sn_draw_style_box: ptr::null_mut(),
             sn_draw_texture_rect: ptr::null_mut(),
-            input: SingletonCache {
-                ptr: ptr::null_mut(),
-                failed: false,
-            },
-            resource_loader: SingletonCache {
-                ptr: ptr::null_mut(),
-                failed: false,
-            },
+            input: SingletonCache::Unfetched,
+            resource_loader: SingletonCache::Unfetched,
             mouse_query_warned: false,
             warned: [0; 32],
             warned_count: 0,
