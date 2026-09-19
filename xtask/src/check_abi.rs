@@ -24,19 +24,19 @@ const WHITESPACE: &[char] = &[' ', '\t', '\n', '\r', '\x0b', '\x0c'];
 
 #[derive(PartialEq)]
 struct Signature {
-    parameters: Vec<String>,
+    parameters: Vec<&'static str>,
     returns: &'static str,
 }
 
-struct Declaration {
+struct Declaration<'a> {
     signature: Signature,
-    source: String,
+    source: &'a str,
 }
 
-struct Binding {
-    delegate: String,
-    export_name: String,
-    source: String,
+struct Binding<'a> {
+    delegate: &'a str,
+    export_name: &'a str,
+    source: &'a str,
 }
 
 pub fn run() -> Result<()> {
@@ -89,8 +89,8 @@ fn compare_sources(
         errors.push("no GetExport bindings were parsed from the production sources".to_owned());
     }
     for binding in &bindings {
-        match exports.get(&binding.export_name) {
-            Some(export) => match delegates.get(&binding.delegate) {
+        match exports.get(binding.export_name) {
+            Some(export) => match delegates.get(binding.delegate) {
                 Some(delegate) if delegate.signature == export.signature => {}
                 Some(delegate) => {
                     errors.push(format!(
@@ -127,13 +127,13 @@ fn compare_sources(
     Ok(bindings.len())
 }
 
-fn map_rust_type(abi_type: &str) -> Result<String, String> {
+fn map_rust_type(abi_type: &str) -> Result<&'static str, String> {
     match abi_type {
-        "i32" => Ok("int".to_owned()),
-        "i64" => Ok("long".to_owned()),
-        "u64" => Ok("ulong".to_owned()),
-        "f64" => Ok("double".to_owned()),
-        "*const c_char" => Ok("string".to_owned()),
+        "i32" => Ok("int"),
+        "i64" => Ok("long"),
+        "u64" => Ok("ulong"),
+        "f64" => Ok("double"),
+        "*const c_char" => Ok("string"),
         _ => Err(format!("unsupported Rust parameter type '{abi_type}'")),
     }
 }
@@ -183,7 +183,7 @@ fn extract_params(text: &str, open: usize) -> Result<&str, String> {
 }
 
 /// The first colon is always the name/type separator.
-fn rust_param_classes(raw: &str) -> Result<Vec<String>, String> {
+fn rust_param_classes(raw: &str) -> Result<Vec<&'static str>, String> {
     let mut classes = Vec::new();
     for param in raw.split(',') {
         let part = param.trim_matches(WHITESPACE);
@@ -201,7 +201,7 @@ fn rust_param_classes(raw: &str) -> Result<Vec<String>, String> {
 
 /// P/Invoke's default string marshaling is ANSI, which silently corrupts
 /// non-ASCII text before the core sees it.
-fn cs_param_classes(raw: &str) -> Result<Vec<String>, String> {
+fn cs_param_classes(raw: &str) -> Result<Vec<&'static str>, String> {
     let mut classes = Vec::new();
     for param in raw.split(',') {
         let original = param.trim_matches(WHITESPACE);
@@ -225,8 +225,7 @@ fn cs_param_classes(raw: &str) -> Result<Vec<String>, String> {
         classes.push(
             map_cs_type(cs_type)
                 .filter(|class| *class != "void")
-                .ok_or_else(|| format!("unsupported C# parameter type '{cs_type}'"))?
-                .to_owned(),
+                .ok_or_else(|| format!("unsupported C# parameter type '{cs_type}'"))?,
         );
     }
     Ok(classes)
@@ -269,11 +268,11 @@ fn strip_attributes(text: &str) -> Result<&str, String> {
 }
 
 /// Later occurrences overwrite earlier ones.
-fn scan_rust_exports(
-    text: &str,
-    source: &str,
-    bindings: &[Binding],
-    exports: &mut HashMap<String, Declaration>,
+fn scan_rust_exports<'a>(
+    text: &'a str,
+    source: &'a str,
+    bindings: &[Binding<'_>],
+    exports: &mut HashMap<&'a str, Declaration<'a>>,
 ) -> Result<(), String> {
     const NEEDLE: &str = "extern \"C\" fn ";
     let mut pos = 0;
@@ -328,14 +327,14 @@ fn scan_rust_exports(
                 ));
             };
             exports.insert(
-                name.to_owned(),
+                name,
                 Declaration {
                     signature: Signature {
                         parameters: rust_param_classes(raw.trim_matches(WHITESPACE))
                             .map_err(|error| format!("{name}: {error}"))?,
                         returns,
                     },
-                    source: source.to_owned(),
+                    source,
                 },
             );
             pos = after_params;
@@ -346,11 +345,11 @@ fn scan_rust_exports(
     Ok(())
 }
 
-fn scan_delegates(
-    text: &str,
-    source: &str,
-    bindings: &[Binding],
-    delegates: &mut HashMap<String, Declaration>,
+fn scan_delegates<'a>(
+    text: &'a str,
+    source: &'a str,
+    bindings: &[Binding<'_>],
+    delegates: &mut HashMap<&'a str, Declaration<'a>>,
 ) -> Result<(), String> {
     const NEEDLE: &str = "private delegate ";
     let mut pos = 0;
@@ -418,15 +417,18 @@ fn scan_delegates(
             parameters,
             returns,
         };
-        let source = source.to_owned();
-        delegates.insert(name.to_owned(), Declaration { signature, source });
+        delegates.insert(name, Declaration { signature, source });
         pos = after_params;
     }
     Ok(())
 }
 
 /// All literal, no whitespace.
-fn scan_bindings(text: &str, source: &str, bindings: &mut Vec<Binding>) -> Result<(), String> {
+fn scan_bindings<'a>(
+    text: &'a str,
+    source: &'a str,
+    bindings: &mut Vec<Binding<'a>>,
+) -> Result<(), String> {
     const NEEDLE: &str = "GetExport<";
     const GENERIC_HELPER: &str = "GetExport<T>(IntPtr lib, string name)";
     let mut pos = 0;
@@ -450,9 +452,9 @@ fn scan_bindings(text: &str, source: &str, bindings: &mut Vec<Binding>) -> Resul
             let export_name = &text[export_start..j];
             if is_profiler_name(export_name) && text[j..].starts_with("\")") {
                 bindings.push(Binding {
-                    delegate: delegate_name.to_owned(),
-                    export_name: export_name.to_owned(),
-                    source: source.to_owned(),
+                    delegate: delegate_name,
+                    export_name,
+                    source,
                 });
                 pos = j + "\")".len();
                 continue;

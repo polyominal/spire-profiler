@@ -73,7 +73,9 @@ pub(crate) fn render_gdextension() -> String {
     )
 }
 
-pub(crate) fn build_matrix(shell: &Shell, root: &Path) -> Result<Vec<(String, PathBuf)>> {
+pub(crate) type NativeArtifact = (&'static str, PathBuf);
+
+pub(crate) fn build_matrix(shell: &Shell, root: &Path) -> Result<Vec<NativeArtifact>> {
     ensure_zigbuild(shell)?;
     let zig = crate::zig::resolve_zig(shell)?;
     // Pin the resolved zig (never PATH) for the whole native build.
@@ -103,7 +105,7 @@ pub(crate) fn build_matrix(shell: &Shell, root: &Path) -> Result<Vec<(String, Pa
             row.zigbuild_triple,
             artifact.display()
         );
-        libs.push((row.bundle_name.to_string(), artifact));
+        libs.push((row.bundle_name, artifact));
     }
     Ok(libs)
 }
@@ -154,23 +156,19 @@ mod tests {
     /// Godot's lookup.
     #[test]
     fn matrix_keys_and_bundle_names_are_unique() {
-        let mut keys: Vec<String> = MATRIX
-            .iter()
-            .map(|r| format!("{}.{}", r.os, r.arch))
-            .collect();
-        keys.sort_unstable();
-        let mut unique_keys = keys.clone();
-        unique_keys.dedup();
-        assert_eq!(
-            unique_keys, keys,
-            "matrix rows must have distinct os.arch keys"
-        );
-
-        let mut names: Vec<&str> = MATRIX.iter().map(|r| r.bundle_name).collect();
-        names.sort_unstable();
-        let mut unique_names = names.clone();
-        unique_names.dedup();
-        assert_eq!(unique_names, names, "bundle names must be distinct");
+        for (index, row) in MATRIX.iter().enumerate() {
+            for other in &MATRIX[..index] {
+                assert_ne!(
+                    (row.os, row.arch),
+                    (other.os, other.arch),
+                    "matrix rows must have distinct os.arch keys"
+                );
+                assert_ne!(
+                    row.bundle_name, other.bundle_name,
+                    "bundle names must be distinct"
+                );
+            }
+        }
     }
 
     #[test]

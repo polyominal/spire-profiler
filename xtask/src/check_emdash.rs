@@ -143,60 +143,54 @@ fn comment_dashes(content: &str) -> usize {
 }
 
 /// The pin comparison, in path order. `Lowerable` is a nudge; the rest fail.
-fn evaluate(counts: &BTreeMap<String, usize>, pins: &[(&str, usize)]) -> Vec<Offense> {
+fn evaluate<'a>(
+    counts: &'a BTreeMap<String, usize>,
+    pins: &'a [(&str, usize)],
+) -> Vec<Offense<'a>> {
     let mut offenses = Vec::new();
     for (path, &actual) in counts {
-        match pins.iter().find(|(pinned, _)| pinned == path) {
-            Some(&(_, pin)) if actual > pin => offenses.push(Offense::OverPin {
-                path: path.clone(),
-                pin,
-                actual,
-            }),
-            Some(&(_, pin)) if actual < pin => offenses.push(Offense::Lowerable {
-                path: path.clone(),
-                pin,
-                actual,
-            }),
+        match pins.iter().find(|(pinned, _)| *pinned == path.as_str()) {
+            Some(&(_, pin)) if actual > pin => {
+                offenses.push(Offense::OverPin { path, pin, actual })
+            }
+            Some(&(_, pin)) if actual < pin => {
+                offenses.push(Offense::Lowerable { path, pin, actual })
+            }
             Some(_) => {}
-            None if actual > 0 => offenses.push(Offense::Unpinned {
-                path: path.clone(),
-                actual,
-            }),
+            None if actual > 0 => offenses.push(Offense::Unpinned { path, actual }),
             None => {}
         }
     }
     for &(path, _) in pins {
         if !counts.contains_key(path) {
-            offenses.push(Offense::StalePin {
-                path: path.to_owned(),
-            });
+            offenses.push(Offense::StalePin { path });
         }
     }
     offenses
 }
 
 #[derive(Debug, PartialEq)]
-enum Offense {
+enum Offense<'a> {
     OverPin {
-        path: String,
+        path: &'a str,
         pin: usize,
         actual: usize,
     },
     Lowerable {
-        path: String,
+        path: &'a str,
         pin: usize,
         actual: usize,
     },
     Unpinned {
-        path: String,
+        path: &'a str,
         actual: usize,
     },
     StalePin {
-        path: String,
+        path: &'a str,
     },
 }
 
-impl Offense {
+impl Offense<'_> {
     fn is_failure(&self) -> bool {
         !matches!(self, Offense::Lowerable { .. })
     }
@@ -256,11 +250,12 @@ mod tests {
 
     #[test]
     fn above_pin_fails() {
-        let offenses = evaluate(&counts(&[("docs/a.md", 3)]), &[("docs/a.md", 2)]);
+        let counts = counts(&[("docs/a.md", 3)]);
+        let offenses = evaluate(&counts, &[("docs/a.md", 2)]);
         assert_eq!(
-            offenses.as_slice(),
+            offenses,
             &[Offense::OverPin {
-                path: "docs/a.md".into(),
+                path: "docs/a.md",
                 pin: 2,
                 actual: 3
             }]
@@ -270,11 +265,12 @@ mod tests {
 
     #[test]
     fn unpinned_dash_fails() {
-        let offenses = evaluate(&counts(&[("src/b.rs", 1)]), &[]);
+        let counts = counts(&[("src/b.rs", 1)]);
+        let offenses = evaluate(&counts, &[]);
         assert_eq!(
-            offenses.as_slice(),
+            offenses,
             &[Offense::Unpinned {
-                path: "src/b.rs".into(),
+                path: "src/b.rs",
                 actual: 1
             }]
         );
@@ -287,11 +283,12 @@ mod tests {
 
     #[test]
     fn below_pin_only_nudges() {
-        let offenses = evaluate(&counts(&[("c.rs", 1)]), &[("c.rs", 3)]);
+        let counts = counts(&[("c.rs", 1)]);
+        let offenses = evaluate(&counts, &[("c.rs", 3)]);
         assert_eq!(
-            offenses.as_slice(),
+            offenses,
             &[Offense::Lowerable {
-                path: "c.rs".into(),
+                path: "c.rs",
                 pin: 3,
                 actual: 1
             }]
@@ -302,12 +299,8 @@ mod tests {
     #[test]
     fn zero_needs_no_pin_and_stale_pin_fails() {
         assert!(evaluate(&counts(&[("d.rs", 0)]), &[]).is_empty());
-        let offenses = evaluate(&counts(&[]), &[("gone.rs", 2)]);
-        assert_eq!(
-            offenses.as_slice(),
-            &[Offense::StalePin {
-                path: "gone.rs".into()
-            }]
-        );
+        let counts = counts(&[]);
+        let offenses = evaluate(&counts, &[("gone.rs", 2)]);
+        assert_eq!(offenses, &[Offense::StalePin { path: "gone.rs" }]);
     }
 }

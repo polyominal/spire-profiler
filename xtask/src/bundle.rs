@@ -4,7 +4,7 @@
 //! names. The .gdextension is rendered from the build matrix, so the keys
 //! and file names cannot drift from the libraries the build produces.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::Result;
 
@@ -18,7 +18,7 @@ pub(crate) fn assemble_bundle(
     root: &Path,
     gen_dir: &Path,
     mod_dir: &Path,
-    libs: &[(String, PathBuf)],
+    libs: &[cross::NativeArtifact],
     commit: &str,
 ) -> Result<()> {
     // Wipe first so a removed library cannot linger.

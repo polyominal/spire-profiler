@@ -158,11 +158,11 @@ fn check_patch_count(output: &str, failures: &mut Vec<String>) -> Option<u64> {
     let count = output
         .match_indices(PATCH_COUNT_MARKER)
         .filter_map(|(index, _)| {
-            let digits: String = output[index + PATCH_COUNT_MARKER.len()..]
-                .chars()
-                .take_while(|character| character.is_ascii_digit())
-                .collect();
-            digits.parse::<u64>().ok()
+            let tail = &output[index + PATCH_COUNT_MARKER.len()..];
+            let end = tail
+                .find(|character: char| !character.is_ascii_digit())
+                .unwrap_or(tail.len());
+            tail[..end].parse::<u64>().ok()
         })
         .max();
     match count {
@@ -288,7 +288,8 @@ fn run_trimmed(program: &str, args: &[&str], context: &str) -> Result<String> {
     if !output.status.success() {
         // stderr usually names the real failure (e.g. wslpath's "No such
         // file or directory"); status alone does not.
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = stderr.trim();
         let detail = if stderr.is_empty() {
             String::new()
         } else {
@@ -313,13 +314,17 @@ fn share_path_with_windows(command: &mut Command, var: &str) {
 /// Any existing spec for the same var is replaced: stale flags (no /p, or
 /// /l) would otherwise compete with the translation.
 fn merged_wslenv(existing: &str, var: &str) -> String {
-    let mut wslenv: Vec<String> = existing
+    let mut wslenv = String::with_capacity(existing.len() + var.len() + 3);
+    for entry in existing
         .split(':')
         .filter(|entry| !entry.is_empty() && entry.split('/').next() != Some(var))
-        .map(str::to_owned)
-        .collect();
-    wslenv.push(format!("{var}/p"));
-    wslenv.join(":")
+    {
+        wslenv.push_str(entry);
+        wslenv.push(':');
+    }
+    wslenv.push_str(var);
+    wslenv.push_str("/p");
+    wslenv
 }
 
 fn no_user_data_home() -> anyhow::Error {
@@ -411,12 +416,11 @@ fn run_game_captured(
 /// One pump thread per stream; lines (not bytes) keep interleaving sane.
 fn spawn_pumps(
     streams: [Box<dyn std::io::Read + Send>; 2],
-) -> (mpsc::Receiver<String>, Vec<thread::JoinHandle<()>>) {
+) -> (mpsc::Receiver<String>, [thread::JoinHandle<()>; 2]) {
     let (sender, receiver) = mpsc::channel::<String>();
-    let mut pumps = Vec::new();
-    for stream in streams {
+    let pumps = streams.map(|stream| {
         let sender = sender.clone();
-        pumps.push(thread::spawn(move || {
+        thread::spawn(move || {
             let mut reader = BufReader::new(stream);
             let mut line_buffer = Vec::new();
             loop {
@@ -433,8 +437,8 @@ fn spawn_pumps(
                     }
                 }
             }
-        }));
-    }
+        })
+    });
     drop(sender);
     (receiver, pumps)
 }
@@ -450,7 +454,7 @@ const LOG_CLOCK_SLACK: Duration = Duration::from_secs(60);
 /// file is this run's.
 fn newest_boot_log(log_dir: &Path, boot_started: SystemTime) -> Option<(PathBuf, String)> {
     let entries = std::fs::read_dir(log_dir).ok()?;
-    let mut candidates: Vec<(SystemTime, PathBuf)> = entries
+    let (_, path) = entries
         .filter_map(|entry| entry.ok())
         .filter(|entry| {
             let name = entry.file_name();
@@ -464,9 +468,7 @@ fn newest_boot_log(log_dir: &Path, boot_started: SystemTime) -> Option<(PathBuf,
             Some((modified, entry.path()))
         })
         .filter(|(modified, _)| *modified + LOG_CLOCK_SLACK >= boot_started)
-        .collect();
-    candidates.sort_by_key(|candidate| candidate.0);
-    let (_, path) = candidates.pop()?;
+        .max_by_key(|(modified, _)| *modified)?;
     let text = std::fs::read_to_string(&path).ok()?;
     Some((path, text))
 }
@@ -558,12 +560,12 @@ mod tests {
     #[test]
     fn patch_count_uses_maximum_matching_count_and_accepts_other_mods() {
         for (counts, passes) in [
-            (vec![MIN_PATCHES - 1], false),
-            (vec![MIN_PATCHES], true),
-            (vec![MIN_PATCHES + 1], true),
-            (vec![0, MIN_PATCHES, 0], true),
-            (vec![MIN_PATCHES, MIN_PATCHES], true),
-            (vec![0, MIN_PATCHES - 1, 0], false),
+            (&[MIN_PATCHES - 1][..], false),
+            (&[MIN_PATCHES][..], true),
+            (&[MIN_PATCHES + 1][..], true),
+            (&[0, MIN_PATCHES, 0][..], true),
+            (&[MIN_PATCHES, MIN_PATCHES][..], true),
+            (&[0, MIN_PATCHES - 1, 0][..], false),
         ] {
             let output = counts
                 .iter()

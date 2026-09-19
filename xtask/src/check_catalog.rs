@@ -119,7 +119,7 @@ pub fn run() -> Result<()> {
 #[derive(Default)]
 struct Review {
     failures: Vec<String>,
-    seen_non_hooks: HashSet<String>,
+    seen_non_hooks: HashSet<(&'static str, &'static str, &'static str)>,
 }
 
 impl Review {
@@ -127,9 +127,9 @@ impl Review {
     /// namespace's class file; failures are the shim's runtime skips.
     fn check_entries(
         &mut self,
-        entries: &[(&str, &str)],
+        entries: &[(&'static str, &'static str)],
         files: &BTreeMap<String, ClassFile>,
-        ns: &str,
+        ns: &'static str,
         universe: &HashSet<String>,
         tracked: &[(&'static str, Regex)],
     ) {
@@ -168,12 +168,9 @@ impl Review {
         }
     }
 
-    fn check_non_hook(&mut self, ns: &str, class: &str, method: &str) {
-        let key = format!("{ns}.{class}.{method}");
-        if catalog::NON_HOOK_ENTRIES
-            .iter()
-            .any(|entry| format!("{}.{}.{}", entry.0, entry.1, entry.2) == key)
-        {
+    fn check_non_hook(&mut self, ns: &'static str, class: &'static str, method: &'static str) {
+        let key = (ns, class, method);
+        if catalog::NON_HOOK_ENTRIES.contains(&key) {
             self.seen_non_hooks.insert(key);
         } else {
             self.failures.push(format!(
@@ -205,22 +202,21 @@ impl Review {
         }
     }
 
-    fn compare_candidates(&mut self, candidates: &[Candidate]) {
-        let reviewed: HashSet<String> = catalog::REVIEWED_CANDIDATES
-            .iter()
-            .map(|(namespace, class, method)| format!("{namespace}.{class}.{method}"))
-            .collect();
+    fn compare_candidates(&mut self, candidates: &[Candidate<'_>]) {
+        let reviewed: HashSet<_> = catalog::REVIEWED_CANDIDATES.iter().copied().collect();
         if reviewed.len() != catalog::REVIEWED_CANDIDATES.len() {
             self.failures
                 .push("duplicate reviewed-candidate entries".to_owned());
             return;
         }
-        let candidate_keys: HashSet<String> = candidates.iter().map(Candidate::key).collect();
-        let new_candidates: Vec<&Candidate> = candidates
+        let candidate_keys: HashSet<_> = candidates
             .iter()
-            .filter(|candidate| !reviewed.contains(&candidate.key()))
+            .map(|candidate| (candidate.namespace, candidate.class, candidate.method))
             .collect();
-        for candidate in &new_candidates {
+        let new_candidates = candidates.iter().filter(|candidate| {
+            !reviewed.contains(&(candidate.namespace, candidate.class, candidate.method))
+        });
+        for candidate in new_candidates {
             println!("new candidate: {candidate}");
             self.failures.push(format!(
                 "new candidate {candidate} — catalog it or record the exclusion"
@@ -229,16 +225,15 @@ impl Review {
         self.failures.extend(
             reviewed
                 .difference(&candidate_keys)
-                .map(|review| format!("reviewed candidate {review} is no longer reported")),
+                .map(|(ns, class, method)| {
+                    format!("reviewed candidate {ns}.{class}.{method} is no longer reported")
+                }),
         );
         self.compare_non_hooks();
     }
 
     fn compare_non_hooks(&mut self) {
-        let expected: HashSet<String> = catalog::NON_HOOK_ENTRIES
-            .iter()
-            .map(|(namespace, class, method)| format!("{namespace}.{class}.{method}"))
-            .collect();
+        let expected: HashSet<_> = catalog::NON_HOOK_ENTRIES.iter().copied().collect();
         if expected.len() != catalog::NON_HOOK_ENTRIES.len() {
             self.failures.push("duplicate non-hook entries".to_owned());
             return;
@@ -246,15 +241,20 @@ impl Review {
         if self.seen_non_hooks == expected {
             return;
         }
-        self.failures.extend(
-            expected
-                .difference(&self.seen_non_hooks)
-                .map(|entry| format!("non-hook entry {entry} is missing or became a hook")),
-        );
+        self.failures
+            .extend(
+                expected
+                    .difference(&self.seen_non_hooks)
+                    .map(|(ns, class, method)| {
+                        format!("non-hook entry {ns}.{class}.{method} is missing or became a hook")
+                    }),
+            );
         self.failures.extend(
             self.seen_non_hooks
                 .difference(&expected)
-                .map(|entry| format!("unexpected non-hook entry {entry}")),
+                .map(|(ns, class, method)| {
+                    format!("unexpected non-hook entry {ns}.{class}.{method}")
+                }),
         );
     }
 
@@ -278,12 +278,12 @@ impl Review {
 
 /// Uncatalogued hooks whose bodies produce tracked effects. The reviewed
 /// list decides whether each report is expected drift signal.
-fn candidate_hooks(
-    relic_files: &BTreeMap<String, ClassFile>,
-    power_files: &BTreeMap<String, ClassFile>,
+fn candidate_hooks<'a>(
+    relic_files: &'a BTreeMap<String, ClassFile>,
+    power_files: &'a BTreeMap<String, ClassFile>,
     universe: &HashSet<String>,
     tracked: &[(&'static str, Regex)],
-) -> Vec<Candidate> {
+) -> Vec<Candidate<'a>> {
     let catalogued: HashSet<(&str, &str)> = catalog::RELICS
         .iter()
         .copied()
@@ -302,32 +302,26 @@ fn candidate_hooks(
                 if !effects.is_empty() {
                     candidates.push(Candidate {
                         namespace: label,
-                        class: class.clone(),
-                        method: method.clone(),
+                        class,
+                        method,
                         effects,
                     });
                 }
             }
         }
     }
-    candidates.sort_by_key(Candidate::key);
+    candidates.sort_by_key(|candidate| (candidate.namespace, candidate.class, candidate.method));
     candidates
 }
 
-struct Candidate {
+struct Candidate<'a> {
     namespace: &'static str,
-    class: String,
-    method: String,
+    class: &'a str,
+    method: &'a str,
     effects: Vec<&'static str>,
 }
 
-impl Candidate {
-    fn key(&self) -> String {
-        format!("{}.{}.{}", self.namespace, self.class, self.method)
-    }
-}
-
-impl std::fmt::Display for Candidate {
+impl std::fmt::Display for Candidate<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -436,7 +430,8 @@ fn parse_class_file(
     };
     let namespace = namespace_re
         .captures(text)
-        .map(|capture| capture[1].to_owned())
+        .and_then(|capture| capture.get(1))
+        .map(|namespace| namespace.as_str())
         .unwrap_or_default();
     if namespace != expected_namespace {
         bail!(
@@ -582,12 +577,9 @@ mod tests {
 
         assert_eq!(
             effects_in(&file, "AfterPlayerTurnStart", &tracked),
-            vec!["cardgen"]
+            ["cardgen"]
         );
-        assert_eq!(
-            effects_in(&file, "AfterObtained", &tracked),
-            Vec::<&str>::new()
-        );
+        assert!(effects_in(&file, "AfterObtained", &tracked).is_empty());
     }
 
     #[test]
@@ -607,8 +599,8 @@ mod tests {
         };
         let tracked = tracked_regexes();
 
-        assert_eq!(effects_in(&file, "Generic", &tracked), vec!["power"]);
-        assert_eq!(effects_in(&file, "Plain", &tracked), vec!["power"]);
+        assert_eq!(effects_in(&file, "Generic", &tracked), ["power"]);
+        assert_eq!(effects_in(&file, "Plain", &tracked), ["power"]);
     }
 
     #[test]
@@ -629,7 +621,7 @@ mod tests {
 
         assert_eq!(
             effects_in(&file, "AfterSideTurnStart", &tracked_regexes()),
-            vec!["damage"]
+            ["damage"]
         );
     }
 
@@ -645,15 +637,15 @@ mod tests {
             .iter()
             .map(|(namespace, class, method)| Candidate {
                 namespace,
-                class: class.to_string(),
-                method: method.to_string(),
+                class,
+                method,
                 effects: vec!["damage"],
             })
             .collect();
         candidates.push(Candidate {
             namespace: "Powers",
-            class: "NewPower".to_owned(),
-            method: "AfterSideTurnStart".to_owned(),
+            class: "NewPower",
+            method: "AfterSideTurnStart",
             effects: vec!["power"],
         });
 
@@ -681,7 +673,7 @@ mod tests {
 
         assert_eq!(
             effects_in(&file, "AfterSideTurnStart", &tracked_regexes()),
-            vec!["damage", "power"]
+            ["damage", "power"]
         );
     }
 

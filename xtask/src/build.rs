@@ -33,7 +33,7 @@ pub fn build(shell: &Shell) -> Result<discover::GamePaths> {
         "mod target: {}",
         game.mods_dir.join(bundle::MOD_ID).display()
     );
-    let lib_names: Vec<&str> = libs.iter().map(|(name, _)| name.as_str()).collect();
+    let lib_names: Vec<&str> = libs.iter().map(|(name, _)| *name).collect();
     println!(
         "bundle: {} (native libraries: {})",
         mod_dir.display(),
