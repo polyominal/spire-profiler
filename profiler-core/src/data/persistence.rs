@@ -153,21 +153,21 @@ pub(crate) mod test_support {
 
     /// The single-player roster every fixture combat carries: one slot-0
     /// entry, the shape the shim stamps for solo runs.
-    pub(crate) fn synthetic_roster() -> Vec<RunPlayer> {
-        vec![RunPlayer {
+    pub(crate) fn synthetic_roster() -> Box<[RunPlayer]> {
+        Box::new([RunPlayer {
             slot: 0,
-            net_id: "1".to_owned(),
-            character: "SHROUD".to_owned(),
-        }]
+            net_id: "1".into(),
+            character: "SHROUD".into(),
+        }])
     }
 
     pub(crate) fn synthetic_run(seq: u32) -> RunSnapshot {
         RunSnapshot {
             seq,
-            character: "SHROUD".to_owned(),
+            character: "SHROUD".into(),
             ascension: 5,
-            game_mode: "standard".to_owned(),
-            seed: "S".to_owned(),
+            game_mode: "standard".into(),
+            seed: "S".into(),
             profile: 2,
             started_at: 1000,
         }
@@ -178,8 +178,8 @@ pub(crate) mod test_support {
     pub(crate) fn synthetic_combat() -> Combat {
         Combat {
             seq: 7,
-            encounter_id: "BYGONE_EFFIGY".to_owned(),
-            encounter_type: "Elite".to_owned(),
+            encounter_id: "BYGONE_EFFIGY".into(),
+            encounter_type: "Elite".into(),
             started_at: 1_786_624_000,
             phase: CombatPhase::Finished(CombatResult::Completed),
             turns: 5,
@@ -188,7 +188,7 @@ pub(crate) mod test_support {
             players: synthetic_roster(),
             cards: vec![
                 CardStat {
-                    id: "OMNI_CARD".to_owned(),
+                    id: "OMNI_CARD".into(),
                     kind: SourceKind::Card,
                     player: 0,
                     plays: 4,
@@ -207,7 +207,7 @@ pub(crate) mod test_support {
                     self_damage: 3,
                 },
                 CardStat {
-                    id: "ANCHOR".to_owned(),
+                    id: "ANCHOR".into(),
                     kind: SourceKind::Relic,
                     block_gained: 10,
                     ..CardStat::default()

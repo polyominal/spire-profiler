@@ -11,7 +11,7 @@ use crate::source_kind::SourceKind;
 #[derive(Debug, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct CardRec {
-    pub id: String,
+    pub id: Box<str>,
     pub kind: SourceKind,
     pub player: u8,
     pub plays: u32,
@@ -34,7 +34,7 @@ pub struct CardRec {
 #[serde(default)]
 pub struct PlayerRec {
     pub slot: u8,
-    pub character: String,
+    pub character: Box<str>,
 }
 
 /// Enough to rejoin a resumed run's fragments and synthesize the fallback
@@ -43,10 +43,10 @@ pub struct PlayerRec {
 #[serde(default)]
 pub struct RunRec {
     pub seq: u32,
-    pub character: String,
+    pub character: Box<str>,
     pub ascension: i32,
-    pub game_mode: String,
-    pub seed: String,
+    pub game_mode: Box<str>,
+    pub seed: Box<str>,
     pub profile: i32,
     pub started_at: i64,
 }
@@ -55,11 +55,11 @@ impl Default for RunRec {
     fn default() -> Self {
         RunRec {
             seq: 0,
-            character: String::new(),
+            character: Box::default(),
             // -1 means "the shim never reported an ascension".
             ascension: -1,
-            game_mode: String::new(),
-            seed: String::new(),
+            game_mode: Box::default(),
+            seed: Box::default(),
             profile: -1,
             started_at: 0,
         }
@@ -72,7 +72,7 @@ impl RunRec {
             && !seed.is_empty()
             && started_at > 0
             && profile >= 0
-            && self.seed == seed
+            && self.seed.as_ref() == seed
             && self.started_at == started_at
             && self.profile == profile
     }
@@ -83,12 +83,12 @@ impl RunRec {
 pub struct CombatRec {
     pub combat_id: u32,
     pub started_at: i64,
-    pub encounter_id: String,
+    pub encounter_id: Box<str>,
     pub result: CombatResult,
     pub turns: u32,
     pub damage_received: i64,
     pub run: Option<RunRec>,
-    pub cards: Vec<CardRec>,
+    pub cards: Box<[CardRec]>,
 }
 
 pub fn parse_combat_doc(content: &str) -> serde_json::Result<CombatRec> {
@@ -120,6 +120,15 @@ impl<'a> From<&'a RunPlayer> for PlayerDoc<'a> {
     }
 }
 
+impl PlayerDoc<'_> {
+    fn serialize_players<S: serde::Serializer>(
+        players: &[RunPlayer],
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(players.iter().map(PlayerDoc::from))
+    }
+}
+
 /// The runs.jsonl entry shape, in the documented field order.
 #[derive(Serialize)]
 struct RunDoc<'a> {
@@ -132,8 +141,11 @@ struct RunDoc<'a> {
     seed: &'a str,
     started_at: i64,
     ended_at: i64,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    players: Vec<PlayerDoc<'a>>,
+    #[serde(
+        skip_serializing_if = "<[RunPlayer]>::is_empty",
+        serialize_with = "PlayerDoc::serialize_players"
+    )]
+    players: &'a [RunPlayer],
 }
 
 #[cfg(test)]
@@ -165,7 +177,7 @@ pub fn build_run_json(ended: &EndedRun) -> String {
         seed: &run.run.seed,
         started_at: run.run.started_at,
         ended_at: ended.ended_at,
-        players: run.players.iter().map(PlayerDoc::from).collect(),
+        players: &run.players,
     };
     serde_json::to_string(&doc).expect("run document cannot fail to serialize")
 }

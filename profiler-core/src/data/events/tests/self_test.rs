@@ -8,7 +8,7 @@ use crate::test_util::unique_dir;
 use crate::ui::ui_model::{Section, Segment, UiRow, UiTab};
 
 fn assert_self_test_combat(combat: &CombatRec, combat_json: &serde_json::Value) {
-    assert_eq!(combat.encounter_id, "SELF_TEST");
+    assert_eq!(combat.encounter_id.as_ref(), "SELF_TEST");
     assert_eq!(combat.turns, 2);
     assert_eq!(current_play_counters().0, 6);
     assert_eq!(
@@ -23,7 +23,7 @@ fn assert_self_test_combat(combat: &CombatRec, combat_json: &serde_json::Value) 
     assert_eq!(combat.result, CombatResult::Completed);
     let run = combat.run.as_ref().expect("combat record carries its run");
     assert_eq!(run.seq, 1);
-    assert_eq!(run.character, "SELF_TEST_CHAR");
+    assert_eq!(run.character.as_ref(), "SELF_TEST_CHAR");
     assert!(combat_json.get("profile").is_none());
     assert!(combat_json.get("build").is_none());
     let zap = card_row(combat, "ZAP");
@@ -57,8 +57,8 @@ fn assert_self_test_combat(combat: &CombatRec, combat_json: &serde_json::Value) 
     );
     assert_eq!(card_json(combat_json, "CRACKED_CORE")["dmg_attributed"], 8);
     assert_eq!(combat.damage_received, 8);
-    assert!(combat.cards.iter().all(|c| c.id != "FIRE_POTION"));
-    assert!(combat.cards.iter().all(|c| c.id != "SHIV"));
+    assert!(combat.cards.iter().all(|c| c.id.as_ref() != "FIRE_POTION"));
+    assert!(combat.cards.iter().all(|c| c.id.as_ref() != "SHIV"));
     assert_no_key(combat_json, "origin");
     let furnace = card_row(combat, "FURNACE");
     assert_eq!((furnace.kind, furnace.plays), (SourceKind::Card, 0));

@@ -13,8 +13,8 @@ fn start_combat() {
         st.store_paths = Some(StorePaths::new(&unique_dir("ui-store")));
         st.current = Some(Combat {
             seq: 1,
-            encounter_id: "BYGONE_EFFIGY".to_owned(),
-            encounter_type: "Elite".to_owned(),
+            encounter_id: "BYGONE_EFFIGY".into(),
+            encounter_type: "Elite".into(),
             ..Combat::default()
         });
     });
@@ -30,7 +30,7 @@ fn push_card_slot(id: &str, dmg: i64, blk: i64, player: u8) {
         let c = st.current.as_mut().expect("combat exists");
         c.cards.push(CardStat {
             player,
-            id: id.to_owned(),
+            id: id.into(),
             damage_dealt: dmg,
             dmg_direct: dmg,
             block_gained: blk,
@@ -95,10 +95,40 @@ fn rows_filter_by_player_filter_and_carry_the_player_slot() {
     let n = ui_snapshot_rows(UiTab::Combat, &mut rows);
     assert_eq!(n, 1);
     assert_eq!((rows[0].player, rows[0].value), (0, 9));
+    assert_eq!(rows[0].share_x10, 1000);
     set_filter(PlayerFilter::Player(1));
     let n = ui_snapshot_rows(UiTab::Combat, &mut rows);
     assert_eq!(n, 1);
     assert_eq!((rows[0].player, rows[0].value), (1, 6));
+    assert_eq!(rows[0].share_x10, 1000);
+}
+
+#[test]
+fn player_filter_precedes_candidate_caps_and_section_totals() {
+    start_combat();
+    for i in 0..ui_model::MAX_ROWS_PER_SECTION {
+        push_card_slot(&format!("OTHER_{i}"), 100, 100, 0);
+    }
+    push_card_slot("FIRST", 9, 6, 1);
+    push_card_slot("SECOND", 3, 2, 1);
+    set_filter(PlayerFilter::Player(1));
+
+    let mut rows = [UiRow::default(); ui_model::MAX_UI_ROWS];
+    let n = ui_snapshot_rows(UiTab::Combat, &mut rows);
+    assert_eq!(n, 4);
+    for section in Section::ALL {
+        let section_rows: Vec<_> = rows[..n]
+            .iter()
+            .filter(|row| row.section == section)
+            .collect();
+        assert_eq!(section_rows.len(), 2);
+        assert_eq!(section_rows[0].name_str(), "FIRST");
+        assert_eq!(section_rows[1].name_str(), "SECOND");
+        assert_eq!(section_rows[0].share_x10, 750);
+        assert_eq!(section_rows[1].share_x10, 250);
+        assert_eq!(section_rows[0].seg_milli[Segment::Direct.index()], 1000);
+        assert_eq!(section_rows[1].seg_milli[Segment::Direct.index()], 333);
+    }
 }
 
 #[test]
@@ -111,7 +141,7 @@ fn run_tab_rows_filter_by_player_filter() {
         // avatar toggle filters it the same way as the combat's cards.
         st.run_cards.push(CardStat {
             player: 0,
-            id: "STRIKE".to_owned(),
+            id: "STRIKE".into(),
             plays: 2,
             damage_dealt: 9,
             dmg_direct: 9,
@@ -119,7 +149,7 @@ fn run_tab_rows_filter_by_player_filter() {
         });
         st.run_cards.push(CardStat {
             player: 1,
-            id: "STRIKE".to_owned(),
+            id: "STRIKE".into(),
             plays: 1,
             damage_dealt: 6,
             dmg_direct: 6,
@@ -145,7 +175,7 @@ fn run_tab_rows_filter_by_player_filter() {
 /// A roll-up row with the chart fields the run-history view carries.
 fn rollup_card(id: &str, plays: u32, dmg: i64) -> CardStat {
     CardStat {
-        id: id.to_owned(),
+        id: id.into(),
         plays,
         damage_dealt: dmg,
         dmg_direct: dmg,
@@ -163,7 +193,7 @@ fn rows_from_an_arbitrary_dataset_match_the_run_tab_shape() {
         rollup_card("STRIKE", 4, 70),
         rollup_card("DEMON_FORM", 1, 35),
         CardStat {
-            id: "DEFEND".to_owned(),
+            id: "DEFEND".into(),
             plays: 2,
             block_gained: 15,
             block_effective: 15,
@@ -215,14 +245,14 @@ fn rows_from_cap_each_section_at_max_rows_per_section() {
 fn self_only_defense_row_renders_as_standalone_self_damage() {
     let cards = vec![
         CardStat {
-            id: "DEFEND".to_owned(),
+            id: "DEFEND".into(),
             plays: 2,
             block_gained: 15,
             block_effective: 15,
             ..CardStat::default()
         },
         CardStat {
-            id: "BLOODLETTING".to_owned(),
+            id: "BLOODLETTING".into(),
             plays: 3,
             self_damage: 9,
             ..CardStat::default()
@@ -255,7 +285,7 @@ fn self_only_defense_row_renders_as_standalone_self_damage() {
 #[test]
 fn defense_section_ranks_self_costs_below_contributors() {
     let card = |id: &str, plays: u32, block: i64, self_damage: i64| CardStat {
-        id: id.to_owned(),
+        id: id.into(),
         plays,
         block_gained: block,
         block_effective: block,
@@ -375,7 +405,7 @@ fn row_detail_matches_the_rows_player_slot() {
 #[test]
 fn row_detail_from_cards_uses_the_given_dataset() {
     let cards = vec![CardStat {
-        id: "STRIKE".to_owned(),
+        id: "STRIKE".into(),
         plays: 3,
         damage_dealt: 42,
         dmg_direct: 42,

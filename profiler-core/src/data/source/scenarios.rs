@@ -204,7 +204,7 @@ impl Scenario {
             total_damage += row.damage_dealt;
             total_blocked += row.damage_blocked;
             if row.damage_dealt != 0 {
-                actual.push((row.id.as_str(), row.player, segments, row.damage_blocked));
+                actual.push((row.id.as_ref(), row.player, segments, row.damage_blocked));
             }
         }
         actual.sort_unstable();
@@ -218,7 +218,7 @@ impl Scenario {
         self.combat()
             .cards
             .iter()
-            .find(|row| row.id == id && row.player == slot)
+            .find(|row| row.id.as_ref() == id && row.player == slot)
             .expect("scenario effects create the expected credited row")
     }
 
@@ -234,14 +234,14 @@ impl Scenario {
                 let (name, slot) = match share.destination() {
                     Destination::Row(index) => {
                         let row = &self.combat().cards[index as usize];
-                        (row.id.as_str(), row.player)
+                        (row.id.as_ref(), row.player)
                     }
                     Destination::Unknown(slot) => ("UNATTRIBUTED", slot),
                 };
                 (name, slot, share.weight())
             })
             .collect();
-        assert_eq!(actual.as_slice(), expected);
+        assert_eq!(actual, expected);
     }
 }
 
@@ -321,7 +321,12 @@ fn ally_soulbound_souls_keep_lineage_through_draws_retention_and_transfer() {
         case.combat().cards.iter().map(|row| row.plays).sum::<u32>(),
         1
     );
-    assert!(case.combat().cards.iter().all(|row| row.id != "SOUL"));
+    assert!(
+        case.combat()
+            .cards
+            .iter()
+            .all(|row| row.id.as_ref() != "SOUL")
+    );
 }
 
 #[test]
@@ -467,7 +472,12 @@ fn generated_unavailable_overrides_prior_native_ancestry() {
     case.assert_source(replaced, &[("SECOND_GENERATOR", 1, 1)]);
     let inconsistent = case.state.source_capture(7, 1, 101, "GENERATED", 0, 2, 0);
     case.assert_source(inconsistent, &[("UNATTRIBUTED", TEAM_SLOT, 1)]);
-    assert!(case.combat().cards.iter().all(|row| row.id != "GENERATED"));
+    assert!(
+        case.combat()
+            .cards
+            .iter()
+            .all(|row| row.id.as_ref() != "GENERATED")
+    );
 }
 
 #[test]
@@ -588,7 +598,12 @@ fn stale_cleanup_cannot_close_replacement_combat_lifetimes() {
     assert_eq!(case.state.orb_context_begin(8, 302, new_play, 0), 1);
     assert_eq!(case.state.orb_context_begin(8, 302, new_play, 0), 2);
     assert_eq!(case.row("NEW", 0).plays, 1);
-    assert!(case.combat().cards.iter().all(|row| row.id != "OLD"));
+    assert!(
+        case.combat()
+            .cards
+            .iter()
+            .all(|row| row.id.as_ref() != "OLD")
+    );
 }
 
 #[test]
@@ -709,7 +724,7 @@ fn forge_generated_supplier_survives_another_players_active_play() {
         case.combat()
             .cards
             .iter()
-            .all(|row| row.id != "SOVEREIGN_BLADE")
+            .all(|row| row.id.as_ref() != "SOVEREIGN_BLADE")
     );
 }
 
@@ -1371,7 +1386,7 @@ fn sentry_mode_generated_osty_attack_keeps_direct_supplier_and_ignores_modifiers
         case.combat()
             .cards
             .iter()
-            .all(|row| row.id != "SWEEPING_GAZE")
+            .all(|row| row.id.as_ref() != "SWEEPING_GAZE")
     );
 }
 

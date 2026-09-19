@@ -63,7 +63,7 @@ fn ordinary_rows_leave_one_unknown_destination_per_creditor_slot() {
             .cards
             .iter()
             .filter(|row| row.kind == SourceKind::Unknown)
-            .all(|row| row.damage_dealt == 3 && row.id == "UNATTRIBUTED")
+            .all(|row| row.damage_dealt == 3 && row.id.as_ref() == "UNATTRIBUTED")
     );
 }
 
@@ -97,7 +97,7 @@ fn unknown_row_tokens_and_unknown_slot_tokens_normalize_to_one_supplier() {
         combat
             .cards
             .iter()
-            .filter(|row| row.id == "UNATTRIBUTED")
+            .filter(|row| row.id.as_ref() == "UNATTRIBUTED")
             .count(),
         2
     );
@@ -195,7 +195,7 @@ fn failed_capture_invalidates_group_and_classified_fallback_books_once() {
         combat
             .cards
             .iter()
-            .find(|row| row.id == "A")
+            .find(|row| row.id.as_ref() == "A")
             .expect("source row exists")
             .damage_dealt,
         0
@@ -241,7 +241,7 @@ fn defense_totals_reject_overflow_without_materializing_unknown_rows() {
             let combat = state.current.as_mut().expect("fixture combat exists");
             combat.cards[0].mitigate_debuff = i64::MAX - 1;
             combat.cards.push(CardStat {
-                id: "NEGATIVE".to_owned(),
+                id: "NEGATIVE".into(),
                 player: 2,
                 block_effective: negative,
                 ..CardStat::default()
@@ -380,7 +380,7 @@ fn producer_segments_preserve_wire_policy_and_credited_rows() {
             };
             let producer_row = rows
                 .iter()
-                .find(|row| row.id == producer_id)
+                .find(|row| row.id.as_ref() == producer_id)
                 .expect("accepted hit credits the normalized producer");
             assert_eq!(
                 (
@@ -393,7 +393,7 @@ fn producer_segments_preserve_wire_policy_and_credited_rows() {
             );
             let modifier_row = rows
                 .iter()
-                .find(|row| row.id == "MODIFIER")
+                .find(|row| row.id.as_ref() == "MODIFIER")
                 .expect("modifier source has its own row");
             assert_eq!(
                 (

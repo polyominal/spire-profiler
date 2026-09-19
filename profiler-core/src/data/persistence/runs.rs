@@ -19,7 +19,7 @@ pub fn rebuild_run_accumulator(seq: u32) -> (u32, u32) {
     if active.seq != seq {
         return (0, 0);
     }
-    let combats = parse_combat_docs(&load_run_combat_docs(seq));
+    let combats = parse_combat_docs(load_run_combat_docs(seq));
     let mut cards = STATE.with(|s| s.borrow().run_cards.clone());
     let mut turns = 0u32;
     let mut count = 0u32;
@@ -66,11 +66,7 @@ pub fn merge_into_run(c: &Combat) {
         }) {
             return;
         }
-        if CardStat::merge_rows(
-            &mut state.run_cards,
-            c.cards.iter().cloned(),
-            CardStatKey::PerSource,
-        ) {
+        if CardStat::merge_rows(&mut state.run_cards, &c.cards, CardStatKey::PerSource) {
             state.run_turns += c.turns;
             state.run_combats += 1;
         }
@@ -98,8 +94,10 @@ fn upsert_card_stat(cards: &mut Vec<CardStat>, card: &CardStat, key: CardStatKey
                 || matches!(key, CardStatKey::TeamMerged)
                     && card.kind != state::SourceKind::Unknown)
     };
-    let candidate = if let Some(index) = cards.iter().position(matches) {
-        cards[index].merged(card).map(|row| (Some(index), row))
+    if let Some(index) = cards.iter().position(matches) {
+        if cards[index].merge_checked(card).is_some() {
+            return true;
+        }
     } else if (card.kind == state::SourceKind::Unknown
         || cards
             .iter()
@@ -108,53 +106,44 @@ fn upsert_card_stat(cards: &mut Vec<CardStat>, card: &CardStat, key: CardStatKey
             < state::caps::RUN_CARDS - state::caps::UNKNOWN_ROWS)
         && cards.len() < state::caps::RUN_CARDS
     {
-        Some((None, card.clone()))
-    } else {
-        None
-    };
-    let Some((index, row)) = candidate.or_else(|| {
-        crate::fail_once(
-            &ROLLUP_FAILURE_LOGGED,
-            format_args!("run row capacity/arithmetic loss; using credited-slot Unknown"),
-        );
-        let slot = state::clamp_source_slot(i32::from(card.player));
-        if let Some(index) = cards
-            .iter()
-            .position(|row| row.player == slot && row.kind == state::SourceKind::Unknown)
-        {
-            cards[index].merged(card).map(|row| (Some(index), row))
-        } else if cards.len() < state::caps::RUN_CARDS {
-            let mut unknown = card.clone();
-            unknown.id = "UNATTRIBUTED".to_owned();
-            unknown.kind = state::SourceKind::Unknown;
-            unknown.player = slot;
-            Some((None, unknown))
-        } else {
-            None
-        }
-    }) else {
-        crate::fail!("run row update exceeds capacity or representable arithmetic");
-        return false;
-    };
-    if let Some(index) = index {
-        cards[index] = row;
-    } else {
-        cards.push(row);
+        cards.push(card.clone());
+        return true;
     }
-    true
+    crate::fail_once(
+        &ROLLUP_FAILURE_LOGGED,
+        format_args!("run row capacity/arithmetic loss; using credited-slot Unknown"),
+    );
+    let slot = state::clamp_source_slot(i32::from(card.player));
+    if let Some(index) = cards
+        .iter()
+        .position(|row| row.player == slot && row.kind == state::SourceKind::Unknown)
+    {
+        if cards[index].merge_checked(card).is_some() {
+            return true;
+        }
+    } else if cards.len() < state::caps::RUN_CARDS {
+        let mut unknown = card.clone();
+        unknown.id = "UNATTRIBUTED".into();
+        unknown.kind = state::SourceKind::Unknown;
+        unknown.player = slot;
+        cards.push(unknown);
+        return true;
+    }
+    crate::fail!("run row update exceeds capacity or representable arithmetic");
+    false
 }
 
 impl CardStat {
     // Each combat is one transaction, including capacity fallback. A late
     // rejection must not publish a prefix or increment its run counters.
-    pub(crate) fn merge_rows(
+    pub(crate) fn merge_rows<T: std::borrow::Borrow<Self>>(
         cards: &mut Vec<Self>,
-        incoming: impl IntoIterator<Item = Self>,
+        incoming: impl IntoIterator<Item = T>,
         key: CardStatKey,
     ) -> bool {
         let mut staged = cards.clone();
         for card in incoming {
-            if !upsert_card_stat(&mut staged, &card, key) {
+            if !upsert_card_stat(&mut staged, card.borrow(), key) {
                 return false;
             }
         }
@@ -166,23 +155,37 @@ impl CardStat {
         true
     }
 
-    fn merged(&self, source: &CardStat) -> Option<Self> {
-        let mut merged = self.clone();
-        merged.plays = merged.plays.checked_add(source.plays)?;
-        merged.damage_dealt = merged.damage_dealt.checked_add(source.damage_dealt)?;
-        merged.damage_blocked = merged.damage_blocked.checked_add(source.damage_blocked)?;
-        merged.block_gained = merged.block_gained.checked_add(source.block_gained)?;
-        merged.block_effective = merged.block_effective.checked_add(source.block_effective)?;
-        merged.forge = merged.forge.checked_add(source.forge)?;
-        merged.dmg_direct = merged.dmg_direct.checked_add(source.dmg_direct)?;
-        merged.dmg_attributed = merged.dmg_attributed.checked_add(source.dmg_attributed)?;
-        merged.dmg_modifier = merged.dmg_modifier.checked_add(source.dmg_modifier)?;
-        merged.blk_modifier = merged.blk_modifier.checked_add(source.blk_modifier)?;
-        merged.mitigate_debuff = merged.mitigate_debuff.checked_add(source.mitigate_debuff)?;
-        merged.mitigate_buff = merged.mitigate_buff.checked_add(source.mitigate_buff)?;
-        merged.mitigate_str = merged.mitigate_str.checked_add(source.mitigate_str)?;
-        merged.self_damage = merged.self_damage.checked_add(source.self_damage)?;
-        Some(merged)
+    fn merge_checked(&mut self, source: &CardStat) -> Option<()> {
+        let plays = self.plays.checked_add(source.plays)?;
+        let damage_dealt = self.damage_dealt.checked_add(source.damage_dealt)?;
+        let damage_blocked = self.damage_blocked.checked_add(source.damage_blocked)?;
+        let block_gained = self.block_gained.checked_add(source.block_gained)?;
+        let block_effective = self.block_effective.checked_add(source.block_effective)?;
+        let forge = self.forge.checked_add(source.forge)?;
+        let dmg_direct = self.dmg_direct.checked_add(source.dmg_direct)?;
+        let dmg_attributed = self.dmg_attributed.checked_add(source.dmg_attributed)?;
+        let dmg_modifier = self.dmg_modifier.checked_add(source.dmg_modifier)?;
+        let blk_modifier = self.blk_modifier.checked_add(source.blk_modifier)?;
+        let mitigate_debuff = self.mitigate_debuff.checked_add(source.mitigate_debuff)?;
+        let mitigate_buff = self.mitigate_buff.checked_add(source.mitigate_buff)?;
+        let mitigate_str = self.mitigate_str.checked_add(source.mitigate_str)?;
+        let self_damage = self.self_damage.checked_add(source.self_damage)?;
+
+        self.plays = plays;
+        self.damage_dealt = damage_dealt;
+        self.damage_blocked = damage_blocked;
+        self.block_gained = block_gained;
+        self.block_effective = block_effective;
+        self.forge = forge;
+        self.dmg_direct = dmg_direct;
+        self.dmg_attributed = dmg_attributed;
+        self.dmg_modifier = dmg_modifier;
+        self.blk_modifier = blk_modifier;
+        self.mitigate_debuff = mitigate_debuff;
+        self.mitigate_buff = mitigate_buff;
+        self.mitigate_str = mitigate_str;
+        self.self_damage = self_damage;
+        Some(())
     }
 }
 
@@ -207,21 +210,21 @@ mod tests {
     #[test]
     fn two_players_same_id_cards_round_trip_and_stay_separate() {
         let mut c = synthetic_combat();
-        c.players = vec![
+        c.players = Box::new([
             RunPlayer {
                 slot: 0,
-                net_id: "1".to_owned(),
-                character: "IRONCLAD".to_owned(),
+                net_id: "1".into(),
+                character: "IRONCLAD".into(),
             },
             RunPlayer {
                 slot: 1,
-                net_id: "2".to_owned(),
-                character: "SILENT".to_owned(),
+                net_id: "2".into(),
+                character: "SILENT".into(),
             },
-        ];
+        ]);
         c.cards = vec![
             CardStat {
-                id: "STRIKE".to_owned(),
+                id: "STRIKE".into(),
                 kind: SourceKind::Card,
                 player: 0,
                 plays: 2,
@@ -229,7 +232,7 @@ mod tests {
                 ..CardStat::default()
             },
             CardStat {
-                id: "STRIKE".to_owned(),
+                id: "STRIKE".into(),
                 kind: SourceKind::Card,
                 player: 1,
                 plays: 1,
@@ -243,8 +246,8 @@ mod tests {
         let combat = records::parse_combat_doc(&json).expect("record parses");
         let rows = &combat.cards;
         assert_eq!(rows.len(), 2);
-        assert_eq!((rows[0].id.as_str(), rows[0].player), ("STRIKE", 0));
-        assert_eq!((rows[1].id.as_str(), rows[1].player), ("STRIKE", 1));
+        assert_eq!((rows[0].id.as_ref(), rows[0].player), ("STRIKE", 0));
+        assert_eq!((rows[1].id.as_ref(), rows[1].player), ("STRIKE", 1));
         assert_eq!((rows[0].plays, rows[1].plays), (2, 1));
 
         STATE.with(|s| {
@@ -314,12 +317,12 @@ mod tests {
             assert_eq!(st.run_combats, 3);
             assert_eq!(st.run_cards.len(), 2);
             let omni = &st.run_cards[0];
-            assert_eq!(omni.id, "OMNI_CARD");
+            assert_eq!(omni.id.as_ref(), "OMNI_CARD");
             assert_eq!(omni.kind, SourceKind::Card);
             assert_eq!(omni.plays, 8); // 4 + 4 across two combats
             assert_eq!(omni.damage_dealt, 42); // 21 + 21
             let anchor = &st.run_cards[1];
-            assert_eq!(anchor.id, "ANCHOR");
+            assert_eq!(anchor.id.as_ref(), "ANCHOR");
             assert_eq!(anchor.kind, SourceKind::Relic);
             assert_eq!(anchor.block_gained, 20); // 10 + 10
         });
@@ -384,7 +387,7 @@ mod tests {
             let mut run = synthetic_run(5);
             run.profile = profile;
             run.started_at = start;
-            run.seed = seed.to_owned();
+            run.seed = seed.into();
             foreign.run = Some(run);
             write_store_file(&data, 5, id, &build_combat_json(&foreign));
         }
@@ -404,17 +407,17 @@ mod tests {
             let strike = st
                 .run_cards
                 .iter()
-                .find(|c| c.id == "STRIKE")
+                .find(|c| c.id.as_ref() == "STRIKE")
                 .expect("STRIKE merged");
             assert_eq!(strike.plays, 3);
             assert_eq!(strike.damage_dealt, 19);
             let defend = st
                 .run_cards
                 .iter()
-                .find(|c| c.id == "DEFEND")
+                .find(|c| c.id.as_ref() == "DEFEND")
                 .expect("DEFEND merged");
             assert_eq!(defend.block_gained, 5);
-            assert!(!st.run_cards.iter().any(|c| c.id == "BASH"));
+            assert!(!st.run_cards.iter().any(|c| c.id.as_ref() == "BASH"));
         });
     }
 
@@ -462,7 +465,7 @@ mod tests {
             let st = s.borrow();
             assert_eq!(st.run_combats, 1);
             assert!(
-                !st.run_cards.iter().any(|c| c.id == "SNEAKY"),
+                !st.run_cards.iter().any(|c| c.id.as_ref() == "SNEAKY"),
                 "a same-seq combat in a foreign run's directory must not fold"
             );
         });
@@ -516,7 +519,7 @@ mod tests {
     #[test]
     fn upsert_key_chooses_whether_player_splits_rows() {
         let row = |player: u8| CardStat {
-            id: "STRIKE".to_owned(),
+            id: "STRIKE".into(),
             kind: SourceKind::Card,
             player,
             plays: 1,
@@ -543,6 +546,62 @@ mod tests {
     }
 
     #[test]
+    fn late_field_overflow_preserves_rows_before_unknown_fallback() {
+        let mut rows = vec![
+            CardStat {
+                id: "STRIKE".into(),
+                player: 2,
+                plays: 7,
+                damage_dealt: 11,
+                self_damage: i64::MAX,
+                ..CardStat::default()
+            },
+            CardStat {
+                id: "UNATTRIBUTED".into(),
+                kind: SourceKind::Unknown,
+                player: 2,
+                plays: 1,
+                damage_dealt: 5,
+                ..CardStat::default()
+            },
+        ];
+        let original = rows[0].clone();
+        let mut incoming = CardStat {
+            id: "STRIKE".into(),
+            player: 2,
+            plays: 2,
+            damage_dealt: 3,
+            self_damage: 1,
+            ..CardStat::default()
+        };
+        assert!(upsert_card_stat(
+            &mut rows,
+            &incoming,
+            CardStatKey::PerSource
+        ));
+        assert_eq!(rows[0], original);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            (
+                rows[1].player,
+                rows[1].plays,
+                rows[1].damage_dealt,
+                rows[1].self_damage
+            ),
+            (2, 3, 8, 1)
+        );
+
+        let before = rows.clone();
+        incoming.self_damage = i64::MAX;
+        assert!(!upsert_card_stat(
+            &mut rows,
+            &incoming,
+            CardStatKey::PerSource
+        ));
+        assert_eq!(rows, before);
+    }
+
+    #[test]
     fn defense_boundary_rejects_the_whole_run_update() {
         for (id, kind, player) in [
             ("A", SourceKind::Card, 0),
@@ -555,12 +614,12 @@ mod tests {
                 let mut combat = synthetic_combat();
                 combat.cards = vec![
                     CardStat {
-                        id: "A".to_owned(),
+                        id: "A".into(),
                         mitigate_buff: i64::MAX - 1,
                         ..CardStat::default()
                     },
                     CardStat {
-                        id: "NEGATIVE".to_owned(),
+                        id: "NEGATIVE".into(),
                         player: 2,
                         block_effective: negative,
                         ..CardStat::default()
@@ -570,13 +629,13 @@ mod tests {
                 let before = STATE.with(|s| s.borrow().run_cards.clone());
                 combat.cards = vec![
                     CardStat {
-                        id: "EARLY".to_owned(),
+                        id: "EARLY".into(),
                         damage_dealt: 3,
                         dmg_direct: 3,
                         ..CardStat::default()
                     },
                     CardStat {
-                        id: id.to_owned(),
+                        id: id.into(),
                         kind,
                         player,
                         mitigate_debuff: 2,
@@ -617,7 +676,7 @@ mod tests {
     fn defense_overflow_cannot_spill_into_a_reserved_unknown_row() {
         let mut rows: Vec<_> = (0..caps::RUN_CARDS - caps::UNKNOWN_ROWS)
             .map(|index| CardStat {
-                id: format!("C{index}"),
+                id: format!("C{index}").into(),
                 ..CardStat::default()
             })
             .collect();
@@ -625,14 +684,14 @@ mod tests {
         let before = rows.clone();
         let incoming = [
             CardStat {
-                id: "EARLY".to_owned(),
+                id: "EARLY".into(),
                 player: 3,
                 damage_dealt: 2,
                 dmg_direct: 2,
                 ..CardStat::default()
             },
             CardStat {
-                id: "LATE".to_owned(),
+                id: "LATE".into(),
                 player: 3,
                 mitigate_debuff: 2,
                 ..CardStat::default()
@@ -669,19 +728,19 @@ mod tests {
     fn team_merge_rejects_combined_defense_and_late_rows_transactionally() {
         for id in ["A", "B"] {
             let mut rows = vec![CardStat {
-                id: "A".to_owned(),
+                id: "A".into(),
                 mitigate_buff: i64::MAX - 1,
                 ..CardStat::default()
             }];
             let before = rows.clone();
             let incoming = [
                 CardStat {
-                    id: "EARLY".to_owned(),
+                    id: "EARLY".into(),
                     damage_dealt: 1,
                     ..CardStat::default()
                 },
                 CardStat {
-                    id: id.to_owned(),
+                    id: id.into(),
                     player: 1,
                     mitigate_debuff: 2,
                     ..CardStat::default()
@@ -705,7 +764,7 @@ mod tests {
         STATE.with(|s| {
             let mut st = s.borrow_mut();
             st.run_cards = vec![CardStat {
-                id: "A".to_owned(),
+                id: "A".into(),
                 mitigate_buff: i64::MAX - 1,
                 ..CardStat::default()
             }];
@@ -716,13 +775,13 @@ mod tests {
         combat.seq = 1;
         combat.cards = vec![
             CardStat {
-                id: "EARLY".to_owned(),
+                id: "EARLY".into(),
                 damage_dealt: 1,
                 dmg_direct: 1,
                 ..CardStat::default()
             },
             CardStat {
-                id: "B".to_owned(),
+                id: "B".into(),
                 player: 1,
                 mitigate_debuff: 2,
                 ..CardStat::default()
@@ -740,7 +799,7 @@ mod tests {
             assert_eq!(st.run_cards.len(), 2);
             assert_eq!(st.run_cards[0].mitigate_buff, i64::MAX - 1);
             assert_eq!(
-                (st.run_cards[1].id.as_str(), st.run_cards[1].mitigate_debuff),
+                (st.run_cards[1].id.as_ref(), st.run_cards[1].mitigate_debuff),
                 ("B", 1)
             );
         });
@@ -749,7 +808,7 @@ mod tests {
     #[test]
     fn run_cap_preserves_each_creditor_in_reserved_unknown_rows() {
         let row = |id: String, player| CardStat {
-            id,
+            id: id.into(),
             kind: SourceKind::Card,
             player,
             plays: 1,
@@ -781,7 +840,7 @@ mod tests {
                 .expect("each creditor keeps its reserved overflow row");
             assert_eq!(
                 (
-                    unknown.id.as_str(),
+                    unknown.id.as_ref(),
                     unknown.plays,
                     unknown.damage_dealt,
                     unknown.damage_blocked

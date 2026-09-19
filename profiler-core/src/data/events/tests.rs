@@ -52,17 +52,18 @@ fn read_all_runs(base: &Path) -> Vec<serde_json::Value> {
 }
 
 fn read_combat(base: &Path) -> (CombatRec, serde_json::Value) {
-    let mut all = read_all_combats(base);
+    let all = read_all_combats(base);
     assert_eq!(all.len(), 1, "exactly one combat record");
-    let (combat, doc) = all.remove(0);
-    (combat, doc)
+    all.into_iter()
+        .next()
+        .expect("exactly one combat was asserted")
 }
 
 fn card_row<'a>(combat: &'a CombatRec, id: &str) -> &'a CardRec {
     combat
         .cards
         .iter()
-        .find(|card| card.id == id)
+        .find(|card| card.id.as_ref() == id)
         .unwrap_or_else(|| panic!("no card row for {id} in the self-test combat"))
 }
 

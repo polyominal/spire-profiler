@@ -46,8 +46,8 @@ pub fn combat_started(encounter_id: &str, encounter_type: &str) -> u64 {
         }
         state.current = Some(Combat {
             seq,
-            encounter_id: encounter_id.to_owned(),
-            encounter_type: encounter_type.to_owned(),
+            encounter_id: encounter_id.into(),
+            encounter_type: encounter_type.into(),
             started_at: now_seconds(),
             run: state.run_ctx.as_ref().map(|run| run.run.clone()),
             players,

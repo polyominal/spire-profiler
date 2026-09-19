@@ -923,10 +923,10 @@ mod tests {
     #[test]
     fn panel_toggle_export_flips_panel_state_by_run_context() {
         let (_base, c_base) = unique_dir("spire-profiler-abi-toggle");
-        let char_ids = CString::new("IRONCLAD").expect("no NUL");
-        let mode = CString::new("Standard").expect("no NUL");
-        let seed = CString::new("TOGGLE_SEED").expect("no NUL");
-        let net_ids = CString::new("1").expect("no NUL");
+        let char_ids = c"IRONCLAD";
+        let mode = c"Standard";
+        let seed = c"TOGGLE_SEED";
+        let net_ids = c"1";
         // SAFETY: the test forms valid C-string arguments for these exports.
         unsafe {
             spire_profiler_test_reset();
@@ -982,7 +982,7 @@ mod tests {
     #[test]
     fn run_history_select_and_clear_exports_drive_the_selection() {
         let (base, c_base) = unique_dir("spire-profiler-abi-run-history");
-        let seed = CString::new("SELF_TEST_SEED").expect("no NUL in seed");
+        let seed = c"SELF_TEST_SEED";
         // SAFETY: the test forms valid C-string arguments for these exports.
         unsafe {
             spire_profiler_test_reset();
@@ -998,11 +998,11 @@ mod tests {
         // SAFETY: the test forms valid C-string arguments for these exports.
         unsafe { spire_profiler_run_history_select(seed.as_ptr(), start, 1) };
         let view = crate::data::run_history::selected_view().expect("selection stored");
-        assert_eq!(view.seed, "SELF_TEST_SEED");
-        assert_eq!(view.character, "SELF_TEST_CHAR");
+        assert_eq!(view.seed.as_ref(), "SELF_TEST_SEED");
+        assert_eq!(view.character.as_ref(), "SELF_TEST_CHAR");
         assert_eq!(view.outcome, Some(RunOutcome::Victory));
         assert_eq!(view.combats.len(), 1);
-        assert_eq!(view.combats[0].encounter, "SELF_TEST");
+        assert_eq!(view.combats[0].encounter.as_ref(), "SELF_TEST");
 
         spire_profiler_run_history_clear();
         assert!(crate::data::run_history::selected_view().is_none());
@@ -1030,7 +1030,7 @@ mod tests {
                 let state = cell.borrow();
                 let combat = state.current.as_ref().expect("fixture combat exists");
                 assert_eq!(
-                    (combat.encounter_id.as_str(), combat.encounter_type.as_str()),
+                    (combat.encounter_id.as_ref(), combat.encounter_type.as_ref()),
                     ("", "")
                 );
             });

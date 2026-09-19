@@ -1072,11 +1072,11 @@ mod tests {
             st.store_paths = Some(StorePaths::new(&unique_dir("ui-store")));
             st.current = Some(Combat {
                 seq: 1,
-                encounter_id: "BYGONE_EFFIGY".to_owned(),
+                encounter_id: "BYGONE_EFFIGY".into(),
                 plays: 2,
                 turns: 1,
                 cards: vec![CardStat {
-                    id: "STRIKE".to_owned(),
+                    id: "STRIKE".into(),
                     damage_dealt: 9,
                     ..CardStat::default()
                 }],

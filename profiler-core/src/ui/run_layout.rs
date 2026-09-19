@@ -88,7 +88,7 @@ pub(crate) fn roster_entries(view: &RunSummaryView) -> Vec<(u8, &str)> {
             .iter()
             .take(CAP)
             .filter(|p| !p.character.is_empty())
-            .map(|p| (p.slot, p.character.as_str()))
+            .map(|p| (p.slot, p.character.as_ref()))
             .collect();
     }
     view.character

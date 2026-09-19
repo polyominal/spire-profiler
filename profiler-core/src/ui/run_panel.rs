@@ -490,7 +490,7 @@ impl SpireProfilerRunPanel {
         self.avatar_animation
             .set_targets(filter, &self.avatar_slots);
         self.layout = build_run_layout(
-            view.as_ref(),
+            view.as_deref(),
             &header,
             hover,
             &mut self.rows,

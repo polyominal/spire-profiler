@@ -18,7 +18,10 @@ pub fn write_run_record(ended: &EndedRun) -> bool {
         return false;
     };
     let run = &ended.context.run;
-    if parse_combat_docs(&load_run_combat_docs(run.seq)).is_empty() {
+    if parse_combat_docs(load_run_combat_docs(run.seq))
+        .next()
+        .is_none()
+    {
         event_log!("run {} ended with no combat records", run.seq);
         return false;
     }
@@ -72,10 +75,10 @@ mod tests {
             context: RunContext {
                 run: RunSnapshot {
                     seq: 42,
-                    character: "SHROUD".to_owned(),
+                    character: "SHROUD".into(),
                     ascension: 5,
-                    game_mode: "standard".to_owned(),
-                    seed: "SEED123".to_owned(),
+                    game_mode: "standard".into(),
+                    seed: "SEED123".into(),
                     profile: 3,
                     started_at: 1_786_624_000,
                 },
@@ -115,7 +118,7 @@ mod tests {
             context: RunContext {
                 run: RunSnapshot {
                     seq: 43,
-                    character: "IRONCLAD".to_owned(),
+                    character: "IRONCLAD".into(),
                     ..RunSnapshot::default()
                 },
                 ..RunContext::default()
@@ -177,7 +180,7 @@ mod tests {
             ended_at: 1_786_624_496,
         }));
 
-        assert_eq!(std::fs::read(&runs_path).unwrap(), vec![0xff]);
+        assert_eq!(std::fs::read(&runs_path).unwrap(), [0xff]);
         assert!(!runs_path.with_extension("jsonl.tmp").exists());
         assert!(!data.join("profiler.log").exists());
     }
