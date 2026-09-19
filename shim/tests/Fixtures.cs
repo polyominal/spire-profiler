@@ -1976,6 +1976,23 @@ internal static class ManagedFixtures
         Check(IdentityCapture.Get(generated, CaptureRuntime.Epoch).Generation == GenerationState.GeneratedUnavailable, "Pre-epoch generated identity cannot become an ordinary named card");
         Same(FlowCapture.Source(generated, CaptureRuntime.Epoch), SourceSnapshot.Unknown(epoch), "Missing startup provenance remains explicit Unknown");
         Check(IdentityCapture.Get(new ProbeModel("A"), CaptureRuntime.Epoch).Generation == GenerationState.Ordinary, "Preparation does not misclassify an unrelated ordinary card");
+
+        var abandoned = new ProbeModel("A");
+        CommandCapture.SetupPrefix();
+        ProvenanceCapture.GeneratedPrefix(new object[] { backend.Combat, abandoned, null });
+        CaptureRuntime.InvalidateEpoch();
+        CaptureRuntime.Register(backend, ++epoch, backend.Combat);
+        Check(IdentityCapture.Get(abandoned, CaptureRuntime.Epoch).Generation == GenerationState.Ordinary, "Cancelled setup cannot carry its generated marker into a later combat");
+
+        var superseded = new ProbeModel("A");
+        var replacement = new ProbeModel("A");
+        CommandCapture.SetupPrefix();
+        ProvenanceCapture.GeneratedPrefix(new object[] { backend.Combat, superseded, null });
+        CommandCapture.SetupPrefix();
+        ProvenanceCapture.GeneratedPrefix(new object[] { backend.Combat, replacement, null });
+        CaptureRuntime.Register(backend, ++epoch, backend.Combat);
+        Check(IdentityCapture.Get(superseded, CaptureRuntime.Epoch).Generation == GenerationState.Ordinary, "Restarted setup discards the previous preparation token");
+        Check(IdentityCapture.Get(replacement, CaptureRuntime.Epoch).Generation == GenerationState.GeneratedUnavailable, "Restarted setup retains only its own generated cards");
     }
     private static void EpochAndThread()
     {
