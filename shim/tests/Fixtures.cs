@@ -546,6 +546,13 @@ internal sealed class FakeBackend : AttributionBackend
     internal override void Diagnostic(string category, Exception error) { Calls.Add("diagnostic:" + category); }
 }
 
+internal sealed class BlockClearListener : AbstractModel
+{
+    internal Func<Creature, Task> Cleared;
+    public override bool ShouldReceiveCombatHooks => true;
+    public override Task AfterBlockCleared(Creature creature) => Cleared(creature);
+}
+
 internal static class ManagedFixtures
 {
     private static FakeBackend backend;
@@ -560,6 +567,13 @@ internal static class ManagedFixtures
     internal static readonly List<int> HistoryAmounts = new();
     private static SourceSnapshot A, B;
     private static Harmony harmony;
+    private static AbstractModel[] blockClearListeners;
+    internal static bool BlockClearListenersPrefix(ref IEnumerable<AbstractModel> __result)
+    {
+        if (blockClearListeners == null) return true;
+        __result = blockClearListeners;
+        return false;
+    }
     internal static void Run(string generatedDirectory)
     {
         context = new FixtureContext();
@@ -591,6 +605,8 @@ internal static class ManagedFixtures
         }
         Console.WriteLine($"DELEGATE METADATA Cdecl={nativeDelegates.Length} UTF8-string-parameters={utf8Parameters} return-marshalling=none");
         harmony = new Harmony("spire-profiler.capture-proof");
+        harmony.Patch(AccessTools.DeclaredMethod(typeof(Hook), "IterateCombatHookListeners"),
+            prefix: new HarmonyMethod(typeof(ManagedFixtures), nameof(BlockClearListenersPrefix)));
         using (var inventory = new StreamWriter(Path.Combine(generatedDirectory, "installed-capture.log")))
         {
             var targets = FlowCapture.ProducerTargets(typeof(AbstractModel).Assembly);
@@ -600,6 +616,12 @@ internal static class ManagedFixtures
             foreach (var group in targets.GroupBy(m => m.GetBaseDefinition().DeclaringType.Name)) Check(expectedRoots[group.Key] == group.Count(), "Exact producer root count");
             FlowCapture.Install(harmony, line => { inventory.WriteLine(line); if (!line.StartsWith("PRODUCER ", StringComparison.Ordinal)) Console.WriteLine(line); });
         }
+        var clearDecision = Harmony.GetPatchInfo(AccessTools.DeclaredMethod(typeof(Hook), "ShouldClearBlock"));
+        Check(clearDecision.Postfixes.Count(patch => patch.owner == harmony.Id
+            && FlowCapture.SameMethod(patch.PatchMethod, AccessTools.DeclaredMethod(typeof(CommandCapture), nameof(CommandCapture.ClearBlockPostfix)))) == 1,
+            "The actual block-clear decision has exactly one owned capture postfix");
+        Check(Harmony.GetPatchInfo(AccessTools.DeclaredMethod(typeof(Hook), "AfterBlockCleared"))?.Owners.Contains(harmony.Id) != true,
+            "The unconditional after-block notification has no capture patch");
         foreach (var name in new[] { "Synchronous", "ReturnTask", "Throw", "Suspended", "Nested", "DoDamage" }) FlowCapture.PatchProducer(harmony, AccessTools.Method(typeof(ProbeModel), name));
         foreach (var name in new[] { "BeforeApplied", "AfterPowerAmountChanged" }) FlowCapture.PatchProducer(harmony, AccessTools.Method(typeof(ProbePower), name));
         foreach (var name in new[] { "OnPlayWrapper", "OnUseWrapper" }) PlayCapture.PatchWrapper(harmony, AccessTools.Method(typeof(ProbeModel), name));
@@ -691,6 +713,7 @@ internal static class ManagedFixtures
         Test("actual model ownership and accepted signed amount adapters", ActualModelAdapters);
         Test("modifier/enemy/Weak rejection invalidates whole groups with evidence intact", CaptureStatusFailures);
         Test("block/Forge/summon immutable scopes, original kickoff timing and inheritance", CommandSources);
+        Test("actual block-clear decisions preserve Barricade/Blur and later cross-player block", RetainedBlock);
         Test("Doom nested batches, original Task and synthetic fallback remainder", DoomBatches);
         Test("orb channel failure and absent explicit Osty card source", OrbAndOsty);
         Test("Poison per-tick refresh rejects missing duration and unrelated targets", PoisonTicks);
@@ -717,6 +740,7 @@ internal static class ManagedFixtures
         backend.NamedSources["A"] = A;
         backend.NamedSources["B"] = B;
         CommandPause = null;
+        blockClearListeners = null;
         DuringBeforeApplied = null;
         DamageFixture.DuringLive = null;
         DamageFixture.Nested = null;
@@ -1793,6 +1817,71 @@ internal static class ManagedFixtures
         int hits = backend.Calls.Count(call => call == "DamageEnemyHit");
         context.Complete(Damage(incoming, enemy));
         Check(backend.Calls.Count(call => call == "DamageEnemyHit") == hits && backend.Fallback.Last().WeakPrevented == 2, "Dirty Strength blocks old native reduction capture without losing observed Weak evidence");
+    }
+    private static void RetainedBlock()
+    {
+        var world = GameWorld();
+        var combat = (ICombatState)backend.Combat;
+        var owner = world.Owner.Creature;
+        var other = world.Other.Creature;
+        blockClearListeners = Array.Empty<AbstractModel>();
+        owner.GainBlockInternal(11);
+        other.GainBlockInternal(17);
+        context.Complete(owner.AfterTurnStart(CombatSide.Player));
+        context.Complete(other.AfterTurnStart(CombatSide.Player));
+        context.Complete(Hook.AfterBlockCleared(combat, owner));
+        context.Complete(Hook.AfterBlockCleared(combat, other));
+        Check(owner.Block == 11 && other.Block == 17 && !backend.Calls.Any(call => call.StartsWith("BlockCleared:", StringComparison.Ordinal)),
+            "First-turn notifications preserve existing block without an actual clear decision");
+
+        foreach (var player in new[] { world.Owner, world.Other })
+            AccessTools.Field(typeof(PlayerCombatState), "<TurnNumber>k__BackingField").SetValue(player.PlayerCombatState, 2);
+        context.Complete(owner.AfterTurnStart(CombatSide.Player));
+        context.Complete(other.AfterTurnStart(CombatSide.Player));
+        Check(owner.Block == 0 && other.Block == 0
+            && backend.Calls.Where(call => call.StartsWith("BlockCleared:", StringComparison.Ordinal)).SequenceEqual(new[] { "BlockCleared:0", "BlockCleared:1" }),
+            "Actual turn-start clears report each physical player exactly once");
+        var listener = Mutable<BlockClearListener>("CROSS_PLAYER_BLOCK");
+        listener.Cleared = creature =>
+        {
+            if (!ReferenceEquals(creature, owner)) return Task.CompletedTask;
+            other.GainBlockInternal(3);
+            return CommandFixture.GainBlock(other, 3, ValueProp.Move, null);
+        };
+        blockClearListeners = new AbstractModel[] { listener };
+        FlowCapture.Current = Frame(new ProbeModel("A"), A);
+        context.Complete(Hook.AfterBlockCleared(combat, owner));
+        int calls = backend.Calls.Count;
+        context.Complete(Hook.AfterBlockCleared(combat, other));
+        Check(other.Block == 3 && backend.CommandEvents.Single().Slot == 1 && backend.CommandEvents.Single().Amount == 3
+            && backend.Calls.Count == calls,
+            "Later player notification cannot clear fresh cross-player block gained during the first player's callback");
+        Same(backend.CommandEvents.Single().Source, A, "Fresh block preserves the first player's supplier on the second player's pool");
+
+        foreach (var power in new PowerModel[] { GamePower<BarricadePower>(owner, 1, A), GamePower<BlurPower>(owner, 1, A) })
+        {
+            blockClearListeners = new AbstractModel[] { power };
+            int clears = backend.Calls.Count(call => call.StartsWith("BlockCleared:", StringComparison.Ordinal));
+            Check(!Hook.ShouldClearBlock(combat, owner, out var preventer) && ReferenceEquals(preventer, power),
+                "Actual " + power.GetType().Name + " prevents its owner's block clear");
+            context.Complete(Hook.AfterBlockCleared(combat, owner));
+            Check(backend.Calls.Count(call => call.StartsWith("BlockCleared:", StringComparison.Ordinal)) == clears,
+                "Retention and the later unconditional notification emit no native clear");
+            Check(Hook.ShouldClearBlock(combat, other, out preventer) && preventer == null && backend.Calls.Last() == "BlockCleared:1",
+                "One player's retention cannot suppress another player's clear");
+        }
+        blockClearListeners = Array.Empty<AbstractModel>();
+        Check(Hook.ShouldClearBlock(combat, owner, out _) && backend.Calls.Last() == "BlockCleared:0",
+            "Removing the retaining power restores the owner's normal clear");
+        calls = backend.Calls.Count;
+        Check(Hook.ShouldClearBlock(combat, world.Enemy, out _) && backend.Calls.Count == calls,
+            "Enemy clear decisions cannot clear a player pool");
+        var replacement = RuntimeHelpers.GetUninitializedObject(typeof(CombatState));
+        backend.Combat = replacement;
+        CaptureRuntime.Register(backend, ++epoch, replacement);
+        Check(Hook.ShouldClearBlock(combat, owner, out _) && Hook.ShouldClearBlock((ICombatState)replacement, owner, out _)
+            && backend.Calls.Count == calls, "Old combat and stale creature decisions cannot clear replacement-combat pools");
+        blockClearListeners = null;
     }
     private static void CommandSources()
     {
