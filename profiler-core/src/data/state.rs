@@ -532,9 +532,9 @@ pub mod caps {
     /// The four player slots plus the TEAM slot, so a corrupt wire slot
     /// can never index out of bounds.
     pub const MAX_PLAYER_SLOTS: usize = 5;
-    /// One chunk per distinct block source still holding block in one
-    /// slot's pool: same-source chunks merge, blocked damage drains FIFO,
-    /// and the slot's turn boundary clears the pool.
+    /// Unconsumed block chunks per slot; unmodified equal-source gains merge.
+    /// Damage drains FIFO; an actual block clear resets the pool, while
+    /// retained block keeps its sources.
     pub const BLOCK_POOL: usize = 64;
     /// Modifier shares awaiting the next block gain, one per recorded
     /// applier per modifier event; that gain attaches the queue to one

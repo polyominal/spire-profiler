@@ -670,6 +670,44 @@ fn block_modifier_mixture_keeps_both_roots_across_consumption() {
 }
 
 #[test]
+fn retained_block_keeps_modifier_prefix_until_its_slot_is_cleared() {
+    let mut case = Scenario::new();
+    let guard = case.card(10, "GUARD", 0);
+    let first = case.card(11, "FIRST_DEXTERITY", 2);
+    let second = case.card(12, "SECOND_DEXTERITY", 3);
+    let mixed = case.mix(&[(first, 1), (second, 1)]);
+    let ally_guard = case.card(13, "ALLY_GUARD", 1);
+    let new_guard = case.card(14, "NEW_GUARD", 0);
+    assert_eq!(case.state.block_modifier_contribution(7, mixed, 4, 0), 1);
+    assert_eq!(case.state.block_gained(7, 8, guard, 0), 1);
+    assert_eq!(case.state.block_gained(7, 5, ally_guard, 1), 1);
+    case.report(0, ATTRIBUTED, INCOMING, 0, 2, 2);
+    assert_eq!(case.row("GUARD", 0).block_effective, 1);
+    assert_eq!(case.row("FIRST_DEXTERITY", 2).blk_modifier, 0);
+    assert_eq!(case.row("SECOND_DEXTERITY", 3).blk_modifier, 1);
+
+    assert_eq!(case.state.turn_started(7), 1);
+    case.report(0, ATTRIBUTED, INCOMING, 0, 2, 2);
+    assert_eq!(case.row("GUARD", 0).block_effective, 2);
+    assert_eq!(case.row("FIRST_DEXTERITY", 2).blk_modifier, 1);
+    assert_eq!(case.row("SECOND_DEXTERITY", 3).blk_modifier, 1);
+
+    assert_eq!(case.state.block_pool_clear(7, 0), 1);
+    assert_eq!(case.state.block_gained(7, 5, new_guard, 0), 1);
+    case.report(0, ATTRIBUTED, INCOMING, 0, 5, 5);
+    case.report(0, ATTRIBUTED, INCOMING, 1, 5, 5);
+    assert_eq!(case.row("GUARD", 0).block_effective, 2);
+    assert_eq!(case.row("FIRST_DEXTERITY", 2).blk_modifier, 1);
+    assert_eq!(case.row("SECOND_DEXTERITY", 3).blk_modifier, 1);
+    assert_eq!(case.row("NEW_GUARD", 0).block_effective, 5);
+    assert_eq!(case.row("ALLY_GUARD", 1).block_effective, 5);
+    assert_eq!(
+        (case.combat().block_total, case.combat().damage_received),
+        (18, 14)
+    );
+}
+
+#[test]
 fn osty_lifo_mixtures_keep_physical_owner_and_creditor_separate() {
     let mut case = Scenario::new();
     let oldest = case.card(10, "OLDER_SUMMON", 0);

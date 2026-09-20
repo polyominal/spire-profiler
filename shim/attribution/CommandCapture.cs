@@ -255,10 +255,11 @@ internal static class CommandCapture
         }
         catch (Exception ex) { CaptureRuntime.Fail("turn-start", ex); }
     }
-    internal static void ClearBlockPrefix(object combatState, object creature)
+    internal static void ClearBlockPostfix(bool __result, object combatState, object creature)
     {
         try
         {
+            if (!__result) return;
             var epoch = CaptureRuntime.EntryEpoch();
             if (!CaptureRuntime.Valid(epoch) || !ReferenceEquals(epoch.Combat, combatState)) return;
             var target = CaptureRuntime.Backend.DescribeCreature(creature);
@@ -323,7 +324,7 @@ internal static class CommandCapture
         CapturePatches.Patch(harmony, AccessTools.DeclaredMethod(typeof(CombatManager), "SetUpCombat"), prefix: new HarmonyMethod(typeof(CommandCapture), nameof(SetupPrefix)), postfix: new HarmonyMethod(typeof(CommandCapture), nameof(SetupPostfix)));
         CapturePatches.Patch(harmony, AccessTools.DeclaredMethod(typeof(CombatRoom), "OnCombatEnded"), postfix: new HarmonyMethod(typeof(CommandCapture), nameof(CombatEndedPostfix)));
         CapturePatches.Patch(harmony, AccessTools.DeclaredMethod(typeof(Hook), "AfterSideTurnStart"), prefix: new HarmonyMethod(typeof(CommandCapture), nameof(TurnPrefix)));
-        CapturePatches.Patch(harmony, AccessTools.DeclaredMethod(typeof(Hook), "AfterBlockCleared"), prefix: new HarmonyMethod(typeof(CommandCapture), nameof(ClearBlockPrefix)));
+        CapturePatches.Patch(harmony, AccessTools.DeclaredMethod(typeof(Hook), "ShouldClearBlock"), postfix: new HarmonyMethod(typeof(CommandCapture), nameof(ClearBlockPostfix)));
         CapturePatches.Patch(harmony, AccessTools.DeclaredMethod(typeof(CreatureCmd), "Kill", new[] { typeof(Creature), typeof(bool) }), prefix: new HarmonyMethod(typeof(CommandCapture), nameof(KillPrefix)));
         CapturePatches.Patch(harmony, AccessTools.DeclaredMethod(typeof(CreatureCmd), "Kill", new[] { typeof(IReadOnlyCollection<Creature>), typeof(bool) }), prefix: new HarmonyMethod(typeof(CommandCapture), nameof(KillManyPrefix)));
         report("COMMAND CAPTURE block=1 forge=1 summon=1 block_modifier=1 buffs=3 histories=3 lifecycle=4 kill=2");

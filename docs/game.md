@@ -85,6 +85,11 @@ renamed parameter types). Verified against the v0.111.0 snapshot.
   `ICombatState`; do not copy older parameter types blindly.
 - Turn hooks are side-based: older mods' `BeforeTurnEnd` is now
   `BeforeSideTurnEnd`.
+- `Hook.AfterBlockCleared` fires even when block is retained or first-turn
+  clearing is skipped. It runs after all starting creatures attempt to clear, so
+  earlier listeners can already have granted fresh block to another player.
+  `Hook.ShouldClearBlock` has one caller, `Creature.ClearBlock`, which
+  immediately sets block to zero on a true result; capture that decision.
 - The canonical `CreatureCmd.Damage` overload has seven arguments and an
   `IEnumerable<Creature>` target parameter. Its state machine has two
   result-list enumerators: the first follows the completed target group; the
