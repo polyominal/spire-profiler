@@ -13,7 +13,7 @@ namespace SpireProfiler;
 internal static class ProfilerPanels
 {
     private static SceneTree _tree;
-    private static PanelTheme _theme;
+    private static PanelTheme _combatTheme, _historyTheme;
     private static ProfilerPanel _combat, _history;
     private static Button _historyButton;
     private static bool _f8Pressed;
@@ -27,8 +27,8 @@ internal static class ProfilerPanels
             SceneTree tree;
             while ((tree = Engine.GetMainLoop() as SceneTree) == null || tree.Root == null) await Task.Delay(100);
             _tree = tree;
-            _theme = new PanelTheme();
-            _combat = new ProfilerPanel(_theme, false);
+            _combatTheme = new PanelTheme();
+            _combat = new ProfilerPanel(_combatTheme, false);
             tree.Root.CallDeferred(Node.MethodName.AddChild, _combat.Backdrop);
             tree.Root.CallDeferred(Node.MethodName.AddChild, _combat.Root);
             tree.ProcessFrame += OnProcessFrame;
@@ -48,8 +48,9 @@ internal static class ProfilerPanels
         _combat = _history = null;
         _historyButton = null;
         _tree = null;
-        _theme?.Dispose();
-        _theme = null;
+        _combatTheme?.Dispose();
+        _historyTheme?.Dispose();
+        _combatTheme = _historyTheme = null;
         _f8Pressed = false;
     }
 
@@ -96,8 +97,12 @@ internal static class ProfilerPanels
     {
         try
         {
-            _theme ??= new PanelTheme();
-            if (_history?.IsValid != true) _history = new ProfilerPanel(_theme, true);
+            if (_history?.IsValid != true)
+            {
+                _historyTheme?.Dispose();
+                _historyTheme = new PanelTheme();
+                _history = new ProfilerPanel(_historyTheme, true);
+            }
             if (_historyButton == null || !GodotObject.IsInstanceValid(_historyButton))
             {
                 _historyButton = new Button { Text = "Profiler [F8]" };
@@ -219,11 +224,12 @@ internal static class ProfilerPanels
             long refreshTicks = 0, refreshAllocated = 0;
             for (int cycle = 0; cycle < 2; cycle++)
             {
-                panel = new ProfilerPanel(_theme ??= new PanelTheme(), cycle == 1);
+                panel = new ProfilerPanel(_combatTheme ??= new PanelTheme(), cycle == 1);
                 tree.Root.CallDeferred(Node.MethodName.AddChild, panel.Backdrop);
                 tree.Root.CallDeferred(Node.MethodName.AddChild, panel.Root);
                 await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
                 panel.Show();
+                if (panel.Visible) throw new InvalidOperationException("Panel toggle changed visibility before refresh");
                 panel.Refresh(0, fixture, fixture);
                 for (int frame = 0; frame < 3; frame++) await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
                 if (!panel.Root.IsInsideTree() || panel.RowCount != 240) throw new InvalidOperationException("Panel fixture failed attachment or chart projection");
@@ -238,6 +244,12 @@ internal static class ProfilerPanels
                     int expectedScroll = Math.Min(scroll, (int)Math.Max(0, panel.Layout.Height - panel.ControlRect.H));
                     if (panel.Tab != UiTab.Run || panel.ScrollPosition != expectedScroll)
                         throw new InvalidOperationException("Tab press did not preserve and clamp the scroll offset");
+                    panel.Refresh(1, fixture, fixture with { Players = Array.Empty<PlayerSummary>() });
+                    panel.SelectPlayer(1);
+                    if (panel.Player != 1 || panel.RowCount != 120)
+                        throw new InvalidOperationException("Run-tab filtering did not use the retained combat roster");
+                    panel.SelectPlayer(1);
+                    panel.Refresh(2, fixture, fixture);
                     hit = panel.Layout.TabHits.Single(hit => hit.Tab == UiTab.Combat);
                     point = new(panel.ControlRect.X + hit.X0 + 8, panel.ControlRect.Y + hit.Y0 + 8);
                     panel.Interact(point, true); panel.Interact(point, false);
@@ -253,10 +265,10 @@ internal static class ProfilerPanels
                 else panel.SelectPlayer(1);
                 if (panel.Player != null || panel.RowCount != 240) throw new InvalidOperationException("Panel fixture failed clearing the filter");
                 var outside = new UiPoint(panel.ControlRect.X - 10, panel.ControlRect.Y + panel.ControlRect.H - 40);
-                if (_theme.HasScrollbar)
+                if (_combatTheme.HasScrollbar)
                 {
-                    var track = PanelGeometry.Scrollbar(new(panel.ControlRect.W, panel.ControlRect.H), _theme.HasPlate,
-                        PanelGeometry.BodyBand(panel.ControlRect.H, _theme.HasPlate, panel.Layout.HeaderBottom), panel.Layout.Height, panel.ScrollPosition).Track;
+                    var track = PanelGeometry.Scrollbar(new(panel.ControlRect.W, panel.ControlRect.H), _combatTheme.HasPlate,
+                        PanelGeometry.BodyBand(panel.ControlRect.H, _combatTheme.HasPlate, panel.Layout.HeaderBottom), panel.Layout.Height, panel.ScrollPosition).Track;
                     var point = new UiPoint(panel.ControlRect.X + track.X + 10, panel.ControlRect.Y + track.Y + track.H / 2);
                     panel.Interact(point, true);
                     panel.Interact(outside, true);
@@ -264,6 +276,8 @@ internal static class ProfilerPanels
                     panel.Interact(outside, false);
                 }
                 panel.Interact(outside, true);
+                if (panel.Requested || !panel.Visible) throw new InvalidOperationException("Outside dismissal did not stage visibility until refresh");
+                panel.Refresh(3, fixture, fixture);
                 if (panel.Visible) throw new InvalidOperationException("Outside press failed to dismiss");
                 panel.Show();
                 await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);

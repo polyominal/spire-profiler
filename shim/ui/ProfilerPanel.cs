@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using Godot;
@@ -116,8 +117,8 @@ internal sealed class ProfilerPanel
         };
     }
 
-    internal void Show() { _manual = true; SetAvailable(_available); _revision = null; }
-    internal void Hide() { _manual = false; SetAvailable(_available); }
+    internal void Show() { _manual = true; _queuedScroll = 0; _revision = null; }
+    internal void Hide() { _manual = false; _queuedScroll = 0; }
     internal void SetAvailable(bool available)
     {
         _available = available;
@@ -134,8 +135,8 @@ internal sealed class ProfilerPanel
     internal void ResetFilter() { _player = null; _revision = null; }
     internal void SelectPlayer(int? slot)
     {
-        if (!_history && _receivedSnapshots && _combatView == null) return;
-        if (_view == null || slot != null && !_view.Players.Any(player => player.Slot == slot)) return;
+        var roster = _history ? _view?.Players : _receivedSnapshots ? _combatView?.Players : _view?.Players;
+        if (roster == null || slot != null && !roster.Any(player => player.Slot == slot)) return;
         _player = _player == slot ? null : slot;
         Present(_view);
     }
@@ -156,6 +157,7 @@ internal sealed class ProfilerPanel
     {
         _combatView = combat; _runView = run;
         _receivedSnapshots = true;
+        SetAvailable(_available);
         if (!Visible) return;
         var size = Root.GetViewport().GetVisibleRect().Size;
         var viewport = new UiPoint(size.X, size.Y);
@@ -168,7 +170,7 @@ internal sealed class ProfilerPanel
         }
         var pointer = Root.GetViewport().GetMousePosition();
         Interact(new(pointer.X, pointer.Y), Input.IsMouseButtonPressed(MouseButton.Left));
-        if (_animation.Advance((float)Root.GetProcessDeltaTime()))
+        if (_animation.AdvanceFrame((double)Stopwatch.GetTimestamp() / Stopwatch.Frequency))
         {
             _scales = _animation.Values;
             _canvas.QueueRedraw();
@@ -231,7 +233,7 @@ internal sealed class ProfilerPanel
         float oldScroll = _scroll;
         if (_dragging && scrollbar != null) _scroll = PanelGeometry.TrackScroll(scrollbar.Track, local.Y, Math.Max(0, _layout.Height - _control.H));
         _mouseDown = pressed;
-        if (edge && !_control.Contains(mouse.X, mouse.Y)) { Hide(); return; }
+        if (edge && !_control.Contains(mouse.X, mouse.Y)) Hide();
         if (edge && !onTrack && _control.Contains(mouse.X, mouse.Y))
         {
             foreach (var hit in _layout.TabHits)

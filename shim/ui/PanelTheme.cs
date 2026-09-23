@@ -18,6 +18,7 @@ internal sealed class PanelTheme : IDisposable
     private readonly Texture2D _tab = Load<Texture2D>("res://images/atlases/ui_atlas.sprites/settings_tab_selected.tres");
     private readonly Texture2D _stroke = Load<Texture2D>("res://images/atlases/ui_atlas.sprites/settings_tab_stroke.tres");
     private readonly Dictionary<string, Texture2D> _portraits = new(StringComparer.Ordinal);
+    private static bool _portraitOverflow;
     private readonly StyleBoxTexture _plate;
     private readonly StyleBoxTexture _shadow;
     internal bool HasPlate => _plate != null;
@@ -64,6 +65,12 @@ internal sealed class PanelTheme : IDisposable
     internal Texture2D Portrait(string path)
     {
         if (_portraits.TryGetValue(path, out var texture)) return texture;
+        if (_portraits.Count >= 8)
+        {
+            if (!_portraitOverflow) Log.Error($"[SpireProfiler] theme per-run asset cache full (8); icon skipped: {path}");
+            _portraitOverflow = true;
+            return null;
+        }
         texture = Load<Texture2D>(path);
         _portraits.Add(path, texture);
         return texture;

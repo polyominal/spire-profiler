@@ -77,8 +77,9 @@ internal sealed class AvatarAnimation
         internal float Value, From, Target, Elapsed;
     }
     private readonly List<Entry> _entries = new();
+    private double? _lastTick;
     internal IReadOnlyList<float> Values => _entries.Select(entry => entry.Value).ToArray();
-    internal void Clear() => _entries.Clear();
+    internal void Clear() { _entries.Clear(); _lastTick = null; }
     internal void SetTargets(int? selected, IReadOnlyList<int> slots)
     {
         int shared = Math.Min(slots.Count, _entries.Count);
@@ -94,6 +95,13 @@ internal sealed class AvatarAnimation
             }
         }
         if (_entries.Count > slots.Count) _entries.RemoveRange(slots.Count, _entries.Count - slots.Count);
+    }
+    internal bool AdvanceFrame(double now)
+    {
+        if (!_entries.Any(entry => entry.Value != entry.Target)) { _lastTick = null; return false; }
+        float delta = _lastTick is { } last ? (float)(now - last) : 0;
+        _lastTick = now;
+        return Advance(delta);
     }
     internal bool Advance(float delta)
     {
