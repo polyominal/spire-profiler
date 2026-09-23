@@ -16,6 +16,8 @@ internal static class UiParityFixtures
         var reference = JsonNode.Parse(File.ReadAllText(referencePath));
         if (Text(reference, "baseline") != Baseline || Number(reference, "schema") != 1)
             throw new InvalidOperationException("UI oracle baseline or schema changed");
+        if (!JsonNode.DeepEquals(reference["approved_changes"], new JsonArray("displayed-defense-scale")))
+            throw new InvalidOperationException("UI oracle must declare the approved defense-scale correction");
         var failures = new List<string>();
         int cases = 0;
         foreach (var fixture in reference["cases"].AsArray())
@@ -26,7 +28,7 @@ internal static class UiParityFixtures
             cases++;
         }
         if (failures.Count != 0) throw new InvalidOperationException($"UI parity failed in {failures.Count}/{cases} reference cases:\n" + string.Join("\n", failures));
-        Console.WriteLine($"UI PARITY PASS baseline={Baseline} cases={cases}");
+        Console.WriteLine($"UI REFERENCE PASS baseline={Baseline} approved=displayed-defense-scale cases={cases}");
     }
     internal static JsonNode Evaluate(string kind, JsonNode input) => kind switch
     {

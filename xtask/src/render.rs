@@ -1,5 +1,5 @@
-//! Render the actual managed panel and an independent replay of original drawing
-//! commands in a private game copy. The installed game and its saves stay untouched.
+//! Render the actual panel and an independent original-source layout with the
+//! approved defense scale, in a private copy of the game and its user data.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -162,7 +162,7 @@ pub fn run(shell: &Shell, reference: &Path) -> Result<()> {
         .env("SPIRE_PROFILER_DATA_DIR", reference.join("render-data"))
         .env(
             "SPIRE_PROFILER_RENDER_REFERENCE",
-            reference.join("ui_reference.json"),
+            reference.join("ui_approved.json"),
         )
         .env("SPIRE_PROFILER_RENDER_OUTPUT", &output)
         .env(
@@ -217,7 +217,7 @@ pub fn run(shell: &Shell, reference: &Path) -> Result<()> {
         "render report contains pixel differences"
     );
     println!(
-        "rendered parity: exact RGBA match; evidence at {}",
+        "rendered parity: exact RGBA match to approved defense scale; evidence at {}",
         output.display()
     );
     Ok(())

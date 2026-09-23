@@ -25,12 +25,12 @@ internal static class ManagedTestProgram
             ProfilerNative.Load(args[2]);
             ManagedFixtures.RunAttributionParity(args[1]);
             ManagedFixtures.RunTemporalParity();
-            UiParityFixtures.Run(Path.Combine(args[1], "parity", "ui_reference.json"));
+            UiParityFixtures.Run(Path.Combine(args[1], "parity", "ui_approved.json"));
             ProfilerNative.Dispose();
             ProfilerNative.Load(args[2]);
             SessionParityFixtures.Run(Path.Combine(args[1], "parity", "session_reference.json"), Path.Combine(args[1], "session-parity"));
             ProfilerNative.Dispose();
-            Console.WriteLine("MANAGED BASELINE PARITY PASS");
+            Console.WriteLine("MANAGED REFERENCE CHECKS PASS (explicit legacy corrections applied)");
             return 0;
         }
         catch (Exception error) { Console.Error.WriteLine(error); return 1; }

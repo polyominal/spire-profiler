@@ -57,7 +57,8 @@ internal static class SessionParityFixtures
             lifecycle.Add(Snapshot("replaced_run_after_combat"));
             Equal(expected["replaced_history"], History("OLD", 400), "replaced_history");
             ProfilerSession.EndRun(1);
-            Equal(expected["active_end_history"], History("NEW", 500), "active_end_history");
+            if (expected["active_end_history"] == null) throw new InvalidOperationException("Original run-ID alias fixture no longer exercises the legacy bug");
+            Equal(null, History("NEW", 500), "active_end_history: no completed combat belongs to NEW");
             Equal(expected["lifecycle"], lifecycle, "lifecycle");
             ProfilerSession.Suspend();
             ProfilerSession.StartRun(Header("BLANK", 600) with { Ascension = 0 }, false);
@@ -73,11 +74,13 @@ internal static class SessionParityFixtures
             Observe(ProfilerSession.StartCombat("OLD_REPEAT", "Normal"), 11);
             ProfilerSession.StartRun(Header("REPEATED", 700), false);
             ProfilerSession.StartCombat("NEW_REPEAT", "Normal");
-            Equal(expected["same_identity"], Snapshot("same_identity_interrupted"), "same_identity");
+            var separateContext = expected["same_identity"].DeepClone();
+            separateContext["run"] = new JsonObject { ["cards"] = new JsonArray(), ["turns"] = 0, ["combats"] = 0 };
+            Equal(separateContext, Snapshot("same_identity_interrupted"), "same_identity: a fresh context cannot adopt the previous context's combat");
             ProfilerSession.Suspend();
             Equal(expected["same_history"], History("REPEATED", 700), "same_history");
             cases += lifecycle.Count + 8;
-            Console.WriteLine($"SESSION PARITY PASS baseline=c928c477852e75ffcc35f8cd16c7ed03caad7c7f cases={cases}");
+            Console.WriteLine($"SESSION REFERENCE PASS baseline=c928c477852e75ffcc35f8cd16c7ed03caad7c7f cases={cases} approved_corrections=2");
         }
         finally
         {

@@ -2,6 +2,10 @@ use profiler_core::data::events as e;
 use profiler_core::data::state::{Combat, STATE, State};
 use serde_json::{Value, json};
 
+thread_local! {
+    static BLOCK_POLICY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 struct Source {
     #[cfg(feature = "baseline")]
     shares: Vec<(u64, u64)>,
@@ -51,7 +55,8 @@ impl Source {
         result
     }
 }
-fn reset() {
+fn reset(block_policy: bool) {
+    BLOCK_POLICY.set(block_policy);
     STATE.with(|state| {
         let mut state = state.borrow_mut();
         *state = State::default();
@@ -68,33 +73,47 @@ fn emit(label: &str, status: i32) {
             .cards
             .iter()
             .map(|r| {
-                json!([
-                    r.player,
-                    r.id,
-                    r.kind as u8,
-                    r.plays,
-                    r.damage_dealt,
-                    r.damage_blocked,
-                    r.block_gained,
-                    r.block_effective,
-                    r.dmg_direct,
-                    r.dmg_attributed,
-                    r.dmg_modifier,
-                    r.blk_modifier,
-                    r.mitigate_debuff,
-                    r.mitigate_buff,
-                    r.mitigate_str,
-                    r.self_damage,
-                    r.forge
-                ])
+                json!({
+                    "player": r.player, "id": r.id, "kind": r.kind as u8,
+                    "plays": r.plays, "damage_dealt": r.damage_dealt,
+                    "damage_blocked": r.damage_blocked, "block_gained": r.block_gained,
+                    "block_effective": r.block_effective, "dmg_direct": r.dmg_direct,
+                    "dmg_attributed": r.dmg_attributed, "dmg_modifier": r.dmg_modifier,
+                    "blk_modifier": r.blk_modifier, "mitigate_debuff": r.mitigate_debuff,
+                    "mitigate_buff": r.mitigate_buff, "mitigate_str": r.mitigate_str,
+                    "self_damage": r.self_damage, "forge": r.forge
+                })
             })
             .collect();
-        json!({"case":label, "status":status,"rows":rows,"plays":c.plays,
+        json!({"case":label, "block_policy":BLOCK_POLICY.get(), "status":status,"rows":rows,"plays":c.plays,
             "generated_plays":c.generated_plays,"generation_triggers":c.generation_triggers,
             "turns":c.turns,"damage_received":c.damage_received,"block_total":c.block_total,
             "potions":c.potions_used})
     });
     println!("{snapshot}");
+}
+fn grant(source: &Source, amount: i32, slot: i32, modifiers: &[(&Source, i32)]) -> i32 {
+    #[cfg(feature = "baseline")]
+    {
+        for &(modifier, credit) in modifiers {
+            modifier.apply(|s| e::block_modifier_contribution(1, s, credit, slot));
+        }
+        source.apply(|s| e::block_gained(1, amount, s, slot))
+    }
+    #[cfg(not(feature = "baseline"))]
+    {
+        let batch: Vec<_> = modifiers
+            .iter()
+            .take(16)
+            .map(|(source, credit)| profiler_core::abi::BlockModifier {
+                source: source.handle,
+                credit: i64::from(*credit),
+            })
+            .collect();
+        source.apply(|s| {
+            e::block_gained_with_modifiers(1, amount, s, slot, &batch, modifiers.len() > 16)
+        })
+    }
 }
 fn hit(
     source: &Source,
@@ -113,7 +132,7 @@ fn hit(
     e::damage_calculation_commit(group)
 }
 fn main() {
-    reset();
+    reset(true);
     for index in 0..67 {
         let source = Source::capture(&format!("BLOCK_{index}"), 0);
         emit(
@@ -125,43 +144,39 @@ fn main() {
         "pool-capacity-consume",
         e::damage_unattributed(1, 67, 0, 67, 1, 0, 0),
     );
-    reset();
+    reset(true);
     let base = Source::capture("BASE", 0);
     let modifier = Source::capture("MOD", 0);
-    for _ in 0..18 {
-        emit(
-            "pending-capacity",
-            modifier.apply(|s| e::block_modifier_contribution(1, s, 1, 0)),
-        );
-    }
-    emit("pending-gain", base.apply(|s| e::block_gained(1, 20, s, 0)));
     emit(
-        "pending-consume",
+        "modifier-capacity-gain",
+        grant(&base, 20, 0, &[(&modifier, 1); 18]),
+    );
+    emit(
+        "modifier-capacity-consume",
         e::damage_unattributed(1, 20, 0, 20, 1, 0, 0),
     );
-    reset();
+    reset(true);
     emit(
         "unobserved-block",
         e::damage_unattributed(1, 9, 0, 9, 1, 0, 0),
     );
-    reset();
+    reset(true);
     let a = Source::capture("A", 0);
     let b = Source::capture("B", 1);
-    a.apply(|s| e::block_modifier_contribution(1, s, 3, 0));
-    emit("zero-gain", b.apply(|s| e::block_gained(1, 0, s, 0)));
+    emit("zero-gain", grant(&b, 0, 0, &[(&a, 3)]));
     emit("after-zero", b.apply(|s| e::block_gained(1, 7, s, 0)));
     emit(
         "consume-after-zero",
         e::damage_unattributed(1, 7, 0, 7, 1, 0, 0),
     );
-    a.apply(|s| e::block_modifier_contribution(1, s, 3, 0));
+    grant(&b, 0, 0, &[(&a, 3)]);
     emit("clear-with-pending", e::block_pool_clear(1, 0));
     emit("after-clear", b.apply(|s| e::block_gained(1, 7, s, 0)));
     emit(
         "consume-after-clear",
         e::damage_unattributed(1, 7, 0, 7, 1, 0, 0),
     );
-    reset();
+    reset(true);
     let a = Source::capture("A", 0);
     let b = Source::capture("B", 1);
     let mut seed = 0xf34e_8397_a68e_f099_u64;
@@ -179,17 +194,17 @@ fn main() {
             5 => source.apply(|s| e::osty_summoned(1, s, amount, slot)),
             6 => e::damage_unattributed(1, amount, amount, 0, 4, slot, 0),
             7 => e::block_pool_clear(1, slot),
-            8 => source.apply(|s| e::block_modifier_contribution(1, s, amount, slot)),
+            8 => grant(source, amount, slot, &[(&b, amount / 2)]),
             _ => e::turn_started(1),
         };
         emit("seeded", status);
     }
-    reset();
+    reset(false);
     for index in 0..520 {
         let source = Source::capture(&format!("ROW_{index}"), index % 5);
         emit("row-capacity", source.apply(|s| e::forge(1, s, 1)));
     }
-    reset();
+    reset(false);
     let a = Source::capture("A", 0);
     let b = Source::capture("B", 1);
     emit(
@@ -216,7 +231,7 @@ fn main() {
     for instance in 70..=335 {
         emit("power-remove", e::power_removed(1, instance));
     }
-    reset();
+    reset(false);
     let a = Source::capture("A", 0);
     for instance in 1..=70 {
         emit(
@@ -235,7 +250,7 @@ fn main() {
     for play in plays {
         emit("play-finish", e::card_play_finished(play));
     }
-    reset();
+    reset(true);
     let a = Source::capture("A", 0);
     let b = Source::capture("B", 1);
     emit(
@@ -309,7 +324,7 @@ fn main() {
         emit("orb-hit", hit(&orb, None, 7, 2, 0, 4));
     }
     emit("orb-play-finish", e::card_play_finished(play));
-    reset();
+    reset(false);
     let a = Source::capture("A", 0);
     let b = Source::capture("B", 1);
     a.apply(|s| e::block_gained(1, 10, s, 0));

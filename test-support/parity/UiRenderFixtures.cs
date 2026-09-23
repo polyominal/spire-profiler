@@ -23,6 +23,8 @@ internal static class UiRenderFixtures
         var reference = JsonNode.Parse(File.ReadAllText(referencePath));
         if (reference["baseline"].GetValue<string>() != Baseline || reference["schema"].GetValue<int>() != 1)
             throw new InvalidOperationException("Rendered parity requires the pinned original reference");
+        if (!JsonNode.DeepEquals(reference["approved_changes"], new JsonArray("displayed-defense-scale")))
+            throw new InvalidOperationException("Rendered reference must declare the approved defense-scale correction");
         string scriptPath = Path.Combine(Path.GetDirectoryName(referencePath), "baseline_render.gd");
         using var script = new GDScript { SourceCode = File.ReadAllText(scriptPath) };
         if (script.Reload() != Error.Ok) throw new InvalidOperationException("Original renderer GDScript did not compile");
@@ -146,7 +148,8 @@ internal static class UiRenderFixtures
         File.WriteAllText(Path.Combine(outputDirectory, "report.json"), JsonSerializer.Serialize(new
         {
             baseline = Baseline,
-            renderer = "actual managed ProfilerPanel versus independent original-command GDScript",
+            renderer = "actual managed ProfilerPanel versus original-source commands with approved defense scale",
+            approvedChange = "displayed-defense-scale",
             exact = failures.Count == 0,
             cases = results
         }, OutputJson) + "\n");

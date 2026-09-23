@@ -1,7 +1,6 @@
-//! Differential fixtures execute the pinned original source and the production
-//! replacement. Every invocation retains both inputs and outputs for inspection.
+//! Differential fixtures retain original behavior and explicit policy corrections
+//! as separate references. Every invocation retains its inputs and outputs.
 
-use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -103,6 +102,44 @@ impl Reference {
                 fingerprints_path.display()
             );
         }
+        // The unchanged oracle remains fingerprinted. A separate original-source
+        // export supplies the independently specified defense-scale correction.
+        let approved = reference.directory.join("approved-ui");
+        fs::create_dir(&approved)?;
+        cmd!(
+            shell,
+            "tar --extract --file {archive} --directory {approved}"
+        )
+        .run()?;
+        let patch = reference.directory.join("defense_scale.patch");
+        fs::copy(support.join("defense_scale.patch"), &patch)?;
+        cmd!(
+            shell,
+            "git apply --unsafe-paths --directory={approved} {patch}"
+        )
+        .run()?;
+        let approved_source = approved.join("profiler-core/src");
+        fs::copy(
+            support.join("ui_oracle.rs"),
+            approved_source.join("ui_oracle.rs"),
+        )?;
+        let mut approved_lib = fs::read_to_string(approved_source.join("lib.rs"))?;
+        approved_lib.push_str("\n#[cfg(test)]\nmod ui_oracle;\n");
+        fs::write(approved_source.join("lib.rs"), approved_lib)?;
+        let corrected_ui = reference.directory.join("ui_approved.json");
+        {
+            let _directory = shell.push_dir(&approved);
+            let _target = shell.push_env("CARGO_TARGET_DIR", scratch.join("approved-target"));
+            let _ui = shell.push_env("PARITY_OUTPUT", &corrected_ui);
+            cmd!(shell, "cargo test --package profiler_core --lib ui_oracle::export_reference --locked --offline").run()?;
+        }
+        let mut corrected: serde_json::Value = serde_json::from_slice(&fs::read(&corrected_ui)?)?;
+        corrected["approved_changes"] = serde_json::json!(["displayed-defense-scale"]);
+        fs::write(&corrected_ui, serde_json::to_vec_pretty(&corrected)?)?;
+        println!(
+            "UI reference: original fingerprint verified; approved defense patch SHA-256 {}",
+            sha256_file(&patch)?
+        );
         let current = reference.directory.join("current");
         fs::create_dir(&current)?;
         let files = cmd!(
@@ -167,16 +204,32 @@ impl Reference {
             )?;
             ledgers.push(result.stdout);
         }
-        ensure!(
-            ledgers[0] == ledgers[1],
-            "original/current attribution ledgers differ; inspect retained JSONL outputs"
-        );
-        println!(
-            "attribution parity: {} identical snapshots",
-            ledgers[0]
+        let mut comparable = Vec::new();
+        for (label, output) in ["baseline", "current"].into_iter().zip(&ledgers) {
+            let mut snapshots = Vec::new();
+            for line in output
                 .split(|byte| *byte == b'\n')
                 .filter(|line| !line.is_empty())
-                .count()
+            {
+                snapshots.push(Self::preserved_ledger(serde_json::from_slice(line)?)?);
+            }
+            fs::write(
+                reference.directory.join(format!("{label}-preserved.json")),
+                serde_json::to_vec_pretty(&snapshots)?,
+            )?;
+            comparable.push(snapshots);
+        }
+        ensure!(
+            comparable[0] == comparable[1],
+            "unapproved attribution difference; inspect retained *-preserved.json and original JSONL outputs"
+        );
+        let corrected = comparable[0]
+            .iter()
+            .filter(|snapshot| snapshot["block_policy"] == true)
+            .count();
+        println!(
+            "attribution reference: {} full snapshots, {corrected} snapshots compare all fields except block allocation and Unknown first-seen order (independent policy-3 model tests cover those)",
+            comparable[0].len() - corrected
         );
         managed::run(shell, Some(&reference))?;
         if render {
@@ -184,6 +237,44 @@ impl Reference {
         }
         println!("parity-test: PASS baseline={BASELINE} rendered={render}");
         Ok(())
+    }
+
+    fn preserved_ledger(mut snapshot: serde_json::Value) -> Result<serde_json::Value> {
+        if snapshot["block_policy"] != true {
+            return Ok(snapshot);
+        }
+        let rows = snapshot["rows"]
+            .as_array_mut()
+            .context("ledger rows must be an array")?;
+        let mut unknown = Vec::new();
+        let mut known = Vec::new();
+        for mut row in rows.drain(..) {
+            let values = row
+                .as_object_mut()
+                .context("ledger row must be an object")?;
+            ensure!(values.len() == 17, "ledger row schema changed");
+            // Only effective block and its modifier split use the new policy.
+            for field in ["block_effective", "blk_modifier"] {
+                *values
+                    .get_mut(field)
+                    .context("missing block credit field")? = 0.into();
+            }
+            if values["id"] == "UNATTRIBUTED" && values["kind"] == 5 {
+                if values.iter().any(|(key, value)| {
+                    !matches!(key.as_str(), "id" | "kind" | "player") && value != 0
+                }) {
+                    unknown.push(row);
+                }
+            } else {
+                known.push(row);
+            }
+        }
+        *rows = known;
+        // Missing block provenance can create an Unknown row earlier than damage.
+        // Its remaining counters still compare, independent of insertion order.
+        unknown.sort_by_key(|row| row["player"].as_u64());
+        snapshot["unknown_rows"] = serde_json::Value::Array(unknown);
+        Ok(snapshot)
     }
 
     #[allow(clippy::too_many_lines)] // Extracted original methods, compile inputs, and their digests form one project transaction.
@@ -202,46 +293,13 @@ impl Reference {
             inputs.push(format!("parity/{name}"));
         }
         fs::copy(support.join("Program.cs"), project.join("tests/Program.cs"))?;
-        for name in ["ui_reference.json", "session_reference.json"] {
+        for name in [
+            "ui_reference.json",
+            "ui_approved.json",
+            "session_reference.json",
+        ] {
             fs::copy(self.directory.join(name), destination.join(name))?;
         }
-        let mut imports = BTreeSet::new();
-        let mut methods = String::new();
-        for (file, start, end) in [
-            (
-                "DamageCapture.cs",
-                "    internal static void Decompose(",
-                "    internal static ResultKind Classify(",
-            ),
-            (
-                "CommandCapture.cs",
-                "    internal static void DecomposeBlock(",
-                "    internal static void BuffPrefix(",
-            ),
-        ] {
-            let original = fs::read_to_string(self.original.join("shim/attribution").join(file))?;
-            imports.extend(
-                original
-                    .lines()
-                    .filter(|line| line.starts_with("using "))
-                    .map(str::to_owned),
-            );
-            let (before_end, _) = original
-                .split_once(end)
-                .with_context(|| format!("original {file} end marker missing"))?;
-            let start_index = before_end
-                .find(start)
-                .with_context(|| format!("original {file} start marker missing"))?;
-            methods.push_str(&before_end[start_index..]);
-        }
-        fs::write(
-            destination.join("BaselineAttribution.g.cs"),
-            format!(
-                "{}\nnamespace SpireProfiler;\ninternal static class BaselineAttribution\n{{\n{methods}}}\n",
-                imports.into_iter().collect::<Vec<_>>().join("\n")
-            ),
-        )?;
-        inputs.push("parity/BaselineAttribution.g.cs".into());
         let original =
             fs::read_to_string(self.original.join("shim/attribution/SourceSnapshot.cs"))?;
         ensure!(
@@ -318,5 +376,60 @@ impl Reference {
         }
         fs::write(project.join("source-digests.txt"), digests)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::Reference;
+
+    #[test]
+    fn approved_block_projection_keeps_physical_and_other_credit_differences() {
+        let original = json!({"block_policy":true, "rows":[{
+            "player":0,"id":"A","kind":0,"plays":0,"damage_dealt":7,"damage_blocked":2,
+            "block_gained":9,"block_effective":3,"dmg_direct":7,"dmg_attributed":0,
+            "dmg_modifier":0,"blk_modifier":1,"mitigate_debuff":4,"mitigate_buff":0,
+            "mitigate_str":0,"self_damage":0,"forge":0
+        }]});
+        let mut corrected = original.clone();
+        corrected["rows"][0]["block_effective"] = 2.into();
+        corrected["rows"][0]["blk_modifier"] = 3.into();
+        assert_eq!(
+            Reference::preserved_ledger(original.clone()).expect("valid ledger"),
+            Reference::preserved_ledger(corrected.clone()).expect("valid ledger")
+        );
+        for field in [
+            "player",
+            "kind",
+            "plays",
+            "damage_dealt",
+            "damage_blocked",
+            "block_gained",
+            "dmg_direct",
+            "dmg_attributed",
+            "dmg_modifier",
+            "mitigate_debuff",
+            "mitigate_buff",
+            "mitigate_str",
+            "self_damage",
+            "forge",
+        ] {
+            let mut changed = corrected.clone();
+            changed["rows"][0][field] = 99.into();
+            assert_ne!(
+                Reference::preserved_ledger(original.clone()).expect("valid ledger"),
+                Reference::preserved_ledger(changed).expect("valid ledger"),
+                "unapproved row field {field} must still fail"
+            );
+        }
+        let mut strict = original.clone();
+        strict["block_policy"] = false.into();
+        corrected["block_policy"] = false.into();
+        assert_ne!(
+            Reference::preserved_ledger(strict).expect("valid ledger"),
+            Reference::preserved_ledger(corrected).expect("valid ledger")
+        );
     }
 }

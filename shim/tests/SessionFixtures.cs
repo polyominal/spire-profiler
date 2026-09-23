@@ -33,6 +33,9 @@ internal static class SessionFixtures
             NativeLifecycle(Path.Combine(scratch, "native"));
             ProfilerNative.Dispose();
             ProfilerNative.Load(nativeLibrary);
+            NativeBlockBatches(Path.Combine(scratch, "block-batches"));
+            ProfilerNative.Dispose();
+            ProfilerNative.Load(nativeLibrary);
             OverlappingRunContexts(Path.Combine(scratch, "overlap"));
             ProfilerNative.Dispose();
             ProfilerNative.Load(nativeLibrary);
@@ -474,6 +477,38 @@ internal static class SessionFixtures
         Check(ProfilerSession.HistoryOpen && ProfilerSession.SelectedHistory.Combats == 2 && ProfilerSession.SelectedHistory.Outcome == "victory", "History selects the completed stored session");
         ProfilerSession.ClearHistory();
         Check(!ProfilerSession.HistoryOpen && ProfilerSession.SelectedHistory == null, "Closing history clears selection");
+    }
+
+    private static void NativeBlockBatches(string directory)
+    {
+        ProfilerSession.Initialize(directory, "g", "m", _ => { });
+        ProfilerSession.StartRun(Header("BLOCK_BATCHES", 1400), false);
+        Check(ProfilerNative.RecordingBegin(), "Atomic block fixture recording begins before combat");
+        ulong epoch = ProfilerSession.StartCombat("BLOCK_BATCHES", "Normal");
+        ulong producer = ProfilerNative.SourceCapture(epoch, 1, 1, "PRODUCER", 0, 0, 0);
+        var modifiers = Enumerable.Range(0, 16).Select(index => new BlockModifier(
+            ProfilerNative.SourceCapture(epoch, 1, (ulong)index + 2, "MOD" + index, 0, 1, 0), 1)).ToArray();
+        Check(ProfilerNative.BlockGained(epoch, 16, producer, 0, modifiers, false) == 1,
+            "All sixteen struct entries cross the real managed/native array boundary");
+        foreach (int amount in new[] { 1, 15 })
+        {
+            Check(ProfilerNative.DamageUnattributed(epoch, amount, 0, amount, 1, 0, 0) == 1 && ProfilerSession.Refresh(),
+                "Partial block consumption crosses the native boundary");
+            Check(ProfilerSession.CurrentCombat.Cards.Sum(row => row.BlockEffective + row.BlkModifier) == (amount == 1 ? 1 : 16),
+                "Marshaled modifier batches conserve each physical block prefix");
+        }
+        var creditedModifiers = ProfilerSession.CurrentCombat.Cards.Where(row => row.Id.StartsWith("MOD", StringComparison.Ordinal)).ToArray();
+        Check(creditedModifiers.Length == 16 && creditedModifiers.All(row => row.BlkModifier == 1)
+            && ProfilerSession.CurrentCombat.Cards.Single(row => row.Id == "PRODUCER").BlockGained == 16,
+            "Marshaled source handles and credits retain every modifier and the gross producer gain");
+        Check(ProfilerNative.BlockGained(epoch, 5, producer, 0, modifiers, true) == 1
+            && ProfilerNative.DamageUnattributed(epoch, 5, 0, 5, 1, 0, 0) == 1 && ProfilerSession.Refresh(),
+            "The incomplete flag preserves the physical gain across the same array boundary");
+        Check(ProfilerSession.CurrentCombat.Cards.Single(row => row.Id == "UNATTRIBUTED").BlockEffective == 5
+            && !ProfilerSession.CurrentCombat.Coverage.Complete, "Incomplete modifier attribution degrades to Unknown");
+        Check(ProfilerNative.Replay(ProfilerNative.Recording()) == ProfilerNative.Snapshot(),
+            "Actual marshaled modifier batches replay exactly");
+        ProfilerSession.Suspend();
     }
 
     private static void OverlappingRunContexts(string directory)
