@@ -15,6 +15,19 @@ internal sealed class ProfilerPanel
     private readonly PanelContainer _plate;
     private readonly VBoxContainer _header;
     private readonly VBoxContainer _body;
+    private readonly Label _title;
+    private readonly Label _subtitle;
+    private readonly Label _seed;
+    private readonly Label _meta;
+    private readonly Label _coverage;
+    private readonly Label _footer;
+    private readonly Label _empty;
+    private readonly HBoxContainer _players;
+    private readonly Button _allPlayers;
+    private readonly Dictionary<int, Button> _playerButtons = new();
+    private IReadOnlyList<PlayerSummary> _roster = Array.Empty<PlayerSummary>();
+    private readonly ChartSection _damage;
+    private readonly ChartSection _defense;
     private readonly ScrollContainer _scroll;
     private readonly Button _combatTab;
     private readonly Button _runTab;
@@ -67,6 +80,22 @@ internal sealed class ProfilerPanel
         content.AddChild(tabs);
         _header = new VBoxContainer();
         content.AddChild(_header);
+        _title = theme.Label("", 28, true);
+        _subtitle = theme.Label("", 20);
+        _seed = theme.Label("", 18);
+        _seed.ClipText = true;
+        _seed.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis;
+        _seed.MouseFilter = Control.MouseFilterEnum.Pass;
+        _players = new HBoxContainer();
+        _allPlayers = theme.Button("All players", () => SelectPlayer(null));
+        _players.AddChild(_allPlayers);
+        _meta = theme.Label("", 20);
+        _coverage = theme.Label("", 20);
+        _coverage.AddThemeColorOverride("font_color", PanelTheme.Indirect);
+        foreach (var label in new[] { _title, _subtitle, _meta, _coverage })
+            label.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+        foreach (var control in new Control[] { _title, _subtitle, _seed, _players, _meta, _coverage })
+            _header.AddChild(control);
         _scroll = new ScrollContainer
         {
             SizeFlagsVertical = Control.SizeFlags.ExpandFill,
@@ -77,6 +106,15 @@ internal sealed class ProfilerPanel
         _body = new VBoxContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
         _body.AddThemeConstantOverride("separation", 6);
         _scroll.AddChild(_body);
+        _empty = theme.Label("Statistics appear after observed combat events.");
+        _body.AddChild(_empty);
+        _damage = new ChartSection(theme, false);
+        _defense = new ChartSection(theme, true);
+        _body.AddChild(_damage.Root);
+        _body.AddChild(_defense.Root);
+        _footer = theme.Label("", 20);
+        _footer.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+        _body.AddChild(_footer);
         Root.Resized += Layout;
         _plate.Draw += () => DrawCount++;
     }
@@ -119,23 +157,25 @@ internal sealed class ProfilerPanel
     {
         _view = view;
         if (_player != null && !(view?.Players.Any(player => player.Slot == _player.Value) ?? false)) _player = null;
-        foreach (Node child in _header.GetChildren()) { _header.RemoveChild(child); child.QueueFree(); }
-        foreach (Node child in _body.GetChildren()) { _body.RemoveChild(child); child.QueueFree(); }
         RowCount = 0;
         if (_combatTab != null)
         {
             _combatTab.Modulate = _runSelected ? new Color(0.6f, 0.6f, 0.6f) : Colors.White;
             _runTab.Modulate = _runSelected ? Colors.White : new Color(0.6f, 0.6f, 0.6f);
         }
+        _empty.Visible = view == null;
+        _players.Visible = _meta.Visible = _damage.Root.Visible = _defense.Root.Visible = _footer.Visible = view != null;
         if (view == null)
         {
-            _header.AddChild(_theme.Label(_history ? "No profiler record for this run" : "No combat recorded yet", 26, true));
-            _body.AddChild(_theme.Label("Statistics appear after observed combat events."));
+            _title.Text = _history ? "No profiler record for this run" : "No combat recorded yet";
+            _subtitle.Hide();
+            _seed.Hide();
+            _coverage.Hide();
+            _damage.Update(Array.Empty<ChartRow>());
+            _defense.Update(Array.Empty<ChartRow>());
             return;
         }
-        var title = _theme.Label(view.Title, 28, true);
-        title.AutowrapMode = TextServer.AutowrapMode.WordSmart;
-        _header.AddChild(title);
+        _title.Text = view.Title;
         bool run = _history || _runSelected;
         string subtitleText = view.Subtitle;
         if (run)
@@ -151,131 +191,182 @@ internal sealed class ProfilerPanel
             };
             subtitleText = string.IsNullOrEmpty(subtitleText) ? outcome : $"{subtitleText} · {outcome}";
         }
-        if (!string.IsNullOrEmpty(subtitleText))
+        _subtitle.Text = subtitleText;
+        _subtitle.Visible = !string.IsNullOrEmpty(subtitleText);
+        _seed.Visible = run && !string.IsNullOrEmpty(view.Seed);
+        if (_seed.Visible)
         {
-            var subtitle = _theme.Label(subtitleText, 20);
-            subtitle.AutowrapMode = TextServer.AutowrapMode.WordSmart;
-            _header.AddChild(subtitle);
+            _seed.Text = $"Seed: {view.Seed}";
+            _seed.TooltipText = _seed.Text;
         }
-        if (run && !string.IsNullOrEmpty(view.Seed))
+        if (!_roster.SequenceEqual(view.Players))
         {
-            var seed = _theme.Label($"Seed: {view.Seed}", 18);
-            seed.ClipText = true;
-            seed.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis;
-            seed.TooltipText = seed.Text;
-            seed.MouseFilter = Control.MouseFilterEnum.Pass;
-            _header.AddChild(seed);
-        }
-        var players = new HBoxContainer();
-        players.AddChild(_theme.Button("All players", () => SelectPlayer(null)));
-        foreach (var player in view.Players)
-        {
-            int slot = player.Slot;
-            var button = _theme.Button($"P{slot + 1}", () => SelectPlayer(slot));
-            var portrait = PanelTheme.Portrait(player.Character);
-            if (portrait != null)
+            foreach (var button in _playerButtons.Values) { _players.RemoveChild(button); button.QueueFree(); }
+            _playerButtons.Clear();
+            foreach (var player in view.Players)
             {
-                button.Icon = portrait;
-                button.ExpandIcon = true;
-                button.AddThemeConstantOverride("icon_max_width", 48);
+                int slot = player.Slot;
+                var button = _theme.Button($"P{slot + 1}", () => SelectPlayer(slot));
+                var portrait = PanelTheme.Portrait(player.Character);
+                if (portrait != null)
+                {
+                    button.Icon = portrait;
+                    button.ExpandIcon = true;
+                    button.AddThemeConstantOverride("icon_max_width", 48);
+                }
+                button.TooltipText = $"Player {slot + 1}: {player.Character}";
+                _players.AddChild(button);
+                _playerButtons.Add(slot, button);
             }
-            button.TooltipText = $"Player {slot + 1}: {player.Character}";
-            button.Modulate = _player == null || _player == slot ? Colors.White : new Color(0.55f, 0.55f, 0.55f);
-            players.AddChild(button);
+            _roster = view.Players;
         }
-        _header.AddChild(players);
+        foreach (var (slot, button) in _playerButtons)
+            button.Modulate = _player == null || _player == slot ? Colors.White : new Color(0.55f, 0.55f, 0.55f);
         long damage = view.Cards.Sum(card => card.DamageDealt);
         string perTurn = view.Turns == 0 ? "–" : ((double)damage / view.Turns).ToString("0.0", CultureInfo.InvariantCulture);
         string totals = $"{view.Turns} turns · {view.Plays} plays · {damage} damage · {perTurn}/turn";
         totals += run ? $"\n{view.Combats} combats · {view.DamageReceived} damage taken" : $" · {view.DamageReceived} damage taken";
-        var meta = _theme.Label(totals, 20);
-        meta.AutowrapMode = TextServer.AutowrapMode.WordSmart;
-        _header.AddChild(meta);
+        _meta.Text = totals;
         string coverage = ChartProjection.Coverage(view.Coverage);
-        if (coverage.Length != 0)
-        {
-            var warning = _theme.Label(coverage, 20);
-            warning.AddThemeColorOverride("font_color", PanelTheme.Indirect);
-            warning.AutowrapMode = TextServer.AutowrapMode.WordSmart;
-            _header.AddChild(warning);
-        }
-        AddSection(view.Cards, false);
-        AddSection(view.Cards, true);
-        var footer = _theme.Label($"{view.Combats} combats · {view.DamageReceived} damage taken · {view.Cards.Sum(card => card.BlockGained)} block\nPotions {view.PotionsUsed} · Forge {view.Cards.Sum(card => card.Forge)}", 20);
-        footer.AutowrapMode = TextServer.AutowrapMode.WordSmart;
-        _body.AddChild(footer);
-        Layout();
+        _coverage.Text = coverage;
+        _coverage.Visible = coverage.Length != 0;
+        var damageRows = ChartProjection.Rows(view.Cards, false, _player);
+        var defenseRows = ChartProjection.Rows(view.Cards, true, _player);
+        _damage.Update(damageRows);
+        _defense.Update(defenseRows);
+        RowCount = damageRows.Count + defenseRows.Count;
+        _footer.Text = $"{view.Combats} combats · {view.DamageReceived} damage taken · {view.Cards.Sum(card => card.BlockGained)} block\nPotions {view.PotionsUsed} · Forge {view.Cards.Sum(card => card.Forge)}";
     }
 
-    private void AddSection(IReadOnlyList<StatRow> cards, bool defense)
+    [SuppressMessage("Design", "CA1001", Justification = "Godot owns the chart subtree through the panel root.")]
+    private sealed class ChartSection
     {
-        _body.AddChild(_theme.Label(defense ? "Defense" : "Damage", 26, true));
-        var rows = ChartProjection.Rows(cards, defense, _player);
-        var legend = new HFlowContainer();
-        var entries = defense
-            ? new[] { ("block", PanelTheme.Block), ("osty", PanelTheme.Osty), ("modifier", PanelTheme.Modifier), ("weak", PanelTheme.Weak), ("buff", PanelTheme.Buff), ("str down", PanelTheme.Strength), ("self dmg", PanelTheme.SelfDamage) }
-            : new[] { ("direct", PanelTheme.Damage), ("indirect", PanelTheme.Indirect), ("modifier", PanelTheme.Modifier) };
-        foreach (var (text, color) in entries)
+        internal VBoxContainer Root { get; } = new();
+        private readonly PanelTheme _theme;
+        private readonly VBoxContainer _rows = new();
+        private readonly Label _empty;
+        private readonly Dictionary<(int Player, int Kind, string Id, bool SelfDamage), ChartControls> _controls = new();
+
+        internal ChartSection(PanelTheme theme, bool defense)
         {
-            var key = new HBoxContainer();
-            key.AddChild(new ColorRect { Color = color, CustomMinimumSize = new Vector2(12, 12), SizeFlagsVertical = Control.SizeFlags.ShrinkCenter, MouseFilter = Control.MouseFilterEnum.Ignore });
-            key.AddChild(_theme.Label(text, 17));
-            legend.AddChild(key);
+            _theme = theme;
+            Root.AddThemeConstantOverride("separation", 6);
+            _rows.AddThemeConstantOverride("separation", 6);
+            Root.AddChild(theme.Label(defense ? "Defense" : "Damage", 26, true));
+            var legend = new HFlowContainer();
+            var entries = defense
+                ? new[] { ("block", PanelTheme.Block), ("osty", PanelTheme.Osty), ("modifier", PanelTheme.Modifier), ("weak", PanelTheme.Weak), ("buff", PanelTheme.Buff), ("str down", PanelTheme.Strength), ("self dmg", PanelTheme.SelfDamage) }
+                : new[] { ("direct", PanelTheme.Damage), ("indirect", PanelTheme.Indirect), ("modifier", PanelTheme.Modifier) };
+            foreach (var (text, color) in entries)
+            {
+                var key = new HBoxContainer();
+                key.AddChild(new ColorRect { Color = color, CustomMinimumSize = new Vector2(12, 12), SizeFlagsVertical = Control.SizeFlags.ShrinkCenter, MouseFilter = Control.MouseFilterEnum.Ignore });
+                key.AddChild(theme.Label(text, 17));
+                legend.AddChild(key);
+            }
+            Root.AddChild(legend);
+            _empty = theme.Label("None", 20);
+            Root.AddChild(_empty);
+            Root.AddChild(_rows);
         }
-        _body.AddChild(legend);
-        if (rows.Count == 0) _body.AddChild(_theme.Label("None", 20));
-        double maximum = rows.Count == 0 ? 1 : rows.Max(row => Math.Abs((double)row.Value));
-        foreach (var row in rows)
+
+        internal void Update(IReadOnlyList<ChartRow> rows)
         {
-            string name = SourceName(row.Source);
+            bool changed = rows.Count != _controls.Count || rows.Any(row =>
+                !_controls.ContainsKey((row.Source.Player, row.Source.Kind, row.Source.Id, row.SelfDamage)));
+            if (changed)
+            {
+                foreach (var control in _controls.Values) { _rows.RemoveChild(control.Root); control.Root.QueueFree(); }
+                _controls.Clear();
+            }
+            _empty.Visible = rows.Count == 0;
+            double maximum = rows.Count == 0 ? 1 : rows.Max(row => Math.Abs((double)row.Value));
+            for (int index = 0; index < rows.Count; index++)
+            {
+                var row = rows[index];
+                var key = (row.Source.Player, row.Source.Kind, row.Source.Id, row.SelfDamage);
+                if (!_controls.TryGetValue(key, out var control))
+                {
+                    control = new ChartControls(_theme, row);
+                    _controls.Add(key, control);
+                    _rows.AddChild(control.Root);
+                }
+                if (control.Root.GetIndex() != index) _rows.MoveChild(control.Root, index);
+                control.Update(row, maximum);
+            }
+        }
+    }
+
+    [SuppressMessage("Design", "CA1001", Justification = "Godot owns the row controls through the chart subtree.")]
+    private sealed class ChartControls
+    {
+        internal HBoxContainer Root { get; }
+        private readonly Label _plays;
+        private readonly Label _value;
+        private readonly Control _bar;
+        private readonly string _name;
+        private ChartRow _row;
+        private double _maximum;
+
+        internal ChartControls(PanelTheme theme, ChartRow row)
+        {
+            _name = SourceName(row.Source);
             string prefix = row.Source.Kind switch { 1 => "[R] ", 3 => "[P] ", 4 => "[O] ", _ => "" };
-            var line = new HBoxContainer
+            Root = new HBoxContainer
             {
                 CustomMinimumSize = new Vector2(0, 34),
-                TooltipText = ChartProjection.Detail(row.Source, name),
                 MouseFilter = Control.MouseFilterEnum.Pass,
             };
-            var label = _theme.Label((row.SelfDamage ? "+ " : prefix) + name, 20);
+            var label = theme.Label((row.SelfDamage ? "+ " : prefix) + _name, 20);
             label.CustomMinimumSize = new Vector2(240, 0);
             label.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
             label.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis;
             label.ClipText = true;
-            line.AddChild(label);
-            var plays = _theme.Label(row.SelfDamage ? "" : $"×{row.Source.Plays}", 19);
-            plays.CustomMinimumSize = new Vector2(44, 0);
-            plays.ClipText = true;
-            line.AddChild(plays);
-            var bar = new Control
+            Root.AddChild(label);
+            _plays = theme.Label("", 19);
+            _plays.CustomMinimumSize = new Vector2(44, 0);
+            _plays.ClipText = true;
+            Root.AddChild(_plays);
+            _bar = new Control
             {
                 CustomMinimumSize = new Vector2(100, 28),
                 SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
                 MouseFilter = Control.MouseFilterEnum.Ignore,
             };
-            bar.Draw += () =>
+            _bar.Draw += () =>
             {
-                float y = (bar.Size.Y - 18) / 2;
-                bar.DrawRect(new Rect2(0, y, bar.Size.X, 18), new Color(1, 1, 1, 0.06f));
+                float y = (_bar.Size.Y - 18) / 2;
+                _bar.DrawRect(new Rect2(0, y, _bar.Size.X, 18), new Color(1, 1, 1, 0.06f));
                 float x = 0;
-                for (int index = 0; index < row.Segments.Count; index++)
+                for (int index = 0; index < _row.Segments.Count; index++)
                 {
-                    float width = (float)(row.Segments[index] / maximum * bar.Size.X);
+                    float width = (float)(_row.Segments[index] / _maximum * _bar.Size.X);
                     if (width <= 0) continue;
-                    bar.DrawRect(new Rect2(x, y, width, 18), PanelTheme.SegmentColor((ChartSegment)index, defense, row.Source.Kind));
+                    _bar.DrawRect(new Rect2(x, y, width, 18), PanelTheme.SegmentColor((ChartSegment)index, _row.Defense, _row.Source.Kind));
                     x += width;
                 }
             };
-            bar.Resized += bar.QueueRedraw;
-            line.AddChild(bar);
-            string valueText = row.SelfDamage ? row.Value.ToString(CultureInfo.InvariantCulture)
-                : string.Create(CultureInfo.InvariantCulture, $"{row.Value} ({row.Share:P1})");
-            var value = _theme.Label(valueText, 20);
-            value.CustomMinimumSize = new Vector2(166, 0);
-            value.ClipText = true;
-            value.HorizontalAlignment = HorizontalAlignment.Right;
-            if (row.SelfDamage) value.AddThemeColorOverride("font_color", PanelTheme.SelfDamage);
-            line.AddChild(value);
-            _body.AddChild(line);
-            RowCount++;
+            _bar.Resized += _bar.QueueRedraw;
+            Root.AddChild(_bar);
+            _value = theme.Label("", 20);
+            _value.CustomMinimumSize = new Vector2(166, 0);
+            _value.ClipText = true;
+            _value.HorizontalAlignment = HorizontalAlignment.Right;
+            if (row.SelfDamage) _value.AddThemeColorOverride("font_color", PanelTheme.SelfDamage);
+            Root.AddChild(_value);
+        }
+
+        internal void Update(ChartRow row, double maximum)
+        {
+            if (_row?.Source != row.Source) Root.TooltipText = ChartProjection.Detail(row.Source, _name);
+            if (_row?.Source.Plays != row.Source.Plays) _plays.Text = row.SelfDamage ? "" : $"×{row.Source.Plays}";
+            if (_row?.Value != row.Value || _row.Share != row.Share)
+                _value.Text = row.SelfDamage ? row.Value.ToString(CultureInfo.InvariantCulture)
+                    : string.Create(CultureInfo.InvariantCulture, $"{row.Value} ({row.Share:P1})");
+            bool redraw = _row == null || _maximum != maximum || !_row.Segments.SequenceEqual(row.Segments);
+            _row = row;
+            _maximum = maximum;
+            if (redraw) _bar.QueueRedraw();
         }
     }
 

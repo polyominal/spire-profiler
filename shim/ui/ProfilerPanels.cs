@@ -175,14 +175,14 @@ internal static class ProfilerPanels
                 for (int iteration = 1; iteration <= 10; iteration++)
                 {
                     var previous = panel.Root.FindChildren("*", "", recursive: true, owned: false)
-                        .Select(node => (Node: node, Id: node.GetInstanceId())).ToArray();
+                        .Select(node => node.GetInstanceId()).ToHashSet();
                     var refreshed = fixture with
                     {
                         Turns = fixture.Turns + (uint)iteration,
                         Cards = fixture.Cards.Select(card => card with
                         {
-                            DmgDirect = card.DmgDirect + iteration,
-                            DamageDealt = card.DamageDealt + iteration,
+                            DmgDirect = (iteration % 2 == 0 ? card.DmgDirect : 81 - card.DmgDirect) + iteration,
+                            DamageDealt = (iteration % 2 == 0 ? card.DamageDealt : 81 - card.DamageDealt) + iteration,
                         }).ToArray(),
                     };
                     long allocated = GC.GetAllocatedBytesForCurrentThread();
@@ -194,13 +194,26 @@ internal static class ProfilerPanels
                     for (int frame = 0; frame < 2; frame++) await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
                     var current = panel.Root.FindChildren("*", "", recursive: true, owned: false);
                     var currentIds = current.Select(node => node.GetInstanceId()).ToHashSet();
-                    if (current.Count != nodes || panel.RowCount != 240
-                        || previous.Any(node => !currentIds.Contains(node.Id) && GodotObject.IsInstanceValid(node.Node)))
-                        throw new InvalidOperationException("Panel refresh retained replaced controls or changed the live node count");
+                    if (current.Count != nodes || panel.RowCount != 240 || !previous.SetEquals(currentIds))
+                        throw new InvalidOperationException("Panel refresh rebuilt controls despite unchanged source identities");
                     string damage = $"{refreshed.Cards.Sum(card => card.DamageDealt)} damage";
                     if (!current.OfType<Label>().Any(label => label.Text.Contains(damage, StringComparison.Ordinal)))
                         throw new InvalidOperationException("Panel refresh did not display changed totals");
+                    string firstId = current.OfType<HBoxContainer>().First(line => line.TooltipText.Length != 0).TooltipText.Split('\n')[1].Trim();
+                    if (firstId != refreshed.Cards.MaxBy(card => card.DamageDealt).Id)
+                        throw new InvalidOperationException("Retained chart rows did not follow their changing damage rank");
                 }
+                var replacedNodes = panel.Root.FindChildren("*", "", recursive: true, owned: false)
+                    .Select(node => (Node: node, Id: node.GetInstanceId())).ToArray();
+                var replaced = fixture with { Cards = fixture.Cards.Select((card, index) => index == 0 ? card with { Id = "REPLACED_SOURCE" } : card).ToArray() };
+                panel.Present(replaced);
+                for (int frame = 0; frame < 2; frame++) await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
+                var remaining = panel.Root.FindChildren("*", "", recursive: true, owned: false);
+                var remainingIds = remaining.Select(node => node.GetInstanceId()).ToHashSet();
+                if (remaining.Count != nodes || panel.RowCount != 240 || replacedNodes.All(node => remainingIds.Contains(node.Id))
+                    || replacedNodes.Any(node => !remainingIds.Contains(node.Id) && GodotObject.IsInstanceValid(node.Node))
+                    || !remaining.OfType<HBoxContainer>().Any(line => line.TooltipText.Contains(System.Environment.NewLine + "REPLACED_SOURCE" + System.Environment.NewLine, StringComparison.Ordinal)))
+                    throw new InvalidOperationException("A changed source set must replace and free its old chart rows");
                 draws += panel.DrawCount;
                 bool exited = false;
                 panel.Root.TreeExited += () => exited = true;
