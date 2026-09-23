@@ -6,14 +6,13 @@ using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
-#pragma warning disable CA1861 // Fixture data stays beside the assertions it explains.
+#pragma warning disable CA1861
 
 namespace SpireProfiler;
 
 internal static class SessionFixtures
 {
     private static int assertions;
-
     internal static void Run(string projectDirectory, string nativeLibrary)
     {
         string scratch = Path.Combine(projectDirectory, "session-fixtures");
@@ -23,22 +22,25 @@ internal static class SessionFixtures
         try
         {
             ParserAndAggregateContracts();
-            AtomicStoreAndIdentity(Path.Combine(scratch, "store"));
-            SelectedHistoryAndCorruption(Path.Combine(scratch, "history"));
+            NumericStore(Path.Combine(scratch, "store"));
             LegacyHistory(Path.Combine(scratch, "legacy"));
+            PreservedGuidHistory(Path.Combine(scratch, "guid"));
+            FailedIdScans(Path.Combine(scratch, "scan"));
             ProfilerNative.Load(nativeLibrary);
-            NativeSessionLifecycle(Path.Combine(scratch, "session"));
-            PendingWritesSurviveResume(Path.Combine(scratch, "retry-session"));
-            InterruptedCombatRecovery(Path.Combine(scratch, "interrupted-session"));
+            NativeLifecycle(Path.Combine(scratch, "native"));
+            ProfilerNative.Dispose();
+            ProfilerNative.Load(nativeLibrary);
+            FailedWriteResume(Path.Combine(scratch, "failed-write"));
+            ProfilerNative.Dispose();
+            ProfilerNative.Load(nativeLibrary);
+            InterruptedAndRepeatedHeaders(Path.Combine(scratch, "interrupted"));
+            ProfilerNative.Dispose();
+            ProfilerNative.Load(nativeLibrary);
             var messages = new List<string>();
             ProfilerSession.Initialize(Path.Combine(scratch, "self-test"), "fixture-game", "fixture-mod", messages.Add);
-            try { ProfilerSession.SelfTest(messages.Add); }
-            catch (Exception error)
-            {
-                throw new InvalidOperationException($"Native self-test diagnostics: {string.Join("; ", messages)}; snapshot: {JsonSerializer.Serialize(ProfilerSession.CurrentCombat, StatisticsJson.Options)}", error);
-            }
-            Check(messages.Contains("[SpireProfiler] managed session self-test: PASS")
-                && messages.Contains("[SpireProfiler] managed records: PASS"), "Production self-test must prove actual native replay and persisted accounting");
+            ProfilerSession.SelfTest(messages.Add);
+            Check(messages.Contains("[SpireProfiler] managed session self-test: PASS") && messages.Contains("[SpireProfiler] managed records: PASS"),
+                "Production self-test must verify native replay and persisted accounting");
             Console.WriteLine($"MANAGED SESSION FIXTURES PASS ({assertions} assertions)");
         }
         finally
@@ -121,240 +123,213 @@ internal static class SessionFixtures
         Reject(() => StatisticsJson.ParseCombat(combatJson.ToJsonString(), run.RunId, 1), "Stored failure reasons must be meaningful strings");
     }
 
-    private static void AtomicStoreAndIdentity(string directory)
+    private static void NumericStore(string directory)
     {
         var diagnostics = new List<string>();
         var store = new StatisticsStore(directory, "game-v", "mod-v", diagnostics.Add);
-        var run = store.OpenRun(Header("EXACT", 100), continued: false);
-        Check(store.SaveRun(run), "New run header must persist");
-        var combat = Record(run, 1, 9);
-        Check(store.SaveCombat(combat), "Completed combat must persist");
-        string path = Path.Combine(directory, "statistics-v1", "runs", run.RunId, "00000001.json");
-        byte[] original = File.ReadAllBytes(path);
-        Check(store.SaveCombat(combat), "Identical immutable write retry must be idempotent");
-        Check(!store.SaveCombat(Record(run, 1, 10)), "Conflicting immutable retry must fail");
-        Check(File.ReadAllBytes(path).SequenceEqual(original), "Conflicting retry must preserve the original bytes");
-        string headerPath = Path.Combine(Path.GetDirectoryName(path), "run.json");
-        byte[] headerBytes = File.ReadAllBytes(headerPath);
+        var empty = store.OpenRun(Header("EMPTY", 100), false);
+        Check(empty.RunId == "1" && !store.SaveRun(empty with { Outcome = "victory" }), "An empty run must not publish an end header");
+        var run = store.OpenRun(Header("EXACT", 200), false);
+        Check(run.RunId == empty.RunId && store.Select(empty.Identity) == null, "An unpersisted run must leave its ID available");
+        Check(store.SaveCombat(Record(run, 1, 9)), "First numeric combat must persist");
+        var header = run with { Outcome = "victory", EndedAt = 300 };
+        Check(store.SaveRun(header), "A run with a stored combat may publish its end header");
+        string headerPath = Path.Combine(directory, "statistics-v1", "runs.jsonl");
+        byte[] before = File.ReadAllBytes(headerPath);
         Directory.CreateDirectory(headerPath + ".tmp");
-        Check(!store.SaveRun(run with { Outcome = "victory", EndedAt = 200 }), "Failed staging write must report failure");
-        Check(File.ReadAllBytes(headerPath).SequenceEqual(headerBytes), "Failed staging must leave the published header intact");
+        Check(!store.SaveRun(run with { Outcome = "defeat", EndedAt = 400 }), "An obstructed staged header must report failure");
+        Check(File.ReadAllBytes(headerPath).SequenceEqual(before), "Failed staging must preserve the published header");
         Directory.Delete(headerPath + ".tmp");
-        Check(store.SaveRun(run with { Outcome = "suspended" }), "A later header retry must recover after transient failure");
-        Check(!Directory.EnumerateFiles(Path.GetDirectoryName(path), "*.tmp").Any(), "Successful atomic writes must not retain staging files");
-        var resumed = store.OpenRun(Header("EXACT", 100), continued: true);
-        Check(resumed.RunId == run.RunId && store.LoadRun(resumed).Summary.Combats == 1, "Exact resume identity must reopen completed combat history");
-        foreach (var different in new[] { Header("EXACT", 101), Header("OTHER", 100), Header("EXACT", 100) with { Profile = 2 } })
-            Check(store.OpenRun(different, continued: true).RunId != run.RunId, "Seed, start time, and profile must all match before resume");
-        Check(store.Select(RunIdentity.Parse(0, "EXACT", 101)) == null, "History must never use a near identity match");
-        var duplicate = store.OpenRun(Header("EXACT", 100), continued: false);
-        Check(duplicate.RunId != run.RunId && store.SaveRun(duplicate), "Independent recordings may share a game identity without overwriting files");
-        Check(store.Select(run.Identity) == null, "Ambiguous recordings must not silently select one run");
-        Check(store.OpenRun(Header("EXACT", 100), continued: true).RunId != run.RunId, "Ambiguous resume must not append to an arbitrary recording");
-        Check(diagnostics.Count >= 2, "Write failure and ambiguous identity must be diagnosed");
-    }
-
-    private static void SelectedHistoryAndCorruption(string directory)
-    {
-        var diagnostics = new List<string>();
-        var store = new StatisticsStore(directory, "game-v", "mod-v", diagnostics.Add);
-        var first = store.OpenRun(Header("FIRST", 100), continued: false);
-        var second = store.OpenRun(Header("SECOND", 200), continued: false);
-        Check(store.SaveRun(first) && store.SaveRun(second) && store.SaveCombat(Record(first, 1, 9)) && store.SaveCombat(Record(second, 1, 4)),
-            "History fixture must persist two independent runs");
-        string secondPath = Path.Combine(directory, "statistics-v1", "runs", second.RunId, "00000001.json");
-        File.WriteAllText(secondPath, "{corrupt");
-        var selected = store.Select(first.Identity);
-        Check(selected.Combats == 1 && selected.Cards.Single().DamageDealt == 9 && diagnostics.Count == 0,
-            "Selecting one run must not eagerly read another run's damaged combats");
-        selected = store.Select(second.Identity);
-        Check(selected.Combats == 0 && selected.Coverage.Quality == CaptureQuality.Partial && diagnostics.Count == 1,
-            "Corrupt selected combat must expose incomplete coverage without manufacturing rows");
-        string firstPath = Path.Combine(directory, "statistics-v1", "runs", first.RunId, "00000001.json");
-        File.WriteAllText(firstPath, JsonSerializer.Serialize(Record(first, 1, 12), StatisticsJson.Options));
-        selected = store.Select(first.Identity);
-        Check(selected.Cards.Single().DamageDealt == 12, "Selecting history again must reload combat data rather than retaining all historical rows");
-        string damagedPath = Path.Combine(Path.GetDirectoryName(firstPath), "00000003.json");
-        File.WriteAllText(damagedPath, "null");
-        var loaded = store.LoadRun(first);
-        Check(loaded.LastOrdinal == 3 && loaded.Summary.Combats == 1 && !loaded.Summary.Coverage.Complete,
-            "Corrupt record ordinals must remain reserved when resuming");
-        Check(store.SaveCombat(Record(first, 4, 2) with { Combat = Record(first, 4, 2).Combat with { PolicyVersion = 2 } }), "Mixed-policy fixture must persist");
-        loaded = store.LoadRun(first);
-        Check(loaded.Summary.Coverage.Reasons.Contains("mixed-attribution-policies"), "Mixed attribution policies must be visibly incomparable");
+        Check(store.SaveRun(run with { Outcome = "defeat", EndedAt = 400 }), "Later finalization may append another header");
+        Check(store.Select(run.Identity).Outcome == "victory", "History must select the first finalized header");
+        var resumed = store.OpenRun(Header("EXACT", 200), true);
+        Check(resumed.RunId == run.RunId && store.LoadRun(resumed).Summary.Combats == 1, "Resume joins the exact recorded identity");
+        var duplicate = store.OpenRun(Header("EXACT", 200), false);
+        Check(duplicate.RunId == "2" && store.SaveCombat(Record(duplicate, 2, 4)), "A fresh recording reserves the next durable ID");
+        Check(store.Select(run.Identity) == null, "Multiple numeric IDs with one identity must remain ambiguous");
+        Directory.CreateDirectory(Path.Combine(directory, "statistics-v1", "runs", "8"));
+        File.WriteAllText(Path.Combine(directory, "statistics-v1", "runs", "8", "99.json"), "corrupt");
+        Check(store.MaxCombatId() == 99 && store.OpenRun(Header("NEXT", 500), false).RunId == "9", "Directory and filename reservations survive corrupt contents");
+        Check(diagnostics.Count >= 2, "Write and ambiguity failures must be diagnosed");
     }
 
     private static void LegacyHistory(string directory)
     {
-        Directory.CreateDirectory(Path.Combine(directory, "runs", "42"));
-        string runPath = Path.Combine(directory, "runs.jsonl");
-        string combatPath = Path.Combine(directory, "runs", "42", "7.json");
-        const string header = """
-            {"run_id":42,"profile":0,"seed":"LEGACY","started_at":100,"ended_at":200,"character":"IRONCLAD","game_mode":"standard","outcome":"victory","players":[{"slot":0,"character":"IRONCLAD"}]}
+        string combatDirectory = Path.Combine(directory, "runs", "42");
+        Directory.CreateDirectory(combatDirectory);
+        string runPath = Path.Combine(directory, "runs.jsonl"), combatPath = Path.Combine(combatDirectory, "7.json");
+        const string first = """
+            {"run_id":42,"profile":0,"seed":"LEGACY","started_at":100,"ended_at":200,"character":"IRONCLAD","game_mode":"standard","outcome":"victory","players":[{"slot":2,"character":"IRONCLAD"}]}
+            """;
+        const string second = """
+            {"run_id":42,"profile":0,"seed":"LEGACY","started_at":100,"ended_at":300,"character":"DEFECT","outcome":"defeat"}
             """;
         const string combat = """
-            {"combat_id":7,"started_at":110,"result":"completed","turns":2,"damage_received":3,"run":{"seq":42,"seed":"LEGACY","profile":0,"started_at":100},"cards":[{"id":"STRIKE","kind":0,"player":0,"plays":1,"damage_dealt":9,"dmg_direct":9}]}
+            {"combat_id":7,"started_at":110,"result":"completed","turns":2,"damage_received":3,"run":{"seq":42,"seed":"LEGACY","profile":0,"started_at":100},"cards":[{"id":"STRIKE","kind":0,"player":2,"plays":1,"damage_dealt":9,"dmg_direct":9}]}
             """;
-        File.WriteAllText(runPath, header + "\n");
+        File.WriteAllText(runPath, first + "\n" + second + "\n");
         File.WriteAllText(combatPath, combat);
-        byte[] beforeRun = File.ReadAllBytes(runPath), beforeCombat = File.ReadAllBytes(combatPath);
-        var diagnostics = new List<string>();
-        var store = new StatisticsStore(directory, "game-v", "mod-v", diagnostics.Add);
+        byte[] oldHeader = File.ReadAllBytes(runPath), oldCombat = File.ReadAllBytes(combatPath);
+        var store = new StatisticsStore(directory, "game-v", "mod-v", _ => { });
         var selected = store.Select(RunIdentity.Parse(0, "LEGACY", 100));
-        Check(selected != null && selected.Combats == 1 && selected.Cards.Single().DamageDealt == 9
-            && selected.Coverage.Quality == CaptureQuality.Unknown, "Legacy totals remain readable with unknown provenance and coverage");
-        var noRoster = JsonNode.Parse(header);
-        noRoster.AsObject().Remove("players");
-        noRoster["character"] = "IRONCLAD, SILENT";
-        File.WriteAllText(runPath, noRoster.ToJsonString() + "\n");
-        selected = store.Select(RunIdentity.Parse(0, "LEGACY", 100));
-        Check(selected.Players.Count == 2 && selected.Players[1] == new PlayerSummary(1, "SILENT"),
-            "Legacy character lists must retain their per-player filters without an explicit roster");
-        File.WriteAllBytes(runPath, beforeRun);
-        var fresh = store.OpenRun(Header("LEGACY", 100), continued: true);
-        Check(store.SaveRun(fresh), "Resuming a legacy identity must open a versioned store record");
-        Check(File.ReadAllBytes(runPath).SequenceEqual(beforeRun) && File.ReadAllBytes(combatPath).SequenceEqual(beforeCombat),
-            "Versioned storage and legacy inspection must preserve old files byte-for-byte");
-        Check(diagnostics.Count == 0, "Valid legacy files should not be reported as corrupt");
-        Check(store.SaveRun(store.OpenRun(Header("LEGACY", 100), continued: false)), "Ambiguous versioned fixture must persist independently");
-        Check(store.Select(RunIdentity.Parse(0, "LEGACY", 100)) == null,
-            "Ambiguous versioned history must not silently fall back to an older legacy recording");
-        var damaged = JsonNode.Parse(combat);
-        damaged["cards"] = null;
-        File.WriteAllText(combatPath, damaged.ToJsonString());
-        var legacyOnly = new StatisticsStore(directory, "game-v", "mod-v", diagnostics.Add);
-        Directory.Delete(Path.Combine(directory, "statistics-v1"), recursive: true);
-        selected = legacyOnly.Select(RunIdentity.Parse(0, "LEGACY", 100));
-        Check(selected?.Coverage.Quality == CaptureQuality.Partial && selected.Combats == 0,
-            "Malformed legacy rows must become incomplete coverage instead of escaping as an exception");
+        Check(selected.Character == "IRONCLAD" && selected.Outcome == "victory" && selected.EndedAt == 200,
+            "Legacy duplicate headers must use the first finalized metadata");
+        Check(selected.Cards.Single().Player == 4 && selected.PlayerCards[2].Single().Player == 2 && selected.Players.Single().Slot == 2,
+            "History must retain sparse roster slots and independent team/player projections");
+        Check(selected.Coverage.Quality == CaptureQuality.Unknown && store.MaxCombatId() == 7, "Legacy coverage and global combat reservation must be retained");
+        var resumed = store.OpenRun(Header("LEGACY", 100), true);
+        Check(resumed.RunId == "42" && store.LoadRun(resumed).Summary.Cards.Single().DamageDealt == 9, "Versioned continuation must rejoin the original numeric run");
+        Check(store.SaveCombat(Record(resumed, 8, 4)) && store.SaveRun(resumed with { Outcome = "defeat", EndedAt = 400 }), "Continuation writes only versioned records");
+        selected = store.Select(resumed.Identity);
+        Check(selected.Combats == 2 && selected.Cards.Single().DamageDealt == 13 && selected.Outcome == "victory", "Legacy first header governs the combined history");
+        Check(File.ReadAllBytes(runPath).SequenceEqual(oldHeader) && File.ReadAllBytes(combatPath).SequenceEqual(oldCombat), "Legacy inputs must remain byte-for-byte unchanged");
+        File.WriteAllBytes(runPath, new byte[] { 255 });
+        File.Delete(Path.Combine(directory, "statistics-v1", "runs.jsonl"));
+        var damagedHeaderStore = new StatisticsStore(directory, "g", "m", _ => { });
+        selected = damagedHeaderStore.Select(resumed.Identity);
+        Check(selected.Outcome == "" && selected.Combats == 2 && selected.Players.Count == 0,
+            "Unreadable end headers must leave combat-only history selectable");
+        Check(damagedHeaderStore.OpenRun(Header("BLOCKED", 1), false) == null,
+            "Unreadable run headers must still block fresh numeric ID allocation");
+
     }
 
-    private static void NativeSessionLifecycle(string directory)
+    private static void PreservedGuidHistory(string directory)
     {
-        var diagnostics = new List<string>();
-        ProfilerSession.Initialize(directory, "game-v", "mod-v", diagnostics.Add);
-        var requested = Header("SESSION", 300);
-        ProfilerSession.StartRun(requested, continued: false);
+        var previous = Header("GUID", 800) with { RunId = "11111111111111111111111111111111", LegacyRunId = 42, Outcome = "victory", EndedAt = 900 };
+        string root = Path.Combine(directory, "statistics-v1", "runs", previous.RunId);
+        Directory.CreateDirectory(root);
+        string header = JsonSerializer.Serialize(previous, StatisticsJson.Options);
+        string combat = JsonSerializer.Serialize(Record(previous, 1, 9) with { Run = null, Combat = Record(previous, 8, 9).Combat }, StatisticsJson.Options);
+        string legacyDirectory = Path.Combine(directory, "runs", "42");
+        Directory.CreateDirectory(legacyDirectory);
+        const string legacy = """
+            {"combat_id":7,"run":{"seq":42,"profile":0,"seed":"GUID","started_at":800},"cards":[{"id":"STRIKE","kind":0,"player":0,"damage_dealt":5,"dmg_direct":5}]}
+            """;
+        File.WriteAllText(Path.Combine(legacyDirectory, "7.json"), legacy);
+        File.WriteAllText(Path.Combine(root, "run.json"), header);
+        File.WriteAllText(Path.Combine(root, "00000001.json"), combat);
+        var store = new StatisticsStore(directory, "g", "m", _ => { });
+        Check(store.Select(previous.Identity).Cards.Single().DamageDealt == 14 && store.MaxCombatId() == 8, "Earlier GUID statistics and their read-only legacy observations remain readable");
+        var continued = store.OpenRun(Header("GUID", 800), true);
+        Check(continued.RunId == "43" && continued.PriorRunId == previous.RunId && store.LoadRun(continued).Summary.Combats == 2,
+            "A GUID continuation writes into a new numeric directory while reading its prior observations");
+        Check(store.SaveCombat(Record(continued, 9, 4)) && store.SaveRun(continued with { Outcome = "defeat", EndedAt = 1000 }),
+            "Numeric continuation records can append independently");
+        var selected = store.Select(previous.Identity);
+        Check(selected.Combats == 3 && selected.Cards.Single().DamageDealt == 18 && selected.Outcome == "victory",
+            "Continued GUID observations retain the first finalized history metadata");
+        Check(File.ReadAllText(Path.Combine(root, "run.json")) == header && File.ReadAllText(Path.Combine(root, "00000001.json")) == combat,
+            "Preserved GUID files must remain untouched");
+    }
+
+    private static void FailedIdScans(string directory)
+    {
+        Directory.CreateDirectory(directory);
+        string legacyRuns = Path.Combine(directory, "runs");
+        File.WriteAllText(legacyRuns, "obstruction");
+        var store = new StatisticsStore(directory, "g", "m", _ => { });
+        Check(store.MaxCombatId() == null && store.OpenRun(Header("BLOCKED", 1), false) == null,
+            "Failed directory scans cannot seed IDs or start a run");
+        File.Delete(legacyRuns);
+        File.WriteAllText(Path.Combine(directory, "runs.jsonl"), "{\"run_id\":4294967295}");
+        Check(store.OpenRun(Header("EXHAUSTED", 2), false) == null, "The final reserved run ID prevents fresh allocation");
+        File.Delete(Path.Combine(directory, "runs.jsonl"));
+        Directory.CreateDirectory(Path.Combine(legacyRuns, "1"));
+        File.WriteAllText(Path.Combine(legacyRuns, "1", "4294967295.json"), "corrupt");
+        Check(store.MaxCombatId() == uint.MaxValue, "Corrupt combat filenames still reserve the final combat ID");
+    }
+
+    private static void NativeLifecycle(string directory)
+    {
+        ProfilerSession.Initialize(directory, "g", "m", _ => { });
+        var run = Header("SESSION", 300);
+        ProfilerSession.StartRun(run, false);
         ulong first = ProfilerSession.StartCombat("ONE", "Normal");
         ObserveDamage(first, 9);
         ProfilerSession.Refresh();
-        var firstSnapshot = ProfilerSession.CurrentCombat;
-        Check(firstSnapshot?.Cards.Single().DamageDealt == 9 && firstSnapshot.Cards.Single().Id == "STRIKE", "Managed session must publish native accounting");
-        Check(ProfilerSession.CurrentRun.Combats == 0 && ProfilerSession.CurrentRun.Cards.Count == 0,
-            "The live run tab contains only completed combats even while combat statistics refresh");
-        Check(ProfilerSession.EndCombat(first) == 1 && ProfilerSession.EndCombat(first) == 0,
-            "Combat completion must be accepted exactly once");
+        var savedView = ProfilerSession.CurrentCombat;
+        Check(ProfilerSession.CurrentRun.Combats == 0 && ProfilerSession.CurrentRun.Cards.Count == 0, "Active combat must not enter the completed run view");
+        Check(ProfilerSession.EndCombat(first) == 1 && ProfilerSession.EndCombat(first) == 0, "Combat completion is accepted once");
         ulong discarded = ProfilerSession.StartCombat("DISCARDED", "Normal");
         ObserveDamage(discarded, 50);
         ProfilerSession.Suspend();
-        Check(!ProfilerSession.InRun && ProfilerSession.CurrentCombat == null && ProfilerNative.Snapshot() == "null",
-            "Suspending must discard active combat state instead of publishing partial resumed credit");
-        string firstPath = Directory.GetFiles(Path.Combine(directory, "statistics-v1"), "00000001.json", SearchOption.AllDirectories).Single();
-        var priorPolicy = JsonNode.Parse(File.ReadAllText(firstPath));
-        priorPolicy["combat"]["policy_version"] = firstSnapshot.PolicyVersion + 1;
-        File.WriteAllText(firstPath, priorPolicy.ToJsonString());
-        ProfilerSession.StartRun(requested, continued: true);
-        Check(ProfilerSession.CurrentRun.Combats == 1 && ProfilerSession.CurrentRun.Cards.Single().DamageDealt == 9,
-            "Resume must restore completed combats once and exclude the suspended fight");
-        ulong resumed = ProfilerSession.StartCombat("TWO", "Normal");
-        Check(resumed > discarded && ProfilerSession.EndCombat(discarded) == 0, "Stale combat callbacks must not finish the resumed fight");
-        ObserveDamage(resumed, 4);
-        Check(ProfilerSession.EndCombat(resumed) == 1 && ProfilerSession.CurrentRun.Combats == 2
-            && ProfilerSession.CurrentRun.Cards.Single().DamageDealt == 13, "Resumed accounting must add exactly one new completed combat");
-        Check(ProfilerSession.CurrentRun.Coverage.Reasons.Contains("mixed-attribution-policies"),
-            "Live resumed summary must flag incompatible attribution policies before a history reload");
-        Check(firstSnapshot.Cards.Single().DamageDealt == 9, "Later native events must not mutate already published snapshots");
+        Check(!ProfilerSession.InRun && ProfilerSession.CurrentCombat == null && ProfilerNative.Snapshot() == "null", "Suspend discards its active combat");
+        ProfilerSession.StartRun(run, true);
+        Check(ProfilerSession.CurrentRun.Combats == 1 && ProfilerSession.CurrentRun.Cards.Single().DamageDealt == 9, "Resume reconstructs only persisted completed combats");
+        ulong next = ProfilerSession.StartCombat("TWO", "Normal");
+        ObserveDamage(next, 4);
+        Check(next > discarded && ProfilerSession.EndCombat(discarded) == 0 && ProfilerSession.EndCombat(next) == 1, "Resumed combat ignores stale callbacks");
+        Check(savedView.Cards.Single().DamageDealt == 9 && ProfilerSession.CurrentRun.Cards.Single().DamageDealt == 13, "Published views remain immutable while totals advance");
         ProfilerSession.EndRun(0);
         ProfilerSession.SelectHistory("SESSION", 300, 0);
-        Check(ProfilerSession.HistoryOpen && ProfilerSession.SelectedHistory?.Combats == 2
-            && ProfilerSession.SelectedHistory.Cards.Single().DamageDealt == 13
-            && ProfilerSession.SelectedHistory.Outcome == "victory", "Selected history must load the persisted completed session");
+        Check(ProfilerSession.HistoryOpen && ProfilerSession.SelectedHistory.Combats == 2 && ProfilerSession.SelectedHistory.Outcome == "victory", "History selects the completed stored session");
         ProfilerSession.ClearHistory();
-        Check(!ProfilerSession.HistoryOpen && ProfilerSession.SelectedHistory == null, "Closing history must release its selected summary");
-        Check(diagnostics.Count == 0, "Ordinary managed/native lifecycle must not emit diagnostics");
+        Check(!ProfilerSession.HistoryOpen && ProfilerSession.SelectedHistory == null, "Closing history clears selection");
     }
 
-    private static void PendingWritesSurviveResume(string directory)
+    private static void FailedWriteResume(string directory)
     {
         var diagnostics = new List<string>();
-        ProfilerSession.Initialize(directory, "game-v", "mod-v", diagnostics.Add);
-        var requested = Header("RETRY", 400);
-        ProfilerSession.StartRun(requested, continued: false);
+        ProfilerSession.Initialize(directory, "g", "m", diagnostics.Add);
+        var run = Header("FAILED", 400);
+        ProfilerSession.StartRun(run, false);
         ulong first = ProfilerSession.StartCombat("ONE", "Normal");
         ObserveDamage(first, 9);
-        Check(ProfilerSession.EndCombat(first) == 1, "Retry fixture must save its first combat");
-        string runDirectory = Directory.GetDirectories(Path.Combine(directory, "statistics-v1", "runs")).Single();
-        string obstruction = Path.Combine(runDirectory, "00000002.json.tmp");
-        Directory.CreateDirectory(obstruction);
-        ulong pending = ProfilerSession.StartCombat("PENDING", "Normal");
-        ObserveDamage(pending, 5);
-        Check(ProfilerSession.EndCombat(pending) == 1 && !ProfilerSession.CurrentRun.Coverage.Complete,
-            "Failed persistence must retain accounted combat and expose incomplete storage");
+        ProfilerSession.EndCombat(first);
+        string runDirectory = Path.Combine(directory, "statistics-v1", "runs", "1");
+        Directory.CreateDirectory(Path.Combine(runDirectory, "2.json.tmp"));
+        ulong failed = ProfilerSession.StartCombat("FAILED", "Normal");
+        ObserveDamage(failed, 5);
+        ProfilerSession.EndCombat(failed);
+        Check(ProfilerSession.CurrentRun.Combats == 2 && ProfilerSession.CurrentRun.Cards.Single().DamageDealt == 14, "Live accounting precedes persistence success");
         ProfilerSession.Suspend();
-        ProfilerSession.StartRun(requested, continued: true);
-        Check(ProfilerSession.CurrentRun.Combats == 2 && ProfilerSession.CurrentRun.Cards.Single().DamageDealt == 14,
-            "Same-process resume must retain still-pending completed combat credit");
+        ProfilerSession.StartRun(run, true);
+        Check(ProfilerSession.CurrentRun.Combats == 1 && ProfilerSession.CurrentRun.Cards.Single().DamageDealt == 9, "Resume excludes the failed stored combat");
+        Directory.Delete(Path.Combine(runDirectory, "2.json.tmp"));
         ulong next = ProfilerSession.StartCombat("NEXT", "Normal");
         ObserveDamage(next, 4);
-        Check(ProfilerSession.EndCombat(next) == 1, "New combat must finish while an earlier write is pending");
-        Directory.Delete(obstruction);
-        ProfilerSession.Suspend();
-        ProfilerSession.StartRun(requested, continued: true);
-        Check(ProfilerSession.CurrentRun.Combats == 3 && ProfilerSession.CurrentRun.Cards.Single().DamageDealt == 18,
-            "Recovered pending write and subsequent combat must retain distinct ordinals and exact credit");
-        Check(File.Exists(Path.Combine(runDirectory, "00000002.json")) && File.Exists(Path.Combine(runDirectory, "00000003.json")),
-            "Pending ordinals must remain reserved across resume");
-        Check(diagnostics.Count > 0, "Failed writes must be diagnosed");
+        ProfilerSession.EndCombat(next);
+        Check(!File.Exists(Path.Combine(runDirectory, "2.json")) && File.Exists(Path.Combine(runDirectory, "3.json")), "No background retry may publish the previously failed combat");
+        Check(diagnostics.Count > 0, "Failed writes are reported");
         ProfilerSession.Suspend();
     }
 
-    private static void InterruptedCombatRecovery(string directory)
+    private static void InterruptedAndRepeatedHeaders(string directory)
     {
-        var diagnostics = new List<string>();
-        string previous = Environment.GetEnvironmentVariable("SPIRE_PROFILER_RECORD");
-        try
-        {
-            Environment.SetEnvironmentVariable("SPIRE_PROFILER_RECORD", "1");
-            ProfilerSession.Initialize(directory, "game-v", "mod-v", diagnostics.Add);
-        }
-        finally { Environment.SetEnvironmentVariable("SPIRE_PROFILER_RECORD", previous); }
-        ProfilerSession.StartRun(Header("INTERRUPTED", 500), continued: false);
-        ulong first = ProfilerSession.StartCombat("INTERRUPTED", "Normal");
-        ObserveDamage(first, 9);
-        ulong second = ProfilerSession.StartCombat("REPLACEMENT", "Normal");
-        ObserveDamage(second, 4);
-        Check(ProfilerSession.EndCombat(second) == 1, "Replacement combat must remain observable after an interrupted predecessor");
-        string runDirectory = Directory.GetDirectories(Path.Combine(directory, "statistics-v1", "runs")).Single();
-        string trace = File.ReadAllText(Path.Combine(runDirectory, "00000002.trace.json"));
-        using (var document = JsonDocument.Parse(trace))
-            Check(document.RootElement.GetProperty("observations").EnumerateArray()
-                .Count(entry => entry.GetProperty("observation").GetProperty("operation").GetString() == "combat_started") == 1,
-                "Each replacement combat recording must start independently of the interrupted trace");
-        Check(ProfilerNative.Replay(trace) == ProfilerNative.Snapshot(), "Replacement recording must reproduce its own completed native snapshot");
-        using (var document = JsonDocument.Parse(File.ReadAllText(Path.Combine(runDirectory, "00000001.json"))))
-            Check(document.RootElement.GetProperty("combat").GetProperty("result").GetString() == "interrupted",
-                "Interrupted observed combat must be retained with an explicit terminal status");
-        ulong failedEnd = ProfilerSession.StartCombat("NATIVE-RESET", "Normal");
-        ObserveDamage(failedEnd, 6);
-        ProfilerSession.Refresh();
-        ProfilerNative.CombatDiscard();
-        Check(ProfilerSession.EndCombat(failedEnd) == 1 && ProfilerSession.CurrentCombat.Outcome == "interrupted"
-            && !ProfilerSession.CurrentCombat.Coverage.Complete && ProfilerSession.CurrentCombat.Cards.Single().DamageDealt == 6,
-            "Failed native completion must preserve the last validated observations with partial coverage");
-        Check(ProfilerSession.CurrentRun.Combats == 3 && ProfilerSession.CurrentRun.Cards.Single().DamageDealt == 19,
-            "Interrupted and failed-completion records must each contribute their observed totals once");
+        ProfilerSession.Initialize(directory, "g", "m", _ => { });
+        ProfilerSession.StartRun(Header("OLD", 500), false);
+        ObserveDamage(ProfilerSession.StartCombat("OLD", "Normal"), 5);
+        ProfilerSession.StartRun(Header("NEW", 600), false);
+        ProfilerSession.StartCombat("NEW", "Normal");
+        ProfilerSession.SelectHistory("OLD", 500, 0);
+        Check(ProfilerSession.SelectedHistory.Outcome == "" && ProfilerSession.SelectedHistory.Combats == 1, "Interrupted prior run is visible as unfinished");
+        Check(ProfilerSession.CurrentRun.Combats == 0, "A different run identity excludes interrupted prior totals");
+        ProfilerSession.EndRun(1);
+        ProfilerSession.SelectHistory("NEW", 600, 0);
+        Check(ProfilerSession.SelectedHistory.Outcome == "defeat" && ProfilerSession.SelectedHistory.Combats == 0, "Shared reserved directory permits the new end header with no matching combats");
         ProfilerSession.Suspend();
+        ProfilerSession.StartRun(Header("REPEATED", 700), false);
+        ObserveDamage(ProfilerSession.StartCombat("OLD", "Normal"), 11);
+        ProfilerSession.StartRun(Header("REPEATED", 700), false);
+        ulong next = ProfilerSession.StartCombat("NEW", "Normal");
+        Check(ProfilerSession.CurrentRun.Combats == 1 && ProfilerSession.CurrentRun.Cards.Single().DamageDealt == 11, "Same identity and reused numeric run ID merge the interrupted combat");
+        ObserveDamage(next, 2);
+        ProfilerSession.EndCombat(next);
+        ProfilerSession.EndRun(0);
+        ProfilerSession.StartRun(Header("REPEATED", 700), true);
+        ProfilerSession.EndRun(1);
+        ProfilerSession.SelectHistory("REPEATED", 700, 0);
+        Check(ProfilerSession.SelectedHistory.Outcome == "victory" && ProfilerSession.SelectedHistory.Cards.Single().DamageDealt == 13, "A later finalization does not replace the first history header");
     }
 
     private static void ObserveDamage(ulong epoch, int amount)
     {
         ulong source = ProfilerNative.SourceCapture(epoch, 1, 1, "STRIKE", 0, 0, 0);
         ulong hit = ProfilerNative.DamageCalculationBegin(epoch, source, 1, 0, 99);
-        Check(epoch != 0 && source != 0 && hit != 0
-            && ProfilerNative.DamageResultAppend(hit, amount, amount, 0, 0, 4, 0) == 1
-            && ProfilerNative.DamageCalculationCommit(hit) == 1, "Fixture damage must cross the real observation ABI");
+        Check(epoch != 0 && source != 0 && hit != 0 && ProfilerNative.DamageResultAppend(hit, amount, amount, 0, 0, 4, 0) == 1
+            && ProfilerNative.DamageCalculationCommit(hit) == 1, "Fixture damage crosses the actual native ABI");
     }
-
     private static RunRecord Header(string seed, long startedAt) => new()
     {
         Profile = 0,
@@ -364,17 +339,17 @@ internal static class SessionFixtures
         GameMode = "standard",
         Players = Array.AsReadOnly(new[] { new PlayerSummary(0, "IRONCLAD") })
     };
-
-    private static CombatRecord Record(RunRecord run, uint ordinal, int damage) => new()
+    private static CombatRecord Record(RunRecord run, uint id, int damage) => new()
     {
         RunId = run.RunId,
-        Ordinal = ordinal,
+        Ordinal = id,
+        Run = run,
         GameVersion = "game-v",
         ModVersion = "mod-v",
-        Combat = new CombatStatistics
+        Combat = new()
         {
             PolicyVersion = 1,
-            CombatId = ordinal,
+            CombatId = id,
             StartedAt = 120,
             Result = "completed",
             Turns = 2,
@@ -383,15 +358,12 @@ internal static class SessionFixtures
             Coverage = CoverageSummary.Healthy
         }
     };
-
     private static void Reject(Action action, string message)
     {
         bool rejected = false;
-        try { action(); }
-        catch (Exception ex) when (ex is InvalidDataException or JsonException or OverflowException) { rejected = true; }
+        try { action(); } catch (Exception ex) when (ex is InvalidDataException or JsonException or OverflowException) { rejected = true; }
         Check(rejected, message);
     }
-
     private static void Check(bool condition, string message)
     {
         assertions++;

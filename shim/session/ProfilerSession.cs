@@ -9,16 +9,12 @@ namespace SpireProfiler;
 // supplies time and identity, persists completed observations, and publishes views.
 internal static class ProfilerSession
 {
-    private const int PendingWriteLimit = 64;
     private static StatisticsStore store;
     private static RunRecord run;
     private static RunRecord combatRun;
     private static SummaryView completedRun;
     private static CombatStatistics combat;
-    private static readonly Queue<CombatRecord> pendingCombats = new();
-    private static readonly Dictionary<string, RunRecord> pendingHeaders = new(StringComparer.Ordinal);
-    private static uint sequence;
-    private static uint ordinal;
+    private static uint? sequence;
     private static ulong activeEpoch;
     private static ulong nativeRevision;
     private static int thread;
@@ -47,9 +43,7 @@ internal static class ProfilerSession
         LiveFilterGeneration++;
         HistoryClearGeneration++;
         activeEpoch = 0;
-        ordinal = 0;
-        pendingCombats.Clear();
-        pendingHeaders.Clear();
+        sequence = store.MaxCombatId();
         recording = Environment.GetEnvironmentVariable("SPIRE_PROFILER_RECORD") == "1";
         ProfilerNative.CombatDiscard();
         nativeRevision = ProfilerNative.Revision;
@@ -59,24 +53,19 @@ internal static class ProfilerSession
     internal static void StartRun(RunRecord requested, bool continued)
     {
         if (!OnThread()) return;
-        Suspend();
+        if (run != null)
+            store.SaveRun(run with { Outcome = "defeat", EndedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds() });
         run = store.OpenRun(requested, continued);
-        if (continued && requested.Identity != null)
+        completedRun = run?.EmptySummary();
+        if (run == null)
         {
-            var pending = pendingHeaders.Values.Where(header => header.Identity == requested.Identity).Take(2).ToArray();
-            if (pending.Length == 1) run = run with { RunId = pending[0].RunId };
+            ProfilerNative.CombatDiscard();
+            activeEpoch = 0;
+            combat = null;
+            combatRun = null;
+            CurrentCombat = null;
         }
-        WriteHeader(run);
-        var loaded = store.LoadRun(run);
-        completedRun = loaded.Summary;
-        ordinal = loaded.LastOrdinal;
-        foreach (var pending in pendingCombats.Where(record => record.RunId == run.RunId).OrderBy(record => record.Ordinal))
-        {
-            ordinal = Math.Max(ordinal, pending.Ordinal);
-            completedRun = completedRun.Add(pending.Combat.View(run.Players));
-        }
-        if (pendingCombats.Any(record => record.RunId == run.RunId))
-            completedRun = completedRun with { Coverage = completedRun.Coverage.WithFailure("statistics-write-pending") };
+        else if (continued) completedRun = store.LoadRun(run).Summary;
         CurrentRun = completedRun;
         LiveFilterGeneration++;
         Revision++;
@@ -91,13 +80,16 @@ internal static class ProfilerSession
             if (combat != null && (combat.Cards.Count != 0 || combat.Plays != 0))
                 Finish(combat with { Result = "interrupted", Coverage = combat.Coverage.WithFailure("interrupted-capture") });
         }
-        FlushPending();
         ProfilerNative.CombatDiscard();
-        if (sequence == uint.MaxValue) { report("combat sequence exhausted"); return 0; }
-        combatRun = run ?? store.OpenRun(new RunRecord(), continued: false);
-        if (run == null) { ordinal = 0; WriteHeader(combatRun); }
+        activeEpoch = 0;
+        combat = null;
+        combatRun = null;
+        CurrentCombat = null;
+        if (sequence == null || sequence == uint.MaxValue) { report("combat sequence unavailable or exhausted"); return 0; }
+        combatRun = run;
         bool recordingStarted = !recording || ProfilerNative.RecordingBegin();
-        activeEpoch = ProfilerNative.CombatStarted(++sequence, encounter, type, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), combatRun.Players.Count);
+        sequence++;
+        activeEpoch = ProfilerNative.CombatStarted(sequence.Value, encounter, type, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), combatRun?.Players.Count ?? 0);
         if (!recordingStarted) ReportFailure("recording-start-failed");
         combat = null;
         CurrentCombat = null;
@@ -120,28 +112,29 @@ internal static class ProfilerSession
 
     private static void Finish(CombatStatistics finished)
     {
-        if (ordinal == uint.MaxValue) { ReportFailure("combat-store-sequence-exhausted"); return; }
         var record = new CombatRecord
         {
             GameVersion = store.GameVersion,
             ModVersion = store.ModVersion,
-            RunId = combatRun.RunId,
-            Ordinal = ++ordinal,
+            RunId = combatRun?.RunId ?? "0",
+            Ordinal = finished.CombatId,
+            Run = combatRun,
             Combat = finished
         };
-        if (!store.SaveCombat(record))
-        {
-            if (pendingCombats.Count < PendingWriteLimit) pendingCombats.Enqueue(record);
-            finished = finished with { Coverage = finished.Coverage.WithFailure("statistics-write-failed") };
-        }
-        if (recording) store.SaveTrace(record.RunId, record.Ordinal, ProfilerNative.Recording());
         combat = finished;
-        CurrentCombat = finished.View(combatRun.Players, combatRun);
-        if (run != null && run.RunId == combatRun.RunId)
+        CurrentCombat = finished.View(combatRun?.Players ?? Array.Empty<PlayerSummary>(), combatRun);
+        if (run != null && combatRun != null && run.RunId == combatRun.RunId
+            && run.Seed == combatRun.Seed && run.Profile == combatRun.Profile && run.StartedAt == combatRun.StartedAt)
         {
             completedRun = completedRun.Add(CurrentCombat);
             CurrentRun = completedRun;
         }
+        if (!store.SaveCombat(record))
+        {
+            combat = finished with { Coverage = finished.Coverage.WithFailure("statistics-write-failed") };
+            CurrentCombat = combat.View(combatRun?.Players ?? Array.Empty<PlayerSummary>(), combatRun);
+        }
+        if (recording) store.SaveTrace(record.RunId, record.Ordinal, ProfilerNative.Recording());
         activeEpoch = 0;
         Revision++;
     }
@@ -156,7 +149,7 @@ internal static class ProfilerSession
             var snapshot = StatisticsJson.ParseNative(ProfilerNative.Snapshot());
             if (snapshot == null || snapshot.CombatId != activeEpoch) throw new InvalidDataException("Native snapshot differs from active combat");
             combat = snapshot;
-            CurrentCombat = snapshot.View(combatRun.Players, combatRun);
+            CurrentCombat = snapshot.View(combatRun?.Players ?? Array.Empty<PlayerSummary>(), combatRun);
             nativeRevision = next;
             Revision++;
             return true;
@@ -165,7 +158,7 @@ internal static class ProfilerSession
         {
             report($"cannot read attribution snapshot: {ex.Message}");
             combat = combat == null ? null : combat with { Coverage = combat.Coverage.WithFailure("snapshot-read-failed") };
-            CurrentCombat = combat?.View(combatRun.Players, combatRun);
+            CurrentCombat = combat?.View(combatRun?.Players ?? Array.Empty<PlayerSummary>(), combatRun);
             Revision++;
             return false;
         }
@@ -174,14 +167,12 @@ internal static class ProfilerSession
     internal static void EndRun(int outcome)
     {
         if (!OnThread() || run == null) return;
-        if (activeEpoch != 0) EndCombat(activeEpoch);
         var ended = run with
         {
             Outcome = outcome switch { 0 => "victory", 1 => "defeat", 2 => "abandoned", _ => "defeat" },
             EndedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
         };
-        WriteHeader(ended);
-        FlushPending();
+        store.SaveRun(ended);
         CurrentRun = completedRun with { Outcome = ended.Outcome, EndedAt = ended.EndedAt };
         run = null;
         Revision++;
@@ -190,8 +181,7 @@ internal static class ProfilerSession
     internal static void Suspend()
     {
         if (!OnThread()) return;
-        if (run != null) WriteHeader(run with { Outcome = "suspended" });
-        FlushPending();
+        bool suspended = run != null;
         ProfilerNative.CombatDiscard();
         activeEpoch = 0;
         combat = null;
@@ -200,7 +190,7 @@ internal static class ProfilerSession
         completedRun = null;
         CurrentCombat = CurrentRun = null;
         LiveFilterGeneration++;
-        ClearHistory();
+        if (suspended) ClearHistory();
         Revision++;
     }
 
@@ -229,24 +219,6 @@ internal static class ProfilerSession
     }
 
     private static bool OnThread() => store != null && Environment.CurrentManagedThreadId == thread;
-
-    private static void WriteHeader(RunRecord header)
-    {
-        if (store.SaveRun(header)) pendingHeaders.Remove(header.RunId);
-        else if (pendingHeaders.Count < PendingWriteLimit || pendingHeaders.ContainsKey(header.RunId)) pendingHeaders[header.RunId] = header;
-    }
-
-    private static void FlushPending()
-    {
-        foreach (var header in pendingHeaders.Values.ToArray())
-            if (store.SaveRun(header)) pendingHeaders.Remove(header.RunId);
-        int count = pendingCombats.Count;
-        for (int i = 0; i < count; i++)
-        {
-            var record = pendingCombats.Dequeue();
-            if (!store.SaveCombat(record)) pendingCombats.Enqueue(record);
-        }
-    }
 
     internal static void SelfTest(Action<string> message)
     {

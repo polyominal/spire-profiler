@@ -37,6 +37,8 @@ internal sealed record PlayerSummary(int Slot, string Character);
 
 internal sealed record StatRow
 {
+    internal const int RunRowLimit = 1024;
+    private const int UnknownRowReserve = 5;
     public string Id { get; init; } = "";
     public int Kind { get; init; }
     public int Player { get; init; }
@@ -78,6 +80,81 @@ internal sealed record StatRow
             };
         }
     }
+
+    internal static IReadOnlyList<StatRow> MergeRows(IReadOnlyList<StatRow> existing, IEnumerable<StatRow> incoming, bool team = false)
+    {
+        var rows = existing.ToList();
+        int ordinary = rows.Count(row => row.Kind != 5);
+        foreach (var row in incoming)
+        {
+            int index = rows.FindIndex(value => value.Id == row.Id && value.Kind == row.Kind
+                && (value.Player == row.Player || team && row.Kind != 5));
+            if (index >= 0)
+            {
+                try { rows[index] = rows[index].Add(row); continue; }
+                catch (OverflowException) { }
+            }
+            else if ((row.Kind == 5 || ordinary < RunRowLimit - UnknownRowReserve) && rows.Count < RunRowLimit)
+            {
+                rows.Add(row);
+                if (row.Kind != 5) ordinary++;
+                continue;
+            }
+            int slot = Math.Clamp(row.Player, 0, 4);
+            index = rows.FindIndex(value => value.Kind == 5 && value.Player == slot);
+            if (index >= 0)
+            {
+                try { rows[index] = rows[index].Add(row); }
+                catch (OverflowException) { return null; }
+            }
+            else if (rows.Count < RunRowLimit)
+                rows.Add(row with { Id = "UNATTRIBUTED", Kind = 5, Player = slot });
+            else return null;
+        }
+        try { CheckRepresentable(rows); }
+        catch (OverflowException) { return null; }
+        return Array.AsReadOnly(rows.ToArray());
+    }
+
+    internal static void CheckRepresentable(IReadOnlyList<StatRow> rows)
+    {
+        Span<Int128> positive = stackalloc Int128[15];
+        Span<Int128> negative = stackalloc Int128[15];
+        Span<Int128> values = stackalloc Int128[15];
+        positive.Clear();
+        negative.Clear();
+        foreach (var row in rows)
+        {
+            long damage, defense;
+            checked
+            {
+                damage = row.DmgDirect + row.DmgAttributed + row.DmgModifier;
+                defense = row.BlockEffective + row.BlkModifier + row.MitigateDebuff + row.MitigateBuff + row.MitigateStr;
+                _ = defense - row.SelfDamage;
+            }
+            values[0] = row.DamageDealt;
+            values[1] = row.DamageBlocked;
+            values[2] = row.BlockGained;
+            values[3] = row.BlockEffective;
+            values[4] = row.DmgDirect;
+            values[5] = row.DmgAttributed;
+            values[6] = row.DmgModifier;
+            values[7] = row.BlkModifier;
+            values[8] = row.MitigateDebuff;
+            values[9] = row.MitigateBuff;
+            values[10] = row.MitigateStr;
+            values[11] = row.SelfDamage;
+            values[12] = row.Forge;
+            values[13] = damage;
+            values[14] = defense;
+            for (int i = 0; i < values.Length; i++)
+            {
+                positive[i] += Int128.Max(values[i], 0);
+                negative[i] += Int128.Min(values[i], 0);
+                if (positive[i] > long.MaxValue || negative[i] < long.MinValue) throw new OverflowException("Run totals exceed the ledger domain");
+            }
+        }
+    }
 }
 
 internal sealed record SummaryView
@@ -106,37 +183,47 @@ internal sealed record SummaryView
 
     internal SummaryView Add(SummaryView combat)
     {
-        try
+        var rows = StatRow.MergeRows(Cards, combat.Cards);
+        if (rows == null) return this with { Coverage = Coverage.WithFailure("summary-overflow") };
+        var merged = this with
         {
-            var rows = new Dictionary<(int Player, int Kind, string Id), StatRow>();
-            var order = new List<(int Player, int Kind, string Id)>();
-            foreach (var row in Cards.Concat(combat.Cards))
-            {
-                var key = (row.Player, row.Kind, row.Id);
-                if (rows.TryGetValue(key, out var existing)) rows[key] = existing.Add(row);
-                else { order.Add(key); rows.Add(key, row); }
-            }
-            checked
-            {
-                var merged = this with
-                {
-                    PolicyVersion = PolicyVersion ?? combat.PolicyVersion,
-                    Cards = Array.AsReadOnly(order.Select(key => rows[key]).ToArray()),
-                    Turns = Turns + combat.Turns,
-                    Plays = Plays + combat.Plays,
-                    Combats = Combats + combat.Combats,
-                    PotionsUsed = PotionsUsed + combat.PotionsUsed,
-                    DamageReceived = DamageReceived + combat.DamageReceived,
-                    BlockTotal = BlockTotal + combat.BlockTotal,
-                    Coverage = Coverage.Merge(combat.Coverage)
-                };
-                if (PolicyVersion.HasValue && combat.PolicyVersion.HasValue && PolicyVersion != combat.PolicyVersion)
-                    merged = merged with { Coverage = merged.Coverage.WithFailure("mixed-attribution-policies") };
-                StatisticsJson.CheckAggregate(merged.Cards);
-                return merged;
-            }
+            PolicyVersion = PolicyVersion ?? combat.PolicyVersion,
+            Cards = rows,
+            Turns = unchecked(Turns + combat.Turns),
+            Plays = unchecked(Plays + combat.Plays),
+            Combats = unchecked(Combats + combat.Combats),
+            PotionsUsed = unchecked(PotionsUsed + combat.PotionsUsed),
+            DamageReceived = unchecked(DamageReceived + combat.DamageReceived),
+            BlockTotal = unchecked(BlockTotal + combat.BlockTotal),
+            Coverage = Coverage.Merge(combat.Coverage)
+        };
+        if (PolicyVersion.HasValue && combat.PolicyVersion.HasValue && PolicyVersion != combat.PolicyVersion)
+            merged = merged with { Coverage = merged.Coverage.WithFailure("mixed-attribution-policies") };
+        return merged;
+    }
+
+    internal SummaryView AddHistory(CombatStatistics combat)
+    {
+        var team = StatRow.MergeRows(Cards, combat.Cards.Select(row => row with { Player = 4 }), team: true) ?? Cards;
+        var players = new Dictionary<int, IReadOnlyList<StatRow>>();
+        foreach (var player in Players)
+        {
+            var prior = PlayerCards.TryGetValue(player.Slot, out var rows) ? rows : Array.Empty<StatRow>();
+            players[player.Slot] = StatRow.MergeRows(prior, combat.Cards.Where(row => row.Player == player.Slot), team: true) ?? prior;
         }
-        catch (OverflowException) { return this with { Coverage = Coverage.WithFailure("summary-overflow") }; }
+        uint plays = 0;
+        foreach (var row in team) plays = unchecked(plays + row.Plays);
+        return this with
+        {
+            Cards = team,
+            PlayerCards = new System.Collections.ObjectModel.ReadOnlyDictionary<int, IReadOnlyList<StatRow>>(players),
+            Turns = unchecked(Turns + combat.Turns),
+            Combats = unchecked(Combats + 1),
+            Plays = plays,
+            DamageReceived = unchecked(DamageReceived + combat.DamageReceived),
+            EndedAt = Outcome is "active" or "suspended" or "" ? Math.Max(EndedAt, combat.StartedAt) : EndedAt,
+            Coverage = Coverage.Merge(combat.Coverage)
+        };
     }
 }
 
@@ -156,6 +243,8 @@ internal sealed record RunRecord
     public string GameVersion { get; init; } = "";
     public string ModVersion { get; init; } = "";
     public string RunId { get; init; } = "";
+    public uint? LegacyRunId { get; init; }
+    public string PriorRunId { get; init; }
     public int Profile { get; init; } = -1;
     public string Seed { get; init; } = "";
     public long StartedAt { get; init; }
@@ -176,6 +265,7 @@ internal sealed record RunRecord
         Subtitle = $"{GameMode} · Ascension {Ascension}",
         Seed = Seed,
         Players = Players,
+        PlayerCards = Players.GroupBy(player => player.Slot).ToDictionary(group => group.Key, _ => (IReadOnlyList<StatRow>)Array.Empty<StatRow>()),
         StartedAt = StartedAt,
         EndedAt = EndedAt,
         Outcome = Outcome,
@@ -228,5 +318,6 @@ internal sealed record CombatRecord
     public string ModVersion { get; init; } = "";
     public string RunId { get; init; } = "";
     public uint Ordinal { get; init; }
+    public RunRecord Run { get; init; }
     public CombatStatistics Combat { get; init; }
 }

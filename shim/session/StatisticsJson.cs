@@ -112,8 +112,8 @@ internal static class StatisticsJson
         var run = JsonSerializer.Deserialize<RunRecord>(document.RootElement, Options)
             ?? throw new InvalidDataException("Run record is missing");
         if (run.SchemaVersion != StatisticsStore.SchemaVersion || run.RunId != expectedId
-            || !Guid.TryParseExact(run.RunId, "N", out _) || run.StartedAt < 0 || run.EndedAt < 0
-            || run.Profile < -1 || run.Seed == null || run.GameVersion == null || run.ModVersion == null
+            || !(uint.TryParse(run.RunId, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out _) || Guid.TryParseExact(run.RunId, "N", out _)) || run.StartedAt < 0 || run.EndedAt < 0
+            || run.Profile < -1 || run.Seed == null || run.GameVersion == null || run.ModVersion == null || run.LegacyRunId == 0
             || run.Outcome is not ("active" or "suspended" or "victory" or "defeat" or "abandoned")
             || run.Players == null || run.Players.Count > 4)
             throw new InvalidDataException("Invalid run header");
@@ -134,7 +134,7 @@ internal static class StatisticsJson
             ?? throw new InvalidDataException("Combat record is missing");
         var combat = record.Combat;
         if (record.SchemaVersion != StatisticsStore.SchemaVersion || record.RunId != runId || record.Ordinal != ordinal
-            || combat == null || combat.CombatId == 0 || combat.PolicyVersion <= 0 || combat.StartedAt < 0
+            || combat == null || uint.TryParse(runId, out _) && combat.CombatId != ordinal || combat.CombatId == 0 || combat.PolicyVersion <= 0 || combat.StartedAt < 0
             || combat.DamageReceived < 0 || combat.Cards == null || combat.Coverage == null
             || combat.Coverage.Quality is not (CaptureQuality.Unknown or CaptureQuality.Complete or CaptureQuality.Partial)
             || combat.Coverage.Reasons == null || combat.Coverage.Reasons.Count > 32
