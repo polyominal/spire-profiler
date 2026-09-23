@@ -102,38 +102,55 @@ impl Reference {
                 fingerprints_path.display()
             );
         }
+        let current = reference.directory.join("current");
+        fs::create_dir(&current)?;
+        let files = cmd!(
+            shell,
+            "git -C {root} ls-files --cached --others --exclude-standard -z -- Cargo.toml Cargo.lock profiler-core xtask"
+        )
+        .read()?;
+        for relative in files.split('\0').filter(|path| !path.is_empty()) {
+            let source = root.join(relative);
+            if !source.exists() {
+                continue;
+            }
+            let destination = current.join(relative);
+            fs::create_dir_all(destination.parent().expect("exported files have a parent"))?;
+            fs::copy(source, destination)?;
+        }
         let driver = root.join("profiler-core/tests/support/attribution_parity.rs");
+        let driver_path = serde_json::to_string(&driver)?;
         let mut ledgers = Vec::new();
         for (label, code, features) in [
-            (
-                "baseline",
-                reference.original.as_path(),
-                &["--features", "baseline"][..],
-            ),
-            ("current", root, &[][..]),
+            ("baseline", &reference.original, "test-support,baseline"),
+            ("current", &current, "test-support"),
         ] {
-            let project = reference.directory.join(label);
-            fs::create_dir(&project)?;
-            let manifest = project.join("Cargo.toml");
-            let core = serde_json::to_string(&code.join("profiler-core"))?;
-            let driver_path = serde_json::to_string(&driver)?;
+            let manifest = code.join("profiler-core/Cargo.toml");
+            let original = fs::read_to_string(&manifest)?;
+            ensure!(
+                original.matches("[features]\n").count() == 1,
+                "{label} crate must have one feature table for the parity adapter"
+            );
             fs::write(
                 &manifest,
                 format!(
-                    "[package]\nname = \"attribution-parity-{label}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n[workspace]\n[features]\nbaseline = []\n[dependencies]\nprofiler_core = {{ path = {core}, features = [\"test-support\"] }}\nserde_json = \"=1.0.151\"\n[[bin]]\nname = \"parity\"\npath = {driver_path}\n"
+                    "{}\n[[example]]\nname = \"attribution-parity\"\npath = {driver_path}\n",
+                    original.replace("[features]\n", "[features]\nbaseline = []\n")
                 ),
             )?;
+            let lock = code.join("Cargo.lock");
+            let locked = sha256_file(&lock)?;
+            println!("attribution parity: {label} Cargo.lock SHA-256 {locked}");
             let _target = shell.push_env("CARGO_TARGET_DIR", scratch.join("target"));
-            cmd!(
-                shell,
-                "cargo generate-lockfile --manifest-path {manifest} --offline"
-            )
-            .run()?;
             let result = cmd!(
                 shell,
-                "cargo run --manifest-path {manifest} --locked --offline {features...}"
+                "cargo run --manifest-path {manifest} --package profiler_core --example attribution-parity --features {features} --locked --offline"
             )
             .output()?;
+            ensure!(
+                sha256_file(&lock)? == locked,
+                "{label} dependency lock changed"
+            );
             fs::write(
                 reference.directory.join(format!("{label}-ledger.jsonl")),
                 &result.stdout,
