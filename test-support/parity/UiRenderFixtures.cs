@@ -34,6 +34,7 @@ internal static class UiRenderFixtures
         foreach (var fixture in reference["render_cases"].AsArray())
         {
             string name = fixture["name"].GetValue<string>();
+            GD.Print("UI_RENDER_BEGIN " + name);
             int width = (int)fixture["viewport"][0].GetValue<float>();
             int height = (int)fixture["viewport"][1].GetValue<float>();
             var viewport = new SubViewport
@@ -91,7 +92,7 @@ internal static class UiRenderFixtures
                     panel.Interact(new(panel.ControlRect.X + 100, panel.ControlRect.Y + (row.Y0 + row.Y1) / 2 - panel.ScrollPosition), false);
                 }
                 else panel.Interact(new(-1, -1), false);
-                await DrawFrame(tree);
+                await DrawFrame(tree, name + " managed");
                 if (panel.DrawCount == 0) throw new InvalidOperationException("Managed panel did not dispatch its actual draw signals");
                 using var actual = viewport.GetTexture().GetImage();
                 actual.Convert(Image.Format.Rgba8);
@@ -103,7 +104,7 @@ internal static class UiRenderFixtures
                 original.SetScript(script);
                 original.Call("configure", fixture.ToJsonString(), reference["render_contract"].ToJsonString());
                 viewport.AddChild(original);
-                await DrawFrame(tree);
+                await DrawFrame(tree, name + " baseline");
                 using var expected = viewport.GetTexture().GetImage();
                 expected.Convert(Image.Format.Rgba8);
                 Save(expected, Path.Combine(outputDirectory, name + ".baseline.png"));
@@ -153,10 +154,15 @@ internal static class UiRenderFixtures
         GD.Print($"UI_RENDER_PASS baseline={Baseline} cases={results.Count} exact_rgba=true");
     }
 
-    private static async Task DrawFrame(SceneTree tree)
+    private static async Task DrawFrame(SceneTree tree, string stage)
     {
+        GD.Print("UI_RENDER_DRAW " + stage);
         await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
-        await tree.ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
+        var drawn = tree.ToSignal(RenderingServer.Singleton, RenderingServer.SignalName.FramePostDraw);
+        // Occluded windows can suppress automatic drawing. Flush queued canvas
+        // changes before explicitly rendering the offscreen viewports.
+        Callable.From(() => RenderingServer.ForceDraw(false)).CallDeferred();
+        await drawn;
     }
 
     private static void Save(Image image, string path)
