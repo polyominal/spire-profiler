@@ -158,17 +158,13 @@ pub(crate) enum Observation {
         source_transfer: u64,
         prevented: i32,
     },
-    BlockModifierContribution {
-        combat_seq: u64,
-        source_transfer: u64,
-        amount: i32,
-        receiver_slot: i32,
-    },
     BlockGained {
         combat_seq: u64,
         amount: i32,
         source_transfer: u64,
         receiver_slot: i32,
+        modifiers: Vec<(u64, i64)>,
+        incomplete: bool,
     },
     Forge {
         combat_seq: u64,
@@ -557,24 +553,24 @@ impl State {
                     source_transfer,
                     prevented,
                 } => candidate.buff_mitigation(combat_seq, source_transfer, prevented) as u64,
-                Observation::BlockModifierContribution {
-                    combat_seq,
-                    source_transfer,
-                    amount,
-                    receiver_slot,
-                } => candidate.block_modifier_contribution(
-                    combat_seq,
-                    source_transfer,
-                    amount,
-                    receiver_slot,
-                ) as u64,
                 Observation::BlockGained {
                     combat_seq,
                     amount,
                     source_transfer,
                     receiver_slot,
-                } => candidate.block_gained(combat_seq, amount, source_transfer, receiver_slot)
-                    as u64,
+                    modifiers,
+                    incomplete,
+                } => {
+                    let modifiers =
+                        candidate.parse_block_modifiers(combat_seq, &modifiers, incomplete);
+                    candidate.block_gained(
+                        combat_seq,
+                        amount,
+                        source_transfer,
+                        receiver_slot,
+                        modifiers,
+                    ) as u64
+                }
                 Observation::Forge {
                     combat_seq,
                     source_transfer,

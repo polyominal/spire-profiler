@@ -283,26 +283,39 @@ pub fn buff_mitigation(combat_seq: u64, source_transfer: u64, prevented: i32) ->
     })
 }
 
-pub fn block_modifier_contribution(
-    combat_seq: u64,
-    source_transfer: u64,
-    amount: i32,
-    receiver_slot: i32,
-) -> i32 {
-    STATE.with(|cell| {
-        cell.borrow_mut().block_modifier_contribution(
-            combat_seq,
-            source_transfer,
-            amount,
-            receiver_slot,
-        )
-    })
+pub fn block_gained(combat_seq: u64, amount: i32, source_transfer: u64, receiver_slot: i32) -> i32 {
+    block_gained_with_modifiers(
+        combat_seq,
+        amount,
+        source_transfer,
+        receiver_slot,
+        &[],
+        false,
+    )
 }
 
-pub fn block_gained(combat_seq: u64, amount: i32, source_transfer: u64, receiver_slot: i32) -> i32 {
+pub fn block_gained_with_modifiers(
+    combat_seq: u64,
+    amount: i32,
+    source_transfer: u64,
+    receiver_slot: i32,
+    modifiers: &[crate::abi::BlockModifier],
+    incomplete: bool,
+) -> i32 {
     STATE.with(|cell| {
-        cell.borrow_mut()
-            .block_gained(combat_seq, amount, source_transfer, receiver_slot)
+        let mut state = cell.borrow_mut();
+        let entries: Vec<_> = modifiers
+            .iter()
+            .map(|entry| (entry.source, entry.credit))
+            .collect();
+        let modifiers = state.parse_block_modifiers(combat_seq, &entries, incomplete);
+        state.block_gained(
+            combat_seq,
+            amount,
+            source_transfer,
+            receiver_slot,
+            modifiers,
+        )
     })
 }
 

@@ -21,8 +21,7 @@ const DEFAULT_SEED: u64 = 0x5EED_5EED_5EED_5EED;
 const SCENARIOS: u32 = 20;
 const EVENTS_PER_SCENARIO: u32 = 40;
 const BASE_SOURCES: usize = 6;
-// The pinned outer pool retains four actual modifier slices per gain.
-const MAX_BLOCK_MODIFIERS: usize = 4;
+const MAX_BLOCK_MODIFIERS: usize = 16;
 const TOKEN_KIND_BITS: u32 = 3;
 
 struct Rng(u64);
@@ -382,23 +381,38 @@ struct NaivePool {
 }
 
 impl NaivePool {
-    fn push(&mut self, source: Roots, base: u64, modifiers: Vec<(Roots, u64)>) {
+    fn push(&mut self, source: Roots, base: u64, modifiers: Vec<(Roots, u64)>, receiver: u8) {
         if modifiers.is_empty()
             && let Some(chunk) = self
                 .chunks
-                .iter_mut()
-                .find(|chunk| chunk.mods.is_empty() && chunk.base.roots == source)
+                .last_mut()
+                .filter(|chunk| chunk.mods.is_empty() && chunk.base.roots == source)
         {
             chunk.remaining += base;
             chunk.base_original += base;
             return;
         }
         if self.chunks.len() == state::caps::BLOCK_POOL {
+            let amount = base + modifiers.iter().map(|(_, amount)| amount).sum::<u64>();
+            let tail = self.chunks.last_mut().expect("a full pool contains a tail");
+            let remaining = tail.remaining + amount;
+            let mut unknown = RowKey::unknown();
+            unknown.slot = receiver;
+            *tail = NaiveChunk {
+                base: NaivePrefix::new(vec![(unknown, 1)]),
+                base_original: remaining,
+                remaining,
+                mods: Box::default(),
+            };
             return;
         }
+        assert!(
+            modifiers.len() <= MAX_BLOCK_MODIFIERS,
+            "model accepts complete bounded commands"
+        );
         let mods: Box<[_]> = modifiers
             .into_iter()
-            .take(MAX_BLOCK_MODIFIERS)
+            .filter(|(_, amount)| *amount > 0)
             .map(|(roots, original)| NaiveModifier {
                 source: NaivePrefix::new(roots),
                 original,
@@ -415,7 +429,7 @@ impl NaivePool {
         }
     }
 
-    fn consume(&mut self, amount: u64) -> Vec<(RowKey, Field, i64)> {
+    fn consume(&mut self, amount: u64, receiver: u8) -> Vec<(RowKey, Field, i64)> {
         let mut remaining = amount;
         let mut credits = Vec::new();
         while remaining > 0 && !self.chunks.is_empty() {
@@ -429,9 +443,38 @@ impl NaivePool {
                     .sum::<u64>();
             let before = total - chunk.remaining;
             let mut modifier_total = 0;
-            for modifier in &mut chunk.mods {
-                let delta = modifier.original * (before + take) / total
-                    - modifier.original * before / total;
+            let outer = |points: u64| {
+                let mut seats = vec![0_u64; chunk.mods.len() + 1];
+                let mut weights: Vec<_> = chunk.mods.iter().map(|m| m.original).collect();
+                weights.push(chunk.base_original);
+                for _ in 0..points {
+                    let winner = (0..weights.len())
+                        .max_by(|&a, &b| {
+                            (weights[a] * (seats[b] + 1)).cmp(&(weights[b] * (seats[a] + 1)))
+                        })
+                        .expect("a block slice has its producer seat");
+                    seats[winner] += 1;
+                }
+                seats
+            };
+            let portions = if chunk.mods.len() > 1 {
+                let previous = outer(before);
+                outer(before + take)
+                    .iter()
+                    .zip(previous)
+                    .map(|(after, before)| after - before)
+                    .collect::<Vec<_>>()
+            } else {
+                chunk
+                    .mods
+                    .iter()
+                    .map(|modifier| {
+                        modifier.original * (before + take) / total
+                            - modifier.original * before / total
+                    })
+                    .collect()
+            };
+            for (modifier, delta) in chunk.mods.iter_mut().zip(portions) {
                 modifier_total += delta;
                 credits.extend(
                     modifier
@@ -441,20 +484,19 @@ impl NaivePool {
                         .map(|(key, amount)| (key, Field::BlockModifier, amount as i64)),
                 );
             }
-            // The base floor cancels against outer residue; only positive credits advance its
-            // prefix.
-            credits.extend(
-                chunk
-                    .base
-                    .credit(take.saturating_sub(modifier_total))
-                    .into_iter()
-                    .map(|(key, amount)| (key, Field::BlockEffective, amount as i64)),
-            );
+            for (key, amount) in chunk.base.credit(take - modifier_total) {
+                credits.push((key, Field::BlockEffective, amount as i64));
+            }
             chunk.remaining -= take;
             remaining -= take;
             if chunk.remaining == 0 {
                 self.chunks.remove(0);
             }
+        }
+        if remaining > 0 {
+            let mut unknown = RowKey::unknown();
+            unknown.slot = receiver;
+            credits.push((unknown, Field::BlockEffective, remaining as i64));
         }
         credits
     }
@@ -705,21 +747,31 @@ impl LedgerModel {
         modifiers: &[(Rc<SimSource>, u64)],
         receiver: i32,
     ) {
-        for (modifier, amount) in modifiers {
-            assert_eq!(
+        let total = base + modifiers.iter().map(|(_, amount)| amount).sum::<u64>();
+        let entries: Vec<_> = modifiers
+            .iter()
+            .map(|(modifier, amount)| {
                 modifier
                     .actual
-                    .with_transfer(|transfer| events::block_modifier_contribution(
-                        combat_epoch(),
-                        transfer,
-                        *amount as i32,
-                        receiver
-                    )),
-                1
-            );
-        }
-        let total = base + modifiers.iter().map(|(_, amount)| amount).sum::<u64>();
-        source.actual.block(total as i32, receiver);
+                    .with_transfer(|source| profiler_core::abi::BlockModifier {
+                        source,
+                        credit: *amount as i64,
+                    })
+            })
+            .collect();
+        assert_eq!(
+            source
+                .actual
+                .with_transfer(|source| events::block_gained_with_modifiers(
+                    combat_epoch(),
+                    total as i32,
+                    source,
+                    receiver,
+                    &entries,
+                    false,
+                )),
+            1
+        );
         self.block_total += total as i64;
         self.credit(&source.roots, Field::BlockGained, total);
         if total > 0 {
@@ -731,6 +783,7 @@ impl LedgerModel {
                     .iter()
                     .map(|(source, amount)| (source.roots.clone(), *amount))
                     .collect(),
+                receiver as u8,
             );
         }
     }
@@ -776,7 +829,9 @@ impl LedgerModel {
             self.add(&key, Field::BlockEffective, remaining as i64);
         } else {
             self.received += total as i64;
-            for (key, field, amount) in self.pools[receiver as usize].consume(blocked) {
+            for (key, field, amount) in
+                self.pools[receiver as usize].consume(blocked, receiver as u8)
+            {
                 self.add(&key, field, amount);
             }
             if kind == 2 {

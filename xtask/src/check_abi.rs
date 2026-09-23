@@ -135,7 +135,10 @@ fn map_rust_type(abi_type: &str) -> Result<&'static str, String> {
         "u64" => Ok("ulong"),
         "f64" => Ok("double"),
         "*const c_char" => Ok("string"),
-        "*mut u8" | "*const ModifierObservation" | "*mut ModifierCredit" => Ok("IntPtr"),
+        "*mut u8"
+        | "*const ModifierObservation"
+        | "*mut ModifierCredit"
+        | "*const BlockModifier" => Ok("IntPtr"),
         _ => Err(format!("unsupported Rust parameter type '{abi_type}'")),
     }
 }

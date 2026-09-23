@@ -6,7 +6,7 @@ use serde::Serialize;
 
 use super::state::{CardStat, Combat, CombatPhase, Coverage, PlayerSlotState, State, caps};
 
-pub(super) const POLICY_VERSION: u32 = 1;
+pub(super) const POLICY_VERSION: u32 = 3;
 
 #[derive(Serialize)]
 struct Summary<'a> {
@@ -145,7 +145,7 @@ mod tests {
         let mut state = State::default();
         state.combat_started(7, "SELF_TEST", "normal", 1234, 1);
         let source = state.source_capture(7, 1, 10, "DEFEND", 0, 0, 0);
-        assert_eq!(state.block_gained(7, 5, source, 0), 1);
+        assert_eq!(state.block_gained(7, 5, source, 0, Default::default()), 1);
         assert_eq!(state.damage_unattributed(7, 8, 3, 5, 1, 0, 0), 1);
         state.capture_failed("missing-hook");
         assert_eq!(state.combat_ended(7), 1);

@@ -229,14 +229,10 @@ pub mod caps {
     /// The four player slots plus the TEAM slot, so a corrupt wire slot
     /// can never index out of bounds.
     pub const MAX_PLAYER_SLOTS: usize = 5;
-    /// Unconsumed block chunks per slot; unmodified equal-source gains merge.
-    /// Damage drains FIFO; an actual block clear resets the pool, while
-    /// retained block keeps its sources.
+    /// Unconsumed FIFO slices per slot; overflow collapses the tail to Unknown.
     pub const BLOCK_POOL: usize = 64;
-    /// Modifier shares awaiting the next block gain, one per recorded
-    /// applier per modifier event; that gain attaches the queue to one
-    /// chunk (at most a chunk's `MAX_MODS` slices) and clears it.
-    pub const PENDING_BLOCK_CONTRIBS: usize = 16;
+    /// Modifier sources captured by one block command, all retained with its gain.
+    pub const BLOCK_MODIFIERS: usize = 16;
     /// One entry per actual generated card identity, updated in place when
     /// the same instance regenerates and cleared only at the combat
     /// boundary, so it grows with one combat's distinct generated copies.

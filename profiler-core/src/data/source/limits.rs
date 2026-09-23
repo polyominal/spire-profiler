@@ -177,7 +177,7 @@ fn late_arithmetic_failure_publishes_no_partial_row_or_pool_updates() {
     let mut state = fixture();
     let a = card(&mut state, "A", 0);
     let b = card(&mut state, "B", 1);
-    assert_eq!(state.block_gained(7, 10, a, 0), 1);
+    assert_eq!(state.block_gained(7, 10, a, 0, Default::default()), 1);
     let row = &mut state.current.as_mut().expect("fixture combat exists").cards[1];
     row.damage_dealt = i64::MAX;
     row.dmg_direct = i64::MAX;
@@ -245,7 +245,7 @@ fn defense_overflow_rolls_back_consumed_block_and_fallback() {
     let mut state = fixture();
     let a = card(&mut state, "A", 0);
     let b = card(&mut state, "B", 1);
-    assert_eq!(state.block_gained(7, 10, b, 0), 1);
+    assert_eq!(state.block_gained(7, 10, b, 0, Default::default()), 1);
     let combat = state.current.as_mut().expect("fixture combat exists");
     combat.cards[0].mitigate_buff = i64::MAX - 1;
     let before = combat.cards.clone();
@@ -420,7 +420,7 @@ fn interned_sources_preserve_lifetime_mixtures_and_expire_with_the_combat() {
 fn journal_unwind_restores_touched_rows_pools_counters_and_appended_entries() {
     let mut state = fixture();
     let source = card(&mut state, "DEFEND", 0);
-    assert_eq!(state.block_gained(7, 10, source, 0), 1);
+    assert_eq!(state.block_gained(7, 10, source, 0, Default::default()), 1);
     let before = state.snapshot();
     let rows = state.current.as_ref().expect("fixture exists").cards.len();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

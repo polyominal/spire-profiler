@@ -84,10 +84,18 @@ impl SourceSnapshot {
     }
 
     pub(super) fn unknown(epoch: CombatEpoch) -> Self {
+        Self::unknown_for(epoch, TEAM_SLOT)
+    }
+
+    pub(super) fn unknown_for(epoch: CombatEpoch, slot: u8) -> Self {
+        debug_assert!(
+            slot <= TEAM_SLOT,
+            "Unknown destinations require a boundary-clamped slot"
+        );
         Self {
             epoch,
             shares: Rc::from([WeightedDestination {
-                destination: Destination::Unknown(TEAM_SLOT),
+                destination: Destination::Unknown(slot),
                 weight: 1,
             }]),
         }
@@ -299,14 +307,21 @@ impl SourcePrefix {
         &self.source
     }
 
-    fn allocation(&self, total: u64) -> Result<Box<[u64]>, SourceFailure> {
-        let weight_total: u64 = self.source.shares.iter().map(|share| share.weight).sum();
-        let mut credits: Box<[u64]> = self
-            .source
-            .shares
-            .iter()
-            .map(|share| {
-                ((u128::from(total) * u128::from(share.weight)) / u128::from(weight_total)) as u64
+    pub(super) fn allocation(
+        total: u64,
+        weights: impl ExactSizeIterator<Item = u64> + Clone,
+    ) -> Result<Box<[u64]>, SourceFailure> {
+        let weight_total = weights
+            .clone()
+            .try_fold(0_u64, |sum, weight| sum.checked_add(weight))
+            .ok_or(SourceFailure::Arithmetic)?;
+        if weight_total == 0 {
+            return Ok(vec![0; weights.len()].into_boxed_slice());
+        }
+        let mut credits: Box<[u64]> = weights
+            .clone()
+            .map(|weight| {
+                ((u128::from(total) * u128::from(weight)) / u128::from(weight_total)) as u64
             })
             .collect();
         let remainder = total - credits.iter().sum::<u64>();
@@ -318,15 +333,17 @@ impl SourcePrefix {
         // N further seats complete the same fixed order, so prefixes are nested.
         for _ in 0..remainder {
             let mut winner = 0;
-            for index in 1..credits.len() {
-                let candidate = u128::from(self.source.shares[index].weight)
+            let mut winner_weight = 0;
+            for (index, weight) in weights.clone().enumerate() {
+                let candidate = u128::from(weight)
                     .checked_mul(u128::from(credits[winner]) + 1)
                     .ok_or(SourceFailure::Arithmetic)?;
-                let incumbent = u128::from(self.source.shares[winner].weight)
+                let incumbent = u128::from(winner_weight)
                     .checked_mul(u128::from(credits[index]) + 1)
                     .ok_or(SourceFailure::Arithmetic)?;
                 if candidate >= incumbent {
                     winner = index;
+                    winner_weight = weight;
                 }
             }
             credits[winner] = credits[winner]
@@ -341,7 +358,7 @@ impl SourcePrefix {
             .credited_total
             .checked_add(amount)
             .ok_or(SourceFailure::Arithmetic)?;
-        let credits = self.allocation(total)?;
+        let credits = Self::allocation(total, self.source.shares.iter().map(|share| share.weight))?;
         let mut result = Vec::new();
         for ((share, before), after) in self.source.shares.iter().zip(&self.credits).zip(&credits) {
             let delta = after
