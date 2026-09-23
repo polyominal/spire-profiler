@@ -1193,6 +1193,8 @@ pub extern "C" fn spire_profiler_modifier_credit(
     basis_high: u64,
     value_low: u64,
     value_high: u64,
+    limit_low: u64,
+    limit_high: u64,
     kind: i32,
 ) -> i64 {
     contain("modifier_credit", i64::MIN, || {
@@ -1202,6 +1204,8 @@ pub extern "C" fn spire_profiler_modifier_credit(
                 basis_high,
                 value_low,
                 value_high,
+                limit_low,
+                limit_high,
                 kind,
             };
             let amount = observed.credit().map(i64::from).unwrap_or_else(|_| {
@@ -1371,7 +1375,7 @@ mod tests {
             let b = spire_profiler_source_capture(engine, 9, 1, 12, c"B".as_ptr(), 0, 1, 0);
             let mixed = spire_profiler_source_accumulate(engine, 9, a, 2, b, 5);
             assert_ne!(mixed, 0);
-            let credit = spire_profiler_modifier_credit(engine, 0, 0, 3, 0, 1);
+            let credit = spire_profiler_modifier_credit(engine, 0, 0, 3, 0, 0, 0, 1);
             assert_eq!(credit, 3);
             assert_eq!(
                 spire_profiler_block_modifier_contribution(engine, 9, a, credit as i32, 1),
@@ -1452,9 +1456,12 @@ mod tests {
         let engine = spire_profiler_engine_create();
         assert_eq!(spire_profiler_recording_begin(engine), 1);
         started(engine, 1);
-        assert_eq!(spire_profiler_modifier_credit(engine, 0, 0, 3, 0, 0), 3);
         assert_eq!(
-            spire_profiler_modifier_credit(engine, 0, 0, 3, 0, 99),
+            spire_profiler_modifier_credit(engine, 0, 0, 3, 0, 0, 0, 0),
+            3
+        );
+        assert_eq!(
+            spire_profiler_modifier_credit(engine, 0, 0, 3, 0, 0, 0, 99),
             i64::MIN
         );
         let trace = CString::new(json(engine, true)).expect("JSON has no literal NUL");

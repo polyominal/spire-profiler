@@ -1841,21 +1841,21 @@ internal static partial class ManagedFixtures
     private static void NativeModifierProjection()
     {
         decimal basis = 0.9999999999999999999999999999m, multiplier = 2.0000000000000000000000000001m;
-        Check(backend.CalculateModifierCredit(basis, multiplier, 2) == (int)(basis * (multiplier - 1)),
+        Check(backend.CalculateModifierCredit(basis, multiplier, 2, decimal.MaxValue) == (int)(basis * (multiplier - 1)),
             "Rust rounds decimal intermediates exactly as the original managed projection");
-        Check(backend.CalculateModifierCredit(0, -2.9999999999999999999999999999m, 0) == 2
-            && backend.CalculateModifierCredit(0, -2.9999999999999999999999999999m, 1) == -2,
+        Check(backend.CalculateModifierCredit(0, -2.9999999999999999999999999999m, 0, decimal.MaxValue) == 2
+            && backend.CalculateModifierCredit(0, -2.9999999999999999999999999999m, 1, decimal.MaxValue) == -2,
             "Rust truncates signed additions before applying the damage absolute value");
         var random = new Random(0x328747);
         decimal Next() => new(random.Next(int.MinValue, int.MaxValue), random.Next(int.MinValue, int.MaxValue),
             random.Next(int.MinValue, int.MaxValue), random.Next(2) == 1, (byte)random.Next(29));
         for (int index = 0; index < 12000; index++)
         {
-            basis = Next(); decimal value = Next(); int kind = index % 4;
+            basis = Next(); decimal value = Next(), limit = Next(); int kind = index % 4;
             int? expected = null, actual = null;
-            try { expected = kind switch { 0 => Math.Abs((int)value), 1 => (int)value, 2 => (int)(basis * (value - 1)), _ => (int)(basis * value) }; }
+            try { expected = kind switch { 0 => Math.Abs((int)value), 1 => (int)value, 2 => (int)(Math.Min(basis, limit) * (value - 1)), _ => (int)(Math.Min(basis, limit) * value) }; }
             catch (OverflowException) { }
-            try { actual = backend.CalculateModifierCredit(basis, value, kind); }
+            try { actual = backend.CalculateModifierCredit(basis, value, kind, limit); }
             catch (OverflowException) { }
             Check(expected == actual, $"Original .NET decimal oracle case {index}: {basis}, {value}, kind {kind}; expected {expected}, got {actual}");
         }

@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Entities.Creatures;
@@ -25,7 +27,7 @@ internal sealed class ParityPower : PowerModel
     {
         Log.Add($"call:{Id.Entry}:{kind}:{amount}:{card != null}:{play != null}:{++Calls}");
         if (Calls == ThrowAt) throw new InvalidOperationException("callback-failure");
-        return kind.EndsWith("add", StringComparison.Ordinal) ? Addition : Multiplier;
+        return kind.EndsWith("add", StringComparison.Ordinal) ? Addition : Multiplier + (Calls - 1) / 10m;
     }
     public override decimal ModifyDamageAdditive(Creature target, decimal amount, ValueProp props, Creature dealer, CardModel cardSource, CardPlay cardPlay)
         => Observe("damage-add", amount, cardSource, cardPlay);
@@ -39,12 +41,37 @@ internal sealed class ParityPower : PowerModel
 
 internal static partial class ManagedFixtures
 {
-    internal static void RunAttributionParity()
+    internal static void RunAttributionParity(string directory)
     {
         Test("original .NET decimal credit oracle", NativeModifierProjection);
         Test("original modifier callback and incremental credit oracle", OriginalModifierSequences);
         Test("original nested Vulnerable decomposition oracle", OriginalVulnerable);
+        WriteOriginalMixtures(directory);
         Console.WriteLine($"ATTRIBUTION PARITY PASS: {assertions} assertions");
+    }
+    private static void WriteOriginalMixtures(string directory)
+    {
+        var random = new Random(0x328747);
+        var cases = new List<object>();
+        for (int test = 0; test < 512; test++)
+        {
+            ulong Weight() => test % 4 == 0 ? (ulong)random.NextInt64(1, long.MaxValue) : (ulong)random.Next(1, 100);
+            var first = new[] { new OriginalSources.SourceShare((7ul << 32) | 16, Weight()), new OriginalSources.SourceShare(7ul << 32, 1) };
+            var second = new[] { new OriginalSources.SourceShare((7ul << 32) | 8, Weight()), new OriginalSources.SourceShare((7ul << 32) | 16, 1) };
+            int before = random.Next(1, int.MaxValue), added = random.Next(1, int.MaxValue);
+            var output = OriginalSources.BaselineTemporal.Combine(new(7, new object()), OriginalSources.SourceSnapshot.Create(7, first), before,
+                OriginalSources.SourceSnapshot.Create(7, second), added);
+            cases.Add(new
+            {
+                first = first.Select(share => new[] { share.Destination, share.Weight }).ToArray(),
+                second = second.Select(share => new[] { share.Destination, share.Weight }).ToArray(),
+                before,
+                added,
+                expected = output.Epoch == 0 ? null : Enumerable.Range(0, output.Count).Select(index => new[] { output[index].Destination, output[index].Weight }).ToArray()
+            });
+        }
+        File.WriteAllText(Path.Combine(directory, "source-mixture-oracle.json"), JsonSerializer.Serialize(cases));
+        Console.WriteLine("ORIGINAL SOURCE MIXTURE ORACLE: " + cases.Count + " cases");
     }
     private static void OriginalModifierSequences()
     {

@@ -167,10 +167,10 @@ internal static class CommandCapture
         {
             decimal multiplier = model is PowerModel power ? power.ModifyBlockMultiplicative(target, running, props, card, play)
                 : ((RelicModel)model).ModifyBlockMultiplicative(target, running, props, card, play);
-            decimal before = Math.Min(running, result);
+            decimal before = running;
             running *= multiplier;
             if (multiplier <= 1) continue;
-            int amount = ModifierCapture.Increase(before, multiplier);
+            int amount = ModifierCapture.Increase(before, multiplier, result);
             if (amount > 0) contribute(model, amount);
         }
     }

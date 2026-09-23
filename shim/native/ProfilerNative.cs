@@ -33,7 +33,7 @@ internal static class ProfilerNative
     private static NativeSnapshot _recording;
     private static NativeReplay _replay;
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    private delegate long NativeModifierCredit(ulong engine, ulong basisLow, ulong basisHigh, ulong valueLow, ulong valueHigh, int kind);
+    private delegate long NativeModifierCredit(ulong engine, ulong basisLow, ulong basisHigh, ulong valueLow, ulong valueHigh, ulong limitLow, ulong limitHigh, int kind);
     private static NativeModifierCredit _modifier_credit;
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int NativeWeakPrevention(ulong engine, int total, int receiverSlot, int receiverPlayer, int weak, int debilitate, uint kraneSlots);
@@ -279,11 +279,12 @@ internal static class ProfilerNative
         return amount;
     }
 
-    internal static int CalculateModifierCredit(decimal basis, decimal value, int kind)
+    internal static int CalculateModifierCredit(decimal basis, decimal value, int kind, decimal limit)
     {
         var (basisLow, basisHigh) = DecimalWords.Pack(basis);
         var (valueLow, valueHigh) = DecimalWords.Pack(value);
-        long amount = _modifier_credit(engine, basisLow, basisHigh, valueLow, valueHigh, kind);
+        var (limitLow, limitHigh) = DecimalWords.Pack(limit);
+        long amount = _modifier_credit(engine, basisLow, basisHigh, valueLow, valueHigh, limitLow, limitHigh, kind);
         if (amount < int.MinValue || amount > int.MaxValue) throw new OverflowException("Modifier credit is not representable");
         return (int)amount;
     }

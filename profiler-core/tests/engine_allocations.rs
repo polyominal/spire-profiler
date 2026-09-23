@@ -128,7 +128,7 @@ fn reproducible_engine_allocation_profile() {
         for _ in 0..10_000 {
             for _ in 0..8 {
                 assert_eq!(
-                    spire_profiler_modifier_credit(engine, 10, 0, 15, 1_u64 << 48, 2),
+                    spire_profiler_modifier_credit(engine, 10, 0, 15, 1_u64 << 48, 20, 0, 2),
                     5
                 );
             }

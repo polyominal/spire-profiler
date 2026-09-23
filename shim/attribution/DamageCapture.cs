@@ -163,7 +163,7 @@ internal static class DamageCapture
         {
             decimal multiplier = model is PowerModel power ? power.ModifyDamageMultiplicative(target, running, props, dealer, card, null)
                 : ((RelicModel)model).ModifyDamageMultiplicative(target, running, props, dealer, card, null);
-            decimal before = Math.Min(running, result);
+            decimal before = running;
             running *= multiplier;
             if (multiplier <= 1) continue;
             if (model is VulnerablePower vulnerable && vulnerable.DynamicVars.TryGetValue("DamageIncrease", out var increase))
@@ -187,13 +187,13 @@ internal static class DamageCapture
                 {
                     foreach (var part in parts)
                     {
-                        int value = ModifierCapture.Product(before, part.Delta);
+                        int value = ModifierCapture.Product(before, part.Delta, result);
                         if (value > 0) contribute(part.Model, value);
                     }
                     continue;
                 }
             }
-            int contribution = ModifierCapture.Increase(before, multiplier);
+            int contribution = ModifierCapture.Increase(before, multiplier, result);
             if (contribution > 0) contribute(model, contribution);
         }
     }

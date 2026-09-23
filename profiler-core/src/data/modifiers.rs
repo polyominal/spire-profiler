@@ -17,6 +17,8 @@ pub(crate) struct ModifierObservation {
     pub basis_high: u64,
     pub value_low: u64,
     pub value_high: u64,
+    pub limit_low: u64,
+    pub limit_high: u64,
     pub kind: i32,
 }
 
@@ -30,7 +32,8 @@ impl ModifierObservation {
                 .ok_or(PolicyFailure::Arithmetic),
             1 => value.truncated(),
             2 | 3 => {
-                let basis = Decimal::parse(self.basis_low, self.basis_high)?;
+                let basis = Decimal::parse(self.basis_low, self.basis_high)?
+                    .min(Decimal::parse(self.limit_low, self.limit_high)?);
                 let delta = if self.kind == 2 {
                     value.subtract_one()?
                 } else {
@@ -134,6 +137,12 @@ impl Decimal {
         )
     }
 
+    fn min(self, other: Self) -> Self {
+        let left = BigInt::from(self.units) * BigInt::from(10_u8).pow(other.scale);
+        let right = BigInt::from(other.units) * BigInt::from(10_u8).pow(self.scale);
+        if left <= right { self } else { other }
+    }
+
     fn product(&self, other: &Self) -> Result<Self, PolicyFailure> {
         Self::rounded(
             BigInt::from(self.units) * BigInt::from(other.units),
@@ -171,6 +180,8 @@ mod tests {
             basis_high,
             value_low,
             value_high,
+            limit_low: u64::MAX,
+            limit_high: u64::from(u32::MAX),
             kind,
         }
     }
