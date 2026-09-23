@@ -35,8 +35,18 @@ internal sealed class NativeAttributionBackend : GameAttributionBackend
     internal override int DamageAbort(ulong calculation) => ProfilerNative.DamageCalculationAbort(calculation);
     internal override int DamageFallback(ulong epoch, ResultPacket packet)
         => ProfilerNative.DamageUnattributed(epoch, packet.Total, packet.Unblocked, packet.Blocked, (int)packet.Kind, packet.ReceiverSlot, packet.WeakPrevented);
-    internal override int BlockGained(ulong epoch, int amount, ulong source, int slot) => ProfilerNative.BlockGained(epoch, amount, source, slot);
-    internal override int BlockModifier(ulong epoch, ulong source, int amount, int slot) => ProfilerNative.BlockModifierContribution(epoch, source, amount, slot);
+    internal override int BlockGained(ulong epoch, int amount, ulong source, int slot, SourceCredit[] modifiers, bool incomplete)
+    {
+        var wire = new BlockModifier[modifiers.Length];
+        for (int i = 0; i < modifiers.Length; i++)
+        {
+            var owner = modifiers[i].Source;
+            if (owner.Epoch != 0 && owner.Epoch != epoch) incomplete = true;
+            wire[i] = new(owner.Handle, modifiers[i].Amount);
+        }
+        try { return ProfilerNative.BlockGained(epoch, amount, source, slot, wire, incomplete); }
+        finally { GC.KeepAlive(modifiers); }
+    }
     internal override int Forge(ulong epoch, ulong source, int amount) => ProfilerNative.Forge(epoch, source, amount);
     internal override int OstySummoned(ulong epoch, ulong source, int hp, int slot) => ProfilerNative.OstySummoned(epoch, source, hp, slot);
     internal override int OstyKilled(ulong epoch, int slot, ulong play) => ProfilerNative.OstyKilled(epoch, slot, play);

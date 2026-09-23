@@ -11,6 +11,7 @@ internal enum ResultKind { Outgoing = 0, Incoming = 1, SelfDamage = 2, OstyDealt
 internal readonly record struct ModelDescriptor(CaptureKind Kind, ProducerRole Role, string Id, int SourceKind, int Slot, object Owner = null, bool Poison = false, object Combat = null);
 internal readonly record struct CreatureDescriptor(bool Player, bool Osty, int Slot, object Combat);
 internal readonly record struct PowerObservation(object Power, object Owner, string Id, int OwnerKind, int OwnerSlot, int Amount, bool Attached);
+internal readonly record struct SourceCredit(SourceSnapshot Source, int Amount);
 internal readonly record struct ResultPacket(int Total, int Unblocked, int Blocked, ResultKind Kind, int ReceiverSlot, int WeakPrevented = 0);
 
 // This boundary is injected before installation; it never owns a game Task.
@@ -42,8 +43,7 @@ internal abstract class AttributionBackend
     internal virtual int DamageCommit(ulong calculation) => 0;
     internal virtual int DamageAbort(ulong calculation) => 0;
     internal virtual int DamageFallback(ulong epoch, ResultPacket packet) => 0;
-    internal virtual int BlockGained(ulong epoch, int amount, ulong source, int slot) => 0;
-    internal virtual int BlockModifier(ulong epoch, ulong source, int amount, int slot) => 0;
+    internal virtual int BlockGained(ulong epoch, int amount, ulong source, int slot, SourceCredit[] modifiers, bool incomplete) => 0;
     internal virtual int Forge(ulong epoch, ulong source, int amount) => 0;
     internal virtual int OstySummoned(ulong epoch, ulong source, int hp, int slot) => 0;
     internal virtual int OstyKilled(ulong epoch, int slot, ulong play) => 0;
