@@ -208,6 +208,27 @@ internal static class ProfilerPanels
         try
         {
             var tree = Engine.GetMainLoop() as SceneTree ?? throw new InvalidOperationException("Panel fixture needs the game scene tree");
+            var portraitTheme = _combatTheme ??= new PanelTheme();
+            string firstPath = PanelTheme.PortraitPath("IRONCLAD");
+            var retainedTexture = portraitTheme.Portrait(firstPath) ?? throw new InvalidOperationException("Portrait fixture needs the installed Ironclad texture");
+            foreach (string path in new[]
+            {
+                PanelTheme.PortraitPath("SILENT"), PanelTheme.PortraitPath("REGENT"), PanelTheme.PortraitPath("NECROBINDER"), PanelTheme.PortraitPath("DEFECT"),
+                "res://images/ui/hover_tip.png",
+                "res://images/atlases/ui_atlas.sprites/scrollbar_track_center.tres",
+                "res://images/atlases/ui_atlas.sprites/scrollbar_track_edge2.tres",
+                "res://images/atlases/ui_atlas.sprites/scrollbar_train_large.tres",
+                "res://images/atlases/ui_atlas.sprites/settings_tab_selected.tres",
+                "res://images/atlases/ui_atlas.sprites/settings_tab_stroke.tres",
+                firstPath
+            })
+            {
+                portraitTheme.RetainPortraits(new[] { path });
+                if (portraitTheme.Portrait(path) == null || portraitTheme.RetainedPortraitCount != 1)
+                    throw new InvalidOperationException("Current roster portrait retention exhausted after earlier paths");
+            }
+            if (!GodotObject.IsInstanceValid(retainedTexture) || retainedTexture.GetWidth() <= 0)
+                throw new InvalidOperationException("Portrait eviction disposed a shared game resource");
             var fixture = new SummaryView
             {
                 Title = "CULTIST",
@@ -237,7 +258,7 @@ internal static class ProfilerPanels
             long refreshTicks = 0, refreshAllocated = 0;
             for (int cycle = 0; cycle < 2; cycle++)
             {
-                panel = new ProfilerPanel(_combatTheme ??= new PanelTheme(), cycle == 1);
+                panel = new ProfilerPanel(portraitTheme, cycle == 1);
                 tree.Root.CallDeferred(Node.MethodName.AddChild, panel.Backdrop);
                 tree.Root.CallDeferred(Node.MethodName.AddChild, panel.Root);
                 await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
@@ -270,18 +291,17 @@ internal static class ProfilerPanels
                 }
                 var avatar = panel.Layout.AvatarHits.FirstOrDefault(hit => hit.Slot == 1);
                 var avatarPoint = new UiPoint(panel.ControlRect.X + avatar.X0 + 8, panel.ControlRect.Y + avatar.Y0 + 8);
-                if (avatar.X1 > avatar.X0) { panel.Interact(avatarPoint, true); panel.Interact(avatarPoint, false); }
-                else panel.SelectPlayer(1);
+                if (avatar.X1 <= avatar.X0) throw new InvalidOperationException("A later roster lost its available portrait filter");
+                panel.Interact(avatarPoint, true); panel.Interact(avatarPoint, false);
                 if (panel.Player != 1 || panel.RowCount != 120) throw new InvalidOperationException("Panel fixture failed player filtering");
                 if (panel.ScrollPosition <= 0) throw new InvalidOperationException("Player filtering unexpectedly reset the scroll offset");
-                if (avatar.X1 > avatar.X0) { panel.Interact(avatarPoint, true); panel.Interact(avatarPoint, false); }
-                else panel.SelectPlayer(1);
+                panel.Interact(avatarPoint, true); panel.Interact(avatarPoint, false);
                 if (panel.Player != null || panel.RowCount != 240) throw new InvalidOperationException("Panel fixture failed clearing the filter");
                 var outside = new UiPoint(panel.ControlRect.X - 10, panel.ControlRect.Y + panel.ControlRect.H - 40);
-                if (_combatTheme.HasScrollbar)
+                if (portraitTheme.HasScrollbar)
                 {
-                    var track = PanelGeometry.Scrollbar(new(panel.ControlRect.W, panel.ControlRect.H), _combatTheme.HasPlate,
-                        PanelGeometry.BodyBand(panel.ControlRect.H, _combatTheme.HasPlate, panel.Layout.HeaderBottom), panel.Layout.Height, panel.ScrollPosition).Track;
+                    var track = PanelGeometry.Scrollbar(new(panel.ControlRect.W, panel.ControlRect.H), portraitTheme.HasPlate,
+                        PanelGeometry.BodyBand(panel.ControlRect.H, portraitTheme.HasPlate, panel.Layout.HeaderBottom), panel.Layout.Height, panel.ScrollPosition).Track;
                     var point = new UiPoint(panel.ControlRect.X + track.X + 10, panel.ControlRect.Y + track.Y + track.H / 2);
                     panel.Interact(point, true);
                     panel.Interact(outside, true);
