@@ -123,6 +123,14 @@ internal static class SessionFixtures
             Reject(() => StatisticsJson.ParseRun(invalid.ToJsonString(), run.RunId), "Preserved run IDs must be bounded to distinct storage identities");
         }
         var record = Record(run, 1, 9);
+        var preserved = JsonSerializer.SerializeToNode(record, StatisticsJson.Options);
+        preserved["schema_version"] = 1;
+        preserved["run"]["schema_version"] = 1;
+        preserved["run"]["legacy_run_id"] = 0;
+        Check(StatisticsJson.ParseVersionOneCombat(preserved.ToJsonString(), run.RunId, 1).Combat.Cards.Single().DamageDealt == 9,
+            "A zero legacy alias in old embedded metadata must not discard its accepted combat");
+        Reject(() => StatisticsJson.ParseVersionOneRun(preserved["run"].ToJsonString(), run.RunId),
+            "A zero legacy alias remains invalid in old standalone run headers");
         var combatJson = JsonSerializer.SerializeToNode(record, StatisticsJson.Options);
         combatJson.AsObject().Remove("schema_version");
         Reject(() => StatisticsJson.ParseCombat(combatJson.ToJsonString(), run.RunId, 1), "Combat schema identity must be explicit");

@@ -119,7 +119,7 @@ internal static class StatisticsJson
             throw new InvalidDataException("Missing or unsupported statistics schema");
         var run = JsonSerializer.Deserialize<RunRecord>(node, Options)
             ?? throw new InvalidDataException("Run record is missing");
-        if (version == 1) run = PreserveVersionOneLinks(run, node);
+        if (version == 1) run = PreserveVersionOneLinks(run, node, header: true);
         if (expectedId != null && run.RunId != expectedId
             || !(version == 1 ? NumericId(run.RunId) || Guid.TryParseExact(run.RunId, "N", out _) : CurrentRunId(run.RunId)) || run.StartedAt < 0 || run.EndedAt < 0
             || run.Profile < -1 || run.Seed == null || run.GameVersion == null || run.ModVersion == null
@@ -161,7 +161,7 @@ internal static class StatisticsJson
         RunRecord run = record.Run;
         if (run != null)
         {
-            if (version == 1) run = PreserveVersionOneLinks(run, document.RootElement.GetProperty("run"));
+            if (version == 1) run = PreserveVersionOneLinks(run, document.RootElement.GetProperty("run"), header: false);
             else run = ParseRun(document.RootElement.GetProperty("run"), runId, version);
         }
         return record with
@@ -184,7 +184,7 @@ internal static class StatisticsJson
         => uint.TryParse(id, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out uint value)
             && value != 0 && id == value.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
-    private static RunRecord PreserveVersionOneLinks(RunRecord run, JsonElement node)
+    private static RunRecord PreserveVersionOneLinks(RunRecord run, JsonElement node, bool header)
     {
         var ids = new List<string>();
         if (node.TryGetProperty("prior_run_id", out var prior) && prior.ValueKind != JsonValueKind.Null)
@@ -194,9 +194,9 @@ internal static class StatisticsJson
         }
         if (node.TryGetProperty("legacy_run_id", out var legacy) && legacy.ValueKind != JsonValueKind.Null)
         {
-            if (legacy.ValueKind != JsonValueKind.Number || !legacy.TryGetUInt32(out uint id) || id == 0) throw new InvalidDataException("Invalid preserved run identity");
+            if (legacy.ValueKind != JsonValueKind.Number || !legacy.TryGetUInt32(out uint id) || header && id == 0) throw new InvalidDataException("Invalid preserved run identity");
             string text = id.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            if (text != run.RunId && !ids.Contains(text, StringComparer.Ordinal)) ids.Add(text);
+            if (id != 0 && text != run.RunId && !ids.Contains(text, StringComparer.Ordinal)) ids.Add(text);
         }
         return run with { SchemaVersion = StatisticsStore.SchemaVersion, PreservedRunIds = Array.AsReadOnly(ids.ToArray()) };
     }
