@@ -2,6 +2,10 @@
 //! IDs. Replaying on a fresh State must reproduce every returned source/group
 //! handle before publishing a snapshot. Truncation is explicit and unreplayable.
 //! A handler panic truncates the trace because its observation may be missing.
+//! Gameplay retains 10,000 entries and 8 MiB of serialized entry bytes. Releases
+//! have a separate allowance: each successful release requires an earlier source
+//! capture or accumulation, so valid maintenance cannot outnumber gameplay.
+//! Record and replay enforce both budgets; GC never spends gameplay capacity.
 
 use serde::{Deserialize, Serialize};
 
@@ -10,6 +14,11 @@ use super::state::State;
 
 const MAX_OBSERVATIONS: usize = 10_000;
 const MAX_BYTES: usize = 8 * 1024 * 1024;
+const MAX_RELEASES: usize = MAX_OBSERVATIONS;
+const MAX_RELEASE_BYTES: usize = br#"{"observation":{"operation":"source_release","handle":18446744073709551615},"result":18446744073709551615}"#.len();
+const MAX_TRACE_BYTES: usize =
+    MAX_BYTES + MAX_RELEASES * MAX_RELEASE_BYTES + MAX_OBSERVATIONS + MAX_RELEASES + 1024;
+const _: () = assert!(MAX_TRACE_BYTES < i32::MAX as usize);
 const TRACE_VERSION: u32 = 1;
 
 #[derive(Serialize, Deserialize)]
@@ -243,7 +252,35 @@ pub(crate) struct Recording {
     pub(crate) truncated: bool,
     observations: Vec<Entry>,
     #[serde(skip)]
+    budget: RecordingBudget,
+}
+
+#[derive(Default)]
+struct RecordingBudget {
+    observations: usize,
     bytes: usize,
+    releases: usize,
+}
+
+impl RecordingBudget {
+    fn accept(&mut self, entry: &Entry) -> bool {
+        let bytes = serde_json::to_vec(entry)
+            .expect("observations contain serializable scalar values")
+            .len();
+        if matches!(entry.observation, Observation::SourceRelease { .. }) {
+            if self.releases == MAX_RELEASES || bytes > MAX_RELEASE_BYTES {
+                return false;
+            }
+            self.releases += 1;
+        } else {
+            if self.observations == MAX_OBSERVATIONS || bytes > MAX_BYTES - self.bytes {
+                return false;
+            }
+            self.observations += 1;
+            self.bytes += bytes;
+        }
+        true
+    }
 }
 
 impl State {
@@ -256,7 +293,7 @@ impl State {
             policy_version: super::summary::POLICY_VERSION,
             truncated: false,
             observations: Vec::new(),
-            bytes: 0,
+            budget: RecordingBudget::default(),
         });
         1
     }
@@ -273,22 +310,14 @@ impl State {
         if recording.truncated {
             return;
         }
-        if recording.observations.len() == MAX_OBSERVATIONS {
-            recording.truncated = true;
-            return;
-        }
         let entry = Entry {
             observation: make(),
             result,
         };
-        let bytes = serde_json::to_vec(&entry)
-            .expect("observations contain scalar values")
-            .len();
-        if bytes > MAX_BYTES - recording.bytes {
+        if !recording.budget.accept(&entry) {
             recording.truncated = true;
             return;
         }
-        recording.bytes += bytes;
         recording.observations.push(entry);
     }
 
@@ -297,7 +326,7 @@ impl State {
         reason = "one exhaustive dispatch keeps the recorded protocol auditable"
     )]
     pub(crate) fn replay(&mut self, json: &str) -> i32 {
-        if json.len() > MAX_BYTES + MAX_OBSERVATIONS + 1024 {
+        if json.len() > MAX_TRACE_BYTES {
             return 0;
         }
         let Ok(recording) = serde_json::from_str::<Recording>(json) else {
@@ -306,12 +335,16 @@ impl State {
         if recording.trace_version != TRACE_VERSION
             || recording.policy_version != super::summary::POLICY_VERSION
             || recording.truncated
-            || recording.observations.len() > MAX_OBSERVATIONS
+            || recording.observations.len() > MAX_OBSERVATIONS + MAX_RELEASES
         {
             return 0;
         }
         let mut candidate = State::default();
+        let mut budget = RecordingBudget::default();
         for entry in recording.observations {
+            if !budget.accept(&entry) {
+                return 0;
+            }
             let result = match entry.observation {
                 Observation::WeakProjection { observed } => match observed.prevention() {
                     Ok(amount) => amount as u64,
@@ -624,5 +657,115 @@ impl State {
         candidate.revision = self.revision.saturating_add(1);
         *self = candidate;
         1
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn release_allowance_preserves_the_exact_gameplay_byte_budget() {
+        let overhead = serde_json::to_vec(&Entry {
+            observation: Observation::CaptureFailed { reason: "".into() },
+            result: 0,
+        })
+        .expect("fixture serializes")
+        .len();
+        let mut state = State::default();
+        assert_eq!(state.recording_begin(), 1);
+        for _ in 0..MAX_RELEASES {
+            state.record(|| Observation::SourceRelease { handle: 0 }, 0);
+        }
+        state.record(
+            || Observation::CaptureFailed {
+                reason: "x".repeat(MAX_BYTES - overhead).into(),
+            },
+            0,
+        );
+        assert!(
+            !state
+                .recording
+                .as_ref()
+                .expect("recording enabled")
+                .truncated
+        );
+        let trace = state.recording_json();
+        assert!(trace.len() > MAX_BYTES + MAX_OBSERVATIONS + 1024);
+        assert!(trace.len() <= MAX_TRACE_BYTES);
+        assert_eq!(State::default().replay(&trace), 1);
+        state.record(|| Observation::CombatDiscard, 0);
+        assert!(
+            state
+                .recording
+                .as_ref()
+                .expect("recording enabled")
+                .truncated
+        );
+        assert_eq!(State::default().replay(&state.recording_json()), 0);
+        let oversized_json = format!("{trace}{}", " ".repeat(MAX_TRACE_BYTES - trace.len() + 1));
+        assert_eq!(
+            State::default().replay(&oversized_json),
+            0,
+            "JSON whitespace cannot bypass the overall input bound"
+        );
+
+        let mut oversized: Recording = serde_json::from_str(&trace).expect("trace parses");
+        let entry = oversized
+            .observations
+            .last_mut()
+            .expect("gameplay entry exists");
+        if let Observation::CaptureFailed { reason } = &mut entry.observation {
+            *reason = format!("{reason}x").into();
+        } else {
+            panic!("last entry is the large gameplay observation");
+        }
+        assert_eq!(
+            State::default()
+                .replay(&serde_json::to_string(&oversized).expect("fixture serializes")),
+            0,
+            "maintenance headroom cannot admit excess gameplay bytes on replay"
+        );
+    }
+
+    #[test]
+    fn replay_and_record_enforce_independent_entry_counts() {
+        let mut state = State::default();
+        assert_eq!(state.recording_begin(), 1);
+        for _ in 0..MAX_RELEASES {
+            state.record(|| Observation::SourceRelease { handle: 0 }, 0);
+        }
+        let mut oversized: Recording =
+            serde_json::from_str(&state.recording_json()).expect("trace parses");
+        oversized.observations.push(Entry {
+            observation: Observation::SourceRelease { handle: 0 },
+            result: 0,
+        });
+        assert_eq!(
+            State::default()
+                .replay(&serde_json::to_string(&oversized).expect("fixture serializes")),
+            0
+        );
+        state.record(|| Observation::SourceRelease { handle: 0 }, 0);
+        assert!(
+            state
+                .recording
+                .as_ref()
+                .expect("recording enabled")
+                .truncated
+        );
+
+        oversized.observations = (0..=MAX_OBSERVATIONS)
+            .map(|_| Entry {
+                observation: Observation::CombatDiscard,
+                result: 0,
+            })
+            .collect();
+        assert_eq!(
+            State::default()
+                .replay(&serde_json::to_string(&oversized).expect("fixture serializes")),
+            0,
+            "maintenance headroom cannot admit excess gameplay entries on replay"
+        );
     }
 }

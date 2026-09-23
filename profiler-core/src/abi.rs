@@ -1449,6 +1449,42 @@ mod tests {
     }
 
     #[test]
+    fn source_collection_does_not_consume_the_gameplay_recording_budget() {
+        let engine = spire_profiler_engine_create();
+        assert_eq!(spire_profiler_recording_begin(engine), 1);
+        started(engine, 1);
+        for _ in 0..9_998 {
+            // SAFETY: the literal owns the terminated identifier through capture.
+            let source =
+                unsafe { spire_profiler_source_capture(engine, 1, 1, 1, c"A".as_ptr(), 0, 0, 0) };
+            assert_ne!(source, 0);
+            assert_eq!(spire_profiler_source_release(engine, source), 1);
+        }
+        assert_eq!(spire_profiler_combat_ended(engine, 1), 1);
+        let trace = json(engine, true);
+        let doc: serde_json::Value = serde_json::from_str(&trace).expect("trace parses");
+        assert_eq!(doc["truncated"], false);
+        assert_eq!(
+            doc["observations"].as_array().expect("entry array").len(),
+            19_998
+        );
+        let trace = CString::new(trace).expect("JSON has no literal NUL");
+        let replay = spire_profiler_engine_create();
+        // SAFETY: CString owns the terminated recording through replay.
+        assert_eq!(unsafe { spire_profiler_replay(replay, trace.as_ptr()) }, 1);
+        assert_eq!(json(replay, false), json(engine, false));
+        spire_profiler_turn_started(engine, 1);
+        let overflow = CString::new(json(engine, true)).expect("JSON has no literal NUL");
+        assert_eq!(
+            // SAFETY: CString owns the terminated recording through replay.
+            unsafe { spire_profiler_replay(replay, overflow.as_ptr()) },
+            0
+        );
+        spire_profiler_engine_destroy(engine);
+        spire_profiler_engine_destroy(replay);
+    }
+
+    #[test]
     fn recording_overflow_is_explicit_and_cannot_replay_as_complete() {
         let engine = spire_profiler_engine_create();
         assert_eq!(spire_profiler_recording_begin(engine), 1);
