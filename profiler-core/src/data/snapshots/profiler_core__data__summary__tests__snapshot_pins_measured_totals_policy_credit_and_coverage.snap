@@ -1,0 +1,6 @@
+---
+source: profiler-core/src/data/summary.rs
+assertion_line: 146
+expression: state.snapshot()
+---
+{"policy_version":2,"combat_id":7,"encounter_id":"SELF_TEST","encounter_type":"normal","started_at":1234,"result":"completed","turns":0,"plays":0,"generated_plays":0,"generation_triggers":0,"damage_received":8,"block_total":5,"potions_used":0,"cards":[{"player":0,"id":"DEFEND","kind":0,"plays":0,"damage_dealt":0,"damage_blocked":0,"block_gained":5,"block_effective":5,"dmg_direct":0,"dmg_attributed":0,"dmg_modifier":0,"blk_modifier":0,"mitigate_debuff":0,"mitigate_buff":0,"mitigate_str":0,"self_damage":0,"forge":0}],"coverage":{"complete":false,"failures":1,"reasons":["missing-hook"]}}

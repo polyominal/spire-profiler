@@ -11,11 +11,7 @@ use xshell::{Shell, cmd};
 
 use crate::{bundle, cross, sha256_file, workspace_root};
 
-const SHARED_FILES: [&str; 3] = [
-    "manifest.json",
-    "spire-profiler.dll",
-    "spire_profiler.gdextension",
-];
+const SHARED_FILES: [&str; 2] = ["manifest.json", "spire-profiler.dll"];
 
 pub fn release(shell: &Shell) -> Result<()> {
     let commit = crate::git::release_commit(shell)?;
@@ -127,7 +123,6 @@ mod tests {
     const FILES: &[&str] = &[
         "manifest.json",
         "spire-profiler.dll",
-        "spire_profiler.gdextension",
         "libprofiler_core.macos.arm64.dylib",
         "libprofiler_core.macos.x86_64.dylib",
         "libprofiler_core.linux.x86_64.so",
@@ -178,7 +173,9 @@ mod tests {
             let expected: Vec<_> = FILES
                 .iter()
                 .enumerate()
-                .filter(|(i, _)| index == 0 || *i < 3 || *i == index + 2)
+                .filter(|(i, _)| {
+                    index == 0 || *i < SHARED_FILES.len() || *i == index + SHARED_FILES.len() - 1
+                })
                 .map(|(_, file)| format!("spire-profiler/{file}"))
                 .collect();
             assert_eq!(listing.lines().collect::<Vec<_>>(), expected);

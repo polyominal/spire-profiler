@@ -8,13 +8,8 @@ internal sealed class NativeAttributionBackend : GameAttributionBackend
     internal override object CurrentCombat => RunContext.CurrentCombat;
     internal override ulong Capture(ulong epoch, CaptureKind kind, ulong instance, string id, int sourceKind, int slot, GenerationState generation)
         => ProfilerNative.SourceCapture(epoch, (int)kind, instance, id, sourceKind, slot, (int)generation);
-    internal override int SourceCount(ulong transfer) => ProfilerNative.SourceCount(transfer);
-    internal override ulong SourceDestination(ulong transfer, int index) => ProfilerNative.SourceDestination(transfer, index);
-    internal override ulong SourceWeight(ulong transfer, int index) => ProfilerNative.SourceWeight(transfer, index);
-    internal override ulong TransferBegin(ulong epoch) => ProfilerNative.SourceTransferBegin(epoch);
-    internal override int TransferAdd(ulong transfer, ulong destination, ulong weight) => ProfilerNative.SourceTransferAdd(transfer, destination, weight);
-    internal override int TransferSeal(ulong transfer) => ProfilerNative.SourceTransferSeal(transfer);
-    internal override int TransferRelease(ulong transfer) => ProfilerNative.SourceTransferRelease(transfer);
+    internal override ulong SourceAccumulate(ulong epoch, ulong first, int before, ulong second, int after)
+        => ProfilerNative.SourceAccumulate(epoch, first, before, second, after);
     internal override int PowerAttached(CaptureEpoch epoch, ulong identity, ulong owner, PowerObservation observed, ulong source)
         => ProfilerNative.PowerAttached(epoch.Sequence, identity, observed.Id, owner, observed.OwnerKind, observed.OwnerSlot, observed.Amount, source);
     internal override int PowerChanged(CaptureEpoch epoch, ulong identity, ulong owner, PowerObservation observed, int before, ulong source)
@@ -53,7 +48,11 @@ internal sealed class NativeAttributionBackend : GameAttributionBackend
     internal override int BlockCleared(ulong epoch, int slot) => ProfilerNative.BlockPoolClear(epoch, slot);
     internal override int PlayerDied(ulong epoch, int slot) => ProfilerNative.PlayerDied(epoch, slot);
     internal override int PotionUsed(ulong epoch) => ProfilerNative.PotionUsed(epoch);
-    internal override ulong CombatStarted(string encounter, string type) => ProfilerNative.CombatStarted(encounter, type);
-    internal override int CombatEnded(ulong epoch) => ProfilerNative.CombatEnded(epoch);
-    internal override void Diagnostic(string category, Exception error) => Log.Error($"[SpireProfiler] attribution {category}: {error?.Message}");
+    internal override ulong CombatStarted(string encounter, string type) => ProfilerSession.StartCombat(encounter, type);
+    internal override int CombatEnded(ulong epoch) => ProfilerSession.EndCombat(epoch);
+    internal override void Diagnostic(string category, Exception error)
+    {
+        ProfilerSession.ReportFailure(category);
+        Log.Error($"[SpireProfiler] attribution {category}: {error?.Message}");
+    }
 }

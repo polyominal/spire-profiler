@@ -314,6 +314,7 @@ impl WeightedDestination {
     pub(super) fn destination(&self) -> Destination {
         self.destination
     }
+    #[cfg(any(test, feature = "test-support"))]
     pub(super) fn weight(&self) -> u64 {
         self.weight
     }

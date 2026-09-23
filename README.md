@@ -5,8 +5,9 @@ A per-source (cards, relics, powers, potions) combat profiler for Slay the Spire
 damage, defense, and forge. It aggregates those numbers per run, and shows them
 in two in-game charts: the combat panel and the run-history summary.
 
-![Run Summary panel: per-source damage bars with a hover breakdown and category
-legend](docs/images/run-summary.png)
+C\# observes game execution and owns the panels and statistics files. A
+deterministic Rust engine assigns source credit under an explicit attribution
+policy. Charts identify incomplete or unknown capture coverage.
 
 ## AI use disclaimer
 
@@ -37,5 +38,5 @@ active avatar again for the full team view).
   spec next to its code.
 - `docs/` holds the environment guides: building ([build.md](docs/build.md)),
   verification gates and headless testing ([verify.md](docs/verify.md)),
-  GDExtension interop ([gdextension.md](docs/gdextension.md)), and the game
+  managed/native interop ([interop.md](docs/interop.md)), and the game
   environment ([game.md](docs/game.md)).

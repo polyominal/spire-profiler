@@ -1,14 +1,12 @@
-//! The bundle's native matrix: one library per (os, arch). The matrix is
-//! the single source of truth for the platform rows: the .gdextension
-//! `[libraries]` section, the C# host's runtime selector, and the release
-//! zips all derive from it. The library names are specified nowhere else.
+//! The native reducer matrix drives artifact names, the managed runtime
+//! selector, and platform release archives.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use xshell::{Shell, cmd};
 
-/// `os`/`arch` key the .gdextension row; the triples drive cargo-zigbuild
+/// `os`/`arch` select the runtime library; triples drive cargo-zigbuild
 /// and locate the artifact; `cdylib` is renamed to `bundle_name`. The Linux
 /// triple carries the `.2.17` glibc floor (the oldest distro Steam still
 /// supports); cargo strips the suffix from the output dir.
@@ -55,23 +53,6 @@ pub(crate) const MATRIX: &[NativeRow] = &[
         bundle_name: "libprofiler_core.windows.x86_64.dll",
     },
 ];
-
-/// The keys and file names live only here; no committed copy to drift.
-pub(crate) fn render_gdextension() -> String {
-    let libraries = MATRIX
-        .iter()
-        .map(|row| format!("{}.{} = \"{}\"", row.os, row.arch, row.bundle_name))
-        .collect::<Vec<_>>()
-        .join("\n");
-    format!(
-        "[configuration]\n\
-         entry_symbol = \"gdextension_entry\"\n\
-         compatibility_minimum = \"4.5\"\n\
-         \n\
-         [libraries]\n\
-         {libraries}\n"
-    )
-}
 
 pub(crate) type NativeArtifact = (&'static str, PathBuf);
 
@@ -152,8 +133,7 @@ fn installed_targets(shell: &Shell) -> Result<String> {
 mod tests {
     use super::*;
 
-    /// A duplicate would silently shadow a library in the bundle or in
-    /// Godot's lookup.
+    /// A duplicate would silently shadow a bundled library or runtime selector.
     #[test]
     fn matrix_keys_and_bundle_names_are_unique() {
         for (index, row) in MATRIX.iter().enumerate() {
@@ -168,23 +148,6 @@ mod tests {
                     "bundle names must be distinct"
                 );
             }
-        }
-    }
-
-    #[test]
-    fn rendered_gdextension_matches_the_matrix() {
-        let rendered = render_gdextension();
-        assert!(rendered.contains("[configuration]\n"));
-        assert!(rendered.contains("entry_symbol = \"gdextension_entry\"\n"));
-        assert!(rendered.contains("compatibility_minimum = \"4.5\"\n"));
-        let libraries = rendered
-            .split_once("[libraries]\n")
-            .expect("rendered extension has a libraries section")
-            .1;
-        assert_eq!(libraries.lines().count(), MATRIX.len());
-        for row in MATRIX {
-            let entry = format!("{}.{} = \"{}\"\n", row.os, row.arch, row.bundle_name);
-            assert!(rendered.contains(&entry), "missing rendered entry: {entry}");
         }
     }
 }

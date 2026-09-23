@@ -7,9 +7,8 @@
 //!
 //! Scope: the fmt-md doc set and xtask/src count every em dash (their
 //! strings are all developer-facing), while profiler-core counts comments
-//! only, because its string and char literals hold player-visible
-//! typography and the renderer's glyph allowlist. Comment classification
-//! reuses the per-line scanner from [`crate::scan`], so a trailing
+//! only. Comment classification reuses the per-line scanner from
+//! [`crate::scan`], so a trailing
 //! comment on a code line is out of scope.
 
 use std::collections::BTreeMap;
@@ -26,33 +25,10 @@ const EM_DASH: char = '\u{2014}';
 /// Hand-curated ceilings, one per file with a nonzero count. A pin only
 /// descends: reword instead of raising, and delete the entry at zero.
 const PINS: &[(&str, usize)] = &[
-    ("profiler-core/src/abi.rs", 8),
-    ("profiler-core/src/data/events/run.rs", 1),
-    ("profiler-core/src/data/persistence.rs", 6),
-    ("profiler-core/src/data/persistence/time.rs", 1),
-    ("profiler-core/src/data/run_history.rs", 1),
-    ("profiler-core/src/data/run_history/tests.rs", 1),
-    ("profiler-core/src/data/state.rs", 5),
-    ("profiler-core/src/engine.rs", 4),
-    ("profiler-core/src/engine/gdext.rs", 12),
-    ("profiler-core/src/engine/object.rs", 2),
-    ("profiler-core/src/lib.rs", 5),
-    ("profiler-core/src/registration.rs", 2),
-    ("profiler-core/src/ui.rs", 2),
-    ("profiler-core/src/ui/chart_layout.rs", 7),
-    ("profiler-core/src/ui/palette.rs", 2),
-    ("profiler-core/src/ui/panel.rs", 2),
-    ("profiler-core/src/ui/panel_body.rs", 3),
-    ("profiler-core/src/ui/panel_common.rs", 4),
-    ("profiler-core/src/ui/panel_replay.rs", 2),
-    ("profiler-core/src/ui/run_panel.rs", 7),
-    ("profiler-core/src/ui/theme.rs", 3),
-    ("profiler-core/src/ui/tooltip.rs", 4),
-    ("profiler-core/src/ui/ui_model.rs", 1),
+    ("profiler-core/src/data/state.rs", 1),
     ("xtask/src/bundle.rs", 1),
     ("xtask/src/check_abi.rs", 3),
     ("xtask/src/check_catalog.rs", 10),
-    ("xtask/src/check_citations.rs", 1),
     ("xtask/src/decompile.rs", 2),
     ("xtask/src/discover.rs", 3),
     ("xtask/src/game_version.rs", 1),

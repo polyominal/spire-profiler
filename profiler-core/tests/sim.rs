@@ -2,25 +2,20 @@
 //! TigerBeetle's VOPR:
 //! https://github.com/tigerbeetle/tigerbeetle/blob/97c7a8ef385270ebe0e1b75959d3d21d134629df/docs/internals/vopr.md
 //! A seeded PRNG feeds every scenario; `SIM_SEED` replays the event stream
-//! and behavioral assertions under equivalent isolated fixtures. Combat
-//! `started_at` and run `ended_at` use the wall clock; assertions do not
-//! depend on their values, so persisted bytes may differ. The lifecycle
-//! walk fixes the original run-start identity and runs 20 scenarios x 40
-//! weighted events in fresh directories, checking complete row expectations
-//! and ledger invariants after every event before parsing persisted JSON.
+//! and behavioral assertions under equivalent isolated fixtures. Timestamps are
+//! fixed host inputs; the walk checks ledger invariants after every event and
+//! compares the immutable JSON projection with the final ledger.
 //! Supplier grants use a FIFO of individual units; defensive pools retain
 //! an independent outer FIFO/residue model and per-seat source prefixes.
 //! Nested-hit walks keep an attack pending through Thorns and Inferno, then
 //! check another target against fresh modifier budgets from the same play.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::fs;
-use std::path::Path;
 use std::rc::Rc;
 
-use profiler_core::data::state::{self, CardStat, CombatResult, RunOutcome, STATE, SourceKind};
-use profiler_core::data::{events, records};
-use profiler_core::test_util::{SourceFixture, combat_epoch, combat_ids, unique_dir};
+use profiler_core::data::events;
+use profiler_core::data::state::{self, CardStat, CombatResult, STATE, SourceKind};
+use profiler_core::test_util::{SourceFixture, combat_epoch};
 
 const DEFAULT_SEED: u64 = 0x5EED_5EED_5EED_5EED;
 const SCENARIOS: u32 = 20;
@@ -387,7 +382,7 @@ struct NaivePool {
 }
 
 impl NaivePool {
-    fn push(&mut self, source: Roots, base: u64, modifiers: Vec<(Roots, u64)>) {
+    fn push(&mut self, source: Roots, base: u64, mut modifiers: Vec<(Roots, u64)>) {
         if modifiers.is_empty()
             && let Some(chunk) = self
                 .chunks
@@ -399,7 +394,23 @@ impl NaivePool {
             return;
         }
         if self.chunks.len() == state::caps::BLOCK_POOL {
+            let tail = self.chunks.last_mut().expect("full model pool has a tail");
+            let remaining =
+                tail.remaining + base + modifiers.iter().map(|(_, amount)| amount).sum::<u64>();
+            *tail = NaiveChunk {
+                base: NaivePrefix::new(vec![(RowKey::unknown(), 1)]),
+                base_original: remaining,
+                remaining,
+                mods: Box::default(),
+            };
             return;
+        }
+        if modifiers.len() > MAX_BLOCK_MODIFIERS {
+            let unknown = modifiers
+                .drain(MAX_BLOCK_MODIFIERS - 1..)
+                .map(|(_, amount)| amount)
+                .sum();
+            modifiers.push((vec![(RowKey::unknown(), 1)], unknown));
         }
         let mods: Box<[_]> = modifiers
             .into_iter()
@@ -460,6 +471,9 @@ impl NaivePool {
             if chunk.remaining == 0 {
                 self.chunks.remove(0);
             }
+        }
+        if remaining > 0 {
+            credits.push((RowKey::unknown(), Field::BlockEffective, remaining as i64));
         }
         credits
     }
@@ -617,7 +631,7 @@ impl LedgerModel {
         self.rows.entry(key.clone()).or_insert_with(|| CardStat {
             player: key.slot,
             id: key.id.clone(),
-            kind: SourceKind::from(key.kind),
+            kind: SourceKind::from_c(i32::from(key.kind)),
             ..CardStat::default()
         })
     }
@@ -1140,7 +1154,6 @@ fn randomized_frozen_sources_match_naive_attribution() {
     let repro = format!("SIM_SEED={seed} frozen sources");
     let mut rng = Rng::new(seed);
     events::test_reset();
-    events::init(&unique_dir("sim/frozen-sources"));
     events::combat_started("FROZEN_SOURCES", "test");
     let mut walk = Walk::new();
     let mut frozen = VecDeque::new();
@@ -1179,7 +1192,6 @@ fn randomized_nested_hits_keep_frozen_suppliers_and_per_target_budgets() {
     let repro = format!("SIM_SEED={seed} nested hits");
     let mut rng = Rng::new(seed ^ 0xCA11_BACC_1AFE);
     events::test_reset();
-    events::init(&unique_dir("sim/nested-hits"));
     events::combat_started("NESTED_HITS", "test");
     let sources = [
         SimSource::card("STRIKE", 0),
@@ -1247,25 +1259,17 @@ fn randomized_combat_lifecycle_invariants() {
     for scenario in 0..SCENARIOS {
         let repro = format!("SIM_SEED={base_seed} scenario {scenario}");
         let mut rng = Rng::new(base_seed ^ u64::from(scenario).wrapping_mul(0x9E37_79B9_7F4A_7C15));
-        let base = unique_dir(&format!("sim/lifecycle-{scenario}"));
         events::test_reset();
-        events::init(&base);
-        events::set_run_meta(7);
-        let (characters, net_ids, player_count) = if scenario % 2 == 0 {
-            ("SIM_CHAR,SIM_CHAR,SIM_CHAR", "10,20,30", 3)
-        } else {
-            ("SIM_CHAR,SIM_CHAR,SIM_CHAR,SIM_CHAR", "10,20,30,40", 4)
-        };
-        events::run_started(
-            characters,
-            rng.range_i32(0, 20),
-            "Standard",
-            "SIM_SEED",
-            rng.range_i32(0, 1),
-            net_ids,
-            1_786_579_200,
-        );
-        events::combat_started("SIM_ENCOUNTER", "test");
+        let player_count = if scenario % 2 == 0 { 3 } else { 4 };
+        STATE.with(|cell| {
+            cell.borrow_mut().combat_started(
+                1,
+                "SIM_ENCOUNTER",
+                "test",
+                1_786_579_200,
+                player_count as i32,
+            )
+        });
         let mut walk = Walk::new();
         walk.ledger.players = vec![false; player_count];
         for step in 0..EVENTS_PER_SCENARIO {
@@ -1275,106 +1279,27 @@ fn randomized_combat_lifecycle_invariants() {
         assert_eq!(events::combat_ended(combat_epoch()), 1);
         let player_died =
             !walk.ledger.players.is_empty() && walk.ledger.players.iter().all(|died| *died);
-        events::run_ended(if player_died {
-            RunOutcome::Defeat
-        } else {
-            RunOutcome::Victory
+        STATE.with(|cell| {
+            let state = cell.borrow();
+            let combat = state.current.as_ref().expect("finished combat exists");
+            assert_eq!(
+                combat.result(),
+                Some(if player_died {
+                    CombatResult::Defeat
+                } else {
+                    CombatResult::Completed
+                }),
+                "{repro}"
+            );
+            let doc: serde_json::Value =
+                serde_json::from_str(&state.snapshot()).expect("snapshot JSON parses");
+            assert_eq!(doc["turns"], combat.turns);
+            assert_eq!(doc["damage_received"], combat.damage_received);
+            assert_eq!(
+                doc["cards"],
+                serde_json::to_value(&combat.cards).expect("rows serialize")
+            );
         });
-        check_written_files(&base, player_died, &repro);
-        let _ = fs::remove_dir_all(&base);
-    }
-}
-
-fn check_written_files(base: &Path, player_died: bool, repro: &str) {
-    let runs_dir = base.join("runs");
-    let ids: Vec<u32> = combat_ids(&runs_dir)
-        .into_iter()
-        .map(|(_, id)| id)
-        .collect();
-    assert_eq!(
-        ids.len(),
-        1,
-        "{repro}: exactly one combat record per scenario"
-    );
-    let combats_text = fs::read_to_string(runs_dir.join("1").join("1.json"))
-        .unwrap_or_else(|err| panic!("{repro}: combat file must be written: {err}"));
-    let rec = records::parse_combat_doc(&combats_text)
-        .unwrap_or_else(|err| panic!("{repro}: combat doc must parse back: {err}"));
-    assert_eq!(
-        rec.combat_id, 1,
-        "{repro}: the scenario's only combat is seq 1"
-    );
-    assert_eq!(
-        rec.result,
-        if player_died {
-            CombatResult::Defeat
-        } else {
-            CombatResult::Completed
-        },
-        "{repro}: the combat result must mirror whether the walk killed the player"
-    );
-    // The persisted record must mirror the finished in-memory combat
-    // (the write/read pairing rule).
-    STATE.with(|cell| {
-        let st = cell.borrow();
-        let combat = st
-            .current
-            .as_ref()
-            .unwrap_or_else(|| panic!("{repro}: the finished combat stays in state"));
-        assert_eq!(
-            rec.turns, combat.turns,
-            "{repro}: written turns must match the ledger"
-        );
-        assert_eq!(
-            rec.damage_received, combat.damage_received,
-            "{repro}: written damage must match the ledger"
-        );
-        assert_eq!(
-            rec.cards.len(),
-            combat.cards.len(),
-            "{repro}: written card count must match the ledger"
-        );
-    });
-    check_no_sub_rows(repro);
-    check_run_file(base, player_died, repro);
-}
-
-fn check_run_file(base: &Path, player_died: bool, repro: &str) {
-    let runs_text = fs::read_to_string(base.join("runs.jsonl"))
-        .unwrap_or_else(|err| panic!("{repro}: runs.jsonl must be written: {err}"));
-    let runs: serde_json::Value = serde_json::from_str(
-        runs_text
-            .lines()
-            .next()
-            .unwrap_or_else(|| panic!("{repro}: runs.jsonl must hold one run line")),
-    )
-    .unwrap_or_else(|err| panic!("{repro}: the run line must be valid JSON: {err}"));
-    assert_eq!(
-        runs["run_id"], 1,
-        "{repro}: the scenario's only run is id 1"
-    );
-    assert_eq!(
-        runs["outcome"],
-        if player_died { "defeat" } else { "victory" },
-        "{repro}: the run record's outcome must mirror the walk's player death"
-    );
-}
-
-fn check_no_sub_rows(repro: &str) {
-    let mut rows =
-        [profiler_core::ui::ui_model::UiRow::default(); profiler_core::ui::ui_model::MAX_UI_ROWS];
-    let n = profiler_core::ui::snapshot::ui_snapshot_rows(
-        profiler_core::ui::ui_model::UiTab::Combat,
-        &mut rows,
-    );
-    const ALLOWED: u8 = profiler_core::ui::ui_model::ROW_FLAG_SELF
-        | profiler_core::ui::ui_model::ROW_FLAG_SELF_SOLO;
-    for row in &rows[..n] {
-        assert_eq!(
-            row.flags & !ALLOWED,
-            0,
-            "{repro}: no flags other than the self-damage pair may be set (sub rows are gone)"
-        );
     }
 }
 
@@ -1383,9 +1308,7 @@ fn block_pool_consume_matches_naive_model() {
     let base_seed = sim_seed();
     let repro = format!("SIM_SEED={base_seed} block pool");
     let mut rng = Rng::new(base_seed ^ 0xB10C_3001_C0DE);
-    let base = unique_dir("sim/blockpool");
     events::test_reset();
-    events::init(&base);
     events::combat_started("BLOCKPOOL_SIM", "test");
     let mut sources = vec![
         SimSource::card("DEFEND", 0),
@@ -1447,5 +1370,4 @@ fn block_pool_consume_matches_naive_model() {
         model.pools[0].chunks.is_empty(),
         "{repro}: the final hit drains every modeled chunk"
     );
-    let _ = fs::remove_dir_all(&base);
 }

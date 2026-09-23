@@ -1,6 +1,6 @@
 //! The citation gate: in-house text names methods, never `file:line`
-//! positions — game line numbers move between builds and silently rot.
-//! Vendored upstream trees are exempt; every other UTF-8 file is scanned.
+//! positions: game line numbers move between builds and silently rot.
+//! Build artifacts and tool caches are excluded; other UTF-8 files are scanned.
 
 use std::fs;
 use std::path::Path;
@@ -18,7 +18,6 @@ const SKIP_DIRS: &[&str] = &[
     "zig-sdk",
     "tmp",
     "tools",
-    "vendor",
 ];
 
 /// Extensions a citation may carry: the source types we write plus the

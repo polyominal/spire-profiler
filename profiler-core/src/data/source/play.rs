@@ -32,9 +32,7 @@ impl State {
                     if source.shares().len() == 1 {
                         source
                     } else {
-                        self.source_transfers
-                            .diagnostics
-                            .report(SourceFailure::Packet);
+                        self.sources.diagnostics.report(SourceFailure::Packet);
                         SourceSnapshot::unknown(epoch)
                     }
                 } else {
@@ -42,20 +40,12 @@ impl State {
                 }
             }
             GenerationState::Ordinary => {
-                self.source_transfers
-                    .diagnostics
-                    .report(SourceFailure::Packet);
+                self.sources.diagnostics.report(SourceFailure::Packet);
                 SourceSnapshot::unknown(epoch)
             }
             GenerationState::GeneratedRecorded => generated.map_or_else(
                 || SourceSnapshot::unknown(epoch),
-                |entry| {
-                    crate::data::persistence::event_log!(
-                        "  generated instance {instance}, supplier role {:?}",
-                        entry.producer_role
-                    );
-                    given.unwrap_or_else(|| entry.source.clone())
-                },
+                |entry| given.unwrap_or_else(|| entry.source.clone()),
             ),
             _ => SourceSnapshot::unknown(epoch),
         }
@@ -73,7 +63,7 @@ impl State {
             self.provenance
                 .generated
                 .retain(|entry| entry.instance != instance);
-            let role = ProducerRole::decode(producer_role, &mut self.source_transfers.diagnostics);
+            ProducerRole::decode(producer_role, &mut self.sources.diagnostics);
             let source = self.source_snapshot(epoch, transfer)?;
             let mut stage = LedgerStage::new(self)?;
             for share in source.shares() {
@@ -87,15 +77,13 @@ impl State {
                         .ok_or(SourceFailure::Arithmetic)?;
                 }
             }
-            stage.commit(self)?;
+            stage.commit()?;
             if instance == 0 || self.provenance.generated.len() == caps::GENERATED_INSTANCES {
                 return Err(SourceFailure::Capacity);
             }
-            self.provenance.generated.push(GeneratedSource {
-                instance,
-                source,
-                producer_role: role,
-            });
+            self.provenance
+                .generated
+                .push(GeneratedSource { instance, source });
             Ok(())
         })();
         self.source_status(result)
@@ -119,9 +107,9 @@ impl State {
             if play_index < 0 || play_count <= 0 || play_index >= play_count {
                 return Err(SourceFailure::Packet);
             }
-            let owner = super::super::state::clamp_source_slot(player_slot);
+            let owner = self.sources.diagnostics.slot(player_slot);
             let generation =
-                GenerationState::decode(generation_state, &mut self.source_transfers.diagnostics);
+                GenerationState::decode(generation_state, &mut self.sources.diagnostics);
             let source = self.source_snapshot(epoch, transfer)?;
             let source = self.card_source(epoch, instance, id, owner, generation, Some(source));
             let mut stage = LedgerStage::new(self)?;
@@ -142,7 +130,7 @@ impl State {
             } else {
                 stage.row_play(source.shares()[0].destination())?;
             }
-            stage.commit(self)?;
+            stage.commit()?;
             self.slot_index(i32::from(owner));
             if execution == 0
                 || instance == 0
@@ -161,7 +149,6 @@ impl State {
             self.provenance.plays.push(ActiveSourcePlay {
                 serial,
                 execution,
-                card_instance: instance,
                 owner_slot: owner,
                 source,
                 first_orb_used: false,
@@ -177,7 +164,7 @@ impl State {
         match result {
             Ok(token) => token,
             Err(failure) => {
-                self.source_transfers.diagnostics.report(failure);
+                self.sources.diagnostics.report(failure);
                 0
             }
         }
@@ -192,12 +179,7 @@ impl State {
                 .iter()
                 .position(|play| play.serial == token.payload)
                 .ok_or(SourceFailure::Token)?;
-            let play = self.provenance.plays.remove(index);
-            crate::data::persistence::event_log!(
-                "  play finished: card {}, execution {}",
-                play.card_instance,
-                play.execution
-            );
+            self.provenance.plays.remove(index);
             Ok(())
         })();
         self.source_status(result)
@@ -244,7 +226,7 @@ impl State {
     ) -> i32 {
         let result = (|| {
             self.provenance_epoch(combat_seq)?;
-            let owner = super::super::state::clamp_source_slot(owner_slot);
+            let owner = self.sources.diagnostics.slot(owner_slot);
             if play != 0 {
                 let token = self.provenance_token(play, TokenKind::CardPlay)?;
                 let play = self
@@ -272,7 +254,7 @@ impl State {
         match result {
             Ok(decision) => decision,
             Err(failure) => {
-                self.source_transfers.diagnostics.report(failure);
+                self.sources.diagnostics.report(failure);
                 0
             }
         }

@@ -22,13 +22,7 @@ internal abstract class AttributionBackend
     internal abstract PowerObservation ObservePower(object power, object owner = null);
     internal virtual bool TemporaryPower(object power) => false;
     internal abstract ulong Capture(ulong epoch, CaptureKind kind, ulong instance, string id, int sourceKind, int slot, GenerationState generation);
-    internal abstract int SourceCount(ulong transfer);
-    internal abstract ulong SourceDestination(ulong transfer, int index);
-    internal abstract ulong SourceWeight(ulong transfer, int index);
-    internal abstract ulong TransferBegin(ulong epoch);
-    internal abstract int TransferAdd(ulong transfer, ulong destination, ulong weight);
-    internal abstract int TransferSeal(ulong transfer);
-    internal abstract int TransferRelease(ulong transfer);
+    internal abstract ulong SourceAccumulate(ulong epoch, ulong first, int before, ulong second, int after);
     internal virtual int PowerAttached(CaptureEpoch epoch, ulong identity, ulong owner, PowerObservation observed, ulong source) => 0;
     internal virtual int PowerChanged(CaptureEpoch epoch, ulong identity, ulong owner, PowerObservation observed, int before, ulong source) => 0;
     internal virtual int PowerRemoved(ulong epoch, ulong identity) => 0;
@@ -63,5 +57,9 @@ internal abstract class AttributionBackend
     internal virtual int PotionUsed(ulong epoch) => 0;
     internal virtual ulong CombatStarted(string encounter, string type) => 0;
     internal virtual int CombatEnded(ulong epoch) => 0;
+    internal virtual ModifierCredit[] CalculateModifierContributions(ModifierObservation[] observations, decimal initial, decimal result, bool damage)
+        => ProfilerNative.CalculateModifierContributions(observations, initial, result, damage);
+    internal virtual int CalculateWeakPrevention(int total, int receiverSlot, bool receiverPlayer, bool weak, bool debilitate, uint kraneSlots)
+        => ProfilerNative.CalculateWeakPrevention(total, receiverSlot, receiverPlayer, weak, debilitate, kraneSlots);
     internal virtual void Diagnostic(string category, Exception error) { }
 }

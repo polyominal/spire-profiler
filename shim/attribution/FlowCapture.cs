@@ -32,7 +32,7 @@ internal static class FlowCapture
                 if (metadata == null || metadata.Dirty) return SourceSnapshot.Unavailable;
                 if (descriptor.Kind == CaptureKind.PowerInstance && metadata.Detached != null) return metadata.Detached;
             }
-            return CaptureRuntime.Copy(epoch, descriptor.Kind, metadata?.Identity ?? 0, descriptor.Id, descriptor.SourceKind,
+            return CaptureRuntime.CaptureSource(epoch, descriptor.Kind, metadata?.Identity ?? 0, descriptor.Id, descriptor.SourceKind,
                 descriptor.Slot, metadata?.Generation ?? GenerationState.Unclassified);
         }
         catch (Exception ex) { CaptureRuntime.Fail("model-source", ex); return SourceSnapshot.Unavailable; }
@@ -122,6 +122,7 @@ internal static class FlowCapture
         PlayCapture.Install(harmony);
         TemporalPowerCapture.Install(harmony, report);
         DamageCapture.Install(harmony, report);
+        ModifierCapture.Install(harmony);
         CommandCapture.Install(harmony, report);
         DoomCapture.Install(harmony, report);
         CapturePatches.Verify(harmony, report);

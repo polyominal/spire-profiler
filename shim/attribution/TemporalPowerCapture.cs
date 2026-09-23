@@ -85,46 +85,19 @@ internal static class TemporalPowerCapture
         {
             var frame = FlowCapture.Current;
             var prior = Take(frame.Model, card, frame.Epoch);
-            var combined = Combine(frame.Epoch, prior, Math.Max(before, 0), frame.Source, checked(amount - before));
+            var combined = AccumulateSources(frame.Epoch, prior, before, frame.Source, amount);
             Save(frame.Model, card, amount, combined, frame.Epoch);
         }
         catch (Exception ex) { CaptureRuntime.Fail("temporal-accumulate", ex); }
     }
-    internal static SourceSnapshot Combine(CaptureEpoch epoch, SourceSnapshot first, int firstAmount, SourceSnapshot second, int secondAmount)
+    internal static SourceSnapshot AccumulateSources(CaptureEpoch epoch, SourceSnapshot first, int before, SourceSnapshot second, int after)
     {
-        if (firstAmount < 0 || secondAmount < 0) return SourceSnapshot.Unavailable;
-        if (firstAmount == 0) return second;
-        if (secondAmount == 0) return first;
-        if (first.Epoch == 0) first = SourceSnapshot.Unknown(epoch.Sequence);
-        if (second.Epoch == 0) second = SourceSnapshot.Unknown(epoch.Sequence);
-        if (first.Epoch != epoch.Sequence || second.Epoch != epoch.Sequence) return SourceSnapshot.Unavailable;
+        if ((first.Epoch != 0 && first.Epoch != epoch.Sequence) || (second.Epoch != 0 && second.Epoch != epoch.Sequence)) return SourceSnapshot.Unavailable;
         try
         {
-            ulong firstSum = 0, secondSum = 0;
-            for (int i = 0; i < first.Count; i++) firstSum = checked(firstSum + first[i].Weight);
-            for (int i = 0; i < second.Count; i++) secondSum = checked(secondSum + second[i].Weight);
-            var destinations = new List<ulong>();
-            var weights = new List<UInt128>();
-            ulong divisor = SourceSnapshot.Gcd(firstSum, secondSum);
-            foreach (var piece in new[] { (Source: first, Amount: firstAmount, Scale: secondSum / divisor), (Source: second, Amount: secondAmount, Scale: firstSum / divisor) })
-                for (int i = 0; i < piece.Source.Count; i++)
-                {
-                    var share = piece.Source[i];
-                    UInt128 weight = checked((UInt128)share.Weight * (uint)piece.Amount * piece.Scale);
-                    int index = destinations.IndexOf(share.Destination);
-                    if (index < 0) { destinations.Add(share.Destination); weights.Add(weight); }
-                    else weights[index] = checked(weights[index] + weight);
-                }
-            UInt128 gcd = 0;
-            foreach (var weight in weights)
-            {
-                UInt128 a = gcd, b = weight;
-                while (b != 0) (a, b) = (b, a % b);
-                gcd = a;
-            }
-            var shares = new SourceShare[weights.Count];
-            for (int i = 0; i < shares.Length; i++) shares[i] = new(destinations[i], checked((ulong)(weights[i] / gcd)));
-            return SourceSnapshot.Create(epoch.Sequence, shares);
+            if (!CaptureRuntime.Valid(epoch)) return SourceSnapshot.Unavailable;
+            ulong handle = CaptureRuntime.Backend.SourceAccumulate(epoch.Sequence, first.Handle, before, second.Handle, after);
+            return handle == 0 ? SourceSnapshot.Unavailable : new SourceSnapshot(epoch.Sequence, handle);
         }
         catch (Exception ex) { CaptureRuntime.Fail("temporal-mixture", ex); return SourceSnapshot.Unavailable; }
     }

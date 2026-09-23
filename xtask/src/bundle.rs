@@ -1,8 +1,5 @@
-//! Assembly of the installable mod bundle under target/mods/spire-profiler/:
-//! manifest + C# host dll + the multi-key .gdextension + one native library
-//! per platform key, each under the EXACT file name its \[libraries\] entry
-//! names. The .gdextension is rendered from the build matrix, so the keys
-//! and file names cannot drift from the libraries the build produces.
+//! Assembly of the installable bundle: manifest, managed host, and the native
+//! attribution reducer libraries selected by the platform matrix.
 
 use std::path::Path;
 
@@ -34,17 +31,11 @@ pub(crate) fn assemble_bundle(
         &gen_dir.join("bin/SpireProfiler.dll"),
         &mod_dir.join(format!("{MOD_ID}.dll")),
     )?;
-    // Each library lands under its .gdextension key's file name (the two
-    // macOS builds both output libprofiler_core.dylib and get their arch
-    // suffix here).
+    // Both macOS builds use the same Cargo output name and get their
+    // architecture suffix here.
     for (name, source) in libs {
         copy_file(source, &mod_dir.join(name))?;
     }
-    // There is no committed copy to drift.
-    std::fs::write(
-        mod_dir.join("spire_profiler.gdextension"),
-        cross::render_gdextension(),
-    )?;
     Ok(())
 }
 

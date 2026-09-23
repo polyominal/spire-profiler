@@ -1,7 +1,7 @@
 //! `cargo xtask headless-test`: install the mod, boot the game headless
-//! with the self-test flag, and gate on successful exit and boot markers. The C#
-//! Log.Info markers land in the godot logs while the core's stderr
-//! markers only appear in process output, so both are combined.
+//! with the self-test flag, and gate on successful exit, exact owned capture
+//! inventory, managed panel lifecycle, and persisted session fixtures. Process
+//! output and the fresh game log both contribute to the verdict.
 
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -29,8 +29,8 @@ const GAME_ARGS: [&str; 6] = [
 
 // The managed gate pins this definition inventory to the verified game.
 const CAPTURE_PRODUCERS: u64 = 1726;
-const CAPTURE_TARGETS: u64 = 1776;
-const CAPTURE_PATCHES: u64 = 3547;
+const CAPTURE_TARGETS: u64 = 1779;
+const CAPTURE_PATCHES: u64 = 3555;
 // Run lifecycle and history UI patches are outside the capture installer.
 const FIXED_OWNER_PATCHES: u64 = 10;
 const MIN_PATCHES: u64 = CAPTURE_TARGETS + FIXED_OWNER_PATCHES;
@@ -43,6 +43,8 @@ struct CaptureReport {
     producers: u64,
     damage_bridges: u64,
     temporal_bridges: u64,
+    modifier_bridges: u64,
+    block_bridges: u64,
 }
 
 impl CaptureReport {
@@ -62,12 +64,24 @@ impl CaptureReport {
             .strip_prefix("temporal_bridges=")?
             .parse()
             .ok()?;
+        let modifier_bridges = fields
+            .next()?
+            .strip_prefix("modifier_bridges=")?
+            .parse()
+            .ok()?;
+        let block_bridges = fields
+            .next()?
+            .strip_prefix("block_bridges=")?
+            .parse()
+            .ok()?;
         Some(Self {
             targets,
             patches,
             producers,
             damage_bridges,
             temporal_bridges,
+            modifier_bridges,
+            block_bridges,
         })
     }
 
@@ -78,6 +92,8 @@ impl CaptureReport {
                 && report.producers == CAPTURE_PRODUCERS
                 && report.damage_bridges == 4
                 && report.temporal_bridges == 16
+                && report.modifier_bridges == 7
+                && report.block_bridges == 1
                 && owned_methods.is_none_or(|owned| owned >= report.targets)
         });
         if verified {
@@ -181,21 +197,11 @@ fn check_patch_count(output: &str, failures: &mut Vec<String>) -> Option<u64> {
     count
 }
 
-/// The shim's load/attach markers and the registration line prove the
-/// gdext classes registered; the draw markers prove parent and both child
-/// dispatches fired, and `chart draw ok` proves clean parent CallErrors.
-const GATE_MARKERS: [&str; 11] = [
-    "[SpireProfiler] INFO: chart self-test (combat):",
-    "[SpireProfiler] INFO: chart self-test (run):",
-    "[SpireProfiler] INFO: combat 1 summary written",
-    "[SpireProfiler] INFO: run 1 recorded (victory)",
-    "[SpireProfiler] GDExtension load result: Ok",
-    "[SpireProfiler] profiler panel attached",
-    "[SpireProfiler] INFO: panel class registered",
-    "[SpireProfiler] INFO: chart _draw active",
-    "[SpireProfiler] INFO: chart body _draw active",
-    "[SpireProfiler] INFO: chart overlay _draw active",
-    "[SpireProfiler] INFO: chart draw ok",
+const GATE_MARKERS: [&str; 4] = [
+    "[SpireProfiler] managed profiler panel attached",
+    "[SpireProfiler] managed panel lifecycle: PASS",
+    "[SpireProfiler] managed session self-test: PASS",
+    "[SpireProfiler] managed records: PASS",
 ];
 
 fn check_gate_markers(output: &str, failures: &mut Vec<String>) {
@@ -475,7 +481,8 @@ fn newest_boot_log(log_dir: &Path, boot_started: SystemTime) -> Option<(PathBuf,
 
 /// Tagged \[SpireProfiler\] and reads as an error.
 fn is_unexpected_error(line: &str) -> bool {
-    line.contains("[SpireProfiler]") && line.contains("ERROR")
+    line.contains("[SpireProfiler]")
+        && (line.contains("ERROR") || line.contains("[SpireProfiler] panic in "))
 }
 
 #[cfg(test)]
@@ -486,7 +493,7 @@ mod tests {
 
     fn complete_boot_output() -> String {
         format!(
-            "{PATCH_COUNT_MARKER}{MIN_PATCHES}\n{CAPTURE_MARKER}targets={CAPTURE_TARGETS} patches={CAPTURE_PATCHES} producers={CAPTURE_PRODUCERS} damage_bridges=4 temporal_bridges=16\n{}",
+            "{PATCH_COUNT_MARKER}{MIN_PATCHES}\n{CAPTURE_MARKER}targets={CAPTURE_TARGETS} patches={CAPTURE_PATCHES} producers={CAPTURE_PRODUCERS} damage_bridges=4 temporal_bridges=16 modifier_bridges=7 block_bridges=1\n{}",
             GATE_MARKERS.join("\n")
         )
     }
@@ -530,13 +537,18 @@ mod tests {
         );
         assert!(verdict.report().is_err());
 
-        let with_error = format!("{output}\n[SpireProfiler] ERROR: patch failed");
-        let verdict = assemble_verdict(&with_error, success);
-        assert_eq!(
-            verdict.failures,
-            ["1 unexpected [SpireProfiler] error line(s)"]
-        );
-        assert!(verdict.report().is_err());
+        for diagnostic in [
+            "[SpireProfiler] ERROR: patch failed",
+            "[SpireProfiler] panic in damage_commit: failed invariant",
+        ] {
+            let with_error = format!("{output}\n{diagnostic}");
+            let verdict = assemble_verdict(&with_error, success);
+            assert_eq!(
+                verdict.failures,
+                ["1 unexpected [SpireProfiler] error line(s)"]
+            );
+            assert!(verdict.report().is_err());
+        }
     }
 
     #[test]
@@ -595,6 +607,9 @@ mod tests {
             ),
             valid.replace("damage_bridges=4", "damage_bridges=3"),
             valid.replace("temporal_bridges=16", "temporal_bridges=15"),
+            valid.replace("modifier_bridges=7", "modifier_bridges=6"),
+            valid.replace("block_bridges=1", "block_bridges=0"),
+            valid.replace(" modifier_bridges=7", ""),
             valid.replace(&format!("patches={CAPTURE_PATCHES}"), "patches=1"),
             valid.replace(&format!("producers={CAPTURE_PRODUCERS}"), "producers=0"),
             valid.replace(

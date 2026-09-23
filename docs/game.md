@@ -30,11 +30,10 @@ assumption first; `STS2_GAME_DIR` overrides.
   `%APPDATA%\` on Windows (confirmed), `~/.local/share/` (or `$XDG_DATA_HOME`)
   on Linux. The `SaveManager.cs` doc comment naming `Godot\app_userdata\sts2` on
   Windows is stale; it pre-dates the custom user dir.
-- Steam Deck and Proton run the Windows build: the game process is a Windows
-  process, so the `windows.x86_64` gdextension key and the shim's
-  `OperatingSystem.IsWindows()` branch fire. The native Linux build's key is
-  `linux.x86_64` (not `linuxbsd.x86_64`) because the game's own addons use
-  `linux.*` feature tags.
+- Steam Deck and Proton run the Windows build, so the managed runtime's
+  `OperatingSystem.IsWindows()` branch selects the Windows reducer library. The
+  native Linux game uses the Linux library; the build host does not choose the
+  game's runtime library.
 - `release_info.json` beside the `.pck` is the game's own `{"commit",
   "version"}` stamp: `SlayTheSpire2.app/Contents/Resources/release_info.json` on
   macOS (verified), `<game root>/release_info.json` on Windows (verified) and
@@ -53,6 +52,10 @@ assumption first; `STS2_GAME_DIR` overrides.
   so mod data lives at the sibling `<exe dir>/mod_data/spire-profiler/`, outside
   the sweep: data files under `mods/` log ERRORs every boot as the scanner
   parses them as manifests (harmless, but they hide real manifest errors).
+- New statistics live under `statistics-v1/` inside that data directory. The
+  managed store reads legacy `runs.jsonl` and `runs/` files without rewriting
+  them, and labels missing historical coverage metadata unknown.
+  `SPIRE_PROFILER_DATA_DIR` overrides the data root.
 - `settings.save` keys are snake\_case; mod consent lives at
   `mod_settings.mods_enabled` (verified against a live settings.save) and is
   scoped per settings file.
@@ -78,11 +81,10 @@ renamed parameter types). Verified against the v0.111.0 snapshot.
 
 - `CombatRoom.Resume(AbstractRoom, IRunState?)` exists but its body is `throw
   new NotImplementedException()`, so Harmony postfixes on it never fire
-  (exceptions skip postfixes). Older-build mods used it as a refresh site; it
-  stays patched, harmless.
-- `CombatManager.SetUpCombat` takes `CombatState`; older hooks declare
-  `CombatStateType`. Harmony injects by name, so the postfix takes
-  `ICombatState`; do not copy older parameter types blindly.
+  (exceptions skip postfixes). Do not use it as a resume observation point.
+- `CombatManager.SetUpCombat` takes `CombatState`. The capture postfix uses that
+  installed signature and observes setup only when the original method ran.
+  Older declarations naming `CombatStateType` do not match this version.
 - Turn hooks are side-based: older mods' `BeforeTurnEnd` is now
   `BeforeSideTurnEnd`.
 - `Hook.AfterBlockCleared` fires even when block is retained or first-turn
@@ -95,6 +97,11 @@ renamed parameter types). Verified against the v0.111.0 snapshot.
   result-list enumerators: the first follows the completed target group; the
   second runs aggregate late hooks. The managed gate verifies the exact
   replacement sites.
+- `Hook.ModifyDamage` and `Hook.ModifyBlock` call model modifiers in ordered
+  stages. Capture replaces those call sites with wrappers that record each
+  original invocation's arguments and result. Re-evaluating a modifier can
+  execute stateful game or mod code twice; the managed bridge fixtures pin the
+  call sites and skipped-original detection.
 - Reflection can return an inherited `MethodInfo` with a different reflected
   type from its declaring type. Harmony requires the declared method;
   deduplicate by module/metadata token and resolve that definition on its

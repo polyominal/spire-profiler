@@ -26,8 +26,10 @@ Run `cargo xtask --help`.
 
 ## Cross-compilation
 
-- The target matrix and `.gdextension` library keys come from the same table in
-  [cross.rs](../xtask/src/cross.rs).
+- The native reducer libraries, managed runtime selector, and release archives
+  derive from the target matrix in [cross.rs](../xtask/src/cross.rs). The
+  managed assembly loads the appropriate library directly; no Godot extension
+  descriptor is packaged.
 - Windows uses cargo-zigbuild because plain `zig cc` cannot link Rust's
   windows-gnu std. The resulting DLL runs on Windows 10 or newer.
 - The Linux target triple's glibc suffix is the compatibility floor. It is the

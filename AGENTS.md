@@ -66,15 +66,15 @@ comments or docs.
 
 ## Spec docs
 
-- Design specs live in the Rust source as module docs (`//!`), not in `docs/`;
-  `docs/` holds the environment guides ([build.md](docs/build.md),
-  [verify.md](docs/verify.md), [gdextension.md](docs/gdextension.md),
-  [game.md](docs/game.md)) and `images/`; the crate overview lives in
-  [lib.rs](profiler-core/src/lib.rs).
+- Design specs live beside their owning source (Rust module docs or C\# source
+  comments), not in `docs/`; `docs/` holds the environment guides
+  ([build.md](docs/build.md), [verify.md](docs/verify.md),
+  [interop.md](docs/interop.md), [game.md](docs/game.md)) and `images/`; the
+  crate overview lives in [lib.rs](profiler-core/src/lib.rs).
 - Every sentence must teach something the code cannot, in the fewest words that
   carry it. If deleting a paragraph loses nothing, delete it.
-- Canonical facts live in exactly one place (the on-disk schema in the
-  `persistence` module doc, the player-slot model in the `state` module doc);
+- Canonical facts live in exactly one place (the on-disk schema in
+  `StatisticsStore.cs`, the player-slot model in the `state` module doc);
   everywhere else points there.
 - The code is the ground truth: a doc that disagrees with it is a bug in the
   doc. Fix the doc, never annotate the disagreement.
@@ -91,15 +91,14 @@ comments or docs.
 
 ## State and borrowing
 
-- Keep live combat/run data in `State` under
-  [state.rs](profiler-core/src/data/state.rs)'s borrowing contract; independent
-  mutable state stays with its lifetime owner. No locks or atomics for
-  gameplay-state coordination; engine initialization and tests may use them.
-- Logging under a state guard follows the [log
-  sink](profiler-core/src/data/persistence/log.rs)'s no-`STATE`-reentry
-  contract.
+- Each native engine owns its combat attribution `State`; `ProfilerSession` owns
+  run lifecycle and storage on the game thread. Independent mutable state stays
+  with its lifetime owner. No locks or atomics for gameplay-state coordination;
+  engine initialization and tests may use them.
+- Native observations never call back into managed code. Diagnostics and capture
+  completeness travel with snapshots; the host owns logging.
 - Fixed-capacity tables are bounded `Vec`s with caps named in `caps`: overflow
-  fails loudly via `fail`, never grows the table silently, never panics. Give
+  marks coverage incomplete, never grows the table silently, never panics. Give
   every cap a one-line rationale.
 - Cross-table references are indices into the owning `Vec`, not references; this
   is the safe-Rust way to avoid self-borrowing.
@@ -131,15 +130,15 @@ required by the production API.
 
 ## Boundaries
 
-- **C ABI**: every export routes through `contain`, which catches a panic and
-  swallows it (logged); nothing unwinds into the host. Strings decode
-  null/malformed to `""`.
-- **Wire values**: clamp-and-log, never panic; a corrupt slot/kind from the host
-  clamps to the nearest valid value and is reported through `fail`. Validation
-  lives at the boundary; interior code trusts it.
+- **C ABI**: every export routes through `contain`, which catches a panic;
+  engine mutations also quarantine the damaged combat. Nothing unwinds into the
+  host. Strings decode null/malformed to `""`.
+- **Wire values**: parse at the boundary, never panic. Invalid scalar
+  slots/kinds clamp and mark coverage incomplete; invalid batches fail before
+  mutation. Interior code consumes the parsed representation.
 - **Unsafe** is quarantined: `#![deny(unsafe_code)]` crate-wide, relaxed in
-  exactly `abi`, `registration`, `engine::gdext`, each with its reason
-  documented. New unsafe joins one of those or is not written.
+  exactly `abi`, for C strings and caller-owned buffers. New unsafe joins that
+  boundary or is not written.
 
 ## Contracts
 
@@ -153,12 +152,12 @@ required by the production API.
 
 ## Persistence
 
-- Field names, order, and zero-omission *are* the schema: absent == zero,
-  unknown fields are ignored, identity fields stay explicit. Change the structs
-  and the schema changes deliberately.
-- No migrations while the mod is in early development: breaking changes land
-  freely and old data is deleted. The schema is written down in the
-  `persistence` module doc; keep code and doc consistent.
+- Managed storage owns an explicit schema version and separate attribution
+  policy version. Unknown fields are ignored; required version and identity
+  fields are parsed before records enter the application.
+- Breaking schemas use a fresh versioned directory. Preserve old data; legacy
+  history is read-only and missing coverage metadata means unknown quality. Keep
+  the schema contract in `StatisticsStore.cs` consistent with its parser.
 - Writes are atomic (temp file + rename): the game can kill the process at any
   point, and a torn record must never appear.
 
@@ -194,8 +193,9 @@ manual re-verification:
   defines the timestamp limits. Extend the walk when adding mechanics.
 - Property tests compare against an independent naive model, not the
   implementation itself.
-- Insta snapshots pin the persisted JSON byte-for-byte; accept updates only with
-  a reviewed diff.
+- Managed fixtures exercise record parsing, atomic retry, history identity,
+  legacy preservation, and native session/replay behavior. Seeded Rust models
+  pin attribution independently of capture and presentation.
 
 ## Rust specifics
 

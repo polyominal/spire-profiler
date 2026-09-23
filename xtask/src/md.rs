@@ -14,7 +14,7 @@ pub(crate) const DOCS: &[&str] = &[
     "AGENTS.md",
     "docs/build.md",
     "docs/verify.md",
-    "docs/gdextension.md",
+    "docs/interop.md",
     "docs/game.md",
 ];
 
