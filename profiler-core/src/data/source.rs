@@ -1,10 +1,13 @@
 //! Combat-owned immutable supplier vectors. A snapshot owns
 //! distinct positive weights in first-seen order, reduced by their gcd, with a
 //! checked u64 total. Row indices belong only to its nonzero combat epoch.
+//! Exported handles retain shared snapshots until the host releases them.
+//! Serials never repeat within an epoch; native consumers retain their own Rc.
 //! Completed damage groups fix each root's budget before consuming results.
 //! Pool prefixes instead retain original weights and a monotone credit cursor;
 //! merging a grant or correcting outer residue never changes those weights.
 
+use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 
 use super::state::{Combat, SourceSlot, State, TEAM_SLOT, caps};
@@ -29,7 +32,7 @@ const _: () = assert!(caps::POWER_GRANTS_PER_INSTANCE <= caps::POWER_GRANTS_TOTA
 const _: () = assert!(caps::DAMAGE_RESULTS == 2);
 const _: () = assert!(caps::DAMAGE_DESTINATIONS >= caps::SOURCE_DESTINATIONS);
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct CombatEpoch(NonZeroU32);
 
 impl CombatEpoch {
@@ -108,7 +111,7 @@ impl Token {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Destination {
     Row(u32),
     Unknown(SourceSlot),
@@ -158,7 +161,9 @@ impl SourceDiagnostics {
 #[derive(Default)]
 pub(super) struct SourceArena {
     epoch: Option<CombatEpoch>,
-    entries: Vec<SourceSnapshot>,
+    entries: BTreeMap<u32, SourceSnapshot>,
+    index: BTreeMap<SourceSnapshot, u32>,
+    serial: u32,
     diagnostics: SourceDiagnostics,
 }
 
@@ -192,7 +197,7 @@ impl State {
                 return Err(SourceFailure::Token);
             }
             self.source_epoch(u64::from(token.epoch.0.get()))?;
-            if token.payload as usize > self.sources.entries.len() {
+            if !self.sources.entries.contains_key(&token.payload) {
                 return Err(SourceFailure::Token);
             }
             Ok(token)
@@ -205,7 +210,11 @@ impl State {
 
     fn source_handle_read(&mut self, wire: u64) -> Result<&SourceSnapshot, SourceFailure> {
         let token = self.source_handle_token(wire)?;
-        Ok(&self.sources.entries[token.payload as usize - 1])
+        Ok(self
+            .sources
+            .entries
+            .get(&token.payload)
+            .expect("the validated handle owns a live snapshot"))
     }
 
     fn source_snapshot(
@@ -460,26 +469,46 @@ impl State {
 
     fn source_export(&mut self, source: SourceSnapshot) -> u64 {
         let arena = &mut self.sources;
-        if let Some(index) = arena.entries.iter().position(|entry| entry == &source) {
+        if let Some(&serial) = arena.index.get(&source) {
             return Token {
                 epoch: source.epoch(),
                 kind: TokenKind::SourceHandle,
-                payload: index as u32 + 1,
+                payload: serial,
             }
             .encode();
         }
-        if arena.entries.len() == PAYLOAD_MAX as usize {
+        if arena.serial == PAYLOAD_MAX {
             arena.diagnostics.report(SourceFailure::Capacity);
             return 0;
         }
+        arena.serial += 1;
         let token = Token {
             epoch: source.epoch(),
             kind: TokenKind::SourceHandle,
-            payload: arena.entries.len() as u32 + 1,
+            payload: arena.serial,
         }
         .encode();
-        arena.entries.push(source);
+        arena.index.insert(source.clone(), arena.serial);
+        arena.entries.insert(arena.serial, source);
         token
+    }
+
+    pub(crate) fn source_release(&mut self, handle: u64) -> i32 {
+        let Ok(token) = self.source_handle_token(handle) else {
+            return 0;
+        };
+        let source = self
+            .sources
+            .entries
+            .remove(&token.payload)
+            .expect("the validated handle owns a live snapshot");
+        let serial = self.sources.index.remove(&source);
+        debug_assert_eq!(
+            serial,
+            Some(token.payload),
+            "the content index must identify the released handle"
+        );
+        1
     }
 
     pub(crate) fn source_accumulate(
@@ -897,6 +926,7 @@ impl State {
         });
         self.provenance = Provenance::default();
         self.sources.entries.clear();
+        self.sources.index.clear();
         1
     }
 }

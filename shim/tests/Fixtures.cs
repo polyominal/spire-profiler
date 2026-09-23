@@ -440,10 +440,10 @@ internal sealed class FakeBackend : AttributionBackend
         BigInteger gcd = normalized.Values.Aggregate(BigInteger.Zero, BigInteger.GreatestCommonDivisor);
         var shares = normalized.Where(entry => entry.Value > 0).Select(entry => new SourceShare(entry.Key, checked((ulong)(entry.Value / gcd)))).ToArray();
         foreach (var entry in interned)
-            if (entry.Value.Epoch == epoch && entry.Value.Shares.SequenceEqual(shares)) return new(epoch, entry.Key);
+            if (entry.Value.Epoch == epoch && entry.Value.Shares.SequenceEqual(shares)) return SourceSnapshot.Own(epoch, entry.Key);
         ulong handle = ++serial;
         interned[handle] = (epoch, shares);
-        return new(epoch, handle);
+        return SourceSnapshot.Own(epoch, handle);
     }
     internal SourceShare[] Entries(SourceSnapshot source) => source.Handle == 0 ? Array.Empty<SourceShare>() : interned[source.Handle].Shares;
     internal SourceSnapshot Unknown(ulong epoch) => CreateSource(epoch, new[] { new SourceShare((epoch << 32) | 33, 1) });
@@ -454,6 +454,8 @@ internal sealed class FakeBackend : AttributionBackend
         if (generation is GenerationState.GeneratedUnavailable or GenerationState.Unclassified && kind == CaptureKind.CardInstance) source = Unknown(epoch);
         return source.Handle;
     }
+    internal readonly List<ulong> ReleasedSources = new();
+    internal override int SourceRelease(ulong handle) { ReleasedSources.Add(handle); return 1; }
     internal override ulong SourceAccumulate(ulong epoch, ulong first, int before, ulong second, int after)
     {
         if (Reject("SourceAccumulate")) return 0;
@@ -474,7 +476,7 @@ internal sealed class FakeBackend : AttributionBackend
         if (gcd == 0) return Unknown(epoch).Handle;
         return CreateSource(epoch, weights.Where(entry => entry.Value > 0).Select(entry => new SourceShare(entry.Key, checked((ulong)(entry.Value / gcd)))).ToArray()).Handle;
     }
-    private SourceSnapshot Read(ulong source) => source == 0 ? Unknown(CaptureRuntime.Epoch.Sequence) : new(interned[source].Epoch, source);
+    private SourceSnapshot Read(ulong source) => source == 0 ? Unknown(CaptureRuntime.Epoch.Sequence) : SourceSnapshot.Own(interned[source].Epoch, source);
     internal override int PowerAttached(CaptureEpoch epoch, ulong identity, ulong owner, PowerObservation observed, ulong source)
     {
         if (Reject("PowerAttached")) return 0;
@@ -605,7 +607,7 @@ internal static partial class ManagedFixtures
         SynchronizationContext.SetSynchronizationContext(context);
         var nativeDelegates = typeof(ProfilerNative).GetNestedTypes(BindingFlags.Public | BindingFlags.NonPublic)
             .Where(type => typeof(MulticastDelegate).IsAssignableFrom(type)).ToArray();
-        Check(nativeDelegates.Length == 45, "Complete compiled native delegate inventory");
+        Check(nativeDelegates.Length == 46, "Complete compiled native delegate inventory");
         int utf8Parameters = 0;
         foreach (var type in nativeDelegates)
         {
@@ -715,6 +717,8 @@ internal static partial class ManagedFixtures
         Test("earlier Harmony skip preserves producer, pending, wrapper/orb and damage callers", SkippedPrefixes);
         Test("inherited stale epochs retain precedence across every scope combination", EntryEpochPrecedence);
         Test("combat-owned provenance handles survive supplier changes without scalar transfers", SourceHandles);
+        Test("weak source ownership survives collection, callbacks, awaits and combat replacement", SourceCollection);
+        Test("periodic source collection retains only live mixture owners", SourceCollectionStress);
         Test("source capture/combine failure and stale epochs preserve explicit Unknown", SourceFailures);
         Test("accepted first attachment, stack ordering and notification exceptions", PowerMutations);
         Test("Misery clone zero-delta attachment and temporary null-card forwarding", TemporaryAndClone);
@@ -965,6 +969,86 @@ internal static partial class ManagedFixtures
         Same(combined, backend.CreateSource(epoch, new[] { new SourceShare(backend.Entries(A)[0].Destination, 2), new SourceShare(backend.Entries(B)[0].Destination, 1) }),
             "Native mixture operation retains the exact weighted supplier ratio");
         Check(backend.Calls.Last() == "SourceAccumulate", "Mixture crosses the boundary in one operation");
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static WeakReference<SourceSnapshot> AbandonedSource()
+        => new(TemporalPowerCapture.AccumulateSources(CaptureRuntime.Epoch,
+            FlowCapture.Source(new ProbeModel("A"), CaptureRuntime.Epoch), 13,
+            FlowCapture.Source(new ProbeModel("B"), CaptureRuntime.Epoch), 17));
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void ConsumeEphemeralSource()
+    {
+        int before = backend.ReleasedSources.Count;
+        CaptureRuntime.WithSource(CaptureRuntime.Epoch,
+            TemporalPowerCapture.AccumulateSources(CaptureRuntime.Epoch, A, 29, B, 37), handle =>
+            {
+                GC.Collect();
+                SourceSnapshot.Collect();
+                Check(!backend.ReleasedSources.Skip(before).Contains(handle), "An otherwise unrooted owner survives its native consumer callback");
+                return 0;
+            });
+    }
+    private static void SourceCollection()
+    {
+        var abandoned = AbandonedSource();
+        var a = FlowCapture.Source(new ProbeModel("A"), CaptureRuntime.Epoch);
+        Check(ReferenceEquals(a, FlowCapture.Source(new ProbeModel("A"), CaptureRuntime.Epoch)), "Every live handle has one managed owner shared by captures");
+        ulong released = CaptureRuntime.WithSource(CaptureRuntime.Epoch, a, handle =>
+        {
+            GC.Collect();
+            SourceSnapshot.Collect();
+            Check(!backend.ReleasedSources.Contains(handle), "Synchronous native consumer keeps its owner alive through a nested collection");
+            return handle;
+        });
+        Check(released == a.Handle && !abandoned.TryGetTarget(out _), "Unowned mixtures become collectible");
+        Check(backend.ReleasedSources.Count == 1, "Only the abandoned mixture is released");
+        ConsumeEphemeralSource();
+        var pause = Pause();
+        var task = new ProbeModel("B").Suspended(pause.Task);
+        int beforeAsyncCollection = backend.ReleasedSources.Count;
+        GC.Collect();
+        SourceSnapshot.Collect();
+        Check(!backend.ReleasedSources.Skip(beforeAsyncCollection).Contains(B.Handle), "Suspended async producer retains its source owner");
+        pause.SetResult(1);
+        context.Complete(task);
+        Same(task.Result, B, "Async continuation consumes its original source after collection");
+        var oldEpoch = CaptureRuntime.Epoch;
+        var oldSource = FlowCapture.Source(new ProbeModel("B"), oldEpoch);
+        backend.Combat = RuntimeHelpers.GetUninitializedObject(typeof(CombatState));
+        CaptureRuntime.Register(backend, ++epoch, backend.Combat);
+        int releaseCount = backend.ReleasedSources.Count;
+        GC.Collect();
+        SourceSnapshot.Collect();
+        Check(backend.ReleasedSources.Count == releaseCount, "New combat drops old bookkeeping without releasing stale handles into the new engine state");
+        Check(CaptureRuntime.WithSource(CaptureRuntime.Epoch, oldSource, _ => true) == false, "Retained old owner cannot reach the replacement combat");
+        GC.KeepAlive(a);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void AddSourceBatch(Queue<SourceSnapshot> live, int offset)
+    {
+        for (int index = offset; index < offset + 100; index++)
+        {
+            if (live.Count == 8) live.Dequeue();
+            live.Enqueue(TemporalPowerCapture.AccumulateSources(CaptureRuntime.Epoch, A, 1, B, index + 2));
+        }
+    }
+    private static void SourceCollectionStress()
+    {
+        var live = new Queue<SourceSnapshot>();
+        for (int batch = 0; batch < 10; batch++)
+        {
+            AddSourceBatch(live, batch * 100);
+            GC.Collect();
+            SourceSnapshot.Collect();
+            Check(backend.ReleasedSources.Count == (batch + 1) * 100 - live.Count, "Each sweep drops dead mixture owners and keeps exactly the active window");
+        }
+        foreach (var source in live)
+            Check(!backend.ReleasedSources.Contains(source.Handle), "Active mixtures remain valid after every sweep");
+        int released = backend.ReleasedSources.Count;
+        GC.Collect();
+        SourceSnapshot.Collect();
+        Check(backend.ReleasedSources.Count == released, "Removed weak entries cannot be released twice");
+        GC.KeepAlive(live);
     }
     private static void SourceFailures()
     {
@@ -1505,6 +1589,8 @@ internal static partial class ManagedFixtures
         DamageFixture.DuringLive = () => parentOperation = DamageCapture.Current;
         DamageFixture.Nested = async () =>
         {
+            GC.Collect();
+            SourceSnapshot.Collect();
             DamageFixture.Results = new() { new(world.Enemy, ValueProp.Move) { UnblockedDamage = 6, BlockedDamage = 1 } };
             DamageFixture.Pause = childPause.Task;
             DamageFixture.Modifiers = new[] { childStrength }; DamageFixture.Bonus = 2;

@@ -163,6 +163,17 @@ pub unsafe extern "C" fn spire_profiler_snapshot(
     })
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_source_release(engine: u64, handle: u64) -> i32 {
+    contain("source_release", 0, || {
+        with_engine(engine, 0, true, |state| {
+            let result = state.source_release(handle);
+            state.record(|| Observation::SourceRelease { handle }, result as u64);
+            result
+        })
+    })
+}
+
 /// # Safety
 /// Non-null strings are readable through a NUL and unmodified during the call.
 #[unsafe(no_mangle)]
@@ -1382,6 +1393,15 @@ mod tests {
                 1
             );
             assert_eq!(spire_profiler_block_gained(engine, 9, 13, mixed, 1), 1);
+            for source in [a, b, mixed] {
+                assert_eq!(spire_profiler_source_release(engine, source), 1);
+            }
+            let recaptured =
+                spire_profiler_source_capture(engine, 9, 1, 11, c"A".as_ptr(), 0, 0, 0);
+            assert!(
+                recaptured > mixed,
+                "replay must reproduce non-reused source serials"
+            );
             let weak = spire_profiler_weak_prevention(engine, 7, 1, 1, 1, 0, 2);
             assert_eq!(weak, 5);
             assert_eq!(

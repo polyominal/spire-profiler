@@ -8,6 +8,7 @@ internal sealed class NativeAttributionBackend : GameAttributionBackend
     internal override object CurrentCombat => RunContext.CurrentCombat;
     internal override ulong Capture(ulong epoch, CaptureKind kind, ulong instance, string id, int sourceKind, int slot, GenerationState generation)
         => ProfilerNative.SourceCapture(epoch, (int)kind, instance, id, sourceKind, slot, (int)generation);
+    internal override int SourceRelease(ulong handle) => ProfilerNative.SourceRelease(handle);
     internal override ulong SourceAccumulate(ulong epoch, ulong first, int before, ulong second, int after)
         => ProfilerNative.SourceAccumulate(epoch, first, before, second, after);
     internal override int PowerAttached(CaptureEpoch epoch, ulong identity, ulong owner, PowerObservation observed, ulong source)

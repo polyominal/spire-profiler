@@ -442,3 +442,72 @@ fn journal_unwind_restores_touched_rows_pools_counters_and_appended_entries() {
     assert_eq!(state.provenance.pools.len(), 1);
     assert_eq!(state.provenance.pools[0].blocks[0].remaining, 10);
 }
+
+#[test]
+fn released_handles_expire_without_releasing_native_consumers() {
+    let mut state = fixture();
+    let a = card(&mut state, "A", 0);
+    let b = card(&mut state, "B", 1);
+    let mixed = state.source_accumulate(7, a, 2, b, 5);
+    assert_eq!(state.source_accumulate(7, a, 2, b, 5), mixed);
+    assert_eq!(
+        state.power_attached(7, 70, "STRENGTH_POWER", 80, 0, 0, 5, mixed),
+        1
+    );
+    let calculation = state.damage_calculation_begin(7, mixed, 1, 0, 999);
+    for handle in [a, b, mixed] {
+        assert_eq!(state.source_release(handle), 1);
+    }
+    assert!(state.sources.entries.is_empty() && state.sources.index.is_empty());
+    assert_eq!(state.damage_result_append(calculation, 5, 5, 0, 0, 4, 0), 1);
+    assert_eq!(state.damage_calculation_commit(calculation), 1);
+    let retained = state.source_capture(7, 2, 70, "", 2, 0, 0);
+    assert!(retained > mixed, "released serials are never reused");
+    assert_eq!(
+        (
+            state.source_weight(retained, 0),
+            state.source_weight(retained, 1)
+        ),
+        (2, 3)
+    );
+    hit(&mut state, retained, 5);
+    let combat = state.current.as_ref().expect("fixture is active");
+    assert_eq!(
+        (combat.cards[0].damage_dealt, combat.cards[1].damage_dealt),
+        (4, 6)
+    );
+    assert_eq!(state.source_release(mixed), 0);
+    assert_eq!(state.source_count(mixed), -1);
+    assert_eq!(state.source_count(retained), 2);
+    assert_eq!(state.combat_started(8, "NEXT", "normal", 1000, 1), 8);
+    assert_eq!(state.source_release(retained), 0);
+    assert!(state.sources.entries.is_empty() && state.sources.index.is_empty());
+}
+
+#[test]
+fn source_collection_schedule_never_changes_credited_results() {
+    let mut retained = fixture();
+    let mut collected = fixture();
+    let roots =
+        [&mut retained, &mut collected].map(|state| (card(state, "A", 0), card(state, "B", 1)));
+    for index in 1..=1_000 {
+        for (state, (a, b)) in [&mut retained, &mut collected].into_iter().zip(roots) {
+            let source = state.source_accumulate(7, a, index, b, index + 1);
+            hit(state, source, index % 17 + 1);
+        }
+        let source = collected.source_accumulate(7, roots[1].0, index, roots[1].1, index + 1);
+        assert_eq!(collected.source_release(source), 1);
+        assert_eq!(collected.sources.entries.len(), 2);
+        assert_eq!(collected.sources.index.len(), 2);
+        assert_eq!(collected.snapshot(), retained.snapshot());
+    }
+    collected.sources.serial = PAYLOAD_MAX - 1;
+    let last = collected.source_accumulate(7, roots[1].0, 1, roots[1].1, 2);
+    assert_ne!(last, 0);
+    assert_eq!(collected.source_release(last), 1);
+    assert_eq!(
+        collected.source_accumulate(7, roots[1].0, 1, roots[1].1, 2),
+        0
+    );
+    assert_eq!(collected.source_count(last), -1);
+}

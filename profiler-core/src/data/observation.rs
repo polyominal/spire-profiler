@@ -22,6 +22,9 @@ pub(crate) enum Observation {
         observed: ModifierObservation,
     },
     CombatDiscard,
+    SourceRelease {
+        handle: u64,
+    },
     SourceCapture {
         combat_seq: u64,
         capture_kind: i32,
@@ -328,6 +331,7 @@ impl State {
                     candidate.discard_combat();
                     0
                 }
+                Observation::SourceRelease { handle } => candidate.source_release(handle) as u64,
                 Observation::SourceCapture {
                     combat_seq,
                     capture_kind,

@@ -5,13 +5,13 @@ use std::rc::Rc;
 
 use super::{CombatEpoch, Destination, PAYLOAD_MAX, SourceFailure, TEAM_SLOT, caps};
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct WeightedDestination {
     destination: Destination,
     weight: u64,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct SourceSnapshot {
     epoch: CombatEpoch,
     shares: Rc<[WeightedDestination]>,

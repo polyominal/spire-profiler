@@ -45,6 +45,7 @@ internal static class CaptureRuntime
         diagnostics.Clear();
         IdentityCapture.NewEpoch();
         TemporalPowerCapture.Clear();
+        SourceSnapshot.Reset();
     }
     internal static void InvalidateEpoch()
     {
@@ -52,6 +53,7 @@ internal static class CaptureRuntime
         Epoch = default;
         IdentityCapture.CancelPreparation();
         TemporalPowerCapture.Clear();
+        SourceSnapshot.Reset();
     }
     internal static bool Stale(CaptureEpoch captured) => captured.Sequence != 0
         && (captured.Sequence != Epoch.Sequence || !ReferenceEquals(captured.Combat, Epoch.Combat));
@@ -89,8 +91,9 @@ internal static class CaptureRuntime
         try
         {
             if (!Valid(epoch)) return SourceSnapshot.Unavailable;
+            SourceSnapshot.Collect();
             ulong source = Backend.Capture(epoch.Sequence, kind, identity, id, sourceKind, slot, generation);
-            return source == 0 ? SourceSnapshot.Unavailable : new SourceSnapshot(epoch.Sequence, source);
+            return SourceSnapshot.Own(epoch.Sequence, source);
         }
         catch (Exception ex) { Fail("source-capture", ex); return SourceSnapshot.Unavailable; }
     }
@@ -98,6 +101,7 @@ internal static class CaptureRuntime
     {
         if (!Valid(epoch)) return unavailable;
         if (source.Epoch != 0 && source.Epoch != epoch.Sequence) return unavailable;
-        return consume(source.Handle);
+        try { SourceSnapshot.Collect(); return consume(source.Handle); }
+        finally { GC.KeepAlive(source); }
     }
 }

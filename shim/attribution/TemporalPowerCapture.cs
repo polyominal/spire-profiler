@@ -97,11 +97,13 @@ internal static class TemporalPowerCapture
         try
         {
             if (!CaptureRuntime.Valid(epoch)) return SourceSnapshot.Unavailable;
+            SourceSnapshot.Collect();
             ulong handle = CaptureRuntime.Backend.SourceAccumulate(epoch.Sequence, first.Handle, before, second.Handle, after);
             return handle == 0 ? SourceSnapshot.Unavailable : handle == first.Handle ? first
-                : handle == second.Handle ? second : new SourceSnapshot(epoch.Sequence, handle);
+                : handle == second.Handle ? second : SourceSnapshot.Own(epoch.Sequence, handle);
         }
         catch (Exception ex) { CaptureRuntime.Fail("temporal-mixture", ex); return SourceSnapshot.Unavailable; }
+        finally { GC.KeepAlive(first); GC.KeepAlive(second); }
     }
     internal static void SetTurnAmount(PowerModel power, int amount)
     {

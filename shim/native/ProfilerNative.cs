@@ -42,6 +42,9 @@ internal static class ProfilerNative
     private delegate ulong NativeSourceCapture(ulong engine, ulong combatSeq, int captureKind, ulong instance, [MarshalAs(UnmanagedType.LPUTF8Str)] string sourceId, int sourceKind, int sourceSlot, int generationState);
     private static NativeSourceCapture _source_capture;
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NativeSourceRelease(ulong engine, ulong handle);
+    private static NativeSourceRelease _source_release;
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int NativePowerAttached(ulong engine, ulong combatSeq, ulong powerInstance, [MarshalAs(UnmanagedType.LPUTF8Str)] string powerId, ulong ownerCreature, int ownerKind, int ownerSlot, int amount, ulong sourceTransfer);
     private static NativePowerAttached _power_attached;
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -171,6 +174,7 @@ internal static class ProfilerNative
                     _revision,
                     _snapshot,
                     _source_capture,
+                    _source_release,
                     _power_attached,
                     _power_amount_changed,
                     _power_removed,
@@ -218,6 +222,7 @@ internal static class ProfilerNative
                     GetExport<NativeRevision>(lib, "spire_profiler_revision"),
                     GetExport<NativeSnapshot>(lib, "spire_profiler_snapshot"),
                     GetExport<NativeSourceCapture>(lib, "spire_profiler_source_capture"),
+                    GetExport<NativeSourceRelease>(lib, "spire_profiler_source_release"),
                     GetExport<NativePowerAttached>(lib, "spire_profiler_power_attached"),
                     GetExport<NativePowerAmountChanged>(lib, "spire_profiler_power_amount_changed"),
                     GetExport<NativePowerRemoved>(lib, "spire_profiler_power_removed"),
@@ -324,6 +329,7 @@ internal static class ProfilerNative
         }
         finally { Marshal.FreeHGlobal(buffer); }
     }
+    internal static int SourceRelease(ulong handle) => _source_release(engine, handle);
     internal static ulong SourceCapture(ulong combatSeq, int captureKind, ulong instance, string sourceId, int sourceKind, int sourceSlot, int generationState) => _source_capture(engine, combatSeq, captureKind, instance, sourceId, sourceKind, sourceSlot, generationState);
     internal static int PowerAttached(ulong combatSeq, ulong powerInstance, string powerId, ulong ownerCreature, int ownerKind, int ownerSlot, int amount, ulong sourceTransfer) => _power_attached(engine, combatSeq, powerInstance, powerId, ownerCreature, ownerKind, ownerSlot, amount, sourceTransfer);
     internal static int PowerAmountChanged(ulong combatSeq, ulong powerInstance, string powerId, ulong ownerCreature, int ownerKind, int ownerSlot, int oldAmount, int newAmount, ulong sourceTransfer) => _power_amount_changed(engine, combatSeq, powerInstance, powerId, ownerCreature, ownerKind, ownerSlot, oldAmount, newAmount, sourceTransfer);

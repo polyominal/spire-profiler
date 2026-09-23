@@ -22,6 +22,7 @@ internal abstract class AttributionBackend
     internal abstract PowerObservation ObservePower(object power, object owner = null);
     internal virtual bool TemporaryPower(object power) => false;
     internal abstract ulong Capture(ulong epoch, CaptureKind kind, ulong instance, string id, int sourceKind, int slot, GenerationState generation);
+    internal abstract int SourceRelease(ulong handle);
     internal abstract ulong SourceAccumulate(ulong epoch, ulong first, int before, ulong second, int after);
     internal virtual int PowerAttached(CaptureEpoch epoch, ulong identity, ulong owner, PowerObservation observed, ulong source) => 0;
     internal virtual int PowerChanged(CaptureEpoch epoch, ulong identity, ulong owner, PowerObservation observed, int before, ulong source) => 0;

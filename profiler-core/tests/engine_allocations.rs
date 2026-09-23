@@ -7,6 +7,8 @@ use profiler_core::abi::*;
 
 static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
 static BYTES: AtomicUsize = AtomicUsize::new(0);
+static LIVE_COUNT: AtomicUsize = AtomicUsize::new(0);
+static PEAK_COUNT: AtomicUsize = AtomicUsize::new(0);
 static LIVE: AtomicUsize = AtomicUsize::new(0);
 static PEAK: AtomicUsize = AtomicUsize::new(0);
 struct CountingAllocator;
@@ -18,6 +20,8 @@ unsafe impl GlobalAlloc for CountingAllocator {
         let ptr = unsafe { System.alloc(layout) };
         if !ptr.is_null() {
             ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+            let count = LIVE_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+            PEAK_COUNT.fetch_max(count, Ordering::Relaxed);
             BYTES.fetch_add(layout.size(), Ordering::Relaxed);
             let live = LIVE.fetch_add(layout.size(), Ordering::Relaxed) + layout.size();
             PEAK.fetch_max(live, Ordering::Relaxed);
@@ -25,6 +29,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
         ptr
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        LIVE_COUNT.fetch_sub(1, Ordering::Relaxed);
         LIVE.fetch_sub(layout.size(), Ordering::Relaxed);
         // SAFETY: pointer and layout came from this allocator unchanged.
         unsafe { System.dealloc(ptr, layout) }
@@ -38,6 +43,8 @@ struct Measure {
     count: usize,
     bytes: usize,
     retained: isize,
+    retained_count: isize,
+    peak_count: usize,
     peak: usize,
     micros: u128,
 }
@@ -47,11 +54,18 @@ impl Measure {
         let before_bytes = BYTES.load(Ordering::Relaxed);
         let before_live = LIVE.load(Ordering::Relaxed);
         PEAK.store(before_live, Ordering::Relaxed);
+        let before_live_count = LIVE_COUNT.load(Ordering::Relaxed);
+        PEAK_COUNT.store(before_live_count, Ordering::Relaxed);
         let start = Instant::now();
         let value = operation();
         (
             value,
             Self {
+                retained_count: LIVE_COUNT.load(Ordering::Relaxed) as isize
+                    - before_live_count as isize,
+                peak_count: PEAK_COUNT
+                    .load(Ordering::Relaxed)
+                    .saturating_sub(before_live_count),
                 count: ALLOCATIONS.load(Ordering::Relaxed) - before_count,
                 bytes: BYTES.load(Ordering::Relaxed) - before_bytes,
                 retained: LIVE.load(Ordering::Relaxed) as isize - before_live as isize,
@@ -121,6 +135,70 @@ fn reproducible_engine_allocation_profile() {
         } else {
             baseline = Some(costs);
         }
+        spire_profiler_engine_destroy(engine);
+    }
+    for (exports, active, sweep) in [
+        (1_000, 8, 1),
+        (10_000, 32, 1),
+        (20_000, 128, 1),
+        (10_000, 32, 128),
+    ] {
+        let ((engine, sources), construction) = Measure::run(|| {
+            let engine = spire_profiler_engine_create();
+            // SAFETY: immutable literals own all terminated input strings.
+            let (a, b) = unsafe {
+                spire_profiler_combat_started(
+                    engine,
+                    1,
+                    c"SOURCE_PROFILE".as_ptr(),
+                    c"normal".as_ptr(),
+                    1,
+                    1,
+                );
+                (
+                    spire_profiler_source_capture(engine, 1, 1, 1, c"A".as_ptr(), 0, 0, 0),
+                    spire_profiler_source_capture(engine, 1, 1, 2, c"B".as_ptr(), 0, 0, 0),
+                )
+            };
+            let mut sources = std::collections::VecDeque::with_capacity(active);
+            let mut dead = Vec::with_capacity(sweep);
+            for index in 0..exports {
+                if sources.len() == active {
+                    let source = sources.pop_front().expect("active window is full");
+                    dead.push(source);
+                    if dead.len() == sweep {
+                        for source in dead.drain(..) {
+                            assert_eq!(spire_profiler_source_release(engine, source), 1);
+                        }
+                    }
+                }
+                let source = spire_profiler_source_accumulate(engine, 1, a, 1, b, index + 2);
+                assert_ne!(source, 0);
+                sources.push_back(source);
+            }
+            for source in dead {
+                assert_eq!(spire_profiler_source_release(engine, source), 1);
+            }
+            (engine, sources)
+        });
+        let (_, consumption) = Measure::run(|| {
+            for index in 0..1_000 {
+                let source = sources[index % active];
+                let group = spire_profiler_damage_calculation_begin(engine, 1, source, 1, 0, 99);
+                assert_eq!(
+                    spire_profiler_damage_result_append(engine, group, 7, 5, 2, 0, 4, 0),
+                    1
+                );
+                assert_eq!(spire_profiler_damage_calculation_commit(engine, group), 1);
+            }
+        });
+        eprintln!(
+            "source exports={exports} active={active} sweep={sweep} construction={construction:?} consumption={consumption:?}"
+        );
+        assert!(
+            construction.retained_count > 0
+                && construction.peak_count >= construction.retained_count as usize
+        );
         spire_profiler_engine_destroy(engine);
     }
     let engine = spire_profiler_engine_create();
