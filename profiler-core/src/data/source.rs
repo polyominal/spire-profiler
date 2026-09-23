@@ -138,7 +138,6 @@ enum SourceFailure {
     Packet,
     Capacity,
     Arithmetic,
-    UnobservedDefense,
 }
 
 #[derive(Default)]
@@ -384,7 +383,6 @@ struct DoomCapture {
 struct SourcePool {
     blocks: Vec<SourceBlock>,
     pending: Vec<(SourceSnapshot, u64)>,
-    pending_failed: bool,
     osty: Vec<SourceOsty>,
 }
 
@@ -647,7 +645,6 @@ struct LedgerStage<'a> {
     pool_count: usize,
     committed: bool,
     capacity_lost: bool,
-    unobserved_defense: bool,
 }
 
 impl<'a> LedgerStage<'a> {
@@ -674,7 +671,6 @@ impl<'a> LedgerStage<'a> {
             original_pools: Vec::new(),
             committed: false,
             capacity_lost: false,
-            unobserved_defense: false,
         })
     }
 
@@ -811,9 +807,6 @@ impl<'a> LedgerStage<'a> {
         if !crate::data::state::CardStat::arithmetic_representable(&self.combat.cards) {
             return Err(SourceFailure::Arithmetic);
         }
-        if self.unobserved_defense {
-            self.diagnostics.report(SourceFailure::UnobservedDefense);
-        }
         if self.capacity_lost {
             self.diagnostics.report(SourceFailure::Capacity);
         }
@@ -941,16 +934,9 @@ impl SourceArena {
         }
         coverage.complete = false;
         coverage.failures = coverage.failures.saturating_add(self.diagnostics.failures);
-        for (index, reason) in [
-            "epoch",
-            "source-handle",
-            "packet",
-            "capacity",
-            "arithmetic",
-            "unobserved-defense",
-        ]
-        .into_iter()
-        .enumerate()
+        for (index, reason) in ["epoch", "source-handle", "packet", "capacity", "arithmetic"]
+            .into_iter()
+            .enumerate()
         {
             if self.diagnostics.reported & (1 << index) != 0 {
                 coverage.add_reason(reason);

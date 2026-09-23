@@ -382,7 +382,7 @@ struct NaivePool {
 }
 
 impl NaivePool {
-    fn push(&mut self, source: Roots, base: u64, mut modifiers: Vec<(Roots, u64)>) {
+    fn push(&mut self, source: Roots, base: u64, modifiers: Vec<(Roots, u64)>) {
         if modifiers.is_empty()
             && let Some(chunk) = self
                 .chunks
@@ -394,23 +394,7 @@ impl NaivePool {
             return;
         }
         if self.chunks.len() == state::caps::BLOCK_POOL {
-            let tail = self.chunks.last_mut().expect("full model pool has a tail");
-            let remaining =
-                tail.remaining + base + modifiers.iter().map(|(_, amount)| amount).sum::<u64>();
-            *tail = NaiveChunk {
-                base: NaivePrefix::new(vec![(RowKey::unknown(), 1)]),
-                base_original: remaining,
-                remaining,
-                mods: Box::default(),
-            };
             return;
-        }
-        if modifiers.len() > MAX_BLOCK_MODIFIERS {
-            let unknown = modifiers
-                .drain(MAX_BLOCK_MODIFIERS - 1..)
-                .map(|(_, amount)| amount)
-                .sum();
-            modifiers.push((vec![(RowKey::unknown(), 1)], unknown));
         }
         let mods: Box<[_]> = modifiers
             .into_iter()
@@ -471,9 +455,6 @@ impl NaivePool {
             if chunk.remaining == 0 {
                 self.chunks.remove(0);
             }
-        }
-        if remaining > 0 {
-            credits.push((RowKey::unknown(), Field::BlockEffective, remaining as i64));
         }
         credits
     }

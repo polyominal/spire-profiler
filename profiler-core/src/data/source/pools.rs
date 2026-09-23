@@ -80,10 +80,6 @@ impl SourceBlock {
 }
 
 impl LedgerStage<'_> {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "bounded FIFO overflow and modifier allocation share one transactional update"
-    )]
     fn push_block(
         &mut self,
         slot: SourceSlot,
@@ -91,7 +87,7 @@ impl LedgerStage<'_> {
         amount: u64,
     ) -> Result<(), SourceFailure> {
         let pool = self.pool(slot)?;
-        let mut pending = std::mem::take(&mut pool.pending);
+        let pending = std::mem::take(&mut pool.pending);
         let modifiers = pending
             .iter()
             .try_fold(0_u64, |sum, (_, amount)| sum.checked_add(*amount))
@@ -114,32 +110,10 @@ impl LedgerStage<'_> {
             return Ok(());
         }
         if pool.blocks.len() == caps::BLOCK_POOL {
-            let tail = pool
-                .blocks
-                .last_mut()
-                .expect("a full bounded pool has a tail");
-            let remaining = tail
-                .remaining
-                .checked_add(amount)
-                .ok_or(SourceFailure::Arithmetic)?;
-            *tail = SourceBlock {
-                base: SourceSnapshot::unknown(source.epoch()).prefix(),
-                base_original: remaining,
-                base_consumed: 0,
-                remaining,
-                mods: Box::default(),
-            };
             self.capacity_lost = true;
             return Ok(());
         }
         let lost = pending.len() > SourceBlock::MAX_MODS;
-        if lost {
-            let unknown = pending
-                .drain(SourceBlock::MAX_MODS - 1..)
-                .try_fold(0_u64, |sum, (_, amount)| sum.checked_add(amount))
-                .ok_or(SourceFailure::Arithmetic)?;
-            pending.push((SourceSnapshot::unknown(source.epoch()), unknown));
-        }
         let mut remaining = base;
         let mut mods = Vec::with_capacity(pending.len().min(SourceBlock::MAX_MODS));
         for (source, amount) in pending.into_iter().take(SourceBlock::MAX_MODS) {
@@ -190,17 +164,7 @@ impl LedgerStage<'_> {
                 )?;
             }
         }
-        if remaining > 0 {
-            self.credit(
-                Destination::Unknown(TEAM_SLOT),
-                CreditField::BlockEffective,
-                i64::try_from(remaining).map_err(|_| SourceFailure::Arithmetic)?,
-            )?;
-            self.unobserved_defense = true;
-        }
-        let pool = self.pool(slot)?;
-        pool.pending.clear();
-        pool.pending_failed = false;
+        self.pool(slot)?.pending.clear();
         Ok(())
     }
 
@@ -256,24 +220,15 @@ impl State {
         amount: i32,
         receiver_slot: i32,
     ) -> i32 {
-        let mut observed_slot = None;
         let result = (|| {
             let epoch = self.provenance_epoch(combat_seq)?;
-            let slot = self.sources.diagnostics.slot(receiver_slot);
-            observed_slot = Some(slot);
             let source = self.source_snapshot(epoch, transfer)?;
             if amount < 0 {
                 return Err(SourceFailure::Packet);
             }
+            let slot = super::super::state::clamp_source_slot(receiver_slot);
             let mut stage = LedgerStage::new(self)?;
             let pool = stage.pool(slot)?;
-            if pool.pending_failed {
-                debug_assert!(
-                    pool.pending.is_empty(),
-                    "rejected modifier batches cannot retain partial credits"
-                );
-                return Err(SourceFailure::Packet);
-            }
             if pool.pending.len() == caps::PENDING_BLOCK_CONTRIBS {
                 return Err(SourceFailure::Capacity);
             }
@@ -283,16 +238,6 @@ impl State {
             stage.commit()?;
             Ok(())
         })();
-        if result.is_err()
-            && let Some(slot) = observed_slot
-        {
-            while self.provenance.pools.len() <= usize::from(slot) {
-                self.provenance.pools.push(SourcePool::default());
-            }
-            let pool = &mut self.provenance.pools[usize::from(slot)];
-            pool.pending.clear();
-            pool.pending_failed = true;
-        }
         self.source_status(result)
     }
 
@@ -305,22 +250,15 @@ impl State {
     ) -> i32 {
         let result = (|| {
             let epoch = self.provenance_epoch(combat_seq)?;
-            let mut source = self.source_snapshot(epoch, transfer)?;
+            let source = self.source_snapshot(epoch, transfer)?;
             if amount < 0 {
                 return Err(SourceFailure::Packet);
             }
-            let slot = self.sources.diagnostics.slot(receiver_slot);
-            let mut stage = LedgerStage::new(self)?;
-            let pool = stage.pool(slot)?;
-            if pool.pending_failed {
-                // A missing modifier leaves no trustworthy base/modifier split.
-                source = SourceSnapshot::unknown(epoch);
-                pool.pending_failed = false;
-            }
             if amount == 0 {
-                pool.pending.clear();
-                return stage.commit();
+                return Ok(());
             }
+            let slot = super::super::state::clamp_source_slot(receiver_slot);
+            let mut stage = LedgerStage::new(self)?;
             stage.combat.block_total = stage
                 .combat
                 .block_total
@@ -382,7 +320,7 @@ impl State {
                 return Err(SourceFailure::Packet);
             }
             let source = self.source_snapshot(epoch, transfer)?;
-            let slot = self.sources.diagnostics.slot(owner_slot);
+            let slot = super::super::state::clamp_source_slot(owner_slot);
             let mut stage = LedgerStage::new(self)?;
             let pool = stage.pool(slot)?;
             if pool.osty.len() == caps::OSTY_STACK {
@@ -404,7 +342,7 @@ impl State {
     pub(crate) fn osty_killed(&mut self, combat_seq: u64, owner_slot: i32, play: u64) -> i32 {
         let result = (|| {
             self.provenance_epoch(combat_seq)?;
-            let owner = self.sources.diagnostics.slot(owner_slot);
+            let owner = super::super::state::clamp_source_slot(owner_slot);
             let source = if play == 0 {
                 None
             } else {
@@ -445,11 +383,9 @@ impl State {
     pub(crate) fn block_pool_clear(&mut self, combat_seq: u64, player_slot: i32) -> i32 {
         let result = (|| {
             self.provenance_epoch(combat_seq)?;
-            let slot = self.sources.diagnostics.slot(player_slot);
+            let slot = super::super::state::clamp_source_slot(player_slot);
             if let Some(pool) = self.provenance.pools.get_mut(usize::from(slot)) {
                 pool.blocks.clear();
-                pool.pending.clear();
-                pool.pending_failed = false;
             }
             Ok(())
         })();
