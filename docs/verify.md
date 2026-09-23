@@ -33,8 +33,15 @@
   assets. Ten scenarios compare exact RGBA pixels and retain both images, a
   difference image, and a JSON report. This requires a graphical session with
   the game closed; it boots the game with Steam disabled and isolated profiler
-  data, then restores the installed mod and verifies its file hashes. The
-  fixture bootstrap is generated only for this command and is not shipped.
+  data. It builds only the host native library and one fixture assembly, then
+  launches a private game copy under the invocation scratch directory.
+  Copy-on-write assets are used when available, with ordinary copies as
+  fallback. A separate `SpireProfilerParity/run-*` user-data directory holds
+  fixture settings and mod consent; the installed game, mods, and normal saves
+  are never changed. Both disposable directories are removed on ordinary return;
+  interruption can leave isolated copies for manual cleanup. Images and reports
+  are retained separately. The fixture bootstrap is generated only for this
+  command and is not shipped.
 - `cargo xtask headless-test` first runs `managed-test`, then requires
   successful game exit, this mod's `OWN PATCHES` minimum, and the `CAPTURE
   VERIFIED` marker with exact producer and damage/temporal bridge inventories.
