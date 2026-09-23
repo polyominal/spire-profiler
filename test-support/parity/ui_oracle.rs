@@ -156,8 +156,38 @@ fn render_context(
     detail: &tooltip::RowDetail,
     show_legend: bool,
 ) -> Value {
-    let viewport = Vector2::new(1920.0, 1080.0);
-    let mut offset = 0.0;
+    render_frame(
+        width,
+        height,
+        header_bottom,
+        strip,
+        flat,
+        header,
+        body,
+        hits,
+        detail,
+        show_legend,
+        Vector2::new(1920.0, 1080.0),
+        0.0,
+        Some(1),
+    )
+}
+fn render_frame(
+    width: f32,
+    height: f32,
+    header_bottom: f32,
+    strip: f32,
+    flat: bool,
+    header: &[Cmd],
+    body: &[Cmd],
+    hits: &[chart_layout::RowHit],
+    detail: &tooltip::RowDetail,
+    show_legend: bool,
+    viewport: Vector2,
+    requested_scroll: f32,
+    hover: Option<usize>,
+) -> Value {
+    let mut offset = requested_scroll;
     let (size, position) = panel_common::modal_box(Some(viewport), width, height, &mut offset);
     let position = position.expect("render viewport exists");
     let strip_vector = Vector2::new(0.0, strip);
@@ -167,7 +197,7 @@ fn render_context(
     let lines = panel_common::reshape_tip(detail, size.y);
     let tip = hits
         .iter()
-        .find(|hit| hit.flat_index == 1)
+        .find(|hit| Some(hit.flat_index) == hover)
         .filter(|_| !lines.is_empty())
         .map(|hit| {
             tooltip::place(
@@ -198,7 +228,7 @@ fn render_context(
         panel_replay::FontPlan::NoText => "NoText",
     };
     let (shadow, plate_body) = theme::plate_rects(plate.size);
-    json!({"viewport":[1920,1080],"flat_chrome":flat,"control":rect(frame),"plate":rect(plate),"origin_x":origin_x,"box_size":[size.x,size.y],
+    json!({"viewport":[viewport.x,viewport.y],"flat_chrome":flat,"control":rect(frame),"plate":rect(plate),"origin_x":origin_x,"box_size":[size.x,size.y],
         "header_offset":[position.x,position.y],"body_offset":[position.x,position.y-offset],"body_clip":rect(body_clip),"scroll":offset,"font_plan":plan,
         "plate_shadow":rect(Rect2::new(shadow.position+plate.position,shadow.size)),"plate_body":rect(Rect2::new(plate_body.position+plate.position,plate_body.size)),
         "legend":legend.map(rect),"legend_commands":commands(&legend_commands),"tip":tip.map(rect),"tip_lines":tip_lines(detail,tooltip::max_tip_lines(size.y)),
@@ -596,6 +626,354 @@ fn hover_cases(cases: &mut Vec<Value>) {
     cases.push(json!({"name":"hover_boundaries","kind":"hover","input":{"panel":rect(panel),"band":[band.0,band.1],"hits":hits.iter().map(|h|json!({"y0":h.y0,"y1":h.y1,"flat_index":h.flat_index})).collect::<Vec<_>>(),"queries":queries},"expected":expected}));
 }
 
+fn actual_render_cases() -> Vec<Value> {
+    let ascii = mixed_cards()
+        .into_iter()
+        .filter(|c| c.id.is_ascii())
+        .collect::<Vec<_>>();
+    let many = (0..80)
+        .map(|i| {
+            fixture_card(
+                &format!("SOURCE_{i:03}"),
+                (i % 2) as u8,
+                SourceKind::Card,
+                i + 1,
+                10,
+                2,
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut cases = vec![];
+    for (name, history, tab, player, cards, viewport, requested_scroll, flat, missing) in [
+        (
+            "combat_mixed",
+            false,
+            UiTab::Combat,
+            None,
+            ascii.clone(),
+            Vector2::new(1920.0, 1080.0),
+            0.0,
+            false,
+            false,
+        ),
+        (
+            "combat_unicode",
+            false,
+            UiTab::Combat,
+            None,
+            mixed_cards(),
+            Vector2::new(1280.0, 720.0),
+            0.0,
+            false,
+            false,
+        ),
+        (
+            "combat_scrolled",
+            false,
+            UiTab::Combat,
+            None,
+            many,
+            Vector2::new(1920.0, 1080.0),
+            99999.0,
+            false,
+            false,
+        ),
+        (
+            "combat_flat",
+            false,
+            UiTab::Combat,
+            None,
+            ascii.clone(),
+            Vector2::new(1280.0, 720.0),
+            0.0,
+            true,
+            false,
+        ),
+        (
+            "combat_empty",
+            false,
+            UiTab::Combat,
+            None,
+            vec![],
+            Vector2::new(1920.0, 1080.0),
+            0.0,
+            false,
+            false,
+        ),
+        (
+            "run_all",
+            false,
+            UiTab::Run,
+            None,
+            ascii.clone(),
+            Vector2::new(1920.0, 1080.0),
+            0.0,
+            false,
+            false,
+        ),
+        (
+            "run_player",
+            false,
+            UiTab::Run,
+            Some(1),
+            ascii.clone(),
+            Vector2::new(1920.0, 1080.0),
+            0.0,
+            false,
+            false,
+        ),
+        (
+            "history_team",
+            true,
+            UiTab::Run,
+            None,
+            ascii.clone(),
+            Vector2::new(1920.0, 1080.0),
+            0.0,
+            false,
+            false,
+        ),
+        (
+            "history_player",
+            true,
+            UiTab::Run,
+            Some(1),
+            ascii.clone(),
+            Vector2::new(1280.0, 720.0),
+            0.0,
+            false,
+            false,
+        ),
+        (
+            "history_missing",
+            true,
+            UiTab::Run,
+            None,
+            vec![],
+            Vector2::new(1920.0, 1080.0),
+            0.0,
+            false,
+            true,
+        ),
+    ] {
+        let roster = vec![
+            PlayerRec {
+                slot: 0,
+                character: "IRONCLAD".into(),
+            },
+            PlayerRec {
+                slot: 1,
+                character: "SILENT".into(),
+            },
+        ];
+        let portraits = roster
+            .iter()
+            .map(|p| AvatarFact {
+                slot: p.slot,
+                loaded: true,
+                path: run_layout::character_icon_path(&p.character).expect("fixture slug"),
+            })
+            .collect::<Vec<_>>();
+        STATE.with(|state| {
+            let mut s = state.borrow_mut();
+            *s = State::default();
+            s.store_paths = Some(StorePaths::new(Path::new("unused-parity-store")));
+            s.player_filter = player.map_or(PlayerFilter::All, PlayerFilter::Player);
+            s.current = Some(Combat {
+                cards: cards.clone(),
+                turns: 3,
+                plays: 27,
+                damage_received: 17,
+                block_total: 222,
+                potions_used: 2,
+                encounter_id: "BYGONE_EFFIGY".into(),
+                ..Combat::default()
+            });
+            s.run_cards = cards.clone();
+            s.run_turns = 7;
+            s.run_combats = 2;
+        });
+        run_history::clear();
+        if let Some(slot) = player {
+            run_history::toggle_run_filter(slot);
+        }
+        let history_view = RunSummaryView {
+            character: "IRONCLAD,SILENT".into(),
+            ascension: 7,
+            game_mode: "Standard".into(),
+            outcome: Some(RunOutcome::Defeat),
+            seed: "LONG_SEED_ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789".into(),
+            players: roster.clone().into(),
+            combats: vec![
+                CombatView {
+                    seq: 1,
+                    encounter: "A".into(),
+                    result: CombatResult::Completed,
+                    damage_dealt: 79,
+                    damage_taken: 17,
+                    turns: 3,
+                },
+                CombatView {
+                    seq: 2,
+                    encounter: "B".into(),
+                    result: CombatResult::Defeat,
+                    damage_dealt: 31,
+                    damage_taken: 9,
+                    turns: 4,
+                },
+            ]
+            .into(),
+            rollup: cards.clone().into(),
+            player_rollups: roster
+                .iter()
+                .map(|p| PlayerRollup {
+                    slot: p.slot,
+                    character: p.character.clone(),
+                    cards: cards
+                        .iter()
+                        .filter(|c| c.player == p.slot)
+                        .cloned()
+                        .collect(),
+                })
+                .collect(),
+            ..RunSummaryView::default()
+        };
+        let header_facts = run_layout::HeaderFacts {
+            portraits: portraits
+                .iter()
+                .map(|p| run_layout::PortraitFact {
+                    slot: p.slot,
+                    loaded: p.loaded,
+                    path: p.path.clone(),
+                })
+                .collect(),
+        };
+        let mut output_rows = vec![UiRow::default(); 256];
+        let count = if history {
+            let selected = run_history::filtered_rollup(&history_view);
+            snapshot::ui_snapshot_rows_from(selected, &mut output_rows)
+        } else {
+            snapshot::ui_snapshot_rows(tab, &mut output_rows)
+        };
+        output_rows.truncate(if missing { 0 } else { count });
+        let detail_cards = if history {
+            run_history::filtered_rollup(&history_view)
+        } else {
+            &cards
+        };
+        let mut hover = None;
+        let mut gutter = 0.0;
+        let mut expected = Value::Null;
+        let mut render = Value::Null;
+        for _ in 0..3 {
+            let (width, height, header_bottom, strip, header, body, hits, show_legend) = if history
+            {
+                let mut scratch = vec![UiRow::default(); 256];
+                let l = run_layout::build_run_layout(
+                    if missing { None } else { Some(&history_view) },
+                    &header_facts,
+                    hover,
+                    &mut scratch,
+                    780.0,
+                    flat,
+                    gutter,
+                );
+                expected = json!({"header":commands(&l.header_cmds),"body":commands(&l.cmds),"portrait_paths":l.portrait_paths,"header_bottom":l.header_bottom,"strip_h":0,"height":l.height});
+                (
+                    l.width,
+                    l.height,
+                    l.header_bottom,
+                    0.0,
+                    l.header_cmds,
+                    l.cmds,
+                    l.row_hits,
+                    l.has_chart,
+                )
+            } else {
+                let l = chart_layout::build(BuildInput {
+                    tab,
+                    rows: &output_rows,
+                    meta: snapshot::ui_snapshot_meta(tab),
+                    footer: &snapshot::ui_footer_text(tab),
+                    hover_row: hover,
+                    avatars: &portraits,
+                    flat_chrome: flat,
+                    tab_sprites: !flat,
+                    width: 780.0,
+                    right_gutter: gutter,
+                    ..BuildInput::default()
+                });
+                expected = layout_output(&l);
+                (
+                    l.width,
+                    l.height,
+                    l.header_bottom,
+                    l.strip_h,
+                    l.header_cmds,
+                    l.cmds,
+                    l.row_hits,
+                    true,
+                )
+            };
+            let mut offset = requested_scroll;
+            let (box_size, _) = panel_common::modal_box(Some(viewport), width, height, &mut offset);
+            gutter = panel_common::scrollbar_gutter(height, box_size.y, !flat);
+            let band = panel_replay::body_band(box_size.y, !flat, header_bottom);
+            hover = hits
+                .iter()
+                .find(|hit| hit.y0 - offset >= band.0 && hit.y1 - offset <= band.1)
+                .map(|h| h.flat_index);
+            let detail = hover.map_or_else(tooltip::RowDetail::default, |index| {
+                snapshot::ui_row_detail_from_cards(&output_rows, index, detail_cards)
+            });
+            render = render_frame(
+                width,
+                height,
+                header_bottom,
+                strip,
+                flat,
+                &header,
+                &body,
+                &hits,
+                &detail,
+                show_legend,
+                viewport,
+                offset,
+                hover,
+            );
+        }
+        if flat {
+            render["scrollbar"] = Value::Null;
+        }
+        render["avatar_slots"] = json!(roster.iter().map(|p| p.slot).collect::<Vec<_>>());
+        render["avatar_scales"] = json!(
+            roster
+                .iter()
+                .map(|p| if player.is_none() {
+                    1.0_f32
+                } else if player == Some(p.slot) {
+                    1.1_f32
+                } else {
+                    0.95_f32
+                })
+                .collect::<Vec<_>>()
+        );
+        render["player"] = json!(player);
+        let view = if missing {
+            Value::Null
+        } else {
+            json!({"title":"BYGONE_EFFIGY","character":"IRONCLAD,SILENT","ascension":7,"game_mode":"Standard","outcome":"defeat","seed":history_view.seed,
+            "cards":cards.iter().map(card).collect::<Vec<_>>(),"players":roster.iter().map(|p|json!({"slot":p.slot,"character":p.character})).collect::<Vec<_>>(),
+            "player_cards":{"0":cards.iter().filter(|c|c.player==0).map(card).collect::<Vec<_>>(),"1":cards.iter().filter(|c|c.player==1).map(card).collect::<Vec<_>>()},
+            "turns":if history||tab==UiTab::Run{7}else{3},"plays":27,"combats":if history||tab==UiTab::Run{2}else{0},"damage_received":if history{26}else{17},"block_total":222,"potions_used":2})
+        };
+        cases.push(json!({"name":name,"history":history,"tab":format!("{tab:?}"),"player":player,"flat_chrome":flat,"viewport":[viewport.x,viewport.y],"scroll":requested_scroll,"hover_row":hover,"view":view,"expected":expected,"render":render}));
+    }
+    STATE.with(|state| *state.borrow_mut() = State::default());
+    run_history::clear();
+    cases
+}
+
 #[test]
 fn export_reference() {
     let destination =
@@ -635,8 +1013,7 @@ fn export_reference() {
     history_cases(&mut cases, &mixed);
     geometry_cases(&mut cases);
     hover_cases(&mut cases);
-    let output =
-        json!({"baseline":BASELINE,"schema":1,"render_contract":render_contract(),"cases":cases});
+    let output = json!({"baseline":BASELINE,"schema":1,"render_contract":render_contract(),"cases":cases,"render_cases":actual_render_cases()});
     std::fs::write(
         destination,
         serde_json::to_string_pretty(&output).expect("JSON values serialize") + "\n",
