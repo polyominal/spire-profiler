@@ -28,6 +28,7 @@ internal static class UiRenderFixtures
         if (script.Reload() != Error.Ok) throw new InvalidOperationException("Original renderer GDScript did not compile");
         Directory.CreateDirectory(outputDirectory);
         var tree = Engine.GetMainLoop() as SceneTree ?? throw new InvalidOperationException("Rendered parity needs the real game scene tree");
+        await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
         var results = new List<object>();
         var failures = new List<string>();
         foreach (var fixture in reference["render_cases"].AsArray())
@@ -47,7 +48,10 @@ internal static class UiRenderFixtures
             using var theme = new PanelTheme();
             try
             {
-                tree.Root.AddChild(viewport);
+                tree.Root.CallDeferred(Node.MethodName.AddChild, viewport);
+                await tree.ToSignal(viewport, Node.SignalName.TreeEntered);
+                await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
+                if (!viewport.IsInsideTree()) throw new InvalidOperationException("Rendered fixture viewport failed to attach");
                 var background = new ColorRect { Color = new Color(.12f, .16f, .2f), Size = new Vector2(width, height) };
                 viewport.AddChild(background);
                 bool flat = fixture["flat_chrome"].GetValue<bool>();
