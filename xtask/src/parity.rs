@@ -77,6 +77,7 @@ impl Reference {
         let ui = reference.directory.join("ui_reference.json");
         let session = reference.directory.join("session_reference.json");
         {
+            let _directory = shell.push_dir(&reference.original);
             let _target = shell.push_env("CARGO_TARGET_DIR", scratch.join("target"));
             let _ui = shell.push_env("PARITY_OUTPUT", &ui);
             let _session = shell.push_env("PARITY_SESSION_OUTPUT", &session);
@@ -106,7 +107,7 @@ impl Reference {
         fs::create_dir(&current)?;
         let files = cmd!(
             shell,
-            "git -C {root} ls-files --cached --others --exclude-standard -z -- Cargo.toml Cargo.lock profiler-core xtask"
+            "git -C {root} ls-files --cached --others --exclude-standard -z -- Cargo.toml Cargo.lock rust-toolchain.toml .cargo/config.toml profiler-core xtask"
         )
         .read()?;
         for relative in files.split('\0').filter(|path| !path.is_empty()) {
@@ -118,7 +119,11 @@ impl Reference {
             fs::create_dir_all(destination.parent().expect("exported files have a parent"))?;
             fs::copy(source, destination)?;
         }
-        let driver = root.join("profiler-core/tests/support/attribution_parity.rs");
+        let driver = current.join("profiler-core/tests/support/attribution_parity.rs");
+        println!(
+            "attribution parity: driver SHA-256 {}",
+            sha256_file(&driver)?
+        );
         let driver_path = serde_json::to_string(&driver)?;
         let mut ledgers = Vec::new();
         for (label, code, features) in [
@@ -141,6 +146,7 @@ impl Reference {
             let lock = code.join("Cargo.lock");
             let locked = sha256_file(&lock)?;
             println!("attribution parity: {label} Cargo.lock SHA-256 {locked}");
+            let _directory = shell.push_dir(code);
             let _target = shell.push_env("CARGO_TARGET_DIR", scratch.join("target"));
             let result = cmd!(
                 shell,

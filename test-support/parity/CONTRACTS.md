@@ -38,8 +38,9 @@ fingerprint; the hash alone does not explain the behavioral change.
 Attribution drivers run as temporary examples inside separate baseline and
 current source exports. Each export uses its original `Cargo.lock` with
 `--locked --offline`; the command reports and checks the lockfile hash. The
-current export includes working-tree source edits. No wrapper project resolves
-its own dependency graph from the local registry cache.
+current export includes working-tree source edits and compiler/configuration
+pins. Both examples compile the same retained driver, whose hash is reported. No
+wrapper project resolves its own dependency graph from the local registry cache.
 
 The managed adapter requires the production statistics DTOs, `ChartProjection`,
 `PanelLayout`, `PanelGeometry`, and `TooltipLayout`. Its entry point is
