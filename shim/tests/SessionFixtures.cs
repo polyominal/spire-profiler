@@ -53,12 +53,17 @@ internal static class SessionFixtures
     {
         var valid = JsonNode.Parse("""
             {"policy_version":1,"combat_id":7,"encounter_id":"CULTIST","encounter_type":"Normal",
-            "started_at":123,"result":"completed","turns":2,"plays":1,"potions_used":0,"damage_received":3,
+            "started_at":123,"result":"completed","turns":2,"plays":1,"potions_used":0,"damage_received":3,"block_total":17,
             "cards":[{"id":"STRIKE","kind":0,"player":0,"plays":1,"damage_dealt":9,"damage_blocked":2,"dmg_direct":6,"dmg_attributed":2,"dmg_modifier":1}],
             "coverage":{"complete":true,"failures":0,"reasons":[]}}
             """);
         var parsed = StatisticsJson.ParseNative(valid.ToJsonString());
         Check(parsed.Cards.Single().DamageDealt == 9 && parsed.Coverage.Complete, "Native boundary must retain observed accounting and coverage");
+        var metadata = Header("METADATA", 123) with { Character = "DEFECT", Ascension = 7, GameMode = "Standard" };
+        var combatView = parsed.View(metadata.Players, metadata);
+        Check(combatView.BlockTotal == 17 && combatView.Ascension == 7 && combatView.GameMode == "Standard"
+            && combatView.Character == "DEFECT" && combatView.Title == "CULTIST",
+            "Combat presentation needs measured total block and the original run metadata independently of source rows");
         Check(parsed.Cards is not StatRow[] && parsed.Coverage.Reasons is not string[], "Published native collections must not expose mutable backing arrays");
         foreach (var invalid in new Action<JsonNode>[]
         {
@@ -235,6 +240,8 @@ internal static class SessionFixtures
         ProfilerSession.Refresh();
         var firstSnapshot = ProfilerSession.CurrentCombat;
         Check(firstSnapshot?.Cards.Single().DamageDealt == 9 && firstSnapshot.Cards.Single().Id == "STRIKE", "Managed session must publish native accounting");
+        Check(ProfilerSession.CurrentRun.Combats == 0 && ProfilerSession.CurrentRun.Cards.Count == 0,
+            "The live run tab contains only completed combats even while combat statistics refresh");
         Check(ProfilerSession.EndCombat(first) == 1 && ProfilerSession.EndCombat(first) == 0,
             "Combat completion must be accepted exactly once");
         ulong discarded = ProfilerSession.StartCombat("DISCARDED", "Normal");

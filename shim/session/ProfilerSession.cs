@@ -30,6 +30,8 @@ internal static class ProfilerSession
     internal static bool InRun => run != null;
     internal static bool HistoryOpen { get; private set; }
     internal static ulong Revision { get; private set; }
+    internal static ulong LiveFilterGeneration { get; private set; }
+    internal static ulong HistoryClearGeneration { get; private set; }
 
     internal static void Initialize(string dataDirectory, string gameVersion, string modVersion, Action<string> diagnostic)
     {
@@ -42,6 +44,8 @@ internal static class ProfilerSession
         combat = null;
         CurrentCombat = CurrentRun = SelectedHistory = null;
         HistoryOpen = false;
+        LiveFilterGeneration++;
+        HistoryClearGeneration++;
         activeEpoch = 0;
         ordinal = 0;
         pendingCombats.Clear();
@@ -74,6 +78,7 @@ internal static class ProfilerSession
         if (pendingCombats.Any(record => record.RunId == run.RunId))
             completedRun = completedRun with { Coverage = completedRun.Coverage.WithFailure("statistics-write-pending") };
         CurrentRun = completedRun;
+        LiveFilterGeneration++;
         Revision++;
     }
 
@@ -83,7 +88,7 @@ internal static class ProfilerSession
         if (activeEpoch != 0)
         {
             Refresh();
-            if (combat != null && (combat.Cards.Count != 0 || combat.Turns != 0))
+            if (combat != null && (combat.Cards.Count != 0 || combat.Plays != 0))
                 Finish(combat with { Result = "interrupted", Coverage = combat.Coverage.WithFailure("interrupted-capture") });
         }
         FlushPending();
@@ -131,7 +136,7 @@ internal static class ProfilerSession
         }
         if (recording) store.SaveTrace(record.RunId, record.Ordinal, ProfilerNative.Recording());
         combat = finished;
-        CurrentCombat = finished.View(combatRun.Players);
+        CurrentCombat = finished.View(combatRun.Players, combatRun);
         if (run != null && run.RunId == combatRun.RunId)
         {
             completedRun = completedRun.Add(CurrentCombat);
@@ -151,8 +156,7 @@ internal static class ProfilerSession
             var snapshot = StatisticsJson.ParseNative(ProfilerNative.Snapshot());
             if (snapshot == null || snapshot.CombatId != activeEpoch) throw new InvalidDataException("Native snapshot differs from active combat");
             combat = snapshot;
-            CurrentCombat = snapshot.View(combatRun.Players);
-            if (run != null) CurrentRun = completedRun.Add(CurrentCombat);
+            CurrentCombat = snapshot.View(combatRun.Players, combatRun);
             nativeRevision = next;
             Revision++;
             return true;
@@ -161,10 +165,7 @@ internal static class ProfilerSession
         {
             report($"cannot read attribution snapshot: {ex.Message}");
             combat = combat == null ? null : combat with { Coverage = combat.Coverage.WithFailure("snapshot-read-failed") };
-            CurrentCombat = combat?.View(combatRun.Players);
-            if (run != null) CurrentRun = CurrentCombat == null
-                ? completedRun with { Coverage = completedRun.Coverage.WithFailure("snapshot-read-failed") }
-                : completedRun.Add(CurrentCombat);
+            CurrentCombat = combat?.View(combatRun.Players, combatRun);
             Revision++;
             return false;
         }
@@ -198,6 +199,7 @@ internal static class ProfilerSession
         run = null;
         completedRun = null;
         CurrentCombat = CurrentRun = null;
+        LiveFilterGeneration++;
         ClearHistory();
         Revision++;
     }
@@ -216,6 +218,7 @@ internal static class ProfilerSession
         if (!OnThread()) return;
         SelectedHistory = null;
         HistoryOpen = false;
+        HistoryClearGeneration++;
         Revision++;
     }
 

@@ -37,8 +37,9 @@ internal static class StatisticsJson
             uint id = root.GetProperty("combat_id").GetUInt32();
             int policy = root.GetProperty("policy_version").GetInt32();
             long received = root.GetProperty("damage_received").GetInt64();
+            long blockTotal = root.GetProperty("block_total").GetInt64();
             long startedAt = root.GetProperty("started_at").GetInt64();
-            if (id == 0 || policy <= 0 || received < 0 || startedAt < 0) throw new InvalidDataException("Invalid combat identity or totals");
+            if (id == 0 || policy <= 0 || received < 0 || blockTotal < 0 || startedAt < 0) throw new InvalidDataException("Invalid combat identity or totals");
             return new()
             {
                 PolicyVersion = policy,
@@ -51,6 +52,7 @@ internal static class StatisticsJson
                 Plays = root.GetProperty("plays").GetUInt32(),
                 PotionsUsed = root.GetProperty("potions_used").GetUInt32(),
                 DamageReceived = received,
+                BlockTotal = blockTotal,
                 Cards = Array.AsReadOnly(rows),
                 Coverage = new()
                 {

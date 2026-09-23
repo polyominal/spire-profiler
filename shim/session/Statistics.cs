@@ -86,13 +86,19 @@ internal sealed record SummaryView
     public string Title { get; init; } = "";
     public string Subtitle { get; init; } = "";
     public string Seed { get; init; } = "";
+    public string Character { get; init; } = "";
+    public int Ascension { get; init; } = -1;
+    public string GameMode { get; init; } = "";
     public IReadOnlyList<StatRow> Cards { get; init; } = Array.Empty<StatRow>();
+    public IReadOnlyDictionary<int, IReadOnlyList<StatRow>> PlayerCards { get; init; }
+        = new System.Collections.ObjectModel.ReadOnlyDictionary<int, IReadOnlyList<StatRow>>(new Dictionary<int, IReadOnlyList<StatRow>>());
     public IReadOnlyList<PlayerSummary> Players { get; init; } = Array.Empty<PlayerSummary>();
     public uint Turns { get; init; }
     public uint Plays { get; init; }
     public uint Combats { get; init; }
     public uint PotionsUsed { get; init; }
     public long DamageReceived { get; init; }
+    public long BlockTotal { get; init; }
     public CoverageSummary Coverage { get; init; } = CoverageSummary.Unknown;
     public long StartedAt { get; init; }
     public long EndedAt { get; init; }
@@ -121,6 +127,7 @@ internal sealed record SummaryView
                     Combats = Combats + combat.Combats,
                     PotionsUsed = PotionsUsed + combat.PotionsUsed,
                     DamageReceived = DamageReceived + combat.DamageReceived,
+                    BlockTotal = BlockTotal + combat.BlockTotal,
                     Coverage = Coverage.Merge(combat.Coverage)
                 };
                 if (PolicyVersion.HasValue && combat.PolicyVersion.HasValue && PolicyVersion != combat.PolicyVersion)
@@ -163,6 +170,9 @@ internal sealed record RunRecord
     internal SummaryView EmptySummary() => new()
     {
         Title = Character,
+        Character = Character,
+        Ascension = Ascension,
+        GameMode = GameMode,
         Subtitle = $"{GameMode} · Ascension {Ascension}",
         Seed = Seed,
         Players = Players,
@@ -185,14 +195,18 @@ internal sealed record CombatStatistics
     public uint Plays { get; init; }
     public uint PotionsUsed { get; init; }
     public long DamageReceived { get; init; }
+    public long BlockTotal { get; init; }
     public IReadOnlyList<StatRow> Cards { get; init; } = Array.Empty<StatRow>();
     public CoverageSummary Coverage { get; init; } = CoverageSummary.Unknown;
 
-    internal SummaryView View(IReadOnlyList<PlayerSummary> players) => new()
+    internal SummaryView View(IReadOnlyList<PlayerSummary> players, RunRecord run = null) => new()
     {
         PolicyVersion = PolicyVersion,
         Title = EncounterId,
         Subtitle = EncounterType,
+        Character = run?.Character ?? "",
+        Ascension = run?.Ascension ?? -1,
+        GameMode = run?.GameMode ?? "",
         Cards = Cards,
         Players = players,
         StartedAt = StartedAt,
@@ -202,6 +216,7 @@ internal sealed record CombatStatistics
         Combats = 1,
         PotionsUsed = PotionsUsed,
         DamageReceived = DamageReceived,
+        BlockTotal = BlockTotal,
         Coverage = Coverage
     };
 }
