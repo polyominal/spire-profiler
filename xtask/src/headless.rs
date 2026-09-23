@@ -29,8 +29,8 @@ const GAME_ARGS: [&str; 6] = [
 
 // The managed gate pins this definition inventory to the verified game.
 const CAPTURE_PRODUCERS: u64 = 1726;
-const CAPTURE_TARGETS: u64 = 1779;
-const CAPTURE_PATCHES: u64 = 3555;
+const CAPTURE_TARGETS: u64 = 1776;
+const CAPTURE_PATCHES: u64 = 3547;
 // Run lifecycle and history UI patches are outside the capture installer.
 const FIXED_OWNER_PATCHES: u64 = 10;
 const MIN_PATCHES: u64 = CAPTURE_TARGETS + FIXED_OWNER_PATCHES;
@@ -43,8 +43,6 @@ struct CaptureReport {
     producers: u64,
     damage_bridges: u64,
     temporal_bridges: u64,
-    modifier_bridges: u64,
-    block_bridges: u64,
 }
 
 impl CaptureReport {
@@ -64,24 +62,12 @@ impl CaptureReport {
             .strip_prefix("temporal_bridges=")?
             .parse()
             .ok()?;
-        let modifier_bridges = fields
-            .next()?
-            .strip_prefix("modifier_bridges=")?
-            .parse()
-            .ok()?;
-        let block_bridges = fields
-            .next()?
-            .strip_prefix("block_bridges=")?
-            .parse()
-            .ok()?;
         Some(Self {
             targets,
             patches,
             producers,
             damage_bridges,
             temporal_bridges,
-            modifier_bridges,
-            block_bridges,
         })
     }
 
@@ -92,8 +78,6 @@ impl CaptureReport {
                 && report.producers == CAPTURE_PRODUCERS
                 && report.damage_bridges == 4
                 && report.temporal_bridges == 16
-                && report.modifier_bridges == 7
-                && report.block_bridges == 1
                 && owned_methods.is_none_or(|owned| owned >= report.targets)
         });
         if verified {
@@ -107,7 +91,7 @@ impl CaptureReport {
 }
 
 pub fn headless_test(shell: &Shell) -> Result<()> {
-    managed::run(shell)?;
+    managed::run(shell, None)?;
     let game = install::install_mod(shell)?;
 
     let log_dir = game_log_dir(game.platform)?;
@@ -493,7 +477,7 @@ mod tests {
 
     fn complete_boot_output() -> String {
         format!(
-            "{PATCH_COUNT_MARKER}{MIN_PATCHES}\n{CAPTURE_MARKER}targets={CAPTURE_TARGETS} patches={CAPTURE_PATCHES} producers={CAPTURE_PRODUCERS} damage_bridges=4 temporal_bridges=16 modifier_bridges=7 block_bridges=1\n{}",
+            "{PATCH_COUNT_MARKER}{MIN_PATCHES}\n{CAPTURE_MARKER}targets={CAPTURE_TARGETS} patches={CAPTURE_PATCHES} producers={CAPTURE_PRODUCERS} damage_bridges=4 temporal_bridges=16\n{}",
             GATE_MARKERS.join("\n")
         )
     }
@@ -607,9 +591,7 @@ mod tests {
             ),
             valid.replace("damage_bridges=4", "damage_bridges=3"),
             valid.replace("temporal_bridges=16", "temporal_bridges=15"),
-            valid.replace("modifier_bridges=7", "modifier_bridges=6"),
-            valid.replace("block_bridges=1", "block_bridges=0"),
-            valid.replace(" modifier_bridges=7", ""),
+            valid.replace(" temporal_bridges=16", ""),
             valid.replace(&format!("patches={CAPTURE_PATCHES}"), "patches=1"),
             valid.replace(&format!("producers={CAPTURE_PRODUCERS}"), "producers=0"),
             valid.replace(

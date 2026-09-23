@@ -7,7 +7,7 @@ in two in-game charts: the combat panel and the run-history summary.
 
 C\# observes game execution and owns the panels and statistics files. A
 deterministic Rust engine assigns source credit under an explicit attribution
-policy. Charts identify incomplete or unknown capture coverage.
+policy. Stored records include capture coverage diagnostics.
 
 ## AI use disclaimer
 

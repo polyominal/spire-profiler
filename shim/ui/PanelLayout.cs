@@ -48,14 +48,20 @@ internal static class UiPalette
     internal static readonly UiColor Border = new(.3f, .4f, .7f, .6f);
     internal static (string Text, UiColor Color) Prefix(int kind) => kind switch
     {
-        1 => ("[R] ", Gold), 3 => ("[P] ", Strength), 4 => ("[O] ", Osty), _ => ("", Cream)
+        1 => ("[R] ", Gold),
+        3 => ("[P] ", Strength),
+        4 => ("[O] ", Osty),
+        _ => ("", Cream)
     };
     internal static UiColor Segment(ChartSegment segment, ChartSection section, int kind) => segment switch
     {
         ChartSegment.Direct => section == ChartSection.Damage ? Damage : kind == 4 ? Osty : Block,
-        ChartSegment.Attributed => Attributed, ChartSegment.Modifier => Modifier,
-        ChartSegment.MitigateDebuff => Weak, ChartSegment.MitigateBuff => Buff,
-        ChartSegment.MitigateStr => Strength, _ => Self
+        ChartSegment.Attributed => Attributed,
+        ChartSegment.Modifier => Modifier,
+        ChartSegment.MitigateDebuff => Weak,
+        ChartSegment.MitigateBuff => Buff,
+        ChartSegment.MitigateStr => Strength,
+        _ => Self
     };
     internal static readonly (string Label, UiColor Color)[] Legend =
     {

@@ -53,8 +53,10 @@ assumption first; `STS2_GAME_DIR` overrides.
   the sweep: data files under `mods/` log ERRORs every boot as the scanner
   parses them as manifests (harmless, but they hide real manifest errors).
 - New statistics live under `statistics-v1/` inside that data directory. The
-  managed store reads legacy `runs.jsonl` and `runs/` files without rewriting
-  them, and labels missing historical coverage metadata unknown.
+  managed store reads legacy `runs.jsonl` and `runs/` files and earlier GUID
+  recordings without rewriting them. Missing historical coverage metadata stays
+  unknown. Finalized run headers append to `statistics-v1/runs.jsonl`; combat
+  and observation files use global combat IDs under the numeric run directory.
   `SPIRE_PROFILER_DATA_DIR` overrides the data root.
 - `settings.save` keys are snake\_case; mod consent lives at
   `mod_settings.mods_enabled` (verified against a live settings.save) and is
@@ -98,10 +100,11 @@ renamed parameter types). Verified against the v0.111.0 snapshot.
   second runs aggregate late hooks. The managed gate verifies the exact
   replacement sites.
 - `Hook.ModifyDamage` and `Hook.ModifyBlock` call model modifiers in ordered
-  stages. Capture replaces those call sites with wrappers that record each
-  original invocation's arguments and result. Re-evaluating a modifier can
-  execute stateful game or mod code twice; the managed bridge fixtures pin the
-  call sites and skipped-original detection.
+  stages. Attribution re-evaluates those modifiers, including nested Vulnerable
+  modifiers. The callbacks can have side effects. Damage decomposition passes a
+  null `CardPlay`; block decomposition retains it. Differential fixtures compare
+  ordered callback arguments, credit, and exception prefixes against the
+  original capture methods.
 - Reflection can return an inherited `MethodInfo` with a different reflected
   type from its declaring type. Harmony requires the declared method;
   deduplicate by module/metadata token and resolve that definition on its

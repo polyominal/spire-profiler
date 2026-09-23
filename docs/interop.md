@@ -49,7 +49,9 @@ stored and native records before publishing immutable views. Use a separate
 `SPIRE_PROFILER_DATA_DIR` for experiments. Headless tests set this
 automatically, so their synthetic runs do not enter normal play history.
 
-The history lookup requires the game's exact profile, seed, and start time. An
-ambiguous identity is diagnosed rather than selecting a recording arbitrarily.
-Only the selected run's combat documents are loaded. Legacy files remain
-read-only, and missing legacy metadata stays unknown.
+The history lookup uses the game's exact profile, seed, and start time. The
+first matching finalized header supplies the outcome and roster; interrupted
+combats can provide an unfinished history view without a header. Ambiguous run
+identities remain unselectable. New records live under `statistics-v1`. Legacy
+files and prior GUID recordings remain read-only, and missing legacy metadata
+stays unknown.

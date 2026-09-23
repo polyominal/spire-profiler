@@ -15,7 +15,9 @@ internal static class PanelGeometry
 {
     internal static float EventScrollDelta(long button, bool pressed, float panY) => button switch
     {
-        4 when pressed => -60, 5 when pressed => 60, _ => panY
+        4 when pressed => -60,
+        5 when pressed => 60,
+        _ => panY
     };
     internal static float ApplyScroll(float offset, float delta, float boxHeight, float contentHeight)
         => Math.Clamp(offset + delta, 0, Math.Max(0, contentHeight - boxHeight));

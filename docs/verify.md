@@ -17,16 +17,33 @@
   `tmp/managed-tests/`. The fixtures check capture and async scope restoration,
   exact patch bridges, chart projection, parser boundaries, atomic persistence,
   and native session/replay behavior. They do not launch Godot.
+- `cargo xtask parity-test`: export the pinned pre-refactor commit into an
+  isolated scratch project and regenerate its UI and session reference outputs.
+  Compare complete attribution ledgers from the same driver against both native
+  implementations, then compare original C\# modifier callbacks and credits,
+  managed drawing commands, and persisted session views. Regenerated JSON must
+  match the checked-in `test-support/parity/fingerprints.json` before the
+  managed comparison runs. Full reference outputs are generated only in ignored
+  scratch; expected hashes are never updated automatically. Evidence remains
+  under `tmp/parity-tests/` and `tmp/managed-tests/`. This gate does not
+  establish rendered pixels or exhaust every possible game event sequence.
+- `cargo xtask parity-test --render` adds real graphical verification. A
+  temporary fixture assembly renders the actual managed controls and a separate
+  GDScript replay of the original Rust drawing commands with the installed game
+  assets. Ten scenarios compare exact RGBA pixels and retain both images, a
+  difference image, and a JSON report. This requires a graphical session with
+  the game closed; it boots the game with Steam disabled and isolated profiler
+  data, then restores the installed mod and verifies its file hashes. The
+  fixture bootstrap is generated only for this command and is not shipped.
 - `cargo xtask headless-test` first runs `managed-test`, then requires
   successful game exit, this mod's `OWN PATCHES` minimum, and the `CAPTURE
-  VERIFIED` marker with exact producer and damage/temporal/modifier bridge
-  inventories. The managed session fixture must prove native accounting,
-  deterministic observation replay, and persisted run history. The managed panel
-  fixture must attach, draw, scroll, filter, hide, free, and recreate both panel
-  variants. Unexpected `[SpireProfiler]` ERROR lines fail the gate. Harmony
-  verification checks owner `dev.spireprofiler` and exact patch methods; other
-  mods cannot satisfy it. Headless drawing proves dispatch and lifecycle, not
-  visual output.
+  VERIFIED` marker with exact producer and damage/temporal bridge inventories.
+  The managed session fixture must prove native accounting, deterministic
+  observation replay, and persisted run history. The managed panel fixture must
+  attach, draw, scroll, filter, hide, free, and recreate both panel variants.
+  Unexpected `[SpireProfiler]` ERROR lines fail the gate. Harmony verification
+  checks owner `dev.spireprofiler` and exact patch methods; other mods cannot
+  satisfy it. Headless drawing proves dispatch and lifecycle, not visual output.
 - Real-play validation is manual: the pipeline cannot play the game.
 - A game update adds one machine-local gate: `cargo xtask check-catalog` reads
   the decompiled tree (`tmp/sts2-decompiled`), so it stays out of smoke; what it

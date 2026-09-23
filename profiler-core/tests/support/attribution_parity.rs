@@ -238,29 +238,62 @@ fn main() {
     reset();
     let a = Source::capture("A", 0);
     let b = Source::capture("B", 1);
-    emit("weak-attach", a.apply(|s| e::power_attached(1, 50, "WEAK_POWER", 99, 1, 4, 3, s)));
-    emit("weak-stack", b.apply(|s| e::power_amount_changed(1, 50, "WEAK_POWER", 99, 1, 4, 3, 8, s)));
-    emit("strength-reduce", a.apply(|s| e::power_attached(1, 51, "STRENGTH_POWER", 99, 1, 4, -3, s)));
+    emit(
+        "weak-attach",
+        a.apply(|s| e::power_attached(1, 50, "WEAK_POWER", 99, 1, 4, 3, s)),
+    );
+    emit(
+        "weak-stack",
+        b.apply(|s| e::power_amount_changed(1, 50, "WEAK_POWER", 99, 1, 4, 3, 8, s)),
+    );
+    emit(
+        "strength-reduce",
+        a.apply(|s| e::power_attached(1, 51, "STRENGTH_POWER", 99, 1, 4, -3, s)),
+    );
     for index in 0..32 {
         let weak = Source::retained(e::source_capture(1, 5, 50, "", 2, 4, 0));
         let group = e::damage_calculation_begin(1, 0, 0, 1, 100);
-        emit("enemy-hit", e::damage_calculation_enemy_hit(group, 99, 10, -3));
-        emit("weak-source", weak.apply(|s| e::damage_calculation_weak_source(group, s)));
-        emit("weak-result", e::damage_result_append(group, 6, 4, 2, 1, index % 4, 2));
+        emit(
+            "enemy-hit",
+            e::damage_calculation_enemy_hit(group, 99, 10, -3),
+        );
+        emit(
+            "weak-source",
+            weak.apply(|s| e::damage_calculation_weak_source(group, s)),
+        );
+        emit(
+            "weak-result",
+            e::damage_result_append(group, 6, 4, 2, 1, index % 4, 2),
+        );
         emit("weak-commit", e::damage_calculation_commit(group));
     }
     for id in ["POISON_POWER", "DOOM_POWER"] {
-        emit("duration-attach", a.apply(|s| e::power_attached(1, 60, id, 99, 1, 4, 7, s)));
-        emit("duration-stack", b.apply(|s| e::power_amount_changed(1, 60, id, 99, 1, 4, 7, 12, s)));
+        emit(
+            "duration-attach",
+            a.apply(|s| e::power_attached(1, 60, id, 99, 1, 4, 7, s)),
+        );
+        emit(
+            "duration-stack",
+            b.apply(|s| e::power_amount_changed(1, 60, id, 99, 1, 4, 7, 12, s)),
+        );
         for amount in (0..12).rev() {
             let source = Source::retained(e::source_capture(1, 2, 60, "", 2, 4, 0));
             emit("duration-hit", hit(&source, None, amount, 0, 0, 4));
-            emit("duration-decay", e::power_amount_changed(1, 60, id, 99, 1, 4, amount + 1, amount, 0));
+            emit(
+                "duration-decay",
+                e::power_amount_changed(1, 60, id, 99, 1, 4, amount + 1, amount, 0),
+            );
         }
         emit("duration-remove", e::power_removed(1, 60));
     }
-    emit("doom-attach", a.apply(|s| e::power_attached(1, 61, "DOOM_POWER", 99, 1, 4, 3, s)));
-    emit("doom-stack", b.apply(|s| e::power_amount_changed(1, 61, "DOOM_POWER", 99, 1, 4, 3, 8, s)));
+    emit(
+        "doom-attach",
+        a.apply(|s| e::power_attached(1, 61, "DOOM_POWER", 99, 1, 4, 3, s)),
+    );
+    emit(
+        "doom-stack",
+        b.apply(|s| e::power_amount_changed(1, 61, "DOOM_POWER", 99, 1, 4, 3, 8, s)),
+    );
     for hp in [2, 4, 11] {
         let batch = e::doom_batch_begin(1);
         emit("doom-target", e::doom_target_capture(batch, 99, 61, hp));

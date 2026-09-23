@@ -210,14 +210,27 @@ internal static class ProfilerPanels
             var tree = Engine.GetMainLoop() as SceneTree ?? throw new InvalidOperationException("Panel fixture needs the game scene tree");
             var fixture = new SummaryView
             {
-                Title = "CULTIST", Character = "IRONCLAD,SILENT", GameMode = "Standard", Ascension = 10, Seed = "PANEL-FIXTURE", Outcome = "victory",
+                Title = "CULTIST",
+                Character = "IRONCLAD,SILENT",
+                GameMode = "Standard",
+                Ascension = 10,
+                Seed = "PANEL-FIXTURE",
+                Outcome = "victory",
                 Players = new[] { new PlayerSummary(0, "IRONCLAD"), new PlayerSummary(1, "SILENT") },
                 Cards = Enumerable.Range(0, 80).Select(index => new StatRow
                 {
-                    Id = index == 0 ? "STRIKE_IRONCLAD" : $"FIXTURE_{index}", Player = index % 2, Plays = 2,
-                    DmgDirect = index + 1, DamageDealt = index + 1, BlockEffective = 10, SelfDamage = 1, Forge = 3,
+                    Id = index == 0 ? "STRIKE_IRONCLAD" : $"FIXTURE_{index}",
+                    Player = index % 2,
+                    Plays = 2,
+                    DmgDirect = index + 1,
+                    DamageDealt = index + 1,
+                    BlockEffective = 10,
+                    SelfDamage = 1,
+                    Forge = 3,
                 }).ToArray(),
-                Coverage = CoverageSummary.Healthy, Turns = 3, Plays = 160,
+                Coverage = CoverageSummary.Healthy,
+                Turns = 3,
+                Plays = 160,
             };
             fixture = fixture with { PlayerCards = fixture.Cards.GroupBy(card => card.Player).ToDictionary(group => group.Key, group => (System.Collections.Generic.IReadOnlyList<StatRow>)group.ToArray()) };
             int draws = 0, refreshes = 0;

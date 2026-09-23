@@ -16,6 +16,7 @@ pub(crate) const DOCS: &[&str] = &[
     "docs/verify.md",
     "docs/interop.md",
     "docs/game.md",
+    "test-support/parity/CONTRACTS.md",
 ];
 
 const WRAP_WIDTH: usize = 80;

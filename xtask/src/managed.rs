@@ -7,10 +7,10 @@ use std::io;
 use anyhow::{Context, Result};
 use xshell::{Shell, cmd};
 
-use crate::{discover, dotnet, game_version, sha256_file, shim, workspace_root};
+use crate::{discover, dotnet, game_version, parity, sha256_file, shim, workspace_root};
 
 #[allow(clippy::too_many_lines)] // One build/run transaction shares project paths and scoped environment guards.
-pub fn run(shell: &Shell) -> Result<()> {
+pub fn run(shell: &Shell, reference: Option<&parity::Reference>) -> Result<()> {
     let game = discover::locate_game()?;
     game_version::check_pin(&game)?;
     let binary = dotnet::resolve_dotnet(shell)?;
@@ -44,15 +44,16 @@ pub fn run(shell: &Shell) -> Result<()> {
     println!("managed-test: project retained at {}", project.display());
     shim::write_sources(&project, shim::ProjectKind::Tests)?;
     let project_file = project.join("SpireProfiler.ManagedTests.csproj");
-    std::fs::write(
-        &project_file,
-        shim::build_csproj(
-            &game.sts2_dll,
-            &game.harmony_dll,
-            &game.godot_sharp_dll,
-            shim::ProjectKind::Tests,
-        ),
-    )?;
+    let mut project_contents = shim::build_csproj(
+        &game.sts2_dll,
+        &game.harmony_dll,
+        &game.godot_sharp_dll,
+        shim::ProjectKind::Tests,
+    );
+    if let Some(reference) = reference {
+        reference.prepare_managed(&project, &mut project_contents)?;
+    }
+    std::fs::write(&project_file, project_contents)?;
     // The pinned SDK provides net9.0; no package feed belongs in this harness.
     std::fs::write(
         project.join("NuGet.Config"),
@@ -94,6 +95,14 @@ pub fn run(shell: &Shell) -> Result<()> {
         "{binary} {executable} {game_assemblies} {project} {native}"
     )
     .run()?;
+    if reference.is_some() {
+        let _oracle = shell.push_env(
+            "SOURCE_MIXTURE_ORACLE",
+            project.join("source-mixture-oracle.json"),
+        );
+        let _root = shell.push_dir(root);
+        cmd!(shell, "cargo test --package profiler_core --lib temporal_pairs_match_original_csharp --locked -- --ignored").run()?;
+    }
     println!("managed-test: PASS");
     Ok(())
 }

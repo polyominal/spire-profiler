@@ -31,8 +31,12 @@ internal sealed class PanelTheme : IDisposable
         {
             _plate = new StyleBoxTexture
             {
-                Texture = _plateTexture, RegionRect = new Rect2(0, 0, 339, 107),
-                TextureMarginLeft = 55, TextureMarginTop = 43, TextureMarginRight = 91, TextureMarginBottom = 32,
+                Texture = _plateTexture,
+                RegionRect = new Rect2(0, 0, 339, 107),
+                TextureMarginLeft = 55,
+                TextureMarginTop = 43,
+                TextureMarginRight = 91,
+                TextureMarginBottom = 32,
                 AxisStretchHorizontal = StyleBoxTexture.AxisStretchMode.Tile,
                 AxisStretchVertical = StyleBoxTexture.AxisStretchMode.Tile,
             };
