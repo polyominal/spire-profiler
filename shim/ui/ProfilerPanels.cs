@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Linq;
 using System.Threading.Tasks;
 using Godot;
+using MegaCrit.Sts2.Core.Helpers;
 using MegaCrit.Sts2.Core.Logging;
 using MegaCrit.Sts2.Core.Nodes.Screens.RunHistoryScreen;
 
@@ -13,12 +14,10 @@ internal static class ProfilerPanels
 {
     private static SceneTree _tree;
     private static PanelTheme _theme;
-    private static ProfilerPanel _combat;
-    private static ProfilerPanel _history;
+    private static ProfilerPanel _combat, _history;
     private static Button _historyButton;
-    private static NRunHistory _historyHost;
     private static bool _f8Pressed;
-    private static ulong _nextRefreshAtMsec;
+    private static ulong _liveGeneration, _historyGeneration;
 
     internal static async Task AttachPanelAsync(string modDir)
     {
@@ -30,12 +29,13 @@ internal static class ProfilerPanels
             _tree = tree;
             _theme = new PanelTheme();
             _combat = new ProfilerPanel(_theme, false);
+            tree.Root.CallDeferred(Node.MethodName.AddChild, _combat.Backdrop);
             tree.Root.CallDeferred(Node.MethodName.AddChild, _combat.Root);
             tree.ProcessFrame += OnProcessFrame;
             tree.Root.TreeExiting += Detach;
             Log.Info("[SpireProfiler] managed profiler panel attached");
         }
-        catch (Exception ex) { Log.Error($"[SpireProfiler] panel attach failed: {ex}"); }
+        catch (Exception error) { Log.Error($"[SpireProfiler] panel attach failed: {error}"); }
     }
 
     private static void Detach()
@@ -45,12 +45,11 @@ internal static class ProfilerPanels
             _tree.ProcessFrame -= OnProcessFrame;
             if (GodotObject.IsInstanceValid(_tree.Root)) _tree.Root.TreeExiting -= Detach;
         }
-        _combat = null;
-        _history = null;
+        _combat = _history = null;
         _historyButton = null;
-        _historyHost = null;
-        _theme = null;
         _tree = null;
+        _theme?.Dispose();
+        _theme = null;
         _f8Pressed = false;
     }
 
@@ -58,39 +57,39 @@ internal static class ProfilerPanels
     {
         try
         {
+            if (_liveGeneration != ProfilerSession.LiveFilterGeneration)
+            {
+                _liveGeneration = ProfilerSession.LiveFilterGeneration;
+                _combat?.ResetFilter();
+            }
+            if (_historyGeneration != ProfilerSession.HistoryClearGeneration)
+            {
+                _historyGeneration = ProfilerSession.HistoryClearGeneration;
+                _history?.ResetFilter();
+                _history?.Hide();
+            }
+            _combat?.SetAvailable(ProfilerSession.InRun);
+            _history?.SetAvailable(ProfilerSession.HistoryOpen);
+            if (_combat?.Visible == true || _history?.Visible == true) ProfilerSession.Refresh();
+            _combat?.Refresh(ProfilerSession.Revision, ProfilerSession.CurrentCombat, ProfilerSession.CurrentRun);
+            _history?.Refresh(ProfilerSession.Revision, null, ProfilerSession.SelectedHistory);
+            if (_historyButton != null && GodotObject.IsInstanceValid(_historyButton)) _historyButton.Disabled = _history?.Visible == true;
             bool f8 = Input.IsKeyPressed(Key.F8);
             if (f8 && !_f8Pressed) Toggle();
             _f8Pressed = f8;
-            if (!ProfilerSession.InRun || ProfilerSession.HistoryOpen) _combat?.Hide();
-            if (!ProfilerSession.HistoryOpen) _history?.Hide();
-            if ((_combat?.Visible == true || _history?.Visible == true) && Time.GetTicksMsec() >= _nextRefreshAtMsec)
-            {
-                _nextRefreshAtMsec = Time.GetTicksMsec() + 100;
-                ProfilerSession.Refresh();
-                _combat?.Refresh(ProfilerSession.Revision, ProfilerSession.CurrentCombat, ProfilerSession.CurrentRun);
-                _history?.Refresh(ProfilerSession.Revision, null, ProfilerSession.SelectedHistory);
-            }
-            if (_historyButton != null && GodotObject.IsInstanceValid(_historyButton))
-                _historyButton.Disabled = _history?.Visible == true;
         }
-        catch (Exception ex)
+        catch (Exception error)
         {
-            _combat?.Hide();
-            _history?.Hide();
-            Log.Error($"[SpireProfiler] panel refresh: {ex}");
+            _combat?.Hide(); _history?.Hide();
+            Log.Error($"[SpireProfiler] panel refresh: {error}");
         }
     }
 
     private static void Toggle()
     {
-        ProfilerPanel panel = ProfilerSession.HistoryOpen ? _history : ProfilerSession.InRun ? _combat : null;
-        if (panel == null || !panel.IsValid) return;
-        if (panel.Visible) panel.Hide();
-        else
-        {
-            panel.Show();
-            _nextRefreshAtMsec = 0;
-        }
+        var panel = ProfilerSession.HistoryOpen ? _history : ProfilerSession.InRun ? _combat : null;
+        if (panel?.IsValid != true) return;
+        if (panel.Requested) panel.Hide(); else panel.Show();
     }
 
     internal static void AttachRunPanelTo(NRunHistory screen)
@@ -98,24 +97,104 @@ internal static class ProfilerPanels
         try
         {
             _theme ??= new PanelTheme();
-            if (_history?.IsValid == true && _historyHost == screen) return;
-            _history?.Free();
-            if (_historyButton != null && GodotObject.IsInstanceValid(_historyButton)) _historyButton.QueueFree();
-            _historyHost = screen;
-            _history = new ProfilerPanel(_theme, true);
-            _historyButton = _theme.Button("Profiler [F8]", Toggle);
-            var share = screen.GetNodeOrNull<Control>("ShareButton");
-            var size = share?.Size ?? new Vector2(172, 64);
-            if (size.X <= 0 || size.Y <= 0) size = new Vector2(172, 64);
-            _historyButton.SetAnchorsPreset(Control.LayoutPreset.BottomRight);
-            _historyButton.OffsetRight = -48;
-            _historyButton.OffsetBottom = -48 - size.Y - 16;
-            _historyButton.OffsetLeft = _historyButton.OffsetRight - size.X;
-            _historyButton.OffsetTop = _historyButton.OffsetBottom - size.Y;
-            screen.CallDeferred(Node.MethodName.AddChild, _historyButton);
-            screen.CallDeferred(Node.MethodName.AddChild, _history.Root);
+            if (_history?.IsValid != true) _history = new ProfilerPanel(_theme, true);
+            if (_historyButton == null || !GodotObject.IsInstanceValid(_historyButton))
+            {
+                _historyButton = new Button { Text = "Profiler [F8]" };
+                StyleRunButton(_historyButton);
+                _historyButton.Pressed += () =>
+                {
+                    try { Toggle(); }
+                    catch (Exception error) { Log.Error($"[SpireProfiler] run history button: {error}"); }
+                };
+            }
+            PlaceRunButton(screen);
+            foreach (var control in new Control[] { _history.Backdrop, _historyButton, _history.Root })
+                if (control.GetParent() != screen)
+                {
+                    control.GetParent()?.RemoveChild(control);
+                    screen.CallDeferred(Node.MethodName.AddChild, control);
+                }
         }
-        catch (Exception ex) { Log.Error($"[SpireProfiler] run panel attach: {ex}"); }
+        catch (Exception error) { Log.Error($"[SpireProfiler] run panel attach: {error}"); }
+    }
+
+    private static void PlaceRunButton(NRunHistory screen)
+    {
+        const float gap = 16.0f;
+        var host = screen.GetRect().Size;
+        var share = screen.GetNodeOrNull<Control>("ShareButton");
+        var shareRect = share?.GetRect() ?? new Rect2();
+        var size = shareRect.Size.X > 0.0f ? shareRect.Size : new Vector2(172.0f, 64.0f);
+        Vector2 origin;
+        if (shareRect.Size.X > 0.0f)
+        {
+            origin = new Vector2(shareRect.End.X - size.X, shareRect.Position.Y - gap - size.Y);
+        }
+        else
+        {
+            Log.Warn("[SpireProfiler] run button: ShareButton node not found; parked above its scene corner");
+            origin = new Vector2(host.X - 220.0f, host.Y - 112.0f - gap - size.Y);
+        }
+        _historyButton.SetAnchorsPreset(Control.LayoutPreset.BottomRight);
+        _historyButton.OffsetLeft = origin.X - host.X;
+        _historyButton.OffsetTop = origin.Y - host.Y;
+        _historyButton.OffsetRight = origin.X + size.X - host.X;
+        _historyButton.OffsetBottom = origin.Y + size.Y - host.Y;
+    }
+
+    private static void StyleRunButton(Button button)
+    {
+        try
+        {
+            var font = GD.Load<FontVariation>("res://themes/kreon_bold_glyph_space_one.tres");
+            if (font == null)
+            {
+                Log.Warn("[SpireProfiler] run button: kreon_bold_glyph_space_one.tres missing; default font kept");
+            }
+            else
+            {
+                button.AddThemeFontOverride("font", font);
+                button.AddThemeFontSizeOverride("font_size", 22);
+            }
+            var plate = GD.Load<Texture2D>("res://images/atlases/ui_atlas.sprites/settings_tab_selected.tres");
+            if (plate == null)
+            {
+                Log.Warn("[SpireProfiler] run button: settings_tab_selected.tres missing; chrome-less text button kept");
+            }
+            else
+            {
+                var box = new StyleBoxTexture
+                {
+                    Texture = plate,
+                    TextureMarginLeft = 24,
+                    TextureMarginTop = 24,
+                    TextureMarginRight = 24,
+                    TextureMarginBottom = 24,
+                    ModulateColor = new Color(0.9f, 0.9f, 0.9f, 1.0f),
+                };
+                button.AddThemeStyleboxOverride("normal", box);
+                button.AddThemeStyleboxOverride("hover", box);
+                button.AddThemeStyleboxOverride("pressed", box);
+                var disabledBox = new StyleBoxTexture
+                {
+                    Texture = plate,
+                    TextureMarginLeft = 24,
+                    TextureMarginTop = 24,
+                    TextureMarginRight = 24,
+                    TextureMarginBottom = 24,
+                    ModulateColor = new Color(0.18f, 0.18f, 0.18f, 1.0f),
+                };
+                button.AddThemeStyleboxOverride("disabled", disabledBox);
+            }
+            button.AddThemeColorOverride("font_color", StsColors.cream);
+            button.AddThemeColorOverride("font_hover_color", StsColors.gold);
+            button.AddThemeColorOverride("font_pressed_color", StsColors.halfTransparentWhite);
+            button.AddThemeColorOverride("font_disabled_color", StsColors.halfTransparentWhite);
+            button.AddThemeColorOverride("font_focus_color", StsColors.cream);
+            button.AddThemeStyleboxOverride("focus", new StyleBoxEmpty());
+        }
+        catch (Exception ex) { Log.Warn($"[SpireProfiler] run button styling: {ex.Message}"); }
     }
 
     internal static async Task SelfTestAsync()
@@ -126,56 +205,71 @@ internal static class ProfilerPanels
             var tree = Engine.GetMainLoop() as SceneTree ?? throw new InvalidOperationException("Panel fixture needs the game scene tree");
             var fixture = new SummaryView
             {
-                Title = "Managed panel lifecycle fixture",
+                Title = "CULTIST", Character = "IRONCLAD,SILENT", GameMode = "Standard", Ascension = 10, Seed = "PANEL-FIXTURE", Outcome = "victory",
                 Players = new[] { new PlayerSummary(0, "IRONCLAD"), new PlayerSummary(1, "SILENT") },
                 Cards = Enumerable.Range(0, 80).Select(index => new StatRow
                 {
-                    Id = index == 0 ? "STRIKE_IRONCLAD" : $"FIXTURE_{index}",
-                    Player = index % 2,
-                    Plays = 2,
-                    DmgDirect = index + 1,
-                    DamageDealt = index + 1,
-                    BlockEffective = 10,
-                    SelfDamage = 1,
-                    Forge = 3,
+                    Id = index == 0 ? "STRIKE_IRONCLAD" : $"FIXTURE_{index}", Player = index % 2, Plays = 2,
+                    DmgDirect = index + 1, DamageDealt = index + 1, BlockEffective = 10, SelfDamage = 1, Forge = 3,
                 }).ToArray(),
-                Coverage = CoverageSummary.Healthy,
-                Turns = 3,
-                Plays = 160,
+                Coverage = CoverageSummary.Healthy, Turns = 3, Plays = 160,
             };
-            int draws = 0;
-            int refreshes = 0;
-            long refreshTicks = 0;
-            long refreshAllocated = 0;
+            fixture = fixture with { PlayerCards = fixture.Cards.GroupBy(card => card.Player).ToDictionary(group => group.Key, group => (System.Collections.Generic.IReadOnlyList<StatRow>)group.ToArray()) };
+            int draws = 0, refreshes = 0;
+            long refreshTicks = 0, refreshAllocated = 0;
             for (int cycle = 0; cycle < 2; cycle++)
             {
-                panel = new ProfilerPanel(new PanelTheme(), cycle == 1);
+                panel = new ProfilerPanel(_theme ??= new PanelTheme(), cycle == 1);
+                tree.Root.CallDeferred(Node.MethodName.AddChild, panel.Backdrop);
                 tree.Root.CallDeferred(Node.MethodName.AddChild, panel.Root);
                 await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
                 panel.Show();
-                panel.Present(fixture);
+                panel.Refresh(0, fixture, fixture);
                 for (int frame = 0; frame < 3; frame++) await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
-                if (!panel.Root.IsInsideTree() || panel.RowCount != 240)
-                    throw new InvalidOperationException("Panel fixture did not attach and build both chart sections");
+                if (!panel.Root.IsInsideTree() || panel.RowCount != 240) throw new InvalidOperationException("Panel fixture failed attachment or chart projection");
                 panel.ScrollToEnd();
-                await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
-                if (panel.ScrollPosition <= 0) throw new InvalidOperationException("Panel fixture did not scroll overflowing content");
-                panel.SelectPlayer(1);
-                if (panel.Player != 1 || panel.RowCount != 120)
-                    throw new InvalidOperationException("Panel fixture did not filter by source owner");
-                panel.SelectPlayer(1);
-                if (panel.Player != null || panel.RowCount != 240)
-                    throw new InvalidOperationException("Panel fixture did not clear the selected player");
-                panel.Hide();
-                if (panel.Visible) throw new InvalidOperationException("Panel fixture did not hide");
+                if (panel.ScrollPosition <= 0) throw new InvalidOperationException("Panel fixture failed scrolling");
+                if (cycle == 0)
+                {
+                    int scroll = panel.ScrollPosition;
+                    var hit = panel.Layout.TabHits.Single(hit => hit.Tab == UiTab.Run);
+                    var point = new UiPoint(panel.ControlRect.X + hit.X0 + 8, panel.ControlRect.Y + hit.Y0 + 8);
+                    panel.Interact(point, false); panel.Interact(point, true); panel.Interact(point, false);
+                    int expectedScroll = Math.Min(scroll, (int)Math.Max(0, panel.Layout.Height - panel.ControlRect.H));
+                    if (panel.Tab != UiTab.Run || panel.ScrollPosition != expectedScroll)
+                        throw new InvalidOperationException("Tab press did not preserve and clamp the scroll offset");
+                    hit = panel.Layout.TabHits.Single(hit => hit.Tab == UiTab.Combat);
+                    point = new(panel.ControlRect.X + hit.X0 + 8, panel.ControlRect.Y + hit.Y0 + 8);
+                    panel.Interact(point, true); panel.Interact(point, false);
+                    if (panel.Tab != UiTab.Combat) throw new InvalidOperationException("Combat tab press did not switch back");
+                }
+                var avatar = panel.Layout.AvatarHits.FirstOrDefault(hit => hit.Slot == 1);
+                var avatarPoint = new UiPoint(panel.ControlRect.X + avatar.X0 + 8, panel.ControlRect.Y + avatar.Y0 + 8);
+                if (avatar.X1 > avatar.X0) { panel.Interact(avatarPoint, true); panel.Interact(avatarPoint, false); }
+                else panel.SelectPlayer(1);
+                if (panel.Player != 1 || panel.RowCount != 120) throw new InvalidOperationException("Panel fixture failed player filtering");
+                if (panel.ScrollPosition <= 0) throw new InvalidOperationException("Player filtering unexpectedly reset the scroll offset");
+                if (avatar.X1 > avatar.X0) { panel.Interact(avatarPoint, true); panel.Interact(avatarPoint, false); }
+                else panel.SelectPlayer(1);
+                if (panel.Player != null || panel.RowCount != 240) throw new InvalidOperationException("Panel fixture failed clearing the filter");
+                var outside = new UiPoint(panel.ControlRect.X - 10, panel.ControlRect.Y + panel.ControlRect.H - 40);
+                if (_theme.HasScrollbar)
+                {
+                    var track = PanelGeometry.Scrollbar(new(panel.ControlRect.W, panel.ControlRect.H), _theme.HasPlate,
+                        PanelGeometry.BodyBand(panel.ControlRect.H, _theme.HasPlate, panel.Layout.HeaderBottom), panel.Layout.Height, panel.ScrollPosition).Track;
+                    var point = new UiPoint(panel.ControlRect.X + track.X + 10, panel.ControlRect.Y + track.Y + track.H / 2);
+                    panel.Interact(point, true);
+                    panel.Interact(outside, true);
+                    if (!panel.Visible) throw new InvalidOperationException("Scrollbar drag dismissed after leaving the panel");
+                    panel.Interact(outside, false);
+                }
+                panel.Interact(outside, true);
+                if (panel.Visible) throw new InvalidOperationException("Outside press failed to dismiss");
                 panel.Show();
                 await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
-                if (panel.DrawCount == 0) throw new InvalidOperationException("Panel fixture never received a managed draw signal");
-                int nodes = panel.Root.FindChildren("*", "", recursive: true, owned: false).Count;
+                var nodes = panel.Root.FindChildren("*", "", recursive: true, owned: false).Select(node => node.GetInstanceId()).ToHashSet();
                 for (int iteration = 1; iteration <= 10; iteration++)
                 {
-                    var previous = panel.Root.FindChildren("*", "", recursive: true, owned: false)
-                        .Select(node => node.GetInstanceId()).ToHashSet();
                     var refreshed = fixture with
                     {
                         Turns = fixture.Turns + (uint)iteration,
@@ -183,7 +277,7 @@ internal static class ProfilerPanels
                         {
                             DmgDirect = (iteration % 2 == 0 ? card.DmgDirect : 81 - card.DmgDirect) + iteration,
                             DamageDealt = (iteration % 2 == 0 ? card.DamageDealt : 81 - card.DamageDealt) + iteration,
-                        }).ToArray(),
+                        }).ToArray()
                     };
                     long allocated = GC.GetAllocatedBytesForCurrentThread();
                     long started = Stopwatch.GetTimestamp();
@@ -192,42 +286,24 @@ internal static class ProfilerPanels
                     refreshAllocated += GC.GetAllocatedBytesForCurrentThread() - allocated;
                     refreshes++;
                     for (int frame = 0; frame < 2; frame++) await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
-                    var current = panel.Root.FindChildren("*", "", recursive: true, owned: false);
-                    var currentIds = current.Select(node => node.GetInstanceId()).ToHashSet();
-                    if (current.Count != nodes || panel.RowCount != 240 || !previous.SetEquals(currentIds))
-                        throw new InvalidOperationException("Panel refresh rebuilt controls despite unchanged source identities");
-                    string damage = $"{refreshed.Cards.Sum(card => card.DamageDealt)} damage";
-                    if (!current.OfType<Label>().Any(label => label.Text.Contains(damage, StringComparison.Ordinal)))
-                        throw new InvalidOperationException("Panel refresh did not display changed totals");
-                    string firstId = current.OfType<HBoxContainer>().First(line => line.TooltipText.Length != 0).TooltipText.Split('\n')[1].Trim();
-                    if (firstId != refreshed.Cards.MaxBy(card => card.DamageDealt).Id)
-                        throw new InvalidOperationException("Retained chart rows did not follow their changing damage rank");
+                    var current = panel.Root.FindChildren("*", "", recursive: true, owned: false).Select(node => node.GetInstanceId()).ToHashSet();
+                    if (!nodes.SetEquals(current) || panel.RowCount != 240) throw new InvalidOperationException("Immediate chart refresh changed host controls");
+                    if (panel.Rows[0].Name != refreshed.Cards.MaxBy(card => card.DamageDealt).Id) throw new InvalidOperationException("Chart rank did not follow updated totals");
                 }
-                var replacedNodes = panel.Root.FindChildren("*", "", recursive: true, owned: false)
-                    .Select(node => (Node: node, Id: node.GetInstanceId())).ToArray();
-                var replaced = fixture with { Cards = fixture.Cards.Select((card, index) => index == 0 ? card with { Id = "REPLACED_SOURCE" } : card).ToArray() };
-                panel.Present(replaced);
-                for (int frame = 0; frame < 2; frame++) await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
-                var remaining = panel.Root.FindChildren("*", "", recursive: true, owned: false);
-                var remainingIds = remaining.Select(node => node.GetInstanceId()).ToHashSet();
-                if (remaining.Count != nodes || panel.RowCount != 240 || replacedNodes.All(node => remainingIds.Contains(node.Id))
-                    || replacedNodes.Any(node => !remainingIds.Contains(node.Id) && GodotObject.IsInstanceValid(node.Node))
-                    || !remaining.OfType<HBoxContainer>().Any(line => line.TooltipText.Contains(System.Environment.NewLine + "REPLACED_SOURCE" + System.Environment.NewLine, StringComparison.Ordinal)))
-                    throw new InvalidOperationException("A changed source set must replace and free its old chart rows");
+                if (panel.DrawCount == 0) throw new InvalidOperationException("Panel fixture never drew");
                 draws += panel.DrawCount;
-                bool exited = false;
-                panel.Root.TreeExited += () => exited = true;
+                var root = panel.Root;
+                var backdrop = panel.Backdrop;
                 panel.Free();
                 for (int frame = 0; frame < 2; frame++) await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
-                if (!exited || panel.IsValid) throw new InvalidOperationException("Panel fixture retained its freed root");
+                if (GodotObject.IsInstanceValid(root) || GodotObject.IsInstanceValid(backdrop)) throw new InvalidOperationException("Panel fixture retained freed controls");
                 panel = null;
             }
             double refreshMsec = refreshTicks * 1000.0 / Stopwatch.Frequency;
-            Log.Info(string.Create(CultureInfo.InvariantCulture,
-                $"[SpireProfiler] managed panel refresh stress: refreshes={refreshes} sources=80 elapsed_ms={refreshMsec:F3} allocated_bytes={refreshAllocated}"));
+            Log.Info(string.Create(CultureInfo.InvariantCulture, $"[SpireProfiler] managed panel refresh stress: refreshes={refreshes} sources=80 elapsed_ms={refreshMsec:F3} allocated_bytes={refreshAllocated}"));
             Log.Info($"[SpireProfiler] managed panel lifecycle: PASS (attach, chart, filter, scroll, hide, free, recreate; draws={draws})");
         }
-        catch (Exception ex) { Log.Error($"[SpireProfiler] managed panel lifecycle: FAIL {ex}"); }
+        catch (Exception error) { Log.Error($"[SpireProfiler] managed panel lifecycle: FAIL {error}"); }
         finally { panel?.Free(); }
     }
 }

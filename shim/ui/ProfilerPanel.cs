@@ -1,395 +1,285 @@
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using Godot;
-using MegaCrit.Sts2.Core.Localization;
+using MegaCrit.Sts2.Core.Logging;
 
 namespace SpireProfiler;
 
-[SuppressMessage("Design", "CA1001", Justification = "Godot owns the node subtree; Free queues its root for deletion.")]
+[SuppressMessage("Design", "CA1001", Justification = "Godot owns and frees the control subtree through Root.")]
 internal sealed class ProfilerPanel
 {
     private readonly PanelTheme _theme;
-    private readonly PanelContainer _plate;
-    private readonly VBoxContainer _header;
-    private readonly VBoxContainer _body;
-    private readonly Label _title;
-    private readonly Label _subtitle;
-    private readonly Label _seed;
-    private readonly Label _meta;
-    private readonly Label _coverage;
-    private readonly Label _footer;
-    private readonly Label _empty;
-    private readonly HBoxContainer _players;
-    private readonly Button _allPlayers;
-    private readonly Dictionary<int, Button> _playerButtons = new();
-    private IReadOnlyList<PlayerSummary> _roster = Array.Empty<PlayerSummary>();
-    private readonly ChartSection _damage;
-    private readonly ChartSection _defense;
-    private readonly ScrollContainer _scroll;
-    private readonly Button _combatTab;
-    private readonly Button _runTab;
     private readonly bool _history;
-    private SummaryView _view;
-    private int? _player;
-    private bool _runSelected;
+    private readonly Control _canvas;
+    private readonly Control _body;
+    private readonly Control _overlay;
+    private readonly AvatarAnimation _animation = new();
+    private Font _fallback;
+    private SummaryView _combatView, _runView, _view;
+    private IReadOnlyList<StatRow> _cards = Array.Empty<StatRow>();
+    private IReadOnlyList<ChartRow> _rows = Array.Empty<ChartRow>();
+    private IReadOnlyList<AvatarFact> _avatars = Array.Empty<AvatarFact>();
+    private IReadOnlyList<int> _avatarSlots = Array.Empty<int>();
+    private IReadOnlyList<float> _scales = Array.Empty<float>();
+    private IReadOnlyList<TipLine> _tipLines = Array.Empty<TipLine>();
+    private RowDetail _detail = RowDetail.Empty;
+    private PanelLayout _layout;
+    private UiRect _control, _plate, _frame;
+    private UiRect? _legend, _tip;
+    private float _originX, _scroll, _queuedScroll, _gutter;
+    private int? _hover, _player;
+    private UiTab _tab;
     private ulong? _revision;
+    private bool _manual, _available = true, _mouseDown, _dragging, _fallbackFont;
+    private bool _receivedSnapshots;
+    private UiPoint _viewport;
 
     internal Control Root { get; }
+    internal ColorRect Backdrop { get; }
     internal bool IsValid => GodotObject.IsInstanceValid(Root) && !Root.IsQueuedForDeletion();
     internal bool Visible => IsValid && Root.Visible;
+    internal bool Requested => _manual;
     internal int DrawCount { get; private set; }
-    internal int RowCount { get; private set; }
+    internal int RowCount => _rows.Count;
     internal int? Player => _player;
-    internal int ScrollPosition => _scroll.ScrollVertical;
+    internal int ScrollPosition => (int)_scroll;
+    internal PanelLayout Layout => _layout;
+    internal IReadOnlyList<ChartRow> Rows => _rows;
+    internal UiRect ControlRect => _control;
+    internal UiTab Tab => _tab;
 
     internal ProfilerPanel(PanelTheme theme, bool history)
     {
         _theme = theme;
         _history = history;
-        Root = new Control { Name = history ? "ProfilerHistory" : "ProfilerCombat", Visible = false };
+        Root = new Control { Name = history ? "ProfilerHistory" : "ProfilerCombat", Visible = false, MouseFilter = Control.MouseFilterEnum.Ignore };
         Root.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
-        theme.Apply(Root);
-        var backdrop = new ColorRect { Color = new Color(0, 0, 0, 0.8f) };
-        backdrop.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
-        Root.AddChild(backdrop);
-        backdrop.GuiInput += input =>
+        Backdrop = new ColorRect { Color = new Color(0, 0, 0, .8f), MouseFilter = Control.MouseFilterEnum.Stop, Visible = false };
+        Backdrop.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.FullRect);
+        _canvas = new Control { Name = "Plate", ClipContents = true, MouseFilter = Control.MouseFilterEnum.Stop };
+        _body = new Control { Name = "ChartBody", ClipContents = true, MouseFilter = Control.MouseFilterEnum.Ignore };
+        _overlay = new Control { Name = "ChartOverlay", MouseFilter = Control.MouseFilterEnum.Ignore };
+        Root.AddChild(_canvas);
+        _canvas.AddChild(_body);
+        _canvas.AddChild(_overlay);
+        _canvas.GuiInput += input =>
         {
-            if (input is InputEventMouseButton { ButtonIndex: MouseButton.Left, Pressed: true }) Hide();
+            try
+            {
+                float delta = input switch
+                {
+                    InputEventMouseButton button => PanelGeometry.EventScrollDelta((int)button.ButtonIndex, button.Pressed, 0),
+                    InputEventPanGesture pan => pan.Delta.Y,
+                    _ => 0
+                };
+                QueueScroll(delta);
+            }
+            catch (Exception error) { Log.Error($"[SpireProfiler] panel scroll: {error}"); }
         };
-        _plate = new PanelContainer { MouseFilter = Control.MouseFilterEnum.Stop };
-        _plate.AddThemeStyleboxOverride("panel", theme.Plate());
-        Root.AddChild(_plate);
-        var content = new VBoxContainer();
-        content.AddThemeConstantOverride("separation", 8);
-        _plate.AddChild(content);
-        var tabs = new HBoxContainer();
-        if (!history)
+        _canvas.Draw += () =>
         {
-            _combatTab = theme.Button("This Combat", () => SelectTab(false));
-            _runTab = theme.Button("Run Summary", () => SelectTab(true));
-            tabs.AddChild(_combatTab);
-            tabs.AddChild(_runTab);
+            try
+            {
+                if (_layout == null) return;
+                _fallback ??= _canvas.GetThemeDefaultFont();
+                if (_theme.HasPlate) _theme.DrawPlate(_canvas, new(_originX, _layout.StripH, _control.W, _control.H - _layout.StripH));
+                else
+                {
+                    _canvas.DrawRect(new Rect2(_originX, _layout.StripH, _control.W, _control.H - _layout.StripH), new Color(.05f, .05f, .1f, .78f));
+                    if (!_history) _canvas.DrawRect(new Rect2(_originX, 0, _control.W, _layout.HeaderBottom), new Color(.05f, .05f, .1f, .78f));
+                }
+                _theme.Replay(_canvas, _layout.Header, new(_originX, 0), _fallback, _fallbackFont, _avatars, _player, _scales);
+                DrawCount++;
+            }
+            catch (Exception error) { Log.Error($"[SpireProfiler] panel draw: {error}"); }
+        };
+        _body.Draw += () =>
+        {
+            try
+            {
+                if (_layout != null) _theme.Replay(_body, _layout.Body, new(0, -(_layout.HeaderBottom + _scroll)), _fallback, _fallbackFont, _avatars, _player, _scales);
+            }
+            catch (Exception error) { Log.Error($"[SpireProfiler] chart draw: {error}"); }
+        };
+        _overlay.Draw += () =>
+        {
+            try
+            {
+                if (_layout == null) return;
+                _theme.DrawScrollbar(_overlay, Scrollbar(), _originX);
+                if (_legend is { } legend) _theme.DrawLegend(_overlay, legend, _fallback, _fallbackFont);
+                if (_tip is { } tip) _theme.DrawTooltip(_overlay, tip, _tipLines, _fallback, _fallbackFont);
+            }
+            catch (Exception error) { Log.Error($"[SpireProfiler] overlay draw: {error}"); }
+        };
+    }
+
+    internal void Show() { _manual = true; SetAvailable(_available); _revision = null; }
+    internal void Hide() { _manual = false; SetAvailable(_available); }
+    internal void SetAvailable(bool available)
+    {
+        _available = available;
+        if (!IsValid) return;
+        Root.Visible = _manual && available;
+        Backdrop.Visible = Root.Visible;
+        if (!Root.Visible)
+        {
+            _queuedScroll = 0; _hover = null; _legend = _tip = null;
+            _tipLines = Array.Empty<TipLine>(); _detail = RowDetail.Empty;
+            _animation.Clear(); _revision = null;
         }
-        else tabs.AddChild(theme.Label("Run Summary", 30, true));
-        var spacer = new Control { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
-        tabs.AddChild(spacer);
-        tabs.AddChild(theme.Button("Close [F8]", Hide));
-        content.AddChild(tabs);
-        _header = new VBoxContainer();
-        content.AddChild(_header);
-        _title = theme.Label("", 28, true);
-        _subtitle = theme.Label("", 20);
-        _seed = theme.Label("", 18);
-        _seed.ClipText = true;
-        _seed.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis;
-        _seed.MouseFilter = Control.MouseFilterEnum.Pass;
-        _players = new HBoxContainer();
-        _allPlayers = theme.Button("All players", () => SelectPlayer(null));
-        _players.AddChild(_allPlayers);
-        _meta = theme.Label("", 20);
-        _coverage = theme.Label("", 20);
-        _coverage.AddThemeColorOverride("font_color", PanelTheme.Indirect);
-        foreach (var label in new[] { _title, _subtitle, _meta, _coverage })
-            label.AutowrapMode = TextServer.AutowrapMode.WordSmart;
-        foreach (var control in new Control[] { _title, _subtitle, _seed, _players, _meta, _coverage })
-            _header.AddChild(control);
-        _scroll = new ScrollContainer
-        {
-            SizeFlagsVertical = Control.SizeFlags.ExpandFill,
-            HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled,
-            VerticalScrollMode = ScrollContainer.ScrollMode.Auto,
-        };
-        content.AddChild(_scroll);
-        _body = new VBoxContainer { SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
-        _body.AddThemeConstantOverride("separation", 6);
-        _scroll.AddChild(_body);
-        _empty = theme.Label("Statistics appear after observed combat events.");
-        _body.AddChild(_empty);
-        _damage = new ChartSection(theme, false);
-        _defense = new ChartSection(theme, true);
-        _body.AddChild(_damage.Root);
-        _body.AddChild(_defense.Root);
-        _footer = theme.Label("", 20);
-        _footer.AutowrapMode = TextServer.AutowrapMode.WordSmart;
-        _body.AddChild(_footer);
-        Root.Resized += Layout;
-        _plate.Draw += () => DrawCount++;
     }
-
-    internal void Show()
+    internal void ResetFilter() { _player = null; _revision = null; }
+    internal void SelectPlayer(int? slot)
     {
-        Root.Show();
-        Layout();
-        _revision = null;
+        if (!_history && _receivedSnapshots && _combatView == null) return;
+        if (_view == null || slot != null && !_view.Players.Any(player => player.Slot == slot)) return;
+        _player = _player == slot ? null : slot;
+        Present(_view);
     }
-
-    internal void Hide()
+    internal void SelectTab(UiTab tab)
     {
-        if (IsValid) Root.Hide();
+        if (_history || _tab == tab) return;
+        _tab = tab;
+        Present(tab == UiTab.Combat ? _combatView : _runView);
+    }
+    internal void QueueScroll(float delta)
+    {
+        if (!Visible) { _queuedScroll = 0; return; }
+        if (!float.IsFinite(delta)) { Log.Error("[SpireProfiler] non-finite scroll delta ignored"); return; }
+        _queuedScroll = (float)Math.Clamp((double)_queuedScroll + delta, -float.MaxValue, float.MaxValue);
     }
 
     internal void Refresh(ulong revision, SummaryView combat, SummaryView run)
     {
-        if (!Visible || _revision == revision) return;
-        _revision = revision;
-        Present(_history || _runSelected ? run : combat);
-    }
-
-    private void SelectTab(bool run)
-    {
-        _runSelected = run;
-        _revision = null;
-        _scroll.ScrollVertical = 0;
-        Refresh(ProfilerSession.Revision, ProfilerSession.CurrentCombat, ProfilerSession.CurrentRun);
-    }
-
-    internal void SelectPlayer(int? slot)
-    {
-        _player = _player == slot ? null : slot;
-        _scroll.ScrollVertical = 0;
-        Present(_view);
+        _combatView = combat; _runView = run;
+        _receivedSnapshots = true;
+        if (!Visible) return;
+        var size = Root.GetViewport().GetVisibleRect().Size;
+        var viewport = new UiPoint(size.X, size.Y);
+        bool resized = viewport != _viewport;
+        _viewport = viewport;
+        if (_revision != revision || resized || _layout == null)
+        {
+            Present(_history || _tab == UiTab.Run ? run : combat);
+            _revision = revision;
+        }
+        var pointer = Root.GetViewport().GetMousePosition();
+        Interact(new(pointer.X, pointer.Y), Input.IsMouseButtonPressed(MouseButton.Left));
+        if (_animation.Advance((float)Root.GetProcessDeltaTime()))
+        {
+            _scales = _animation.Values;
+            _canvas.QueueRedraw();
+        }
     }
 
     internal void Present(SummaryView view)
     {
         _view = view;
-        if (_player != null && !(view?.Players.Any(player => player.Slot == _player.Value) ?? false)) _player = null;
-        RowCount = 0;
-        if (_combatTab != null)
-        {
-            _combatTab.Modulate = _runSelected ? new Color(0.6f, 0.6f, 0.6f) : Colors.White;
-            _runTab.Modulate = _runSelected ? Colors.White : new Color(0.6f, 0.6f, 0.6f);
-        }
-        _empty.Visible = view == null;
-        _players.Visible = _meta.Visible = _damage.Root.Visible = _defense.Root.Visible = _footer.Visible = view != null;
-        if (view == null)
-        {
-            _title.Text = _history ? "No profiler record for this run" : "No combat recorded yet";
-            _subtitle.Hide();
-            _seed.Hide();
-            _coverage.Hide();
-            _damage.Update(Array.Empty<ChartRow>());
-            _defense.Update(Array.Empty<ChartRow>());
-            return;
-        }
-        _title.Text = view.Title;
-        bool run = _history || _runSelected;
-        string subtitleText = view.Subtitle;
-        if (run)
-        {
-            string outcome = view.Outcome switch
-            {
-                "victory" => "Victory",
-                "defeat" => "Defeat",
-                "abandoned" => "Abandoned",
-                "active" => "In progress",
-                "suspended" => "Suspended",
-                _ => "Unfinished",
-            };
-            subtitleText = string.IsNullOrEmpty(subtitleText) ? outcome : $"{subtitleText} · {outcome}";
-        }
-        _subtitle.Text = subtitleText;
-        _subtitle.Visible = !string.IsNullOrEmpty(subtitleText);
-        _seed.Visible = run && !string.IsNullOrEmpty(view.Seed);
-        if (_seed.Visible)
-        {
-            _seed.Text = $"Seed: {view.Seed}";
-            _seed.TooltipText = _seed.Text;
-        }
-        if (!_roster.SequenceEqual(view.Players))
-        {
-            foreach (var button in _playerButtons.Values) { _players.RemoveChild(button); button.QueueFree(); }
-            _playerButtons.Clear();
-            foreach (var player in view.Players)
-            {
-                int slot = player.Slot;
-                var button = _theme.Button($"P{slot + 1}", () => SelectPlayer(slot));
-                var portrait = PanelTheme.Portrait(player.Character);
-                if (portrait != null)
-                {
-                    button.Icon = portrait;
-                    button.ExpandIcon = true;
-                    button.AddThemeConstantOverride("icon_max_width", 48);
-                }
-                button.TooltipText = $"Player {slot + 1}: {player.Character}";
-                _players.AddChild(button);
-                _playerButtons.Add(slot, button);
-            }
-            _roster = view.Players;
-        }
-        foreach (var (slot, button) in _playerButtons)
-            button.Modulate = _player == null || _player == slot ? Colors.White : new Color(0.55f, 0.55f, 0.55f);
-        long damage = view.Cards.Sum(card => card.DamageDealt);
-        string perTurn = view.Turns == 0 ? "–" : ((double)damage / view.Turns).ToString("0.0", CultureInfo.InvariantCulture);
-        string totals = $"{view.Turns} turns · {view.Plays} plays · {damage} damage · {perTurn}/turn";
-        totals += run ? $"\n{view.Combats} combats · {view.DamageReceived} damage taken" : $" · {view.DamageReceived} damage taken";
-        _meta.Text = totals;
-        string coverage = ChartProjection.Coverage(view.Coverage);
-        _coverage.Text = coverage;
-        _coverage.Visible = coverage.Length != 0;
-        var damageRows = ChartProjection.Rows(view.Cards, false, _player);
-        var defenseRows = ChartProjection.Rows(view.Cards, true, _player);
-        _damage.Update(damageRows);
-        _defense.Update(defenseRows);
-        RowCount = damageRows.Count + defenseRows.Count;
-        _footer.Text = $"{view.Combats} combats · {view.DamageReceived} damage taken · {view.Cards.Sum(card => card.BlockGained)} block\nPotions {view.PotionsUsed} · Forge {view.Cards.Sum(card => card.Forge)}";
+        if (_history && _player != null && !(view?.Players.Any(player => player.Slot == _player) ?? false)) _player = null;
+        _cards = view?.Cards ?? Array.Empty<StatRow>();
+        if (_history && _player is { } slot && view.PlayerCards.TryGetValue(slot, out var playerCards)) _cards = playerCards;
+        _rows = ChartProjection.Rows(_cards, _history ? null : _player);
+        var roster = _history ? view?.Players : _receivedSnapshots ? _combatView?.Players : view?.Players;
+        if (_history && roster?.Count == 0 && !string.IsNullOrEmpty(view.Character))
+            roster = view.Character.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).Take(4)
+                .Select((character, index) => new PlayerSummary(index, character)).ToArray();
+        _avatars = (roster ?? Array.Empty<PlayerSummary>()).Select(player => (player.Slot, Path: PanelTheme.PortraitPath(player.Character)))
+            .Where(player => player.Path != null).Select(player => new AvatarFact(player.Slot, _theme.Portrait(player.Path) != null, player.Path)).ToArray();
+        _avatarSlots = _avatars.Select(avatar => avatar.Slot).ToArray();
+        _animation.SetTargets(_player, _avatarSlots);
+        _scales = _animation.Values;
+        Rebuild();
     }
 
-    [SuppressMessage("Design", "CA1001", Justification = "Godot owns the chart subtree through the panel root.")]
-    private sealed class ChartSection
+    private void Rebuild()
     {
-        internal VBoxContainer Root { get; } = new();
-        private readonly PanelTheme _theme;
-        private readonly VBoxContainer _rows = new();
-        private readonly Label _empty;
-        private readonly Dictionary<(int Player, int Kind, string Id, bool SelfDamage), ChartControls> _controls = new();
-
-        internal ChartSection(PanelTheme theme, bool defense)
+        var metaView = _view == null ? null : _history ? _view with { Cards = _cards }
+            : _tab == UiTab.Run ? _view with { DamageReceived = 0 } : _view;
+        var meta = ChartProjection.Meta(metaView, _history ? UiTab.Run : _tab);
+        for (int pass = 0; pass < 2; pass++)
         {
-            _theme = theme;
-            Root.AddThemeConstantOverride("separation", 6);
-            _rows.AddThemeConstantOverride("separation", 6);
-            Root.AddChild(theme.Label(defense ? "Defense" : "Damage", 26, true));
-            var legend = new HFlowContainer();
-            var entries = defense
-                ? new[] { ("block", PanelTheme.Block), ("osty", PanelTheme.Osty), ("modifier", PanelTheme.Modifier), ("weak", PanelTheme.Weak), ("buff", PanelTheme.Buff), ("str down", PanelTheme.Strength), ("self dmg", PanelTheme.SelfDamage) }
-                : new[] { ("direct", PanelTheme.Damage), ("indirect", PanelTheme.Indirect), ("modifier", PanelTheme.Modifier) };
-            foreach (var (text, color) in entries)
-            {
-                var key = new HBoxContainer();
-                key.AddChild(new ColorRect { Color = color, CustomMinimumSize = new Vector2(12, 12), SizeFlagsVertical = Control.SizeFlags.ShrinkCenter, MouseFilter = Control.MouseFilterEnum.Ignore });
-                key.AddChild(theme.Label(text, 17));
-                legend.AddChild(key);
-            }
-            Root.AddChild(legend);
-            _empty = theme.Label("None", 20);
-            Root.AddChild(_empty);
-            Root.AddChild(_rows);
+            _layout = _history
+                ? PanelLayout.History(_view, _rows, meta, _avatars, _hover, flat: !_theme.HasPlate, gutter: _gutter)
+                : PanelLayout.Chart(_tab, _rows, meta, ChartProjection.Footer(_view, _tab), _hover, avatars: _avatars, flat: !_theme.HasPlate, tabSprites: _theme.HasTabs, gutter: _gutter);
+            float height = Math.Min(_layout.Height, PanelGeometry.HeightCap(_viewport.Y > 0 ? _viewport.Y : null));
+            var position = PanelGeometry.Center(_viewport, new(_layout.Width, height));
+            _control = new(position.X, position.Y, _layout.Width, height);
+            _plate = new(position.X, position.Y + _layout.StripH, _layout.Width, height - _layout.StripH);
+            _scroll = Math.Min(_scroll, Math.Max(0, _layout.Height - height));
+            float gutter = _layout.Height > height && _theme.HasScrollbar ? 32 : 0;
+            if (gutter == _gutter) break;
+            _gutter = gutter;
         }
-
-        internal void Update(IReadOnlyList<ChartRow> rows)
-        {
-            bool changed = rows.Count != _controls.Count || rows.Any(row =>
-                !_controls.ContainsKey((row.Source.Player, row.Source.Kind, row.Source.Id, row.SelfDamage)));
-            if (changed)
-            {
-                foreach (var control in _controls.Values) { _rows.RemoveChild(control.Root); control.Root.QueueFree(); }
-                _controls.Clear();
-            }
-            _empty.Visible = rows.Count == 0;
-            double maximum = rows.Count == 0 ? 1 : rows.Max(row => Math.Abs((double)row.Value));
-            for (int index = 0; index < rows.Count; index++)
-            {
-                var row = rows[index];
-                var key = (row.Source.Player, row.Source.Kind, row.Source.Id, row.SelfDamage);
-                if (!_controls.TryGetValue(key, out var control))
-                {
-                    control = new ChartControls(_theme, row);
-                    _controls.Add(key, control);
-                    _rows.AddChild(control.Root);
-                }
-                if (control.Root.GetIndex() != index) _rows.MoveChild(control.Root, index);
-                control.Update(row, maximum);
-            }
-        }
+        _detail = _hover is { } index ? ChartProjection.Detail(_rows, index, _cards) : RowDetail.Empty;
+        _tipLines = _detail.IsEmpty ? Array.Empty<TipLine>() : TooltipLayout.Shape(_detail, TooltipLayout.MaximumLines(_control.H));
+        _fallbackFont = PanelTheme.NeedsFallback(_layout, _detail);
+        UpdateFrame();
+        _canvas.QueueRedraw(); _body.QueueRedraw(); _overlay.QueueRedraw();
     }
 
-    [SuppressMessage("Design", "CA1001", Justification = "Godot owns the row controls through the chart subtree.")]
-    private sealed class ChartControls
+    internal void Interact(UiPoint mouse, bool pressed)
     {
-        internal HBoxContainer Root { get; }
-        private readonly Label _plays;
-        private readonly Label _value;
-        private readonly Control _bar;
-        private readonly string _name;
-        private ChartRow _row;
-        private double _maximum;
-
-        internal ChartControls(PanelTheme theme, ChartRow row)
+        if (_layout == null || !Visible) return;
+        var scrollbar = Scrollbar();
+        var local = new UiPoint(mouse.X - _control.X, mouse.Y - _control.Y);
+        bool onTrack = scrollbar?.Track.Contains(local.X, local.Y) == true;
+        bool edge = pressed && !_mouseDown;
+        _dragging = PanelGeometry.DragState(_dragging, pressed, _mouseDown, onTrack);
+        float oldScroll = _scroll;
+        if (_dragging && scrollbar != null) _scroll = PanelGeometry.TrackScroll(scrollbar.Track, local.Y, Math.Max(0, _layout.Height - _control.H));
+        _mouseDown = pressed;
+        if (edge && !_control.Contains(mouse.X, mouse.Y)) { Hide(); return; }
+        if (edge && !onTrack && _control.Contains(mouse.X, mouse.Y))
         {
-            _name = SourceName(row.Source);
-            string prefix = row.Source.Kind switch { 1 => "[R] ", 3 => "[P] ", 4 => "[O] ", _ => "" };
-            Root = new HBoxContainer
-            {
-                CustomMinimumSize = new Vector2(0, 34),
-                MouseFilter = Control.MouseFilterEnum.Pass,
-            };
-            var label = theme.Label((row.SelfDamage ? "+ " : prefix) + _name, 20);
-            label.CustomMinimumSize = new Vector2(240, 0);
-            label.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
-            label.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis;
-            label.ClipText = true;
-            Root.AddChild(label);
-            _plays = theme.Label("", 19);
-            _plays.CustomMinimumSize = new Vector2(44, 0);
-            _plays.ClipText = true;
-            Root.AddChild(_plays);
-            _bar = new Control
-            {
-                CustomMinimumSize = new Vector2(100, 28),
-                SizeFlagsHorizontal = Control.SizeFlags.ExpandFill,
-                MouseFilter = Control.MouseFilterEnum.Ignore,
-            };
-            _bar.Draw += () =>
-            {
-                float y = (_bar.Size.Y - 18) / 2;
-                _bar.DrawRect(new Rect2(0, y, _bar.Size.X, 18), new Color(1, 1, 1, 0.06f));
-                float x = 0;
-                for (int index = 0; index < _row.Segments.Count; index++)
-                {
-                    float width = (float)(_row.Segments[index] / _maximum * _bar.Size.X);
-                    if (width <= 0) continue;
-                    _bar.DrawRect(new Rect2(x, y, width, 18), PanelTheme.SegmentColor((ChartSegment)index, _row.Defense, _row.Source.Kind));
-                    x += width;
-                }
-            };
-            _bar.Resized += _bar.QueueRedraw;
-            Root.AddChild(_bar);
-            _value = theme.Label("", 20);
-            _value.CustomMinimumSize = new Vector2(166, 0);
-            _value.ClipText = true;
-            _value.HorizontalAlignment = HorizontalAlignment.Right;
-            if (row.SelfDamage) _value.AddThemeColorOverride("font_color", PanelTheme.SelfDamage);
-            Root.AddChild(_value);
+            foreach (var hit in _layout.TabHits)
+                if (local.X >= hit.X0 && local.X < hit.X1 && local.Y >= hit.Y0 && local.Y < hit.Y1) { SelectTab(hit.Tab); break; }
+            foreach (var hit in _layout.AvatarHits)
+                if (local.X >= hit.X0 && local.X < hit.X1 && local.Y >= hit.Y0 && local.Y < hit.Y1) { SelectPlayer(hit.Slot); break; }
         }
+        if (_control.Contains(mouse.X, mouse.Y)) _scroll = PanelGeometry.ApplyScroll(_scroll, _queuedScroll, _control.H, _layout.Height);
+        _queuedScroll = 0;
+        int? hover = PanelGeometry.Hover(_layout.RowHits, _control, mouse, _scroll, PanelGeometry.BodyBand(_control.H, _theme.HasPlate, _layout.HeaderBottom));
+        if (hover != _hover) { _hover = hover; Rebuild(); }
+        else if (_scroll != oldScroll) { UpdateFrame(); _body.QueueRedraw(); _overlay.QueueRedraw(); }
+    }
 
-        internal void Update(ChartRow row, double maximum)
+    private ScrollbarGeometry Scrollbar() => !_theme.HasScrollbar || _layout == null ? null
+        : PanelGeometry.Scrollbar(new(_control.W, _control.H), _theme.HasPlate, PanelGeometry.BodyBand(_control.H, _theme.HasPlate, _layout.HeaderBottom), _layout.Height, _scroll);
+
+    private void UpdateFrame()
+    {
+        UiRect? legend = _layout.HasChart ? PanelGeometry.PlaceLegend(_viewport, _plate, PanelGeometry.LegendPlate(_theme.HasPlate).Size) : null;
+        UiRect? tip = null;
+        if (_hover is { } index && _tipLines.Count != 0)
         {
-            if (_row?.Source != row.Source) Root.TooltipText = ChartProjection.Detail(row.Source, _name);
-            if (_row?.Source.Plays != row.Source.Plays) _plays.Text = row.SelfDamage ? "" : $"×{row.Source.Plays}";
-            if (_row?.Value != row.Value || _row.Share != row.Share)
-                _value.Text = row.SelfDamage ? row.Value.ToString(CultureInfo.InvariantCulture)
-                    : string.Create(CultureInfo.InvariantCulture, $"{row.Value} ({row.Share:P1})");
-            bool redraw = _row == null || _maximum != maximum || !_row.Segments.SequenceEqual(row.Segments);
-            _row = row;
-            _maximum = maximum;
-            if (redraw) _bar.QueueRedraw();
+            var hit = _layout.RowHits.FirstOrDefault(hit => hit.FlatIndex == index);
+            tip = PanelGeometry.PlaceTip(_viewport, _plate, _control.Y + hit.Y0 - _scroll, new(TooltipLayout.Width, TooltipLayout.Height(_tipLines.Count)), legend);
         }
+        var (frame, originX) = PanelGeometry.Frame(_plate, legend, tip);
+        _frame = frame with { Y = frame.Y - _layout.StripH, H = frame.H + _layout.StripH };
+        _originX = originX;
+        _canvas.Position = new(_frame.X, _frame.Y);
+        _canvas.Size = new(_frame.W, _frame.H);
+        var band = PanelGeometry.BodyBand(_control.H, _theme.HasPlate, _layout.HeaderBottom);
+        _body.Position = new(_originX, band.Top);
+        _body.Size = new(_control.W, band.Bottom - band.Top);
+        _overlay.Size = new(_frame.W, _frame.H);
+        _legend = legend is { } key ? key with { X = key.X - _frame.X, Y = key.Y - _frame.Y } : null;
+        _tip = tip is { } detail ? detail with { X = detail.X - _frame.X, Y = detail.Y - _frame.Y } : null;
     }
 
-    private static string SourceName(StatRow row)
+    internal void ScrollToEnd()
     {
-        string table = row.Kind switch { 0 => "cards", 1 => "relics", 2 => "powers", 3 => "potions", _ => null };
-        if (table == null) return row.Id;
-        try { return LocString.GetIfExists(table, row.Id + ".title")?.GetFormattedText() ?? row.Id; }
-        catch (Exception) { return row.Id; }
+        if (_layout == null) return;
+        _scroll = Math.Max(0, _layout.Height - _control.H);
+        UpdateFrame(); _body.QueueRedraw(); _overlay.QueueRedraw();
     }
-
-    private void Layout()
-    {
-        if (!IsValid) return;
-        Vector2 viewport = Root.Size;
-        _plate.Position = new Vector2(Math.Max(16, (viewport.X - 840) / 2), Math.Max(16, viewport.Y * 0.075f));
-        _plate.Size = new Vector2(Math.Min(840, Math.Max(320, viewport.X - 32)), Math.Max(240, viewport.Y * 0.85f));
-    }
-
-    internal void ScrollToEnd() => _scroll.ScrollVertical = (int)_scroll.GetVScrollBar().MaxValue;
-
     internal void Free()
     {
         if (IsValid) Root.QueueFree();
+        if (GodotObject.IsInstanceValid(Backdrop) && !Backdrop.IsQueuedForDeletion()) Backdrop.QueueFree();
     }
 }
