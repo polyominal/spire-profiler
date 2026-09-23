@@ -33,10 +33,13 @@ internal static class SessionFixtures
             NativeLifecycle(Path.Combine(scratch, "native"));
             ProfilerNative.Dispose();
             ProfilerNative.Load(nativeLibrary);
+            OverlappingRunContexts(Path.Combine(scratch, "overlap"));
+            ProfilerNative.Dispose();
+            ProfilerNative.Load(nativeLibrary);
             FailedWriteResume(Path.Combine(scratch, "failed-write"));
             ProfilerNative.Dispose();
             ProfilerNative.Load(nativeLibrary);
-            InterruptedAndRepeatedHeaders(Path.Combine(scratch, "interrupted"));
+            RepeatedHeaders(Path.Combine(scratch, "headers"));
             ProfilerNative.Dispose();
             ProfilerNative.Load(nativeLibrary);
             var messages = new List<string>();
@@ -147,8 +150,11 @@ internal static class SessionFixtures
         var empty = store.OpenRun(Header("EMPTY", 100), false);
         Check(empty.RunId == "1" && !store.SaveRun(empty with { Outcome = "victory" }), "An empty run must not publish an end header");
         var run = store.OpenRun(Header("EXACT", 200), false);
-        Check(run.RunId == empty.RunId && store.Select(empty.Identity) == null, "An unpersisted run must leave its ID available");
+        Check(run.RunId == "2" && run.RunId != empty.RunId && store.Select(empty.Identity) == null,
+            "Fresh contexts must retain distinct IDs before either has persisted a record");
         Check(store.SaveCombat(Record(run, 1, 9)), "First numeric combat must persist");
+        Check(!store.SaveRun(run with { Seed = "UNRELATED", Outcome = "victory", EndedAt = 300 }),
+            "A combat in the same numeric directory cannot finalize a different run identity");
         var header = run with { Outcome = "victory", EndedAt = 300 };
         Check(store.SaveRun(header), "A run with a stored combat may publish its end header");
         string headerPath = Path.Combine(directory, "statistics-v2", "runs.jsonl");
@@ -162,7 +168,7 @@ internal static class SessionFixtures
         var resumed = store.OpenRun(Header("EXACT", 200), true);
         Check(resumed.RunId == run.RunId && store.LoadRun(resumed).Summary.Combats == 1, "Resume joins the exact recorded identity");
         var duplicate = store.OpenRun(Header("EXACT", 200), false);
-        Check(duplicate.RunId == "2" && store.SaveCombat(Record(duplicate, 2, 4)), "A fresh recording reserves the next durable ID");
+        Check(duplicate.RunId == "3" && store.SaveCombat(Record(duplicate, 2, 4)), "A fresh recording reserves the next durable ID");
         Check(store.Select(run.Identity) == null, "Multiple numeric IDs with one identity must remain ambiguous");
         Directory.CreateDirectory(Path.Combine(directory, "statistics-v2", "runs", "8"));
         File.WriteAllText(Path.Combine(directory, "statistics-v2", "runs", "8", "99.json"), "corrupt");
@@ -470,6 +476,42 @@ internal static class SessionFixtures
         Check(!ProfilerSession.HistoryOpen && ProfilerSession.SelectedHistory == null, "Closing history clears selection");
     }
 
+    private static void OverlappingRunContexts(string directory)
+    {
+        ProfilerSession.Initialize(directory, "g", "m", _ => { });
+        var oldRun = Header("OLD", 1500);
+        var newRun = Header("NEW", 1600);
+        ProfilerSession.StartRun(oldRun, false);
+        ulong oldEpoch = ProfilerSession.StartCombat("OLD_COMBAT", "Normal");
+        ObserveDamage(oldEpoch, 9);
+        ProfilerSession.StartRun(newRun, false);
+        ProfilerSession.StartCombat("NEW_COMBAT", "Normal");
+        Check(ProfilerSession.CurrentRun.Combats == 0 && ProfilerSession.CurrentRun.Cards.Count == 0,
+            "Finishing an older interrupted combat must not enter the replacement run accumulator");
+        ProfilerSession.EndRun(0);
+        ProfilerSession.SelectHistory(newRun.Seed, newRun.StartedAt, newRun.Profile);
+        Check(ProfilerSession.SelectedHistory == null,
+            "A replacement run without its own completed combat must not publish empty history from an older combat");
+        ProfilerSession.SelectHistory(oldRun.Seed, oldRun.StartedAt, oldRun.Profile);
+        Check(ProfilerSession.SelectedHistory?.Combats == 1 && ProfilerSession.SelectedHistory.Cards.Single().DamageDealt == 9,
+            "The older interrupted combat must remain available under its own run identity");
+        ProfilerSession.Suspend();
+        var repeated = Header("REPEATED-FRESH", 1700);
+        ProfilerSession.StartRun(repeated, false);
+        oldEpoch = ProfilerSession.StartCombat("FIRST_ATTEMPT", "Normal");
+        ObserveDamage(oldEpoch, 11);
+        ProfilerSession.StartRun(repeated, false);
+        ulong nextEpoch = ProfilerSession.StartCombat("SECOND_ATTEMPT", "Normal");
+        ObserveDamage(nextEpoch, 4);
+        ProfilerSession.EndCombat(nextEpoch);
+        Check(ProfilerSession.CurrentRun.Combats == 1 && ProfilerSession.CurrentRun.Cards.Single().DamageDealt == 4,
+            "Two explicitly fresh attempts with the same game identity must not share an active-context ID");
+        ProfilerSession.EndRun(0);
+        ProfilerSession.SelectHistory(repeated.Seed, repeated.StartedAt, repeated.Profile);
+        Check(ProfilerSession.SelectedHistory == null,
+            "Separately recorded fresh attempts with the same game identity remain ambiguous in history");
+    }
+
     private static void FailedWriteResume(string directory)
     {
         var diagnostics = new List<string>();
@@ -497,32 +539,23 @@ internal static class SessionFixtures
         ProfilerSession.Suspend();
     }
 
-    private static void InterruptedAndRepeatedHeaders(string directory)
+    private static void RepeatedHeaders(string directory)
     {
         ProfilerSession.Initialize(directory, "g", "m", _ => { });
-        ProfilerSession.StartRun(Header("OLD", 500), false);
-        ObserveDamage(ProfilerSession.StartCombat("OLD", "Normal"), 5);
-        ProfilerSession.StartRun(Header("NEW", 600), false);
-        ProfilerSession.StartCombat("NEW", "Normal");
-        ProfilerSession.SelectHistory("OLD", 500, 0);
-        Check(ProfilerSession.SelectedHistory.Outcome == "" && ProfilerSession.SelectedHistory.Combats == 1, "Interrupted prior run is visible as unfinished");
-        Check(ProfilerSession.CurrentRun.Combats == 0, "A different run identity excludes interrupted prior totals");
-        ProfilerSession.EndRun(1);
-        ProfilerSession.SelectHistory("NEW", 600, 0);
-        Check(ProfilerSession.SelectedHistory.Outcome == "defeat" && ProfilerSession.SelectedHistory.Combats == 0, "Shared reserved directory permits the new end header with no matching combats");
-        ProfilerSession.Suspend();
-        ProfilerSession.StartRun(Header("REPEATED", 700), false);
-        ObserveDamage(ProfilerSession.StartCombat("OLD", "Normal"), 11);
-        ProfilerSession.StartRun(Header("REPEATED", 700), false);
-        ulong next = ProfilerSession.StartCombat("NEW", "Normal");
-        Check(ProfilerSession.CurrentRun.Combats == 1 && ProfilerSession.CurrentRun.Cards.Single().DamageDealt == 11, "Same identity and reused numeric run ID merge the interrupted combat");
-        ObserveDamage(next, 2);
-        ProfilerSession.EndCombat(next);
+        var run = Header("CONTINUED", 700);
+        ProfilerSession.StartRun(run, false);
+        ulong first = ProfilerSession.StartCombat("FIRST", "Normal");
+        ObserveDamage(first, 9);
+        ProfilerSession.EndCombat(first);
         ProfilerSession.EndRun(0);
-        ProfilerSession.StartRun(Header("REPEATED", 700), true);
+        ProfilerSession.StartRun(run, true);
+        ulong next = ProfilerSession.StartCombat("NEXT", "Normal");
+        ObserveDamage(next, 4);
+        ProfilerSession.EndCombat(next);
         ProfilerSession.EndRun(1);
-        ProfilerSession.SelectHistory("REPEATED", 700, 0);
-        Check(ProfilerSession.SelectedHistory.Outcome == "victory" && ProfilerSession.SelectedHistory.Cards.Single().DamageDealt == 13, "A later finalization does not replace the first history header");
+        ProfilerSession.SelectHistory(run.Seed, run.StartedAt, run.Profile);
+        Check(ProfilerSession.SelectedHistory.Outcome == "victory" && ProfilerSession.SelectedHistory.Cards.Single().DamageDealt == 13,
+            "A later finalization of a continued run does not replace the first history header");
     }
 
     private static void ObserveDamage(ulong epoch, int amount)
