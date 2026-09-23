@@ -196,8 +196,12 @@ internal static class DamageCapture
         int weak = 0;
         if (captured.Weak && receiver.Player && total > 0)
         {
-            weak = CaptureRuntime.Backend.CalculateWeakPrevention(total, receiver.Slot, receiver.Player,
-                captured.Weak, captured.Debilitate, captured.PaperKraneSlots);
+            try
+            {
+                weak = CaptureRuntime.Backend.CalculateWeakPrevention(total, receiver.Slot, receiver.Player,
+                    captured.Weak, captured.Debilitate, captured.PaperKraneSlots);
+            }
+            catch (Exception ex) { CaptureRuntime.Fail("weak-projection", ex); }
         }
         return new(total, result.UnblockedDamage, result.BlockedDamage,
             Classify(dealer, captured.Dealer, captured.ExplicitCard, receiver, result.Receiver), receiver.Slot, weak);

@@ -2439,8 +2439,13 @@ internal static partial class ManagedFixtures
         DamageCapture.Inspect = (_, _, _) => new(false, true, 0, weak, true, 2);
         DamageFixture.Results = new() { new(incoming, ValueProp.Move) { UnblockedDamage = int.MaxValue } };
         context.Complete(Damage(incoming, enemy));
-        Check(backend.Committed.Count == 0 && backend.Fallback.Count == 0 && backend.Calls.Contains("diagnostic:damage-report"),
-            "The original overflowing Weak estimate aborts reporting the result group");
+        Check(backend.Committed.Single().Total == int.MaxValue && backend.Committed[0].WeakPrevented == 0
+            && backend.Fallback.Count == 0 && backend.Calls.Contains("diagnostic:weak-projection"),
+            "Optional Weak overflow preserves physical damage and marks incomplete coverage");
+        DamageFixture.Results = new() { new(incoming, ValueProp.Move) { UnblockedDamage = int.MaxValue }, new(incoming, ValueProp.Move) { UnblockedDamage = 2 } };
+        context.Complete(Damage(incoming, enemy));
+        Check(backend.Committed.TakeLast(2).Select(packet => packet.Total).SequenceEqual(new[] { int.MaxValue, 2 })
+            && backend.Committed.Last().WeakPrevented == 8, "Weak projection failure cannot discard sibling results or their valid estimate");
     }
     private static void RetainedBlock()
     {
