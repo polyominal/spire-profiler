@@ -85,6 +85,8 @@ internal static class TemporalPowerCapture
         {
             var frame = FlowCapture.Current;
             var prior = Take(frame.Model, card, frame.Epoch);
+            // Overflow consumes the prior entry without replacing it.
+            _ = checked(amount - before);
             var combined = AccumulateSources(frame.Epoch, prior, before, frame.Source, amount);
             Save(frame.Model, card, amount, combined, frame.Epoch);
         }
