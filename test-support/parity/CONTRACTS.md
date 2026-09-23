@@ -58,7 +58,7 @@ values must only change through a reviewed baseline regeneration.
   standalone self-damage retains its identifier and plays. Zero plays are hidden.
 - Detail resolution selects the first card with the same player and identifier,
   ignoring source kind. Truncated identifiers may not resolve back to the full
-  source. These surprising baseline behaviors are intentional parity fixtures.
+  source. Fixtures cover both identifier and source-kind collisions.
 - Live Combat and Run headline totals remain team-wide when a player is selected.
   History totals use the selected saved player rollup. An unavailable history
   player rollup falls back to the aggregate rollup. DPS truncates to one decimal;
@@ -107,14 +107,14 @@ values must only change through a reviewed baseline regeneration.
   overflow clamps. Hidden panels drain pending input. The scrollbar has a
   20-pixel track and a fixed 30-pixel grabber; track clicks map proportionally,
   and dragging remains captured until release.
-- All avatars start at scale 1. Selecting a player animates it to 1.1 and others
+- The All selection uses avatar scale 1. Selecting a player animates it to 1.1 and others
   to 0.95 over 0.05 seconds; unselected modulation is 0.55. New or reordered slots
   initialize at their new target, rather than inheriting another slot's motion.
 - The original backdrop is black with alpha 0.8. Tooltip and legend geometry
   expands the drawing control without changing the main plate's input bounds.
-- The run-history Contribution button follows the live Share button rectangle:
-  same size, a 16-pixel horizontal gap, and 22-pixel Kreon Bold text. Disabled
-  appearance retains the plate with dim modulation. Its anchor must follow
+- The run-history Profiler button follows the live Share button rectangle:
+  same size, directly above it with a 16-pixel gap, and 22-pixel Kreon Bold text.
+  Disabled appearance retains the plate with dim modulation. Its anchor must follow
   actual layout changes rather than a hard-coded screen corner.
 
 History fixture selection explicitly feeds the selected original rollup into the
