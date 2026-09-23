@@ -33,9 +33,8 @@ internal static class ProfilerNative
     private static NativeSnapshot _recording;
     private static NativeReplay _replay;
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    private delegate int NativeModifierContributions(ulong engine, ulong initialLow, ulong initialHigh, ulong resultLow, ulong resultHigh,
-        int damage, IntPtr observations, int count, IntPtr credits, int capacity);
-    private static NativeModifierContributions _modifier_contributions;
+    private delegate long NativeModifierCredit(ulong engine, ulong basisLow, ulong basisHigh, ulong valueLow, ulong valueHigh, int kind);
+    private static NativeModifierCredit _modifier_credit;
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int NativeWeakPrevention(ulong engine, int total, int receiverSlot, int receiverPlayer, int weak, int debilitate, uint kraneSlots);
     private static NativeWeakPrevention _weak_prevention;
@@ -211,7 +210,7 @@ internal static class ProfilerNative
                     _recording_begin,
                     _recording,
                     _replay,
-                    _modifier_contributions,
+                    _modifier_credit,
                     _weak_prevention) =
                     (GetExport<NativeEngineCreate>(lib, "spire_profiler_engine_create"),
                     GetExport<NativeEngineDestroy>(lib, "spire_profiler_engine_destroy"),
@@ -258,7 +257,7 @@ internal static class ProfilerNative
                     GetExport<NativeRecordingBegin>(lib, "spire_profiler_recording_begin"),
                     GetExport<NativeSnapshot>(lib, "spire_profiler_recording"),
                     GetExport<NativeReplay>(lib, "spire_profiler_replay"),
-                    GetExport<NativeModifierContributions>(lib, "spire_profiler_modifier_contributions"),
+                    GetExport<NativeModifierCredit>(lib, "spire_profiler_modifier_credit"),
                     GetExport<NativeWeakPrevention>(lib, "spire_profiler_weak_prevention"));
                 library = lib;
                 libraryPath = path;
@@ -280,26 +279,13 @@ internal static class ProfilerNative
         return amount;
     }
 
-    internal static ModifierCredit[] CalculateModifierContributions(ModifierObservation[] observations, decimal initial, decimal result, bool damage)
+    internal static int CalculateModifierCredit(decimal basis, decimal value, int kind)
     {
-        var (initialLow, initialHigh) = ModifierObservation.PackDecimal(initial);
-        var (resultLow, resultHigh) = ModifierObservation.PackDecimal(result);
-        var credits = new ModifierCredit[observations.Length];
-        var input = GCHandle.Alloc(observations, GCHandleType.Pinned);
-        try
-        {
-            var output = GCHandle.Alloc(credits, GCHandleType.Pinned);
-            try
-            {
-                int count = _modifier_contributions(engine, initialLow, initialHigh, resultLow, resultHigh, damage ? 1 : 0,
-                    input.AddrOfPinnedObject(), observations.Length, output.AddrOfPinnedObject(), credits.Length);
-                if (count < 0 || count > credits.Length) throw new InvalidOperationException("Modifier observation batch rejected");
-                if (count != credits.Length) Array.Resize(ref credits, count);
-                return credits;
-            }
-            finally { output.Free(); }
-        }
-        finally { input.Free(); }
+        var (basisLow, basisHigh) = DecimalWords.Pack(basis);
+        var (valueLow, valueHigh) = DecimalWords.Pack(value);
+        long amount = _modifier_credit(engine, basisLow, basisHigh, valueLow, valueHigh, kind);
+        if (amount < int.MinValue || amount > int.MaxValue) throw new OverflowException("Modifier credit is not representable");
+        return (int)amount;
     }
 
     internal static void Dispose()

@@ -6,7 +6,7 @@ use serde::Serialize;
 
 use super::state::{CardStat, Combat, CombatPhase, Coverage, PlayerSlotState, State, caps};
 
-pub(super) const POLICY_VERSION: u32 = 2;
+pub(super) const POLICY_VERSION: u32 = 1;
 
 #[derive(Serialize)]
 struct Summary<'a> {

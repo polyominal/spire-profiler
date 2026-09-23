@@ -7,7 +7,7 @@ use std::ffi::{CStr, c_char};
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::data::modifiers::WeakObservation;
+use crate::data::modifiers::{ModifierObservation, WeakObservation};
 use crate::data::observation::Observation;
 use crate::data::state::State;
 
@@ -1186,92 +1186,33 @@ pub extern "C" fn spire_profiler_combat_discard(engine: u64) {
     })
 }
 
-pub use crate::data::modifiers::{ModifierCredit, ModifierObservation};
-
-/// Returns the credit count, or -1 without writing on any rejected batch.
-/// Decimal halves preserve the four words returned by .NET decimal.GetBits.
-/// # Safety
-/// Non-null observations and credits are aligned, disjoint buffers of count and
-/// capacity initialized records respectively, and remain valid for this call.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn spire_profiler_modifier_contributions(
+pub extern "C" fn spire_profiler_modifier_credit(
     engine: u64,
-    initial_low: u64,
-    initial_high: u64,
-    result_low: u64,
-    result_high: u64,
-    damage: i32,
-    observations: *const ModifierObservation,
-    count: i32,
-    credits: *mut ModifierCredit,
-    capacity: i32,
-) -> i32 {
-    contain("modifier_contributions", -1, || {
-        with_engine(engine, -1, true, |state| {
-            let buffer_failed = |state: &mut State| {
-                state.capture_failed("modifier-buffer");
-                state.record(
-                    || Observation::CaptureFailed {
-                        reason: "modifier-buffer".into(),
-                    },
-                    0,
-                );
-                -1
+    basis_low: u64,
+    basis_high: u64,
+    value_low: u64,
+    value_high: u64,
+    kind: i32,
+) -> i64 {
+    contain("modifier_credit", i64::MIN, || {
+        with_engine(engine, i64::MIN, true, |state| {
+            let observed = ModifierObservation {
+                basis_low,
+                basis_high,
+                value_low,
+                value_high,
+                kind,
             };
-            let Ok(count) = usize::try_from(count) else {
-                return buffer_failed(state);
-            };
-            if count > crate::data::modifiers::MAX_OBSERVATIONS
-                || capacity < 0
-                || (count > 0 && observations.is_null())
-            {
-                return buffer_failed(state);
-            }
-            let observations = if count == 0 {
-                &[]
-            } else {
-                // SAFETY: the caller provides count aligned, immutable initialized records.
-                unsafe { std::slice::from_raw_parts(observations, count) }
-            };
-            let result = crate::data::modifiers::ModifierBatch::parse(
-                (initial_low, initial_high),
-                (result_low, result_high),
-                damage,
-                observations,
-            )
-            .and_then(|batch| batch.credits());
-            let returned = result
-                .as_ref()
-                .map_or(u64::MAX, |credits| credits.len() as u64);
-            state.record(
-                || Observation::ModifierProjection {
-                    initial_low,
-                    initial_high,
-                    result_low,
-                    result_high,
-                    damage,
-                    observations: observations.into(),
-                    credits: result.as_ref().map_or_else(
-                        |_| Box::default(),
-                        |credits| credits.clone().into_boxed_slice(),
-                    ),
-                },
-                returned,
-            );
-            let Ok(result) = result else {
+            let amount = observed.credit().map(i64::from).unwrap_or_else(|_| {
                 state.capture_failed("modifier-policy");
-                return -1;
-            };
-            if result.len() > capacity as usize || (!result.is_empty() && credits.is_null()) {
-                return buffer_failed(state);
-            }
-            if !result.is_empty() {
-                // SAFETY: destination capacity covers all results and buffers are disjoint.
-                unsafe {
-                    std::ptr::copy_nonoverlapping(result.as_ptr(), credits, result.len());
-                }
-            }
-            result.len() as i32
+                i64::MIN
+            });
+            state.record(
+                || Observation::ModifierProjection { observed },
+                amount as u64,
+            );
+            amount
         })
     })
 }
@@ -1430,49 +1371,10 @@ mod tests {
             let b = spire_profiler_source_capture(engine, 9, 1, 12, c"B".as_ptr(), 0, 1, 0);
             let mixed = spire_profiler_source_accumulate(engine, 9, a, 2, b, 5);
             assert_ne!(mixed, 0);
-            let raw = [ModifierObservation {
-                source: a,
-                input_low: 10,
-                input_high: 0,
-                output_low: 3,
-                output_high: 0,
-                parent: -1,
-                kind: 0,
-            }];
-            let mut credits = [ModifierCredit {
-                source: 0,
-                amount: 0,
-            }];
+            let credit = spire_profiler_modifier_credit(engine, 0, 0, 3, 0, 1);
+            assert_eq!(credit, 3);
             assert_eq!(
-                spire_profiler_modifier_contributions(
-                    engine,
-                    0,
-                    0,
-                    13,
-                    0,
-                    0,
-                    raw.as_ptr(),
-                    1,
-                    credits.as_mut_ptr(),
-                    1
-                ),
-                1
-            );
-            assert_eq!(
-                credits[0],
-                ModifierCredit {
-                    source: a,
-                    amount: 3
-                }
-            );
-            assert_eq!(
-                spire_profiler_block_modifier_contribution(
-                    engine,
-                    9,
-                    credits[0].source,
-                    credits[0].amount,
-                    1
-                ),
+                spire_profiler_block_modifier_contribution(engine, 9, a, credit as i32, 1),
                 1
             );
             assert_eq!(spire_profiler_block_gained(engine, 9, 13, mixed, 1), 1);
@@ -1511,7 +1413,7 @@ mod tests {
         );
         let mut corrupt: serde_json::Value =
             serde_json::from_slice(trace.as_bytes()).expect("trace parses");
-        corrupt["observations"][4]["observation"]["credits"][0]["amount"] = 99.into();
+        corrupt["observations"][4]["result"] = 99.into();
         let corrupt = CString::new(corrupt.to_string()).expect("JSON has no literal NUL");
         assert_eq!(
             // SAFETY: CString owns the terminated recording through replay.
@@ -1546,68 +1448,21 @@ mod tests {
         spire_profiler_engine_destroy(engine);
     }
     #[test]
-    fn modifier_batch_rejection_writes_no_partial_credits() {
+    fn scalar_modifier_failures_do_not_erase_prior_successful_observations() {
         let engine = spire_profiler_engine_create();
-        let raw = [
-            ModifierObservation {
-                source: 1,
-                input_low: 7,
-                input_high: 0,
-                output_low: 3,
-                output_high: 0,
-                parent: -1,
-                kind: 0,
-            },
-            ModifierObservation {
-                source: 2,
-                input_low: 7,
-                input_high: 0,
-                output_low: 2,
-                output_high: 0,
-                parent: -1,
-                kind: 99,
-            },
-        ];
-        let sentinel = ModifierCredit {
-            source: 123,
-            amount: 456,
-        };
-        let mut credits = [sentinel; 2];
-        // SAFETY: arrays own disjoint aligned input and output ranges of the supplied lengths.
-        unsafe {
-            assert_eq!(
-                spire_profiler_modifier_contributions(
-                    engine,
-                    0,
-                    0,
-                    20,
-                    0,
-                    1,
-                    raw.as_ptr(),
-                    2,
-                    credits.as_mut_ptr(),
-                    2
-                ),
-                -1
-            );
-            assert_eq!(credits, [sentinel; 2]);
-            assert_eq!(
-                spire_profiler_modifier_contributions(
-                    engine,
-                    0,
-                    0,
-                    20,
-                    0,
-                    1,
-                    raw.as_ptr(),
-                    1,
-                    credits.as_mut_ptr(),
-                    0
-                ),
-                -1
-            );
-            assert_eq!(credits, [sentinel; 2]);
-        }
+        assert_eq!(spire_profiler_recording_begin(engine), 1);
+        started(engine, 1);
+        assert_eq!(spire_profiler_modifier_credit(engine, 0, 0, 3, 0, 0), 3);
+        assert_eq!(
+            spire_profiler_modifier_credit(engine, 0, 0, 3, 0, 99),
+            i64::MIN
+        );
+        let trace = CString::new(json(engine, true)).expect("JSON has no literal NUL");
+        let replay = spire_profiler_engine_create();
+        // SAFETY: CString owns the terminated trace through replay.
+        assert_eq!(unsafe { spire_profiler_replay(replay, trace.as_ptr()) }, 1);
+        assert_eq!(json(engine, false), json(replay, false));
         spire_profiler_engine_destroy(engine);
+        spire_profiler_engine_destroy(replay);
     }
 }

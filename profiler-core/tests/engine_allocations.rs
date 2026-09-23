@@ -124,43 +124,16 @@ fn reproducible_engine_allocation_profile() {
         spire_profiler_engine_destroy(engine);
     }
     let engine = spire_profiler_engine_create();
-    let observations: Vec<_> = (0..8)
-        .map(|index| ModifierObservation {
-            source: index + 1,
-            input_low: 10,
-            input_high: 0,
-            output_low: if index % 2 == 0 { 2 } else { 15 },
-            output_high: if index % 2 == 0 { 0 } else { 1_u64 << 48 },
-            parent: -1,
-            kind: (index % 2) as i32,
-        })
-        .collect();
-    let mut credits = [ModifierCredit {
-        source: 0,
-        amount: 0,
-    }; 8];
-    let (_, modifier_batches) = Measure::run(|| {
+    let (_, modifier_credits) = Measure::run(|| {
         for _ in 0..10_000 {
-            // SAFETY: the arrays are aligned and disjoint with eight records each.
-            let count = unsafe {
-                spire_profiler_modifier_contributions(
-                    engine,
-                    10,
-                    0,
-                    30,
-                    0,
-                    1,
-                    observations.as_ptr(),
-                    8,
-                    credits.as_mut_ptr(),
-                    8,
-                )
-            };
-            assert_eq!(count, 8);
+            for _ in 0..8 {
+                assert_eq!(
+                    spire_profiler_modifier_credit(engine, 10, 0, 15, 1_u64 << 48, 2),
+                    5
+                );
+            }
         }
     });
-    eprintln!("10k eight-observation exact-decimal batches={modifier_batches:?}");
-    assert_eq!(credits[0].amount, 2);
-    assert_eq!(credits[1].amount, 5);
+    eprintln!("80k decimal modifier credits={modifier_credits:?}");
     spire_profiler_engine_destroy(engine);
 }

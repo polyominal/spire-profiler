@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::modifiers::{ModifierBatch, ModifierCredit, ModifierObservation, WeakObservation};
+use super::modifiers::{ModifierObservation, WeakObservation};
 use super::state::State;
 
 const MAX_OBSERVATIONS: usize = 10_000;
@@ -19,13 +19,7 @@ pub(crate) enum Observation {
         observed: WeakObservation,
     },
     ModifierProjection {
-        initial_low: u64,
-        initial_high: u64,
-        result_low: u64,
-        result_high: u64,
-        damage: i32,
-        observations: Box<[ModifierObservation]>,
-        credits: Box<[ModifierCredit]>,
+        observed: ModifierObservation,
     },
     CombatDiscard,
     SourceCapture {
@@ -323,31 +317,13 @@ impl State {
                         u64::MAX
                     }
                 },
-                Observation::ModifierProjection {
-                    initial_low,
-                    initial_high,
-                    result_low,
-                    result_high,
-                    damage,
-                    observations,
-                    credits,
-                } => {
-                    match ModifierBatch::parse(
-                        (initial_low, initial_high),
-                        (result_low, result_high),
-                        damage,
-                        &observations,
-                    )
-                    .and_then(|batch| batch.credits())
-                    {
-                        Ok(actual) if actual.as_slice() == credits.as_ref() => actual.len() as u64,
-                        Err(_) if credits.is_empty() => {
-                            candidate.capture_failed("modifier-policy");
-                            u64::MAX
-                        }
-                        _ => return 0,
+                Observation::ModifierProjection { observed } => match observed.credit() {
+                    Ok(amount) => i64::from(amount) as u64,
+                    Err(_) => {
+                        candidate.capture_failed("modifier-policy");
+                        i64::MIN as u64
                     }
-                }
+                },
                 Observation::CombatDiscard => {
                     candidate.discard_combat();
                     0

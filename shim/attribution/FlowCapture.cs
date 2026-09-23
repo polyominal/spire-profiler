@@ -122,7 +122,6 @@ internal static class FlowCapture
         PlayCapture.Install(harmony);
         TemporalPowerCapture.Install(harmony, report);
         DamageCapture.Install(harmony, report);
-        ModifierCapture.Install(harmony);
         CommandCapture.Install(harmony, report);
         DoomCapture.Install(harmony, report);
         CapturePatches.Verify(harmony, report);

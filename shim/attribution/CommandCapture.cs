@@ -27,15 +27,11 @@ internal sealed record CommandFrame(CaptureEpoch Epoch, CommandKind Kind, Source
 }
 internal readonly record struct CommandState(CommandFrame Previous, ProducerFrame Producer);
 internal sealed record BuffCapture(CaptureEpoch Epoch, SourceSnapshot Source, decimal Amount, bool Buffer);
+internal readonly record struct BlockModifierCapture(CaptureEpoch Epoch, decimal Amount);
 internal static class CommandCapture
 {
     private static readonly AsyncLocal<CommandFrame> current = new();
     internal static CommandFrame Current { get => current.Value ?? CommandFrame.Barrier; private set => current.Value = value; }
-    internal static void InvalidateBlockSource(CaptureEpoch epoch)
-    {
-        if (Current.Kind == CommandKind.Block && Current.Epoch == epoch)
-            Current = Current with { Source = SourceSnapshot.Unavailable };
-    }
     internal static void Prefix(MethodBase __originalMethod, object[] __args, out CommandState __state)
     {
         __state = new(Current, FlowCapture.Current);
@@ -117,6 +113,66 @@ internal static class CommandCapture
                 CaptureRuntime.Fail("block-report");
         }
         catch (Exception ex) { CaptureRuntime.Fail("block-report", ex); }
+    }
+    internal static void BlockModifierPrefix(decimal block, out BlockModifierCapture __state)
+    {
+        __state = default;
+        try { __state = new(CaptureRuntime.EntryEpoch(), block); }
+        catch (Exception ex) { CaptureRuntime.Fail("block-modifier-entry", ex); }
+    }
+    internal static void BlockModifierPostfix(decimal __result, BlockModifierCapture __state, Creature target, ValueProp props,
+        CardModel cardSource, CardPlay cardPlay, IEnumerable<AbstractModel> modifiers)
+    {
+        try
+        {
+            if (!CaptureRuntime.Valid(__state.Epoch) || target == null || !target.IsPlayer || __result <= __state.Amount || modifiers == null) return;
+            if (!ReferenceEquals(target.CombatState, __state.Epoch.Combat)) return;
+            decimal start = __state.Amount;
+            if (cardSource?.Enchantment is { } enchantment)
+            {
+                start += enchantment.EnchantBlockAdditive(start);
+                start *= enchantment.EnchantBlockMultiplicative(start);
+            }
+            DecomposeBlock(modifiers, start, __result, target, props, cardSource, cardPlay, (model, amount) =>
+            {
+                var source = FlowCapture.Source(model, __state.Epoch);
+                if (CaptureRuntime.WithSource(__state.Epoch, source, transfer => CaptureRuntime.Backend.BlockModifier(__state.Epoch.Sequence, transfer, amount, RunContext.PlayerSlot(target.Player))) != 1)
+                    CaptureRuntime.Fail("block-modifier-report");
+            });
+        }
+        catch (Exception ex) { CaptureRuntime.Fail("block-modifier", ex); }
+    }
+    internal static void DecomposeBlock(IEnumerable<AbstractModel> modifiers, decimal start, decimal result, Creature target, ValueProp props,
+        CardModel card, CardPlay play, Action<AbstractModel, int> contribute)
+    {
+        decimal running = start;
+        var multiplicative = new List<AbstractModel>();
+        foreach (var model in modifiers)
+        {
+            decimal addition = model switch
+            {
+                PowerModel power => power.ModifyBlockAdditive(target, running, props, card, play),
+                RelicModel relic => relic.ModifyBlockAdditive(target, running, props, card, play),
+                _ => 0m
+            };
+            running += addition;
+            if (addition > 0) contribute(model, ModifierCapture.Additive(addition, false));
+            else if (model is PowerModel or RelicModel)
+            {
+                if (multiplicative.Count == 64) { CaptureRuntime.Fail("block-modifier-cap"); return; }
+                multiplicative.Add(model);
+            }
+        }
+        foreach (var model in multiplicative)
+        {
+            decimal multiplier = model is PowerModel power ? power.ModifyBlockMultiplicative(target, running, props, card, play)
+                : ((RelicModel)model).ModifyBlockMultiplicative(target, running, props, card, play);
+            decimal before = Math.Min(running, result);
+            running *= multiplier;
+            if (multiplier <= 1) continue;
+            int amount = ModifierCapture.Increase(before, multiplier);
+            if (amount > 0) contribute(model, amount);
+        }
     }
     internal static void BuffPrefix(object __instance, decimal amount, out BuffCapture __state)
     {
@@ -258,6 +314,9 @@ internal static class CommandCapture
         PatchCommand(harmony, AccessTools.DeclaredMethod(typeof(CreatureCmd), "GainBlock", new[] { typeof(Creature), typeof(decimal), typeof(ValueProp), typeof(CardPlay), typeof(bool) }));
         PatchCommand(harmony, AccessTools.DeclaredMethod(typeof(ForgeCmd), "Forge", new[] { typeof(decimal), typeof(Player), typeof(AbstractModel) }));
         PatchCommand(harmony, AccessTools.DeclaredMethod(typeof(OstyCmd), "Summon", new[] { typeof(PlayerChoiceContext), typeof(Player), typeof(decimal), typeof(AbstractModel) }));
+        var prefix = new HarmonyMethod(typeof(CommandCapture), nameof(BlockModifierPrefix));
+        var postfix = new HarmonyMethod(typeof(CommandCapture), nameof(BlockModifierPostfix));
+        CapturePatches.Patch(harmony, AccessTools.DeclaredMethod(typeof(Hook), "ModifyBlock"), prefix: prefix, postfix: postfix);
         foreach (var entry in new[] { (typeof(BufferPower), "ModifyHpLostAfterOstyLate"), (typeof(IntangiblePower), "ModifyHpLostAfterOsty"), (typeof(HardenedShellPower), "ModifyHpLostBeforeOstyLate") })
             CapturePatches.Patch(harmony, AccessTools.DeclaredMethod(entry.Item1, entry.Item2), prefix: new HarmonyMethod(typeof(CommandCapture), nameof(BuffPrefix)), postfix: new HarmonyMethod(typeof(CommandCapture), nameof(BuffPostfix)));
         foreach (var entry in new[] { ("BlockGained", nameof(BlockGained)), ("OrbChanneled", nameof(OrbChanneled)), ("PotionUsed", nameof(PotionPostfix)) })

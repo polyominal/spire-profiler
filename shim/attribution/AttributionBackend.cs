@@ -57,8 +57,8 @@ internal abstract class AttributionBackend
     internal virtual int PotionUsed(ulong epoch) => 0;
     internal virtual ulong CombatStarted(string encounter, string type) => 0;
     internal virtual int CombatEnded(ulong epoch) => 0;
-    internal virtual ModifierCredit[] CalculateModifierContributions(ModifierObservation[] observations, decimal initial, decimal result, bool damage)
-        => ProfilerNative.CalculateModifierContributions(observations, initial, result, damage);
+    internal virtual int CalculateModifierCredit(decimal basis, decimal value, int kind)
+        => ProfilerNative.CalculateModifierCredit(basis, value, kind);
     internal virtual int CalculateWeakPrevention(int total, int receiverSlot, bool receiverPlayer, bool weak, bool debilitate, uint kraneSlots)
         => ProfilerNative.CalculateWeakPrevention(total, receiverSlot, receiverPlayer, weak, debilitate, kraneSlots);
     internal virtual void Diagnostic(string category, Exception error) { }
