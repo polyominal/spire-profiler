@@ -52,6 +52,6 @@ automatically, so their synthetic runs do not enter normal play history.
 The history lookup uses the game's exact profile, seed, and start time. The
 first matching finalized header supplies the outcome and roster; interrupted
 combats can provide an unfinished history view without a header. Ambiguous run
-identities remain unselectable. New records live under `statistics-v1`. Legacy
-files and prior GUID recordings remain read-only, and missing legacy metadata
-stays unknown.
+identities remain unselectable. New records live under `statistics-v2`. Legacy
+files and numeric/GUID records in `statistics-v1` remain read-only, and missing
+legacy metadata stays unknown.

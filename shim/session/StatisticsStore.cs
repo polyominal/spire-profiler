@@ -8,17 +8,19 @@ using System.Text.Json;
 
 namespace SpireProfiler;
 
-// Schema-1 records live at statistics-v1/runs/<numeric-run>/<combat>.json.
+// Schema-2 records live at statistics-v2/runs/<numeric-run>/<combat>.json.
 // Each combat carries the run metadata captured at its start. Finalized headers
-// append to statistics-v1/runs.jsonl; the first matching header supplies history.
+// append to statistics-v2/runs.jsonl; the first matching header supplies history.
 // Numeric IDs reserve existing directories and files, including unreadable ones.
-// The unversioned store and GUID directories are read-only inputs.
+// Unversioned and schema-1 stores are read-only inputs. Preserved run IDs
+// flatten imported directory aliases; new records use numeric identities only.
 internal sealed class StatisticsStore
 {
-    internal const int SchemaVersion = 1;
+    internal const int SchemaVersion = 2;
     private const int MaxDocumentBytes = 64 * 1024 * 1024;
     private static readonly UTF8Encoding Utf8 = new(false, true);
     private readonly string dataDirectory;
+    private readonly string preservedDirectory;
     private readonly string versionDirectory;
     private readonly string runsDirectory;
     private readonly Action<string> report;
@@ -26,12 +28,13 @@ internal sealed class StatisticsStore
     internal string GameVersion { get; }
     internal string ModVersion { get; }
 
-    private sealed record StoreSnapshot(IReadOnlyList<RunRecord> Headers, IReadOnlyList<CombatRecord> Combats);
+    private sealed record StoreSnapshot(IReadOnlyList<RunRecord> Headers, IReadOnlyList<CombatRecord> Combats, IReadOnlySet<RunIdentity> InvalidImports, uint MaximumRunId);
 
     internal StatisticsStore(string dataDirectory, string gameVersion, string modVersion, Action<string> report)
     {
         this.dataDirectory = dataDirectory;
-        versionDirectory = Path.Combine(dataDirectory, "statistics-v1");
+        preservedDirectory = Path.Combine(dataDirectory, "statistics-v1");
+        versionDirectory = Path.Combine(dataDirectory, "statistics-v2");
         runsDirectory = Path.Combine(versionDirectory, "runs");
         GameVersion = gameVersion;
         ModVersion = modVersion;
@@ -45,24 +48,27 @@ internal sealed class StatisticsStore
             var snapshot = ReadStore(continued, strictHeaders: true);
             var prior = continued ? Match(snapshot, requested.Identity) : null;
             string id = prior?.RunId;
-            string priorId = prior?.PriorRunId;
+            var preservedIds = prior?.PreservedRunIds ?? Array.Empty<string>();
             if (!uint.TryParse(id, NumberStyles.None, CultureInfo.InvariantCulture, out uint number) || number == 0)
             {
-                priorId = id;
-                uint maximum = 0;
-                foreach (var header in snapshot.Headers)
-                    if (uint.TryParse(header.RunId, NumberStyles.None, CultureInfo.InvariantCulture, out uint recorded)) maximum = Math.Max(maximum, recorded);
-                foreach (string root in new[] { Path.Combine(dataDirectory, "runs"), runsDirectory })
+                if (id != null) preservedIds = Array.AsReadOnly(preservedIds.Append(id).Distinct(StringComparer.Ordinal).ToArray());
+                uint maximum = snapshot.MaximumRunId;
+                foreach (string root in new[] { Path.Combine(dataDirectory, "runs"), Path.Combine(preservedDirectory, "runs"), runsDirectory })
                     foreach (string directory in Directories(root))
                         if (uint.TryParse(Path.GetFileName(directory), NumberStyles.None, CultureInfo.InvariantCulture, out uint reserved)) maximum = Math.Max(maximum, reserved);
                 if (maximum == uint.MaxValue) { report("run IDs exhausted"); return null; }
                 id = (maximum + 1).ToString(CultureInfo.InvariantCulture);
             }
+            else if (id != number.ToString(CultureInfo.InvariantCulture))
+            {
+                preservedIds = Array.AsReadOnly(preservedIds.Append(id).Distinct(StringComparer.Ordinal).ToArray());
+                id = number.ToString(CultureInfo.InvariantCulture);
+            }
+            preservedIds = Array.AsReadOnly(preservedIds.Where(priorId => priorId != id).ToArray());
             return requested with
             {
                 RunId = id,
-                PriorRunId = priorId,
-                LegacyRunId = prior?.LegacyRunId,
+                PreservedRunIds = preservedIds,
                 GameVersion = GameVersion,
                 ModVersion = ModVersion,
                 Outcome = "active",
@@ -79,12 +85,12 @@ internal sealed class StatisticsStore
         try
         {
             uint maximum = 0;
-            foreach (string root in new[] { Path.Combine(dataDirectory, "runs"), runsDirectory })
+            foreach (string root in new[] { Path.Combine(dataDirectory, "runs"), Path.Combine(preservedDirectory, "runs"), runsDirectory })
                 foreach (string directory in Directories(root))
                 {
                     string runId = Path.GetFileName(directory);
                     bool numeric = uint.TryParse(runId, NumberStyles.None, CultureInfo.InvariantCulture, out uint number);
-                    if (!numeric && (root != runsDirectory || !Guid.TryParseExact(runId, "N", out _))) continue;
+                    if (!numeric && (root != Path.Combine(preservedDirectory, "runs") || !Guid.TryParseExact(runId, "N", out _))) continue;
                     string source = numeric ? Path.Combine(root, number.ToString(CultureInfo.InvariantCulture)) : directory;
                     foreach (string path in Files(source))
                     {
@@ -92,7 +98,7 @@ internal sealed class StatisticsStore
                         if (numeric) maximum = Math.Max(maximum, id);
                         else
                         {
-                            try { maximum = Math.Max(maximum, StatisticsJson.ParseCombat(Read(path), runId, id).Combat.CombatId); }
+                            try { maximum = Math.Max(maximum, StatisticsJson.ParseVersionOneCombat(Read(path), runId, id).Combat.CombatId); }
                             catch (Exception ex) when (RecordFailure(ex)) { report($"cannot read preserved combat identity: {ex.Message}"); }
                         }
                     }
@@ -107,7 +113,8 @@ internal sealed class StatisticsStore
         if (run.Outcome is not ("victory" or "defeat" or "abandoned")) return false;
         try
         {
-            if (!ReadStore(strictHeaders: true).Combats.Any(combat => MatchesStorage(combat.RunId, run))) return false;
+            foreach (var (root, version) in Stores) ReadHeaders(root, version, strictHeaders: true);
+            if (!ReadCombats(run).Any(combat => MatchesStorage(combat.RunId, run))) return false;
             string path = Path.Combine(versionDirectory, "runs.jsonl");
             string prior = File.Exists(path) ? Read(path) : "";
             if (prior.Length != 0 && !prior.EndsWith('\n')) prior += "\n";
@@ -141,8 +148,12 @@ internal sealed class StatisticsStore
         uint highest = 0;
         try
         {
-            var snapshot = ReadStore();
-            foreach (var record in snapshot.Combats)
+            var records = ReadCombats(run);
+            // GUID recordings reused native IDs after restart. Equal-key sorting
+            // depends on the full archive, including unrelated records.
+            if (records.Select(record => record.Combat.CombatId).Distinct().Count() != records.Count)
+                records = ReadStore().Combats.Where(record => MatchesStorage(record.RunId, run)).ToList();
+            foreach (var record in records)
             {
                 if (!Belongs(record, run)) continue;
                 highest = Math.Max(highest, record.Ordinal);
@@ -172,121 +183,174 @@ internal sealed class StatisticsStore
     private RunRecord Match(StoreSnapshot snapshot, RunIdentity identity)
     {
         if (identity == null) return null;
-        var candidates = snapshot.Headers.Where(header => header.Identity == identity).OrderBy(header => header.PriorRunId != null)
+        var candidates = snapshot.Headers.Where(header => header.Identity == identity)
             .Concat(snapshot.Combats.Reverse().Select(combat => combat.Run).Where(run => run?.Identity == identity)).ToArray();
         if (candidates.Length == 0) return null;
-        var links = candidates.SelectMany(run => new[]
-        {
-            (Prior: run.PriorRunId, Current: run.RunId),
-            (Prior: run.LegacyRunId?.ToString(CultureInfo.InvariantCulture), Current: run.RunId)
-        }).Where(link => link.Prior != null && link.Prior != link.Current);
-        var aliases = links.GroupBy(link => link.Prior, StringComparer.Ordinal).ToDictionary(group => group.Key, group => group.First().Current, StringComparer.Ordinal);
-        string Canonical(string id)
-        {
-            int remaining = aliases.Count;
-            while (aliases.TryGetValue(id, out string mapped))
-            {
-                if (remaining-- == 0) return null;
-                id = mapped;
-            }
-            return id;
-        }
-        string canonical = Canonical(candidates[0].RunId);
-        if (canonical == null || candidates.Any(run => Canonical(run.RunId) != canonical))
+        var recordedIds = candidates.Select(run => run.RunId).Distinct(StringComparer.Ordinal).ToArray();
+        var owners = candidates.Where(candidate => recordedIds.All(id => MatchesStorage(id, candidate)))
+            .DistinctBy(run => run.RunId).ToArray();
+        if (snapshot.InvalidImports.Contains(identity) || owners.Length != 1)
         {
             report("multiple profiler runs match the selected game run");
             return null;
         }
-        var selected = candidates[0];
-        var owner = candidates.First(run => run.RunId == canonical);
-        return selected with { RunId = canonical, PriorRunId = owner.PriorRunId, LegacyRunId = owner.LegacyRunId };
+        return candidates[0] with { RunId = owners[0].RunId, PreservedRunIds = owners[0].PreservedRunIds };
     }
 
     private static bool MatchesStorage(string id, RunRecord run)
-        => id == run.RunId || id == run.PriorRunId || id == run.LegacyRunId?.ToString(CultureInfo.InvariantCulture);
+        => id == run.RunId || run.PreservedRunIds.Contains(id, StringComparer.Ordinal);
 
     private static bool Belongs(CombatRecord combat, RunRecord run)
         => combat.Run != null && MatchesStorage(combat.RunId, run)
             && combat.Run.Identity != null && combat.Run.Identity == run.Identity;
 
+    private (string Root, int Version)[] Stores => new[] { (dataDirectory, 0), (preservedDirectory, 1), (versionDirectory, SchemaVersion) };
+
     private StoreSnapshot ReadStore(bool includeCombats = true, bool strictHeaders = false)
     {
         var headers = new List<RunRecord>();
         var combats = new List<CombatRecord>();
-        foreach (bool versioned in new[] { false, true })
+        var invalidImports = new HashSet<RunIdentity>();
+        uint maximum = 0;
+        foreach (var (root, version) in Stores)
         {
-            string root = versioned ? versionDirectory : dataDirectory;
-            string headerPath = Path.Combine(root, "runs.jsonl");
-            string[] lines = Array.Empty<string>();
-            try
-            {
-                if (File.Exists(headerPath) || Directory.Exists(headerPath)) lines = Read(headerPath).Split('\n', StringSplitOptions.RemoveEmptyEntries);
-            }
-            catch (Exception ex) when (RecordFailure(ex))
-            {
-                if (strictHeaders) throw;
-                report($"cannot read run headers: {ex.Message}");
-            }
-            foreach (string line in lines)
-            {
-                if (string.IsNullOrWhiteSpace(line)) continue;
-                try
-                {
-                    RunRecord header;
-                    if (versioned)
-                    {
-                        var node = JsonSerializer.Deserialize<RunRecord>(line, StatisticsJson.Options) ?? throw new InvalidDataException("Missing header");
-                        header = StatisticsJson.ParseRun(line, node.RunId);
-                    }
-                    else header = LegacyHeader(JsonSerializer.Deserialize<LegacyRun>(line, StatisticsJson.Options) ?? throw new InvalidDataException("Missing legacy header"));
-                    if (header.RunId != "0" && header.Outcome is "victory" or "defeat" or "abandoned") headers.Add(header);
-                }
-                catch (Exception ex) when (RecordFailure(ex)) { report($"cannot parse run header: {ex.Message}"); }
-            }
-            string[] directories;
-            try { directories = Directories(Path.Combine(root, "runs")); }
-            catch (Exception ex) when (RecordFailure(ex)) { report($"cannot list history: {ex.Message}"); directories = Array.Empty<string>(); }
-            foreach (string directory in directories)
-            {
-                string id = Path.GetFileName(directory);
-                bool numeric = uint.TryParse(id, NumberStyles.None, CultureInfo.InvariantCulture, out uint numericId);
-                string sourceDirectory = numeric ? Path.Combine(root, "runs", numericId.ToString(CultureInfo.InvariantCulture)) : directory;
-                if (numeric) id = numericId.ToString(CultureInfo.InvariantCulture);
-                RunRecord guidHeader = null;
-                if (!numeric)
-                {
-                    if (!versioned || !Guid.TryParseExact(id, "N", out _)) continue;
-                    try { guidHeader = StatisticsJson.ParseRun(Read(Path.Combine(directory, "run.json")), id); }
-                    catch (Exception ex) when (RecordFailure(ex)) { report($"cannot read preserved run: {ex.Message}"); continue; }
-                    if (guidHeader.Outcome is "victory" or "defeat" or "abandoned") headers.Add(guidHeader);
-                }
-                if (!includeCombats) continue;
-                string[] paths;
-                try { paths = Files(sourceDirectory); }
-                catch (Exception ex) when (RecordFailure(ex)) { report($"cannot list combats: {ex.Message}"); continue; }
-                foreach (string path in paths)
-                {
-                    if (!uint.TryParse(Path.GetFileNameWithoutExtension(path), NumberStyles.None, CultureInfo.InvariantCulture, out uint ordinal)) continue;
-                    try
-                    {
-                        string sourcePath = numeric ? Path.Combine(sourceDirectory, $"{ordinal}.json") : path;
-                        CombatRecord record;
-                        if (versioned)
-                        {
-                            record = StatisticsJson.ParseCombat(Read(sourcePath), id, ordinal);
-                            if (guidHeader != null) record = record with { Run = guidHeader with { Outcome = "", EndedAt = 0, Players = Array.Empty<PlayerSummary>() } };
-                        }
-                        else record = LegacyCombatRecord(Read(sourcePath), id, ordinal);
-                        if (numeric && (id == "0" ? record.Run != null : record.Run?.RunId != id)) throw new InvalidDataException("Combat run identity differs from directory");
-                        if (record.Run != null) record = record with { Run = record.Run with { Outcome = "", EndedAt = 0, Players = Array.Empty<PlayerSummary>() } };
-                        combats.Add(record);
-                    }
-                    catch (Exception ex) when (RecordFailure(ex)) { report($"cannot parse combat '{path}': {ex.Message}"); }
-                }
-            }
+            var sourceHeaders = ReadHeaders(root, version, strictHeaders);
+            var sourceCombats = ReadCombats(root, version, null, includeCombats, sourceHeaders);
+            foreach (var header in sourceHeaders)
+                if (uint.TryParse(header.RunId, NumberStyles.None, CultureInfo.InvariantCulture, out uint reserved)) maximum = Math.Max(maximum, reserved);
+            if (version == 1) NormalizeVersionOneStore(sourceHeaders, sourceCombats, invalidImports);
+            headers.AddRange(sourceHeaders);
+            combats.AddRange(sourceCombats);
         }
         combats.Sort((left, right) => left.Combat.CombatId.CompareTo(right.Combat.CombatId));
-        return new(headers, combats);
+        return new(headers, combats, invalidImports, maximum);
+    }
+
+    private static void NormalizeVersionOneStore(List<RunRecord> headers, List<CombatRecord> combats, HashSet<RunIdentity> invalid)
+    {
+        var ordered = headers.OrderBy(run => run.PreservedRunIds.Count != 0 && uint.TryParse(run.RunId, out _)).ToArray();
+        headers.Clear();
+        headers.AddRange(ordered);
+        var candidates = headers.Concat(combats.OrderByDescending(combat => combat.Combat.CombatId).Select(combat => combat.Run)).Where(run => run?.Identity != null);
+        var normalized = new Dictionary<(RunIdentity, string), (string Id, IReadOnlyList<string> Preserved)>();
+        foreach (var group in candidates.GroupBy(run => run.Identity))
+        {
+            var aliases = group.SelectMany(run => run.PreservedRunIds.Select(id => (Prior: id, Current: run.RunId)))
+                .Where(link => link.Prior != link.Current).GroupBy(link => link.Prior, StringComparer.Ordinal)
+                .ToDictionary(links => links.Key, links => links.First().Current, StringComparer.Ordinal);
+            string Canonical(string id)
+            {
+                int remaining = aliases.Count;
+                while (aliases.TryGetValue(id, out string mapped))
+                {
+                    if (remaining-- == 0) return null;
+                    id = mapped;
+                }
+                return id;
+            }
+            var components = group.GroupBy(run => Canonical(run.RunId)).ToArray();
+            if (components.Any(component => component.Key == null)) { invalid.Add(group.Key); continue; }
+            foreach (var component in components)
+            {
+                var preserved = Array.AsReadOnly(component.SelectMany(run => run.PreservedRunIds.Prepend(run.RunId))
+                    .Where(id => id != component.Key).Distinct(StringComparer.Ordinal).ToArray());
+                foreach (var run in component) normalized[(group.Key, run.RunId)] = (component.Key, preserved);
+            }
+        }
+        RunRecord Normalize(RunRecord run)
+            => run?.Identity != null && normalized.TryGetValue((run.Identity, run.RunId), out var value)
+                ? run with { RunId = value.Id, PreservedRunIds = value.Preserved } : run;
+        for (int i = 0; i < headers.Count; i++) headers[i] = Normalize(headers[i]);
+        for (int i = 0; i < combats.Count; i++) combats[i] = combats[i] with { Run = Normalize(combats[i].Run) };
+    }
+
+    private List<RunRecord> ReadHeaders(string root, int version, bool strictHeaders = false)
+    {
+        var headers = new List<RunRecord>();
+        string headerPath = Path.Combine(root, "runs.jsonl");
+        string[] lines = Array.Empty<string>();
+        try
+        {
+            if (File.Exists(headerPath) || Directory.Exists(headerPath)) lines = Read(headerPath).Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        }
+        catch (Exception ex) when (RecordFailure(ex))
+        {
+            if (strictHeaders) throw;
+            report($"cannot read run headers: {ex.Message}");
+        }
+        foreach (string line in lines)
+        {
+            if (string.IsNullOrWhiteSpace(line)) continue;
+            try
+            {
+                RunRecord header;
+                if (version != 0)
+                {
+                    header = version == 1 ? StatisticsJson.ParseVersionOneRun(line) : StatisticsJson.ParseRun(line);
+                }
+                else header = LegacyHeader(JsonSerializer.Deserialize<LegacyRun>(line, StatisticsJson.Options) ?? throw new InvalidDataException("Missing legacy header"));
+                if (header.RunId != "0" && header.Outcome is "victory" or "defeat" or "abandoned") headers.Add(header);
+            }
+            catch (Exception ex) when (RecordFailure(ex)) { report($"cannot parse run header: {ex.Message}"); }
+        }
+        return headers;
+    }
+
+    private List<CombatRecord> ReadCombats(RunRecord selected)
+    {
+        var combats = new List<CombatRecord>();
+        foreach (var (root, version) in Stores) combats.AddRange(ReadCombats(root, version, selected));
+        combats.Sort((left, right) => left.Combat.CombatId.CompareTo(right.Combat.CombatId));
+        return combats;
+    }
+
+    private List<CombatRecord> ReadCombats(string root, int version, RunRecord selected, bool includeCombats = true, List<RunRecord> headers = null)
+    {
+        var combats = new List<CombatRecord>();
+        string[] directories;
+        try { directories = Directories(Path.Combine(root, "runs")); }
+        catch (Exception ex) when (RecordFailure(ex)) { report($"cannot list history: {ex.Message}"); directories = Array.Empty<string>(); }
+        foreach (string directory in directories)
+        {
+            string id = Path.GetFileName(directory);
+            bool numeric = uint.TryParse(id, NumberStyles.None, CultureInfo.InvariantCulture, out uint numericId);
+            string sourceDirectory = numeric ? Path.Combine(root, "runs", numericId.ToString(CultureInfo.InvariantCulture)) : directory;
+            if (numeric) id = numericId.ToString(CultureInfo.InvariantCulture);
+            if (selected != null && !MatchesStorage(id, selected)) continue;
+            RunRecord guidHeader = null;
+            if (!numeric)
+            {
+                if (version != 1 || !Guid.TryParseExact(id, "N", out _)) continue;
+                try { guidHeader = StatisticsJson.ParseVersionOneRun(Read(Path.Combine(directory, "run.json")), id); }
+                catch (Exception ex) when (RecordFailure(ex)) { report($"cannot read preserved run: {ex.Message}"); continue; }
+                if (guidHeader.Outcome is "victory" or "defeat" or "abandoned") headers?.Add(guidHeader);
+            }
+            if (!includeCombats) continue;
+            string[] paths;
+            try { paths = Files(sourceDirectory); }
+            catch (Exception ex) when (RecordFailure(ex)) { report($"cannot list combats: {ex.Message}"); continue; }
+            foreach (string path in paths)
+            {
+                if (!uint.TryParse(Path.GetFileNameWithoutExtension(path), NumberStyles.None, CultureInfo.InvariantCulture, out uint ordinal)) continue;
+                try
+                {
+                    string sourcePath = numeric ? Path.Combine(sourceDirectory, $"{ordinal}.json") : path;
+                    CombatRecord record;
+                    if (version != 0)
+                    {
+                        string json = Read(sourcePath);
+                        record = version == 1 ? StatisticsJson.ParseVersionOneCombat(json, id, ordinal) : StatisticsJson.ParseCombat(json, id, ordinal);
+                        if (guidHeader != null) record = record with { Run = guidHeader with { Outcome = "", EndedAt = 0, Players = Array.Empty<PlayerSummary>() } };
+                    }
+                    else record = LegacyCombatRecord(Read(sourcePath), id, ordinal);
+                    if (numeric && (id == "0" ? record.Run != null : record.Run?.RunId != id)) throw new InvalidDataException("Combat run identity differs from directory");
+                    if (record.Run != null) record = record with { Run = record.Run with { Outcome = "", EndedAt = 0, Players = Array.Empty<PlayerSummary>() } };
+                    combats.Add(record);
+                }
+                catch (Exception ex) when (RecordFailure(ex)) { report($"cannot parse combat '{path}': {ex.Message}"); }
+            }
+        }
+        return combats;
     }
 
     private static RunRecord LegacyHeader(LegacyRun run)
@@ -349,7 +413,8 @@ internal sealed class StatisticsStore
 
     private string RunDirectory(string id)
     {
-        if (!uint.TryParse(id, NumberStyles.None, CultureInfo.InvariantCulture, out _)) throw new InvalidDataException("New records require a numeric run identity");
+        if (!uint.TryParse(id, NumberStyles.None, CultureInfo.InvariantCulture, out uint number) || id != number.ToString(CultureInfo.InvariantCulture))
+            throw new InvalidDataException("New records require a canonical numeric run identity");
         return Path.Combine(runsDirectory, id);
     }
 

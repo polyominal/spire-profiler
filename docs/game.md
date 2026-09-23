@@ -52,12 +52,13 @@ assumption first; `STS2_GAME_DIR` overrides.
   so mod data lives at the sibling `<exe dir>/mod_data/spire-profiler/`, outside
   the sweep: data files under `mods/` log ERRORs every boot as the scanner
   parses them as manifests (harmless, but they hide real manifest errors).
-- New statistics live under `statistics-v1/` inside that data directory. The
-  managed store reads legacy `runs.jsonl` and `runs/` files and earlier GUID
-  recordings without rewriting them. Missing historical coverage metadata stays
-  unknown. Finalized run headers append to `statistics-v1/runs.jsonl`; combat
-  and observation files use global combat IDs under the numeric run directory.
-  `SPIRE_PROFILER_DATA_DIR` overrides the data root.
+- New statistics live under `statistics-v2/` inside that data directory. The
+  managed store reads legacy `runs.jsonl` and `runs/` files and `statistics-v1/`
+  numeric and GUID recordings without rewriting them. Missing historical
+  coverage metadata stays unknown. Finalized run headers append to
+  `statistics-v2/runs.jsonl`; combat and observation files use global combat IDs
+  under the numeric run directory. `SPIRE_PROFILER_DATA_DIR` overrides the data
+  root.
 - `settings.save` keys are snake\_case; mod consent lives at
   `mod_settings.mods_enabled` (verified against a live settings.save) and is
   scoped per settings file.

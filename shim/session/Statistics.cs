@@ -243,8 +243,7 @@ internal sealed record RunRecord
     public string GameVersion { get; init; } = "";
     public string ModVersion { get; init; } = "";
     public string RunId { get; init; } = "";
-    public uint? LegacyRunId { get; init; }
-    public string PriorRunId { get; init; }
+    public IReadOnlyList<string> PreservedRunIds { get; init; } = Array.Empty<string>();
     public int Profile { get; init; } = -1;
     public string Seed { get; init; } = "";
     public long StartedAt { get; init; }
