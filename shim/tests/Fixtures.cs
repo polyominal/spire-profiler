@@ -461,8 +461,10 @@ internal sealed class FakeBackend : AttributionBackend
         if (secondAmount < 0) return 0;
         if (firstAmount == 0) return second;
         if (secondAmount == 0) return first;
-        var a = Entries(Read(first));
-        var b = Entries(Read(second));
+        var firstSource = Read(first); var secondSource = Read(second);
+        if (firstSource.Epoch != epoch || secondSource.Epoch != epoch) return 0;
+        var a = Entries(firstSource);
+        var b = Entries(secondSource);
         BigInteger aTotal = a.Aggregate(BigInteger.Zero, (sum, entry) => sum + entry.Weight);
         BigInteger bTotal = b.Aggregate(BigInteger.Zero, (sum, entry) => sum + entry.Weight);
         var weights = new SortedDictionary<ulong, BigInteger>();
@@ -985,6 +987,12 @@ internal static partial class ManagedFixtures
         int staleCalls = 0;
         CaptureRuntime.WithSource(CaptureRuntime.Epoch, A, _ => ++staleCalls);
         Check(staleCalls == 0, "An opaque handle from a previous combat never reaches the consumer");
+        var selected = TemporalPowerCapture.AccumulateSources(CaptureRuntime.Epoch, SourceSnapshot.Unavailable, 0, A, 3);
+        Check(ReferenceEquals(selected, A), "A zero-weight mixture preserves the selected stale source identity");
+        CaptureRuntime.WithSource(CaptureRuntime.Epoch, selected, _ => ++staleCalls);
+        Check(staleCalls == 0, "The original stale selected source remains skipped rather than becoming Unknown credit");
+        Check(TemporalPowerCapture.AccumulateSources(CaptureRuntime.Epoch, A, 2, SourceSnapshot.Unavailable, 3).Handle == 0,
+            "A positive mixture validates every consumed source epoch");
     }
     private static void PowerMutations()
     {

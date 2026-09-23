@@ -24,7 +24,6 @@ const KIND_MASK: u64 = (1 << KIND_BITS) - 1;
 const _: () = assert!(KIND_BITS + PAYLOAD_BITS == 32);
 const _: () = assert!(caps::COMBAT_CARDS <= PAYLOAD_MAX as usize);
 const _: () = assert!(caps::SOURCE_DESTINATIONS == 128);
-const _: () = assert!(caps::SOURCE_HANDLES <= PAYLOAD_MAX as usize);
 const _: () = assert!(caps::POWER_GRANTS_TOTAL >= caps::POWER_INSTANCES);
 const _: () = assert!(caps::POWER_GRANTS_PER_INSTANCE <= caps::POWER_GRANTS_TOTAL);
 const _: () = assert!(caps::DAMAGE_RESULTS == 2);
@@ -469,7 +468,7 @@ impl State {
             }
             .encode();
         }
-        if arena.entries.len() == caps::SOURCE_HANDLES {
+        if arena.entries.len() == PAYLOAD_MAX as usize {
             arena.diagnostics.report(SourceFailure::Capacity);
             return 0;
         }
@@ -496,26 +495,20 @@ impl State {
             let added = after.checked_sub(before).ok_or(SourceFailure::Arithmetic)?;
             let before = before.max(0) as u32;
             let added = u32::try_from(added).map_err(|_| SourceFailure::Packet)?;
-            let first = self.source_snapshot(epoch, first)?;
-            let second = self.source_snapshot(epoch, second)?;
             if before == 0 {
                 return Ok(second);
             }
             if added == 0 {
                 return Ok(first);
             }
+            let first = self.source_snapshot(epoch, first)?;
+            let second = self.source_snapshot(epoch, second)?;
             let rows = self.current.as_ref().map_or(0, |combat| combat.cards.len());
-            SourceSnapshot::mixture(
-                epoch,
-                rows,
-                &[
-                    PowerGrant::new(before, first),
-                    PowerGrant::new(added, second),
-                ],
-            )
+            SourceSnapshot::combine(epoch, rows, first, before, second, added)
+                .map(|source| self.source_export(source))
         })();
         match result {
-            Ok(source) => self.source_export(source),
+            Ok(source) => source,
             Err(failure) => {
                 self.sources.diagnostics.report(failure);
                 0

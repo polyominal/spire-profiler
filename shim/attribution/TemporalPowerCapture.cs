@@ -92,12 +92,12 @@ internal static class TemporalPowerCapture
     }
     internal static SourceSnapshot AccumulateSources(CaptureEpoch epoch, SourceSnapshot first, int before, SourceSnapshot second, int after)
     {
-        if ((first.Epoch != 0 && first.Epoch != epoch.Sequence) || (second.Epoch != 0 && second.Epoch != epoch.Sequence)) return SourceSnapshot.Unavailable;
         try
         {
             if (!CaptureRuntime.Valid(epoch)) return SourceSnapshot.Unavailable;
             ulong handle = CaptureRuntime.Backend.SourceAccumulate(epoch.Sequence, first.Handle, before, second.Handle, after);
-            return handle == 0 ? SourceSnapshot.Unavailable : new SourceSnapshot(epoch.Sequence, handle);
+            return handle == 0 ? SourceSnapshot.Unavailable : handle == first.Handle ? first
+                : handle == second.Handle ? second : new SourceSnapshot(epoch.Sequence, handle);
         }
         catch (Exception ex) { CaptureRuntime.Fail("temporal-mixture", ex); return SourceSnapshot.Unavailable; }
     }

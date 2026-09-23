@@ -47,6 +47,43 @@ fn normalization_merges_roots_without_losing_small_suppliers() {
 }
 
 #[test]
+fn temporal_pairs_preserve_common_units_order_and_checked_intermediates() {
+    for a in 1..=12_u128 {
+        for b in 1..=12_u128 {
+            let first = source(&[(2, a as u64), (0, 1)]);
+            let second = source(&[(1, b as u64), (2, 1)]);
+            let actual = SourceSnapshot::combine(epoch(), 3, first, 7, second, 11)
+                .expect("small temporal mixtures fit");
+            let mut expected = [
+                7 * a * (b + 1) + 11 * (a + 1),
+                7 * (b + 1),
+                11 * b * (a + 1),
+            ];
+            let divisor = expected.iter().copied().fold(0, SourceSnapshot::gcd);
+            expected.iter_mut().for_each(|weight| *weight /= divisor);
+            assert_eq!(
+                actual
+                    .shares
+                    .iter()
+                    .map(|share| (share.destination, u128::from(share.weight)))
+                    .collect::<Vec<_>>(),
+                [
+                    (Destination::Row(2), expected[0]),
+                    (Destination::Row(0), expected[1]),
+                    (Destination::Row(1), expected[2])
+                ]
+            );
+        }
+    }
+    let first = source(&[(0, u64::MAX - 1), (1, 1)]);
+    let second = source(&[(0, u64::MAX - 2), (1, 1)]);
+    assert_eq!(
+        SourceSnapshot::combine(epoch(), 2, first, i32::MAX as u32, second, 1),
+        Err(SourceFailure::Arithmetic)
+    );
+}
+
+#[test]
 fn proportional_allocation_matches_naive_unit_threshold_model() {
     for a in 0..=16_u64 {
         for b in 0..=16_u64 {

@@ -379,7 +379,7 @@ fn producer_segments_preserve_wire_policy_and_credited_rows() {
 }
 
 #[test]
-fn interned_sources_are_immutable_bounded_and_expire_with_the_combat() {
+fn interned_sources_preserve_lifetime_mixtures_and_expire_with_the_combat() {
     let mut state = fixture();
     let a = card(&mut state, "A", 0);
     let b = card(&mut state, "B", 1);
@@ -395,11 +395,13 @@ fn interned_sources_are_immutable_bounded_and_expire_with_the_combat() {
     assert_eq!(state.source_accumulate(7, a, 2, b, 1), 0);
     assert_eq!(state.source_accumulate(7, a, i32::MIN, b, i32::MAX), 0);
     assert_eq!(state.sources.entries.len(), prior);
-    for index in 1..=caps::SOURCE_HANDLES {
-        state.source_accumulate(7, a, index as i32, b, index as i32 + 1);
+    for index in 1..=9000 {
+        assert_ne!(state.source_accumulate(7, a, index, b, index + 1), 0);
     }
-    assert_eq!(state.sources.entries.len(), caps::SOURCE_HANDLES);
-    assert_eq!(state.source_accumulate(7, a, i32::MAX - 1, b, i32::MAX), 0);
+    assert!(state.sources.entries.len() > 9000);
+    assert_ne!(state.source_accumulate(7, a, i32::MAX - 1, b, i32::MAX), 0);
+    assert_eq!(state.source_accumulate(7, u64::MAX, 0, b, 3), b);
+    assert_eq!(state.source_accumulate(7, a, 3, u64::MAX, 3), a);
     hit(&mut state, mixed, 5);
     assert_eq!(
         state.current.as_ref().expect("fixture exists").cards[0].damage_dealt,
@@ -407,6 +409,10 @@ fn interned_sources_are_immutable_bounded_and_expire_with_the_combat() {
     );
     assert_eq!(state.combat_started(8, "NEXT", "normal", 1000, 1), 8);
     assert_eq!(state.source_count(mixed), -1);
+    assert_eq!(state.source_accumulate(8, 0, 0, mixed, 3), mixed);
+    assert_eq!(state.source_accumulate(8, mixed, 3, 0, 3), mixed);
+    assert_eq!(state.source_accumulate(8, mixed, 3, 0, 4), 0);
+    assert_eq!(state.source_accumulate(8, 0, 0, 0, 0), 0);
     assert_eq!(state.combat_started(7, "OLD", "normal", 1000, 1), 0);
 }
 

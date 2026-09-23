@@ -154,6 +154,53 @@ impl SourceSnapshot {
         Self::normalized(epoch, rows, entries)
     }
 
+    pub(super) fn combine(
+        epoch: CombatEpoch,
+        rows: usize,
+        first: Self,
+        first_amount: u32,
+        second: Self,
+        second_amount: u32,
+    ) -> Result<Self, SourceFailure> {
+        let first_total: u128 = first
+            .shares
+            .iter()
+            .map(|share| u128::from(share.weight))
+            .sum();
+        let second_total: u128 = second
+            .shares
+            .iter()
+            .map(|share| u128::from(share.weight))
+            .sum();
+        let divisor = Self::gcd(first_total, second_total);
+        let mut entries: Vec<(Destination, u128)> = Vec::new();
+        for (source, amount, scale) in [
+            (first, first_amount, second_total / divisor),
+            (second, second_amount, first_total / divisor),
+        ] {
+            for share in source.shares.iter() {
+                let weight = u128::from(share.weight)
+                    .checked_mul(u128::from(amount))
+                    .and_then(|weight| weight.checked_mul(scale))
+                    .ok_or(SourceFailure::Arithmetic)?;
+                if let Some((_, existing)) = entries
+                    .iter_mut()
+                    .find(|(key, _)| *key == share.destination)
+                {
+                    *existing = existing
+                        .checked_add(weight)
+                        .ok_or(SourceFailure::Arithmetic)?;
+                } else {
+                    if entries.len() == caps::SOURCE_DESTINATIONS {
+                        return Err(SourceFailure::Capacity);
+                    }
+                    entries.push((share.destination, weight));
+                }
+            }
+        }
+        Self::normalized(epoch, rows, entries)
+    }
+
     pub(super) fn prefix(&self) -> SourcePrefix {
         SourcePrefix {
             source: self.clone(),

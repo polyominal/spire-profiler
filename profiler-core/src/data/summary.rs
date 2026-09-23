@@ -193,7 +193,7 @@ mod tests {
                 state.capture_failed("runtime-0");
             }
             if source {
-                assert_eq!(state.source_accumulate(1, u64::MAX, 1, 0, 1), 0);
+                assert_eq!(state.source_accumulate(1, u64::MAX, 1, 0, 2), 0);
             }
             if rows {
                 for index in 0..caps::COMBAT_CARDS {
@@ -240,7 +240,7 @@ mod tests {
         let mut state = State::default();
         assert_eq!(state.combat_started(10, "ONE", "normal", 1, 1), 10);
         state.capture_failed("capture");
-        assert_eq!(state.source_accumulate(10, u64::MAX, 1, 0, 1), 0);
+        assert_eq!(state.source_accumulate(10, u64::MAX, 1, 0, 2), 0);
         assert_eq!(state.combat_ended(10), 1);
         let summary: serde_json::Value =
             serde_json::from_str(&state.snapshot()).expect("summary parses");

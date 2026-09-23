@@ -199,8 +199,6 @@ impl State {
 }
 
 pub mod caps {
-    /// Distinct immutable source mixtures retained until the combat ends.
-    pub const SOURCE_HANDLES: usize = 8192;
     /// Distinct failure categories, with overflow represented by a fixed marker.
     pub const COVERAGE_REASONS: usize = 32;
     /// Distinct credited roots inherited by one effect.
