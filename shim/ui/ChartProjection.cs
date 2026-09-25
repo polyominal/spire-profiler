@@ -14,7 +14,7 @@ internal sealed record ChartRow(StatRow Source, ChartSection Section, int Flags,
     internal bool SelfDamage => (Flags & 2) != 0;
     internal bool SoloSelf => (Flags & 4) != 0;
 }
-internal sealed record ChartMeta(uint Turns = 0, uint Plays = 0, uint Combats = 0, long TotalDamage = 0, long DamageTaken = 0, int DpsX10 = 0, string Encounter = "");
+internal sealed record ChartMeta(uint Turns = 0, uint Plays = 0, uint Combats = 0, long TotalDamage = 0, long DamageTaken = 0, int DpsX10 = 0, string Encounter = "", CaptureQuality Quality = CaptureQuality.Complete);
 internal sealed record DetailStat(string Label, string Value, UiColor Color);
 internal sealed record RowDetail(string Title, IReadOnlyList<DetailStat> Stats)
 {
@@ -88,7 +88,8 @@ internal static class ChartProjection
         long damage = cards.Sum(card => card.DamageDealt);
         uint plays = tab == UiTab.Combat ? view.Plays : (uint)cards.Sum(card => (long)card.Plays);
         return new(view.Turns, plays, view.Combats, damage, view.DamageReceived,
-            view.Turns == 0 ? 0 : (int)((Int128)damage * 10 / view.Turns), tab == UiTab.Combat ? TruncateBytes(view.Title, 64) : "");
+            view.Turns == 0 ? 0 : (int)((Int128)damage * 10 / view.Turns), tab == UiTab.Combat ? TruncateBytes(view.Title, 64) : "",
+            view.Coverage.Quality);
     }
 
     internal static string Footer(SummaryView view, UiTab tab)

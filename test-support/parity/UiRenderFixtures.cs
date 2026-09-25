@@ -70,6 +70,7 @@ internal static class UiRenderFixtures
                 viewport.AddChild(panel.Backdrop);
                 viewport.AddChild(panel.Root);
                 var view = fixture["view"]?.Deserialize<SummaryView>(InputJson);
+                if (view != null) view = view with { Coverage = CoverageSummary.Healthy };
                 panel.Show();
                 panel.Refresh(1, view, view);
                 if (fixture["tab"].GetValue<string>() == "Run") panel.SelectTab(UiTab.Run);

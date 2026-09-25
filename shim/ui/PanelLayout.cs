@@ -139,6 +139,7 @@ internal sealed class PanelLayout
             }
             sink.Text(content.X, y + 26, 24, UiPalette.Cream, MetaLine(tab, meta), TextRole.Title, align: TextAlign.LeftClipped, width: content.W);
             y += 34;
+            y = sink.CoverageWarning(meta.Quality, content.X, y, content.W);
         }
         layout.HeaderBottom = y;
         sink = new CommandSink(layout.Body);
@@ -257,6 +258,7 @@ internal sealed class PanelLayout
             }
             header.Text(content.X, y + 26, 24, UiPalette.Cream, MetaLine(UiTab.Run, meta), TextRole.Title, align: TextAlign.LeftClipped, width: content.W);
             y += 40;
+            y = header.CoverageWarning(meta.Quality, content.X, y, content.W);
             layout.HeaderBottom = y;
             var chart = Chart(UiTab.Run, rows, meta, "", hover, skipChrome: true, flat: flat, width: width, gutter: gutter);
             foreach (var command in chart.Body)
@@ -324,4 +326,12 @@ internal sealed class CommandSink
         if (text.Length != 0) _commands.Add(new TextCommand(x, y, size, color, role, effect, align, width, text));
     }
     internal void Title(float x, float y, string text) => Text(x, y, 32, UiPalette.Gold, text, TextRole.Title, TextEffect.Outline);
+    internal float CoverageWarning(CaptureQuality quality, float x, float y, float width)
+    {
+        if (quality == CaptureQuality.Complete) return y;
+        string warning = quality == CaptureQuality.Partial
+            ? "Incomplete statistics: totals may omit activity." : "Capture quality unknown: totals are unverified.";
+        Text(x, y + 22, 20, UiPalette.Gold, warning, align: TextAlign.LeftClipped, width: width);
+        return y + 30;
+    }
 }

@@ -79,6 +79,36 @@ internal static class PanelFixtures
         if (!ranked.Select(row => row.Name).SequenceEqual(expectedNames)
             || ranked[0].Value != 20 || ranked[1].Value != 50 || ranked[2].Value != -49)
             throw new InvalidOperationException("Defense scaling must retain the existing net-value ranking and separate row labels");
+        var healthy = new SummaryView { Coverage = CoverageSummary.Healthy, Cards = cards };
+        foreach (var coverage in new[] { healthy.Coverage.WithFailure("snapshot-read-failed"), CoverageSummary.Unknown })
+        {
+            var uncertain = healthy with { Coverage = coverage };
+            string warning = coverage.Quality == CaptureQuality.Partial
+                ? "Incomplete statistics: totals may omit activity." : "Capture quality unknown: totals are unverified.";
+            foreach (var tab in new[] { UiTab.Combat, UiTab.Run })
+            {
+                var completeLayout = PanelLayout.Chart(tab, rows, ChartProjection.Meta(healthy, tab), "");
+                var uncertainLayout = PanelLayout.Chart(tab, rows, ChartProjection.Meta(uncertain, tab), "");
+                CheckWarning(completeLayout, uncertainLayout, warning);
+            }
+            CheckWarning(
+                PanelLayout.History(healthy, rows, ChartProjection.Meta(healthy, UiTab.Run), Array.Empty<AvatarFact>()),
+                PanelLayout.History(uncertain, rows, ChartProjection.Meta(uncertain, UiTab.Run), Array.Empty<AvatarFact>()), warning);
+        }
+        var empty = healthy with { Cards = Array.Empty<StatRow>(), Coverage = healthy.Coverage.WithFailure("snapshot-read-failed") };
+        var emptyLayout = PanelLayout.Chart(UiTab.Combat, Array.Empty<ChartRow>(), ChartProjection.Meta(empty, UiTab.Combat), "");
+        if (!emptyLayout.Header.OfType<TextCommand>().Any(text => text.Text.StartsWith("Incomplete statistics:", StringComparison.Ordinal)))
+            throw new InvalidOperationException("A rejected empty snapshot must not look like a trustworthy zero-activity combat");
         Console.WriteLine("MANAGED PANEL PROJECTION FIXTURES PASS");
+    }
+
+    private static void CheckWarning(PanelLayout complete, PanelLayout partial, string expected)
+    {
+        var warning = partial.Header.OfType<TextCommand>().Single(text => text.Text == expected);
+        if (complete.Header.OfType<TextCommand>().Any(text => text.Text == warning.Text)
+            || warning.Y >= partial.HeaderBottom || partial.HeaderBottom <= complete.HeaderBottom
+            || partial.Body.OfType<RectCommand>().First().Y < partial.HeaderBottom
+            || partial.Height - complete.Height != partial.HeaderBottom - complete.HeaderBottom)
+            throw new InvalidOperationException("Incomplete capture must remain visible in the fixed header without overlapping or hiding chart rows");
     }
 }

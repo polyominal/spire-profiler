@@ -35,6 +35,10 @@ production implementation.
 - Host tests exercise portrait-cache replacement across more than eight paths
   and verify the resulting portrait filters. Callback and async-lifetime tests
   replace the original duplicate-callback and receiver-global staging behavior.
+- Coverage notices have independent managed layout and session fixtures. Partial
+  and unknown capture quality add a fixed-header warning in combat, run, and
+  history views. Original UI inputs have no coverage field; their adapters
+  explicitly supply healthy coverage to compare unchanged charts.
 
 The comparison includes ordered drawing commands, strings, colors, typography,
 alignment, textures, row and avatar hitboxes, metadata, tooltip lines, and

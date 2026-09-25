@@ -55,6 +55,7 @@ internal static class UiParityFixtures
         var tab = Enum.Parse<UiTab>(Text(input, "tab"));
         var view = new SummaryView
         {
+            Coverage = CoverageSummary.Healthy,
             Cards = cards,
             Title = Text(input, "encounter"),
             Turns = (uint)Number(input, tab == UiTab.Run ? "run_turns" : "turns"),
@@ -80,6 +81,7 @@ internal static class UiParityFixtures
         var cards = selected == null ? allCards : Cards(selected["cards"]);
         var view = new SummaryView
         {
+            Coverage = CoverageSummary.Healthy,
             Cards = cards,
             Title = "Run Summary",
             Ascension = (int)Number(input, "ascension"),

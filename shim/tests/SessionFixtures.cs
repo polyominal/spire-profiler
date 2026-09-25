@@ -36,6 +36,9 @@ internal static class SessionFixtures
             NativeOstySacrifice(Path.Combine(scratch, "osty-sacrifice"));
             ProfilerNative.Dispose();
             ProfilerNative.Load(nativeLibrary);
+            IncompleteCombat(Path.Combine(scratch, "incomplete"));
+            ProfilerNative.Dispose();
+            ProfilerNative.Load(nativeLibrary);
             NativeBlockBatches(Path.Combine(scratch, "block-batches"));
             ProfilerNative.Dispose();
             ProfilerNative.Load(nativeLibrary);
@@ -599,6 +602,34 @@ internal static class SessionFixtures
         ProfilerSession.SelectHistory(repeated.Seed, repeated.StartedAt, repeated.Profile);
         Check(ProfilerSession.SelectedHistory == null,
             "Separately recorded fresh attempts with the same game identity remain ambiguous in history");
+    }
+
+    private static void IncompleteCombat(string directory)
+    {
+        var run = Header("INCOMPLETE", 1450);
+        ProfilerSession.Initialize(directory, "g", "m", _ => { });
+        ProfilerSession.StartRun(run, false);
+        ulong epoch = ProfilerSession.StartCombat("MISSING", "Normal");
+        ProfilerSession.ReportFailure("snapshot-read-failed");
+        Check(ProfilerSession.EndCombat(epoch) == 1 && ProfilerSession.CurrentCombat.Cards.Count == 0
+            && ChartProjection.Meta(ProfilerSession.CurrentCombat, UiTab.Combat).Quality == CaptureQuality.Partial,
+            "Zero recorded activity must retain the capture failure for combat presentation");
+        epoch = ProfilerSession.StartCombat("HEALTHY", "Normal");
+        ObserveDamage(epoch, 9);
+        Check(ProfilerSession.EndCombat(epoch) == 1 && ProfilerSession.CurrentCombat.Coverage.Complete
+            && ProfilerSession.CurrentRun.Cards.Single().DamageDealt == 9 && ProfilerSession.CurrentRun.Combats == 2
+            && ChartProjection.Meta(ProfilerSession.CurrentRun, UiTab.Run).Quality == CaptureQuality.Partial,
+            "A healthy later combat cannot erase a run's earlier missing activity");
+        ProfilerSession.EndRun(0);
+        ProfilerSession.Suspend();
+        ProfilerSession.StartRun(run, true);
+        Check(ChartProjection.Meta(ProfilerSession.CurrentRun, UiTab.Run).Quality == CaptureQuality.Partial,
+            "Continuation must restore the incomplete run warning from stored coverage");
+        ProfilerSession.SelectHistory(run.Seed, run.StartedAt, run.Profile);
+        Check(ChartProjection.Meta(ProfilerSession.SelectedHistory, UiTab.Run).Quality == CaptureQuality.Partial
+            && ProfilerSession.SelectedHistory.Coverage.Reasons.Contains("snapshot-read-failed"),
+            "History must warn about the same incomplete combat while retaining available totals");
+        ProfilerSession.Suspend();
     }
 
     private static void FailedWriteResume(string directory)
