@@ -277,6 +277,7 @@ impl State {
 }
 
 mod allocation;
+mod audit;
 mod damage;
 mod play;
 mod pools;

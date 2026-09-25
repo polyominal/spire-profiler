@@ -38,6 +38,7 @@ internal static class ProfilerNative
     private static NativeEngineDestroy _combat_discard;
     private static NativeRevision _revision;
     private static NativeSnapshot _snapshot;
+    private static NativeSnapshot _audit_snapshot;
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int NativeRecordingBegin(ulong engine);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -183,6 +184,7 @@ internal static class ProfilerNative
                     _combat_discard,
                     _revision,
                     _snapshot,
+                    _audit_snapshot,
                     _source_capture,
                     _source_release,
                     _power_attached,
@@ -230,6 +232,7 @@ internal static class ProfilerNative
                     GetExport<NativeEngineDestroy>(lib, "spire_profiler_combat_discard"),
                     GetExport<NativeRevision>(lib, "spire_profiler_revision"),
                     GetExport<NativeSnapshot>(lib, "spire_profiler_snapshot"),
+                    GetExport<NativeSnapshot>(lib, "spire_profiler_audit_snapshot"),
                     GetExport<NativeSourceCapture>(lib, "spire_profiler_source_capture"),
                     GetExport<NativeSourceRelease>(lib, "spire_profiler_source_release"),
                     GetExport<NativePowerAttached>(lib, "spire_profiler_power_attached"),
@@ -311,6 +314,7 @@ internal static class ProfilerNative
     internal static void CombatDiscard() { if (engine != 0) _combat_discard(engine); }
     internal static ulong Revision => engine == 0 ? 0 : _revision(engine);
     internal static string Snapshot() => ReadJson(_snapshot, engine);
+    internal static string AuditSnapshot() => ReadJson(_audit_snapshot, engine);
     internal static bool RecordingBegin() => engine != 0 && _recording_begin(engine) == 1;
     internal static string Recording() => ReadJson(_recording, engine);
     internal static string Replay(string recording)

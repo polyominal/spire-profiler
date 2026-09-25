@@ -80,13 +80,6 @@ impl State {
         let Some(combat) = self.current.as_ref() else {
             return "null".into();
         };
-        let mut coverage = self.coverage.clone();
-        self.sources.append_coverage(&mut coverage);
-        if combat.row_capacity_logged {
-            coverage.complete = false;
-            coverage.failures = coverage.failures.saturating_add(1);
-            coverage.add_reason("row-capacity");
-        }
         let summary = Summary {
             policy_version: POLICY_VERSION,
             combat_id: combat.seq,
@@ -105,10 +98,21 @@ impl State {
             block_total: combat.block_total,
             potions_used: combat.potions_used,
             cards: &combat.cards,
-            coverage,
+            coverage: self.snapshot_coverage(combat),
         };
         serde_json::to_string(&summary)
             .expect("snapshot contains only serializable integers and strings")
+    }
+
+    pub(super) fn snapshot_coverage(&self, combat: &Combat) -> Coverage {
+        let mut coverage = self.coverage.clone();
+        self.sources.append_coverage(&mut coverage);
+        if combat.row_capacity_logged {
+            coverage.complete = false;
+            coverage.failures = coverage.failures.saturating_add(1);
+            coverage.add_reason("row-capacity");
+        }
+        coverage
     }
 }
 
