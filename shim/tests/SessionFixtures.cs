@@ -107,6 +107,33 @@ internal static class SessionFixtures
             document["cards"][0][field] = -1;
             Reject(() => StatisticsJson.ParseNative(document.ToJsonString()), "Only effective defense permits negative accounting: " + field);
         }
+        var signed = valid.DeepClone();
+        signed["cards"] = JsonNode.Parse("""
+            [{"id":"MINIMUM","block_gained":9,"block_effective":-9223372036854775807,"self_damage":1},
+             {"id":"OTHER","block_effective":2}]
+            """);
+        var signedCombat = StatisticsJson.ParseNative(signed.ToJsonString());
+        var signedRows = ChartProjection.Rows(signedCombat.Cards);
+        Check(signedRows.Count == 2 && signedRows[0].Name == "MINIMUM" && signedRows[0].Value == long.MinValue
+            && signedRows[0].SegMilli[(int)ChartSegment.SelfDamage] == 500 && signedRows[1].Value == 2,
+            "The full accepted signed domain must rank by magnitude without overflowing and retain drawable segment scaling");
+        var signedLayout = PanelLayout.Chart(UiTab.Combat, signedRows, new(), "");
+        Check(signedLayout.Body.OfType<TextCommand>().Any(text => text.Text == "-9223372036854775808")
+            && ChartProjection.Detail(signedRows, 0, signedCombat.Cards).Stats.Any(stat => stat.Label == "self dmg" && stat.Value == "1"),
+            "Minimum signed defense must remain displayable in chart labels and source details");
+        foreach (long credit in new[] { 2_147_484L, long.MaxValue })
+        {
+            signed["cards"][0]["block_effective"] = credit;
+            signed["cards"][0]["self_damage"] = 0;
+            signed["cards"][1]["block_effective"] = 1 - credit;
+            signedCombat = StatisticsJson.ParseNative(signed.ToJsonString());
+            signedRows = ChartProjection.Rows(signedCombat.Cards);
+            Check(signedRows.Count == 1 && signedRows[0].ShareX10 == (Int128)credit * 1000,
+                "Signed defense cancellation must preserve percentages beyond the int and long domains");
+            string expectedLabel = credit == long.MaxValue ? "9223372036854775807  (922337203685477580700.0%)" : "2147484  (214748400.0%)";
+            Check(PanelLayout.Chart(UiTab.Combat, signedRows, new(), "").Body.OfType<TextCommand>().Any(text => text.Text == expectedLabel),
+                "Large signed-defense percentages must display their actual magnitude without wrapping or clamping");
+        }
         var huge = new SummaryView
         {
             Cards = new[] { new StatRow { Id = "A", DamageDealt = long.MaxValue, DmgDirect = long.MaxValue } },
