@@ -11,7 +11,7 @@ using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 
 namespace SpireProfiler;
 
-internal sealed record PendingPower(CaptureEpoch Epoch, object Power, object Target, SourceSnapshot Source)
+internal sealed record PendingPower(CaptureEpoch Epoch, object Power, object Target, SourceSnapshot Source, ulong AuditAction = 0)
 {
     internal static readonly PendingPower Barrier = new(default, null, null, SourceSnapshot.Unavailable);
 }
@@ -19,6 +19,7 @@ internal enum MutationOperation { Attachment, AmountChange, Removal }
 internal abstract record MutationState
 {
     private MutationState() { }
+    internal AuditMutation Audit { get; init; }
     internal static readonly MutationState Inactive = new Idle();
     private sealed record Idle : MutationState;
     internal abstract record Tracked(CaptureEpoch Epoch, IdentityMetadata Metadata) : MutationState;
@@ -34,22 +35,24 @@ internal static class ProvenanceCapture
     internal static void CommandPrefix(MethodBase __originalMethod, object[] __args, out PendingPower __state)
     {
         __state = Pending;
-        Pending = PendingPower.Barrier;
+        ulong audit = PoisonAudit.Attempt(__originalMethod, __args);
+        Pending = audit == 0 ? PendingPower.Barrier : PendingPower.Barrier with { AuditAction = audit };
         try
         {
             var epoch = CaptureRuntime.EntryEpoch(__state.Epoch);
-            Pending = PendingPower.Barrier with { Epoch = epoch };
+            Pending = PendingPower.Barrier with { Epoch = epoch, AuditAction = audit };
             if (!CaptureRuntime.Valid(epoch)) return;
             bool apply = __originalMethod.Name == "Apply";
             object power = __args[1], target = apply ? __args[2] : null, card = __args[apply ? 5 : 4];
-            Pending = new(epoch, power, target, FlowCapture.Supplied(card, epoch));
+            Pending = new(epoch, power, target, FlowCapture.Supplied(card, epoch), audit);
         }
         catch (Exception ex) { CaptureRuntime.Fail("power-command", ex); }
     }
     internal static void CommandFinalizer(PendingPower __state) { if (__state != null) Pending = __state; }
     internal static void MutationPrefix(object __instance, MethodBase __originalMethod, object[] __args, out MutationState __state)
     {
-        __state = MutationState.Inactive;
+        var audit = PoisonAudit.BeforeMutation(__instance, __originalMethod, __args);
+        __state = audit == null ? MutationState.Inactive : MutationState.Inactive with { Audit = audit };
         try
         {
             var epoch = CaptureRuntime.EntryEpoch();
@@ -65,12 +68,12 @@ internal static class ProvenanceCapture
             object power = amount ? __instance : __args[0];
             var metadata = IdentityCapture.Get(power, epoch);
             if (metadata == null) return;
-            __state = new MutationState.ObservationFailed(epoch, metadata);
+            __state = new MutationState.ObservationFailed(epoch, metadata) { Audit = audit };
             var before = CaptureRuntime.Backend.ObservePower(power, amount ? null : __instance);
-            __state = new MutationState.Observed(epoch, metadata, operation, before, SourceSnapshot.Unavailable, metadata.Dirty);
+            __state = new MutationState.Observed(epoch, metadata, operation, before, SourceSnapshot.Unavailable, metadata.Dirty) { Audit = audit };
             var source = operation == MutationOperation.Removal ? FlowCapture.Source(power, epoch)
                 : Matching(power) ? Pending.Source : FlowCapture.Supplied(null, epoch);
-            __state = new MutationState.Observed(epoch, metadata, operation, before, source, metadata.Dirty);
+            __state = new MutationState.Observed(epoch, metadata, operation, before, source, metadata.Dirty) { Audit = audit };
             if (operation == MutationOperation.Removal) metadata.Detached = source;
         }
         catch (Exception ex) { CaptureRuntime.Fail("power-observe-prefix", ex); }
@@ -78,13 +81,14 @@ internal static class ProvenanceCapture
     internal static void MutationFinalizer(MutationState __state)
     {
         var tracked = __state as MutationState.Tracked;
+        int? status = null;
         try
         {
             if (tracked == null || !CaptureRuntime.Valid(tracked.Epoch)) return;
             if (tracked is MutationState.ObservationFailed)
             {
                 tracked.Metadata.Dirty = true;
-                CaptureRuntime.Backend.PowerInvalidate(tracked.Epoch.Sequence, tracked.Metadata.Identity);
+                status = CaptureRuntime.Backend.PowerInvalidate(tracked.Epoch.Sequence, tracked.Metadata.Identity);
                 return;
             }
             if (tracked is not MutationState.Observed observed) return;
@@ -96,7 +100,8 @@ internal static class ProvenanceCapture
                 {
                     tracked.Metadata.Detached = observed.Source;
                     tracked.Metadata.Dirty = true;
-                    if (CaptureRuntime.Backend.PowerRemoved(tracked.Epoch.Sequence, tracked.Metadata.Identity) == 1) tracked.Metadata.Dirty = false;
+                    status = CaptureRuntime.Backend.PowerRemoved(tracked.Epoch.Sequence, tracked.Metadata.Identity);
+                    if (status == 1) tracked.Metadata.Dirty = false;
                     TemporalPowerCapture.RemovePower(tracked.Metadata.Identity);
                 }
                 else if (after.Attached) tracked.Metadata.Detached = null;
@@ -111,7 +116,7 @@ internal static class ProvenanceCapture
                     throw new InvalidOperationException("Prior dirty provenance could not be invalidated");
                 var owner = IdentityCapture.Get(after.Owner, tracked.Epoch);
                 if (owner == null) throw new InvalidOperationException("Unavailable power owner identity");
-                int status = CaptureRuntime.WithSource(tracked.Epoch, observed.Source, transfer => attachment
+                status = CaptureRuntime.WithSource(tracked.Epoch, observed.Source, transfer => attachment
                     ? CaptureRuntime.Backend.PowerAttached(tracked.Epoch, tracked.Metadata.Identity, owner.Identity, after, transfer)
                     : CaptureRuntime.Backend.PowerChanged(tracked.Epoch, tracked.Metadata.Identity, owner.Identity, after, before.Amount, transfer));
                 if (status != 1) throw new InvalidOperationException("Observed power mutation rejected");
@@ -135,6 +140,7 @@ internal static class ProvenanceCapture
             }
             CaptureRuntime.Fail("power-observe-finalizer", ex);
         }
+        finally { PoisonAudit.AfterMutation(__state?.Audit, status); }
     }
     internal static void Generated(object card)
     {

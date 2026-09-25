@@ -10,7 +10,7 @@ using MegaCrit.Sts2.Core.Models.Powers;
 
 namespace SpireProfiler;
 
-internal sealed record ProducerFrame(CaptureEpoch Epoch, object Model, SourceSnapshot Source, ProducerRole Role, DamageSegment Segment, bool Poison = false)
+internal sealed record ProducerFrame(CaptureEpoch Epoch, object Model, SourceSnapshot Source, ProducerRole Role, DamageSegment Segment, bool Poison = false, AuditTrigger Audit = null)
 {
     internal static readonly ProducerFrame Barrier = new(default, null, SourceSnapshot.Unavailable, ProducerRole.Unknown, DamageSegment.Attributed);
 }
@@ -47,16 +47,17 @@ internal static class FlowCapture
     internal static void Prefix(object __instance, MethodBase __originalMethod, object[] __args, out ProducerFrame __state)
     {
         __state = Current;
-        Current = ProducerFrame.Barrier;
+        var audit = PoisonAudit.Trigger(__instance, __originalMethod);
+        Current = audit == null ? ProducerFrame.Barrier : ProducerFrame.Barrier with { Audit = audit };
         try
         {
             var epoch = CaptureRuntime.EntryEpoch(__state.Epoch);
-            Current = ProducerFrame.Barrier with { Epoch = epoch };
+            Current = ProducerFrame.Barrier with { Epoch = epoch, Audit = audit };
             if (!CaptureRuntime.Valid(epoch)) return;
             var descriptor = CaptureRuntime.Backend.Describe(__instance);
             if (descriptor.Combat != null && !ReferenceEquals(descriptor.Combat, epoch.Combat))
             {
-                Current = ProducerFrame.Barrier with { Epoch = epoch with { Combat = descriptor.Combat } };
+                Current = ProducerFrame.Barrier with { Epoch = epoch with { Combat = descriptor.Combat }, Audit = audit };
                 return;
             }
             SourceSnapshot source;
@@ -67,7 +68,7 @@ internal static class FlowCapture
                 source = TemporalPowerCapture.TurnSource(__instance, epoch);
             else source = Source(__instance, epoch);
             var segment = descriptor.Role is ProducerRole.Card or ProducerRole.Relic or ProducerRole.Potion ? DamageSegment.Direct : DamageSegment.Attributed;
-            Current = new(epoch, __instance, source, descriptor.Role, segment, descriptor.Poison);
+            Current = new(epoch, __instance, source, descriptor.Role, segment, descriptor.Poison, audit);
         }
         catch (Exception ex) { CaptureRuntime.Fail("producer-prefix", ex); }
     }

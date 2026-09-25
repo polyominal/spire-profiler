@@ -44,7 +44,8 @@ internal static class ProfilerSession
         HistoryClearGeneration++;
         activeEpoch = 0;
         sequence = store.MaxCombatId();
-        recording = Environment.GetEnvironmentVariable("SPIRE_PROFILER_RECORD") == "1";
+        PoisonAudit.Initialize(dataDirectory, gameVersion, modVersion, diagnostic, Environment.GetEnvironmentVariable("SPIRE_PROFILER_AUDIT") == "1");
+        recording = PoisonAudit.Enabled || Environment.GetEnvironmentVariable("SPIRE_PROFILER_RECORD") == "1";
         ProfilerNative.CombatDiscard();
         nativeRevision = ProfilerNative.Revision;
         Revision++;
@@ -59,6 +60,7 @@ internal static class ProfilerSession
         completedRun = run?.EmptySummary();
         if (run == null)
         {
+            PoisonAudit.Finish("interrupted", combat?.Coverage);
             ProfilerNative.CombatDiscard();
             activeEpoch = 0;
             combat = null;
@@ -80,6 +82,7 @@ internal static class ProfilerSession
             if (combat != null && (combat.Cards.Count != 0 || combat.Plays != 0))
                 Finish(combat with { Result = "interrupted", Coverage = combat.Coverage.WithFailure("interrupted-capture") });
         }
+        PoisonAudit.Finish("interrupted", combat?.Coverage);
         ProfilerNative.CombatDiscard();
         activeEpoch = 0;
         combat = null;
@@ -89,6 +92,7 @@ internal static class ProfilerSession
         combatRun = run;
         bool recordingStarted = !recording || ProfilerNative.RecordingBegin();
         sequence++;
+        PoisonAudit.Start(combatRun, sequence.Value, encounter);
         activeEpoch = ProfilerNative.CombatStarted(sequence.Value, encounter, type, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), combatRun?.Players.Count ?? 0);
         if (!recordingStarted) ReportFailure("recording-start-failed");
         combat = null;
@@ -101,10 +105,11 @@ internal static class ProfilerSession
     internal static int EndCombat(ulong epoch)
     {
         if (!OnThread() || epoch == 0 || epoch != activeEpoch) return 0;
+        PoisonAudit.EndCheckpoint();
         bool ended = ProfilerNative.CombatEnded(epoch) == 1;
         if (!ended) ReportFailure("combat-end");
         bool refreshed = Refresh();
-        if (combat == null) { activeEpoch = 0; return 0; }
+        if (combat == null) { PoisonAudit.Finish("interrupted", null); activeEpoch = 0; return 0; }
         if (!ended || !refreshed) combat = combat with { Result = "interrupted" };
         Finish(combat);
         return 1;
@@ -135,6 +140,7 @@ internal static class ProfilerSession
             CurrentCombat = combat.View(combatRun?.Players ?? Array.Empty<PlayerSummary>(), combatRun);
         }
         if (recording) store.SaveTrace(record.RunId, record.Ordinal, ProfilerNative.Recording());
+        PoisonAudit.Finish(finished.Result, combat.Coverage);
         activeEpoch = 0;
         Revision++;
     }
@@ -157,6 +163,7 @@ internal static class ProfilerSession
         catch (Exception ex) when (ex is InvalidDataException or IOException or System.Text.Json.JsonException or OverflowException or InvalidOperationException or ArgumentException)
         {
             report($"cannot read attribution snapshot: {ex.Message}");
+            PoisonAudit.Diagnostic("snapshot-read-failed: " + ex.Message);
             combat = combat == null ? null : combat with { Coverage = combat.Coverage.WithFailure("snapshot-read-failed") };
             CurrentCombat = combat?.View(combatRun?.Players ?? Array.Empty<PlayerSummary>(), combatRun);
             Revision++;
@@ -182,6 +189,7 @@ internal static class ProfilerSession
     {
         if (!OnThread()) return;
         bool suspended = run != null;
+        PoisonAudit.Finish("interrupted", combat?.Coverage);
         ProfilerNative.CombatDiscard();
         activeEpoch = 0;
         combat = null;
@@ -215,6 +223,7 @@ internal static class ProfilerSession
     internal static void ReportFailure(string reason)
     {
         if (!OnThread() || activeEpoch == 0) return;
+        PoisonAudit.Diagnostic(reason);
         ProfilerNative.CaptureFailed(reason);
     }
 

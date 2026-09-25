@@ -98,6 +98,7 @@ internal static class PlayCapture
     }
     internal static void StartedPostfix(object combatState, CardPlay cardPlay)
     {
+        PoisonAudit.Card(cardPlay);
         try
         {
             var epoch = CaptureRuntime.EntryEpoch();

@@ -41,6 +41,43 @@ Attribution policy identity lives in the [summary
 module](../profiler-core/src/data/summary.rs); changing the implementation
 language does not establish metric comparability.
 
+## Auditing poison attribution
+
+Set `SPIRE_PROFILER_AUDIT=1` in the game process environment before startup.
+This also enables observation recording. Combat journals appear under
+`audit-v1/run-<id>/combat-<epoch>-<attempt>.audit.jsonl` in the profiler data
+directory. The attempt identifier distinguishes retries, continued runs, and
+console-started encounters. Keep the journal, adjacent statistics under
+`statistics-v2`, and the matching build together.
+
+Generate a readable report from one journal or a directory:
+
+```sh
+cargo xtask audit-report /path/to/audit-v1 --output tmp/poison-audit.md
+```
+
+The journal records observed card plays, requested and accepted poison amounts,
+target HP/block/Artifact, damage results, and living opponents' Accelerant
+stacks. Separate native checkpoints expose ordered poison grants and credited
+totals. Game evidence and native claims are distinct: replaying native
+observations can reproduce an attribution error, but cannot establish that
+capture was correct. The report checks the evidence available and identifies
+unresolved comparisons; it is not formal verification of all game mechanics.
+
+The current poison allocation rule is documented in the [provenance
+module](../profiler-core/src/data/source/power.rs). Audit mode does not change
+it. Damage requested before modifiers, actual damage, blocked damage, and
+overkill are separate values; comparing requested damage directly with credited
+totals can give a false discrepancy.
+
+Each complete JSONL line is flushed immediately. A missing footer, sequence gap,
+diagnostic, interrupted combat, or explicit cutoff makes the evidence
+incomplete. Capture stops at 20,000 events or 32 MiB per combat, with a 1 MiB
+event limit. Audit mode performs extra serialization and file I/O on the game
+thread; leave it disabled for ordinary play. Journals are retained until
+manually removed, and they cannot recover numerical evidence missing from
+earlier runs.
+
 ## Storage inspection
 
 [StatisticsStore](../shim/session/StatisticsStore.cs) owns file locations and
