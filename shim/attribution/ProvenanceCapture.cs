@@ -1,17 +1,21 @@
 using System;
 using System.Linq;
 using System.Reflection;
+using System.Reflection.Emit;
+using System.Runtime.CompilerServices;
 using System.Threading;
+using System.Collections.Generic;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Commands;
 using MegaCrit.Sts2.Core.Combat.History;
 using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Models.Powers;
 using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 
 namespace SpireProfiler;
 
-internal sealed record PendingPower(CaptureEpoch Epoch, object Power, object Target, SourceSnapshot Source, ulong AuditAction = 0)
+internal sealed record PendingPower(CaptureEpoch Epoch, object Power, object Target, SourceSnapshot Source, AuditCommand Audit = null)
 {
     internal static readonly PendingPower Barrier = new(default, null, null, SourceSnapshot.Unavailable);
 }
@@ -35,12 +39,12 @@ internal static class ProvenanceCapture
     internal static void CommandPrefix(MethodBase __originalMethod, object[] __args, out PendingPower __state)
     {
         __state = Pending;
-        ulong audit = PoisonAudit.Attempt(__originalMethod, __args);
-        Pending = audit == 0 ? PendingPower.Barrier : PendingPower.Barrier with { AuditAction = audit };
+        var audit = PoisonAudit.Attempt(__originalMethod, __args);
+        Pending = PendingPower.Barrier with { Audit = audit };
         try
         {
             var epoch = CaptureRuntime.EntryEpoch(__state.Epoch);
-            Pending = PendingPower.Barrier with { Epoch = epoch, AuditAction = audit };
+            Pending = PendingPower.Barrier with { Epoch = epoch, Audit = audit };
             if (!CaptureRuntime.Valid(epoch)) return;
             bool apply = __originalMethod.Name == "Apply";
             object power = __args[1], target = apply ? __args[2] : null, card = __args[apply ? 5 : 4];
@@ -49,6 +53,57 @@ internal static class ProvenanceCapture
         catch (Exception ex) { CaptureRuntime.Fail("power-command", ex); }
     }
     internal static void CommandFinalizer(PendingPower __state) { if (__state != null) Pending = __state; }
+    internal static void ApplyCompleted(ref AsyncTaskMethodBuilder builder)
+    {
+        PoisonAudit.Complete(Pending.Audit, "completed");
+        builder.SetResult();
+    }
+    internal static void ApplyFailed(ref AsyncTaskMethodBuilder builder, Exception error)
+    {
+        PoisonAudit.Complete(Pending.Audit, error is OperationCanceledException ? "cancelled" : "faulted", error: error);
+        builder.SetException(error);
+    }
+    internal static void ChangeCompleted(ref AsyncTaskMethodBuilder<int> builder, int result)
+    {
+        PoisonAudit.Complete(Pending.Audit, "completed", result);
+        builder.SetResult(result);
+    }
+    internal static void ChangeFailed(ref AsyncTaskMethodBuilder<int> builder, Exception error)
+    {
+        PoisonAudit.Complete(Pending.Audit, error is OperationCanceledException ? "cancelled" : "faulted", error: error);
+        builder.SetException(error);
+    }
+    internal static void EnvenomCompleted(ref AsyncTaskMethodBuilder builder)
+    {
+        PoisonAudit.EnvenomEnd("completed");
+        builder.SetResult();
+    }
+    internal static void EnvenomFailed(ref AsyncTaskMethodBuilder builder, Exception error)
+    {
+        PoisonAudit.EnvenomEnd(error is OperationCanceledException ? "cancelled" : "faulted", error);
+        builder.SetException(error);
+    }
+    internal static IEnumerable<CodeInstruction> CompletionTranspiler(IEnumerable<CodeInstruction> instructions, MethodBase __originalMethod)
+    {
+        var code = instructions.Select(instruction => new CodeInstruction(instruction)).ToList();
+        string name = __originalMethod.DeclaringType.FullName;
+        bool envenom = name.Contains("EnvenomPower"), change = name.Contains("ModifyAmount");
+        var builder = change ? typeof(AsyncTaskMethodBuilder<int>) : typeof(AsyncTaskMethodBuilder);
+        var complete = AccessTools.DeclaredMethod(builder, "SetResult", change ? new[] { typeof(int) } : Type.EmptyTypes);
+        var fail = AccessTools.DeclaredMethod(builder, "SetException", new[] { typeof(Exception) });
+        if (code.Count(instruction => instruction.Calls(complete)) != 1 || code.Count(instruction => instruction.Calls(fail)) != 1)
+            throw new InvalidOperationException("Audited power command completion IL changed: " + name);
+        foreach (var instruction in code)
+        {
+            string bridge = instruction.Calls(complete)
+                ? envenom ? nameof(EnvenomCompleted) : change ? nameof(ChangeCompleted) : nameof(ApplyCompleted)
+                : instruction.Calls(fail) ? envenom ? nameof(EnvenomFailed) : change ? nameof(ChangeFailed) : nameof(ApplyFailed) : null;
+            if (bridge == null) continue;
+            instruction.opcode = OpCodes.Call;
+            instruction.operand = AccessTools.DeclaredMethod(typeof(ProvenanceCapture), bridge);
+        }
+        return code;
+    }
     internal static void MutationPrefix(object __instance, MethodBase __originalMethod, object[] __args, out MutationState __state)
     {
         var audit = PoisonAudit.BeforeMutation(__instance, __originalMethod, __args);
@@ -171,7 +226,12 @@ internal static class ProvenanceCapture
     {
         var apply = AccessTools.DeclaredMethod(typeof(PowerCmd), "Apply", new[] { typeof(PlayerChoiceContext), typeof(PowerModel), typeof(Creature), typeof(decimal), typeof(Creature), typeof(CardModel), typeof(bool) });
         var change = AccessTools.DeclaredMethod(typeof(PowerCmd), "ModifyAmount", new[] { typeof(PlayerChoiceContext), typeof(PowerModel), typeof(decimal), typeof(Creature), typeof(CardModel), typeof(bool) });
-        foreach (var target in new[] { apply, change }) CapturePatches.Patch(harmony, FlowCapture.DeclaredMethod(target), prefix: new HarmonyMethod(typeof(ProvenanceCapture), nameof(CommandPrefix)), finalizer: new HarmonyMethod(typeof(ProvenanceCapture), nameof(CommandFinalizer)));
+        foreach (var target in new[] { apply, change })
+        {
+            CapturePatches.Patch(harmony, FlowCapture.DeclaredMethod(target), prefix: new HarmonyMethod(typeof(ProvenanceCapture), nameof(CommandPrefix)), finalizer: new HarmonyMethod(typeof(ProvenanceCapture), nameof(CommandFinalizer)));
+            CapturePatches.Patch(harmony, TemporalPowerCapture.Body(target), transpiler: new HarmonyMethod(typeof(ProvenanceCapture), nameof(CompletionTranspiler)));
+        }
+        CapturePatches.Patch(harmony, TemporalPowerCapture.Body(AccessTools.DeclaredMethod(typeof(EnvenomPower), "AfterDamageGiven")), transpiler: new HarmonyMethod(typeof(ProvenanceCapture), nameof(CompletionTranspiler)));
         foreach (var target in new[] { AccessTools.DeclaredMethod(typeof(Creature), "ApplyPowerInternal"), AccessTools.DeclaredMethod(typeof(Creature), "RemovePowerInternal"), AccessTools.DeclaredMethod(typeof(PowerModel), "SetAmount") })
             PatchMutation(harmony, target);
         CapturePatches.Patch(harmony, AccessTools.DeclaredMethod(typeof(CombatHistory), "CardGenerated"), prefix: new HarmonyMethod(typeof(ProvenanceCapture), nameof(GeneratedPrefix)));

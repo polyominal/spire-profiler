@@ -28,6 +28,6 @@ internal static class CapturePatches
                 throw new InvalidOperationException($"Missing owned capture {record.Kind}: {record.Original.DeclaringType.FullName}.{record.Original.Name}");
         }
         int targets = records.Select(record => (record.Original.Module, record.Original.MetadataToken)).Distinct().Count();
-        report($"CAPTURE VERIFIED owner={harmony.Id} targets={targets} patches={records.Count} producers=1726 damage_bridges=4 temporal_bridges=16");
+        report($"CAPTURE VERIFIED owner={harmony.Id} targets={targets} patches={records.Count} producers=1726 damage_bridges=4 temporal_bridges=16 audit_completion_bridges=6");
     }
 }

@@ -29,8 +29,8 @@ const GAME_ARGS: [&str; 6] = [
 
 // The managed gate pins this definition inventory to the verified game.
 const CAPTURE_PRODUCERS: u64 = 1726;
-const CAPTURE_TARGETS: u64 = 1779;
-const CAPTURE_PATCHES: u64 = 3555;
+const CAPTURE_TARGETS: u64 = 1782;
+const CAPTURE_PATCHES: u64 = 3558;
 // Run lifecycle and history UI patches are outside the capture installer.
 const FIXED_OWNER_PATCHES: u64 = 10;
 const MIN_PATCHES: u64 = CAPTURE_TARGETS + FIXED_OWNER_PATCHES;
@@ -43,6 +43,7 @@ struct CaptureReport {
     producers: u64,
     damage_bridges: u64,
     temporal_bridges: u64,
+    audit_completion_bridges: u64,
 }
 
 impl CaptureReport {
@@ -62,12 +63,18 @@ impl CaptureReport {
             .strip_prefix("temporal_bridges=")?
             .parse()
             .ok()?;
+        let audit_completion_bridges = fields
+            .next()?
+            .strip_prefix("audit_completion_bridges=")?
+            .parse()
+            .ok()?;
         Some(Self {
             targets,
             patches,
             producers,
             damage_bridges,
             temporal_bridges,
+            audit_completion_bridges,
         })
     }
 
@@ -78,6 +85,7 @@ impl CaptureReport {
                 && report.producers == CAPTURE_PRODUCERS
                 && report.damage_bridges == 4
                 && report.temporal_bridges == 16
+                && report.audit_completion_bridges == 6
                 && owned_methods.is_none_or(|owned| owned >= report.targets)
         });
         if verified {
@@ -477,7 +485,7 @@ mod tests {
 
     fn complete_boot_output() -> String {
         format!(
-            "{PATCH_COUNT_MARKER}{MIN_PATCHES}\n{CAPTURE_MARKER}targets={CAPTURE_TARGETS} patches={CAPTURE_PATCHES} producers={CAPTURE_PRODUCERS} damage_bridges=4 temporal_bridges=16\n{}",
+            "{PATCH_COUNT_MARKER}{MIN_PATCHES}\n{CAPTURE_MARKER}targets={CAPTURE_TARGETS} patches={CAPTURE_PATCHES} producers={CAPTURE_PRODUCERS} damage_bridges=4 temporal_bridges=16 audit_completion_bridges=6\n{}",
             GATE_MARKERS.join("\n")
         )
     }
@@ -590,6 +598,7 @@ mod tests {
                 "[OtherMod] CAPTURE VERIFIED owner=dev.spireprofiler ",
             ),
             valid.replace("damage_bridges=4", "damage_bridges=3"),
+            valid.replace("audit_completion_bridges=6", "audit_completion_bridges=5"),
             valid.replace("temporal_bridges=16", "temporal_bridges=15"),
             valid.replace(" temporal_bridges=16", ""),
             valid.replace(&format!("patches={CAPTURE_PATCHES}"), "patches=1"),
