@@ -41,12 +41,20 @@ internal static class ChartProjection
                 long positive = section == ChartSection.Damage ? card.DmgDirect + card.DmgAttributed + card.DmgModifier
                     : card.BlockEffective + card.BlkModifier + card.MitigateDebuff + card.MitigateBuff + card.MitigateStr;
                 long value = positive - (section == ChartSection.Defense ? card.SelfDamage : 0);
-                return (Card: card, Segments: segments, Positive: positive, Value: value);
+                Int128 scale = Int128.Abs(value);
+                if (section == ChartSection.Defense)
+                {
+                    scale = 0;
+                    for (int index = 0; index < 6; index++) scale += Math.Max(0, segments[index]);
+                    scale = card.SelfDamage > 0 && positive > 0
+                        ? Int128.Max(scale, card.SelfDamage) : scale + Math.Max(0, card.SelfDamage);
+                }
+                return (Card: card, Segments: segments, Positive: positive, Value: value, Scale: scale);
             }).ToArray();
             var kept = candidates.Where(row => row.Value > 0 || (section == ChartSection.Defense && row.Card.SelfDamage > 0))
                 .Take(MaxCandidates).OrderBy(row => section == ChartSection.Defense && row.Card.SelfDamage > 0 && row.Positive == 0)
                 .ThenByDescending(row => Math.Abs(row.Value)).ToArray();
-            long maximum = kept.Length == 0 ? 0 : kept.Max(row => Math.Abs(row.Value));
+            Int128 maximum = kept.Length == 0 ? 0 : kept.Max(row => row.Scale);
             long total = candidates.Sum(row => row.Positive);
             foreach (var item in kept)
             {
@@ -63,7 +71,7 @@ internal static class ChartProjection
         return output;
     }
 
-    private static ChartRow MakeRow(StatRow source, ChartSection section, int flags, long value, long[] segments, long maximum, long total)
+    private static ChartRow MakeRow(StatRow source, ChartSection section, int flags, long value, long[] segments, Int128 maximum, long total)
     {
         int share = (flags & 2) == 0 && total > 0 && value > 0 ? (int)((Int128)value * 1000 / total) : 0;
         var milli = new int[7];

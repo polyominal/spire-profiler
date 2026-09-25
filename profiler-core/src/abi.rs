@@ -11,6 +11,16 @@ use crate::data::modifiers::{ModifierObservation, WeakObservation};
 use crate::data::observation::Observation;
 use crate::data::state::State;
 
+#[repr(C)]
+pub struct BlockModifier {
+    pub source: u64,
+    pub credit: i64,
+}
+
+const _: () = assert!(std::mem::size_of::<BlockModifier>() == 16);
+const _: () = assert!(std::mem::offset_of!(BlockModifier, source) == 0);
+const _: () = assert!(std::mem::offset_of!(BlockModifier, credit) == 8);
+
 #[derive(Default)]
 struct Engines {
     entries: Vec<(u64, State)>,
@@ -757,53 +767,46 @@ pub extern "C" fn spire_profiler_buff_mitigation(
     })
 }
 
+/// # Safety
+/// For a nonzero in-range count, a non-null aligned modifiers pointer covers
+/// count initialized entries, readable and unmodified throughout this call.
 #[unsafe(no_mangle)]
-pub extern "C" fn spire_profiler_block_modifier_contribution(
-    engine: u64,
-    combat_seq: u64,
-    source_transfer: u64,
-    amount: i32,
-    receiver_slot: i32,
-) -> i32 {
-    contain("block_modifier_contribution", 0, || {
-        with_engine(engine, 0, true, |state| {
-            let result = state.block_modifier_contribution(
-                combat_seq,
-                source_transfer,
-                amount,
-                receiver_slot,
-            );
-            state.record(
-                || Observation::BlockModifierContribution {
-                    combat_seq,
-                    source_transfer,
-                    amount,
-                    receiver_slot,
-                },
-                result as u64,
-            );
-            result
-        })
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn spire_profiler_block_gained(
+pub unsafe extern "C" fn spire_profiler_block_gained(
     engine: u64,
     combat_seq: u64,
     amount: i32,
     source_transfer: u64,
     receiver_slot: i32,
+    modifiers: *const BlockModifier,
+    count: i32,
+    incomplete: i32,
 ) -> i32 {
     contain("block_gained", 0, || {
         with_engine(engine, 0, true, |state| {
-            let result = state.block_gained(combat_seq, amount, source_transfer, receiver_slot);
+            let valid_count =
+                (0..=crate::data::state::caps::BLOCK_MODIFIERS as i32).contains(&count);
+            let valid_buffer = count == 0 || (!modifiers.is_null() && modifiers.is_aligned());
+            let entries: Vec<_> = if valid_count && valid_buffer && count > 0 {
+                // SAFETY: the caller owns count initialized, aligned readable entries.
+                unsafe { std::slice::from_raw_parts(modifiers, count as usize) }
+                    .iter()
+                    .map(|entry| (entry.source, entry.credit))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let incomplete = incomplete != 0 || !valid_count || !valid_buffer;
+            let parsed = state.parse_block_modifiers(combat_seq, &entries, incomplete);
+            let result =
+                state.block_gained(combat_seq, amount, source_transfer, receiver_slot, parsed);
             state.record(
                 || Observation::BlockGained {
                     combat_seq,
                     amount,
                     source_transfer,
                     receiver_slot,
+                    modifiers: entries.into_boxed_slice(),
+                    incomplete,
                 },
                 result as u64,
             );
@@ -1388,11 +1391,11 @@ mod tests {
             assert_ne!(mixed, 0);
             let credit = spire_profiler_modifier_credit(engine, 0, 0, 3, 0, 0, 0, 1);
             assert_eq!(credit, 3);
+            let modifiers = [BlockModifier { source: a, credit }];
             assert_eq!(
-                spire_profiler_block_modifier_contribution(engine, 9, a, credit as i32, 1),
+                spire_profiler_block_gained(engine, 9, 13, mixed, 1, modifiers.as_ptr(), 1, 0),
                 1
             );
-            assert_eq!(spire_profiler_block_gained(engine, 9, 13, mixed, 1), 1);
             for source in [a, b, mixed] {
                 assert_eq!(spire_profiler_source_release(engine, source), 1);
             }
@@ -1446,6 +1449,108 @@ mod tests {
         );
         spire_profiler_engine_destroy(engine);
         spire_profiler_engine_destroy(replay);
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one malformed-packet table checks physical fallback and exact replay together"
+    )]
+    fn malformed_block_batches_preserve_physical_gains_and_replay_without_leaking() {
+        let engine = spire_profiler_engine_create();
+        assert_eq!(spire_profiler_recording_begin(engine), 1);
+        started(engine, 9);
+        // SAFETY: literals own strings; arrays own each declared in-range buffer.
+        // Invalid counts and misaligned pointers are rejected before dereference.
+        unsafe {
+            let base = spire_profiler_source_capture(engine, 9, 1, 1, c"BASE".as_ptr(), 0, 0, 0);
+            let modifier = spire_profiler_source_capture(engine, 9, 1, 2, c"MOD".as_ptr(), 0, 1, 0);
+            let valid = [BlockModifier {
+                source: modifier,
+                credit: 2,
+            }];
+            let negative = [BlockModifier {
+                source: modifier,
+                credit: -1,
+            }];
+            let excessive = [BlockModifier {
+                source: modifier,
+                credit: i64::MAX,
+            }];
+            let stale = [BlockModifier {
+                source: 17,
+                credit: 1,
+            }];
+            let misaligned = valid.as_ptr().cast::<u8>().wrapping_add(1).cast();
+            for (buffer, count, incomplete) in [
+                (std::ptr::null(), 1, 0),
+                (valid.as_ptr(), -1, 0),
+                (std::ptr::dangling(), 17, 0),
+                (misaligned, 1, 0),
+                (negative.as_ptr(), 1, 0),
+                (excessive.as_ptr(), 1, 0),
+                (stale.as_ptr(), 1, 0),
+                (valid.as_ptr(), 1, 1),
+                (valid.as_ptr(), 1, -1),
+            ] {
+                assert_eq!(
+                    spire_profiler_block_gained(engine, 9, 3, base, 0, buffer, count, incomplete),
+                    1
+                );
+                assert_eq!(
+                    spire_profiler_damage_unattributed(engine, 9, 3, 0, 3, 1, 0, 0),
+                    1
+                );
+            }
+            assert_eq!(
+                spire_profiler_block_gained(engine, 9, 0, base, 0, valid.as_ptr(), 1, 0),
+                1
+            );
+            assert_eq!(
+                spire_profiler_block_gained(engine, 9, 2, base, 0, std::ptr::null(), 0, 0),
+                1
+            );
+            assert_eq!(
+                spire_profiler_damage_unattributed(engine, 9, 2, 0, 2, 1, 0, 0),
+                1
+            );
+        }
+        let expected = json(engine, false);
+        let summary: serde_json::Value = serde_json::from_str(&expected).expect("summary parses");
+        assert_eq!(summary["block_total"], 29);
+        assert_eq!(summary["cards"][0]["block_gained"], 29);
+        assert_eq!(summary["cards"][0]["block_effective"], 2);
+        assert_eq!(summary["cards"][1]["blk_modifier"], 0);
+        assert_eq!(summary["cards"][2]["block_effective"], 27);
+        assert_eq!(summary["cards"][2]["block_gained"], 0);
+        assert_eq!(summary["coverage"]["complete"], false);
+        let trace = CString::new(json(engine, true)).expect("JSON contains no NUL");
+        let replay = spire_profiler_engine_create();
+        // SAFETY: CString owns the terminated trace through replay.
+        assert_eq!(unsafe { spire_profiler_replay(replay, trace.as_ptr()) }, 1);
+        assert_eq!(json(replay, false), expected);
+        spire_profiler_engine_destroy(engine);
+        spire_profiler_engine_destroy(replay);
+    }
+
+    #[test]
+    fn old_attribution_policies_are_rejected_without_reinterpreting_or_mutating_state() {
+        let engine = spire_profiler_engine_create();
+        assert_eq!(spire_profiler_recording_begin(engine), 1);
+        started(engine, 9);
+        assert_eq!(spire_profiler_turn_started(engine, 9), 1);
+        let expected = json(engine, false);
+        let mut trace: serde_json::Value =
+            serde_json::from_str(&json(engine, true)).expect("trace parses");
+        assert_eq!(trace["policy_version"], 3);
+        for policy in [1, 2] {
+            trace["policy_version"] = policy.into();
+            let input = CString::new(trace.to_string()).expect("JSON has no NUL");
+            // SAFETY: CString owns the terminated trace through replay.
+            assert_eq!(unsafe { spire_profiler_replay(engine, input.as_ptr()) }, 0);
+            assert_eq!(json(engine, false), expected);
+        }
+        spire_profiler_engine_destroy(engine);
     }
 
     #[test]

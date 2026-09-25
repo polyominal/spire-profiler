@@ -4,8 +4,8 @@
 //! Exported handles retain shared snapshots until the host releases them.
 //! Serials never repeat within an epoch; native consumers retain their own Rc.
 //! Completed damage groups fix each root's budget before consuming results.
-//! Pool prefixes instead retain original weights and a monotone credit cursor;
-//! merging a grant or correcting outer residue never changes those weights.
+//! Pool prefixes retain original supplier weights and a monotone credit cursor
+//! through partial consumption and adjacent grant merges.
 
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
@@ -390,21 +390,21 @@ struct DoomCapture {
 #[derive(Clone, Default)]
 struct SourcePool {
     blocks: Vec<SourceBlock>,
-    pending: Vec<(SourceSnapshot, u64)>,
     osty: Vec<SourceOsty>,
+}
+
+#[derive(Default)]
+pub(crate) struct BlockModifiers {
+    entries: Box<[(SourceSnapshot, u64)]>,
+    incomplete: bool,
 }
 
 #[derive(Clone)]
 struct SourceBlock {
     base: SourcePrefix,
     base_original: u64,
-    base_consumed: i64,
     remaining: u64,
     mods: Box<[SourceBlockMod]>,
-}
-
-impl SourceBlock {
-    const MAX_MODS: usize = 4;
 }
 
 #[derive(Clone)]
@@ -420,7 +420,8 @@ struct SourceOsty {
     remaining: u64,
 }
 
-const _: () = assert!(caps::PENDING_BLOCK_CONTRIBS >= SourceBlock::MAX_MODS);
+const _: () = assert!(caps::BLOCK_MODIFIERS == 16);
+const _: () = assert!(caps::BLOCK_POOL > 0);
 const _: () = assert!(caps::MAX_PLAYER_SLOTS == 5);
 
 impl SourceDiagnostics {

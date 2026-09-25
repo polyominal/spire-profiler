@@ -1,5 +1,13 @@
-//! Existing FIFO block and LIFO Osty slices keep their outer arithmetic.
-//! Positive credits advance source prefixes separately from base residue.
+//! Block grants drain FIFO; only adjacent modifier-free equal sources merge.
+//! An overflowing pool replaces its last remaining slice and the new grant with
+//! Unknown at the same tail position. Missing block provenance credits observed
+//! absorption to the receiver's Unknown row, never inventing a block gain.
+//! Each gain owns its complete bounded modifier batch. Incomplete batches keep
+//! observed producer gains but place their effective slice under Unknown.
+//! Modifier budgets never exceed the observed gain. One modifier uses cumulative
+//! floors with producer residue; multiple modifiers share a monotone weighted
+//! prefix (ties favor later modifiers, then the producer). Source prefixes keep
+//! the same supplier weights through partial consumption and adjacent merges.
 
 use super::*;
 
@@ -19,38 +27,43 @@ impl SourceBlock {
             .checked_sub(self.remaining)
             .and_then(|value| value.checked_add(take))
             .ok_or(SourceFailure::Arithmetic)?;
-        let base_floor = if total == 0 {
-            0
+        let after = if self.mods.len() <= 1 {
+            self.mods
+                .iter()
+                .map(|entry| {
+                    (u128::from(entry.original) * u128::from(consumed_after) / u128::from(total))
+                        as u64
+                })
+                .collect::<Box<[_]>>()
         } else {
-            (u128::from(self.base_original) * u128::from(consumed_after) / u128::from(total)) as u64
+            // Independent modifier floors can catch up together and exceed a hit.
+            // A shared monotone prefix assigns each consumed point exactly once.
+            let mut weights: Vec<_> = self.mods.iter().map(|entry| entry.original).collect();
+            weights.push(self.base_original);
+            SourcePrefix::allocation(consumed_after, weights.iter().copied())?
         };
-        let mut base_delta = i128::from(base_floor) - i128::from(self.base_consumed);
-        let mut allocated = base_delta;
-        let mut mod_deltas = Vec::with_capacity(self.mods.len());
-        for entry in &self.mods {
-            let after = if total == 0 {
-                0
-            } else {
-                (u128::from(entry.original) * u128::from(consumed_after) / u128::from(total)) as u64
-            };
-            let delta = after
-                .checked_sub(entry.consumed)
-                .ok_or(SourceFailure::Arithmetic)?;
-            mod_deltas.push(delta);
-            allocated += i128::from(delta);
-        }
-        base_delta += i128::from(take) - allocated;
+        let mod_deltas: Vec<_> = self
+            .mods
+            .iter()
+            .zip(after)
+            .map(|(entry, after)| {
+                after
+                    .checked_sub(entry.consumed)
+                    .ok_or(SourceFailure::Arithmetic)
+            })
+            .collect::<Result<_, _>>()?;
+        let allocated = mod_deltas
+            .iter()
+            .try_fold(0_u64, |sum, delta| sum.checked_add(*delta))
+            .ok_or(SourceFailure::Arithmetic)?;
+        let base_delta = take
+            .checked_sub(allocated)
+            .ok_or(SourceFailure::Arithmetic)?;
         let mut credits = Vec::new();
         if base_delta > 0 {
-            let amount = u64::try_from(base_delta).map_err(|_| SourceFailure::Arithmetic)?;
-            credits.extend(
-                self.base
-                    .credit(amount)?
-                    .into_iter()
-                    .map(|(destination, amount)| {
-                        (destination, CreditField::BlockEffective, amount)
-                    }),
-            );
+            for (destination, amount) in self.base.credit(base_delta)? {
+                credits.push((destination, CreditField::BlockEffective, amount));
+            }
         }
         for (entry, delta) in self.mods.iter_mut().zip(mod_deltas) {
             entry.consumed = entry
@@ -69,8 +82,6 @@ impl SourceBlock {
                     .map(|(destination, amount)| (destination, CreditField::BlockModifier, amount)),
             );
         }
-        self.base_consumed = i64::try_from(i128::from(self.base_consumed) + base_delta)
-            .map_err(|_| SourceFailure::Arithmetic)?;
         self.remaining = self
             .remaining
             .checked_sub(take)
@@ -85,19 +96,27 @@ impl LedgerStage<'_> {
         slot: SourceSlot,
         source: SourceSnapshot,
         amount: u64,
+        modifiers: BlockModifiers,
     ) -> Result<(), SourceFailure> {
-        let pool = self.pool(slot)?;
-        let pending = std::mem::take(&mut pool.pending);
-        let modifiers = pending
+        let epoch = source.epoch();
+        let (source, entries) = if modifiers.incomplete {
+            (SourceSnapshot::unknown_for(epoch, slot), Box::default())
+        } else {
+            (source, modifiers.entries)
+        };
+        let modifier_total = entries
             .iter()
             .try_fold(0_u64, |sum, (_, amount)| sum.checked_add(*amount))
             .ok_or(SourceFailure::Arithmetic)?;
-        let base = amount.saturating_sub(modifiers);
-        if pending.is_empty()
-            && let Some(entry) = pool
-                .blocks
-                .iter_mut()
-                .find(|entry| entry.mods.is_empty() && entry.base.source() == &source)
+        let modifier_budget = modifier_total.min(amount);
+        let budgets =
+            RootBudgets::proportional(modifier_budget, entries.iter().map(|(_, amount)| *amount))?;
+        let base = amount - modifier_budget;
+        let pool = self.pool(slot)?;
+        if modifier_budget == 0
+            && let Some(entry) = pool.blocks.last_mut()
+            && entry.mods.is_empty()
+            && entry.base.source() == &source
         {
             entry.remaining = entry
                 .remaining
@@ -110,32 +129,42 @@ impl LedgerStage<'_> {
             return Ok(());
         }
         if pool.blocks.len() == caps::BLOCK_POOL {
+            let tail = pool
+                .blocks
+                .last_mut()
+                .expect("a full positive-capacity pool has a tail");
+            let remaining = tail
+                .remaining
+                .checked_add(amount)
+                .ok_or(SourceFailure::Arithmetic)?;
+            *tail = SourceBlock {
+                base: SourceSnapshot::unknown_for(epoch, slot).prefix(),
+                base_original: remaining,
+                remaining,
+                mods: Box::default(),
+            };
             self.capacity_lost = true;
             return Ok(());
         }
-        let lost = pending.len() > SourceBlock::MAX_MODS;
-        let mut remaining = base;
-        let mut mods = Vec::with_capacity(pending.len().min(SourceBlock::MAX_MODS));
-        for (source, amount) in pending.into_iter().take(SourceBlock::MAX_MODS) {
-            remaining = remaining
-                .checked_add(amount)
-                .ok_or(SourceFailure::Arithmetic)?;
-            mods.push(SourceBlockMod {
-                source: source.prefix(),
-                original: amount,
-                consumed: 0,
-            });
-        }
+        let remaining = amount;
         if remaining > 0 {
             pool.blocks.push(SourceBlock {
                 base: source.prefix(),
                 base_original: base,
-                base_consumed: 0,
                 remaining,
-                mods: mods.into_boxed_slice(),
+                mods: entries
+                    .into_iter()
+                    .zip(budgets)
+                    .filter_map(|((source, _), amount)| {
+                        (amount > 0).then(|| SourceBlockMod {
+                            source: source.prefix(),
+                            original: amount,
+                            consumed: 0,
+                        })
+                    })
+                    .collect(),
             });
         }
-        self.capacity_lost |= lost;
         Ok(())
     }
 
@@ -164,7 +193,14 @@ impl LedgerStage<'_> {
                 )?;
             }
         }
-        self.pool(slot)?.pending.clear();
+        if remaining > 0 {
+            self.credit(
+                Destination::Unknown(slot),
+                CreditField::BlockEffective,
+                i64::try_from(remaining).map_err(|_| SourceFailure::Arithmetic)?,
+            )?;
+            self.diagnostics.report(SourceFailure::Token);
+        }
         Ok(())
     }
 
@@ -213,32 +249,42 @@ impl LedgerStage<'_> {
 }
 
 impl State {
-    pub(crate) fn block_modifier_contribution(
+    pub(crate) fn parse_block_modifiers(
         &mut self,
         combat_seq: u64,
-        transfer: u64,
-        amount: i32,
-        receiver_slot: i32,
-    ) -> i32 {
-        let result = (|| {
-            let epoch = self.provenance_epoch(combat_seq)?;
-            let source = self.source_snapshot(epoch, transfer)?;
-            if amount < 0 {
+        entries: &[(u64, i64)],
+        incomplete: bool,
+    ) -> BlockModifiers {
+        let parsed = (|| {
+            if incomplete || entries.len() > caps::BLOCK_MODIFIERS {
                 return Err(SourceFailure::Packet);
             }
-            let slot = super::super::state::clamp_source_slot(receiver_slot);
-            let mut stage = LedgerStage::new(self)?;
-            let pool = stage.pool(slot)?;
-            if pool.pending.len() == caps::PENDING_BLOCK_CONTRIBS {
-                return Err(SourceFailure::Capacity);
-            }
-            if amount > 0 {
-                pool.pending.push((source, amount as u64));
-            }
-            stage.commit()?;
-            Ok(())
+            let epoch = self.provenance_epoch(combat_seq)?;
+            entries
+                .iter()
+                .map(|(handle, amount)| {
+                    let amount = u32::try_from(*amount)
+                        .ok()
+                        .filter(|amount| *amount <= i32::MAX as u32)
+                        .ok_or(SourceFailure::Packet)?;
+                    let source = self.source_snapshot(epoch, *handle)?;
+                    Ok((source, u64::from(amount)))
+                })
+                .collect::<Result<Box<[_]>, SourceFailure>>()
         })();
-        self.source_status(result)
+        match parsed {
+            Ok(entries) => BlockModifiers {
+                entries,
+                incomplete: false,
+            },
+            Err(_) => {
+                self.capture_failed("block-modifier-incomplete");
+                BlockModifiers {
+                    entries: Box::default(),
+                    incomplete: true,
+                }
+            }
+        }
     }
 
     pub(crate) fn block_gained(
@@ -247,10 +293,17 @@ impl State {
         amount: i32,
         transfer: u64,
         receiver_slot: i32,
+        modifiers: BlockModifiers,
     ) -> i32 {
         let result = (|| {
             let epoch = self.provenance_epoch(combat_seq)?;
-            let source = self.source_snapshot(epoch, transfer)?;
+            let source = self.source_snapshot(epoch, transfer).unwrap_or_else(|_| {
+                self.capture_failed("block-producer-incomplete");
+                SourceSnapshot::unknown_for(
+                    epoch,
+                    super::super::state::clamp_source_slot(receiver_slot),
+                )
+            });
             if amount < 0 {
                 return Err(SourceFailure::Packet);
             }
@@ -265,7 +318,7 @@ impl State {
                 .checked_add(i64::from(amount))
                 .ok_or(SourceFailure::Arithmetic)?;
             stage.source_credit(&source, CreditField::BlockGained, amount as u64)?;
-            stage.push_block(slot, source, amount as u64)?;
+            stage.push_block(slot, source, amount as u64, modifiers)?;
             stage.commit()?;
             self.slot_index(i32::from(slot));
             Ok(())
@@ -392,3 +445,7 @@ impl State {
         self.source_status(result)
     }
 }
+
+#[cfg(test)]
+#[path = "block_tests.rs"]
+mod tests;

@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Reflection.Emit;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Combat;
@@ -23,11 +25,15 @@ namespace SpireProfiler;
 internal enum CommandKind { Unknown, Block, Forge, Summon }
 internal sealed record CommandFrame(CaptureEpoch Epoch, CommandKind Kind, SourceSnapshot Source, object Receiver, decimal Amount, int Slot)
 {
+    internal const int MaxModifiers = 16;
+    // This object follows the command's ExecutionContext through awaits. Only
+    // its own physical history event consumes the modifier batch.
+    internal SourceCredit[] Modifiers = Array.Empty<SourceCredit>();
+    internal bool Incomplete, Closed;
     internal static readonly CommandFrame Barrier = new(default, CommandKind.Unknown, SourceSnapshot.Unavailable, null, 0, 4);
 }
 internal readonly record struct CommandState(CommandFrame Previous, ProducerFrame Producer);
 internal sealed record BuffCapture(CaptureEpoch Epoch, SourceSnapshot Source, decimal Amount, bool Buffer);
-internal readonly record struct BlockModifierCapture(CaptureEpoch Epoch, decimal Amount);
 internal static class CommandCapture
 {
     private static readonly AsyncLocal<CommandFrame> current = new();
@@ -107,72 +113,49 @@ internal static class CommandCapture
             var target = CaptureRuntime.Backend.DescribeCreature(receiver);
             if (!target.Player || !ReferenceEquals(target.Combat, epoch.Combat)) return;
             var operation = Current;
-            var source = operation.Kind == CommandKind.Block && ReferenceEquals(operation.Receiver, receiver) && CaptureRuntime.Valid(operation.Epoch)
-                ? operation.Source : SourceSnapshot.Unavailable;
-            if (CaptureRuntime.WithSource(epoch, source, transfer => CaptureRuntime.Backend.BlockGained(epoch.Sequence, amount, transfer, target.Slot)) != 1)
-                CaptureRuntime.Fail("block-report");
+            bool owns = operation.Kind == CommandKind.Block && !operation.Closed && ReferenceEquals(operation.Receiver, receiver) && CaptureRuntime.Valid(operation.Epoch);
+            var source = owns ? operation.Source : SourceSnapshot.Unavailable;
+            var modifiers = owns ? operation.Modifiers : Array.Empty<SourceCredit>();
+            bool incomplete = owns && operation.Incomplete;
+            if (owns) { operation.Modifiers = Array.Empty<SourceCredit>(); operation.Closed = true; }
+            try
+            {
+                if (CaptureRuntime.WithSource(epoch, source, transfer => CaptureRuntime.Backend.BlockGained(epoch.Sequence, amount, transfer, target.Slot, modifiers, incomplete)) != 1)
+                    CaptureRuntime.Fail("block-report");
+            }
+            finally { GC.KeepAlive(modifiers); }
         }
         catch (Exception ex) { CaptureRuntime.Fail("block-report", ex); }
     }
-    internal static void BlockModifierPrefix(decimal block, out BlockModifierCapture __state)
+    internal static void BlockCompleted(ref AsyncTaskMethodBuilder<decimal> builder, decimal result)
     {
-        __state = default;
-        try { __state = new(CaptureRuntime.EntryEpoch(), block); }
-        catch (Exception ex) { CaptureRuntime.Fail("block-modifier-entry", ex); }
+        var command = Current;
+        if (command.Kind == CommandKind.Block) { command.Modifiers = Array.Empty<SourceCredit>(); command.Closed = true; }
+        builder.SetResult(result);
     }
-    internal static void BlockModifierPostfix(decimal __result, BlockModifierCapture __state, Creature target, ValueProp props,
-        CardModel cardSource, CardPlay cardPlay, IEnumerable<AbstractModel> modifiers)
+    internal static void BlockFailed(ref AsyncTaskMethodBuilder<decimal> builder, Exception error)
     {
-        try
-        {
-            if (!CaptureRuntime.Valid(__state.Epoch) || target == null || !target.IsPlayer || __result <= __state.Amount || modifiers == null) return;
-            if (!ReferenceEquals(target.CombatState, __state.Epoch.Combat)) return;
-            decimal start = __state.Amount;
-            if (cardSource?.Enchantment is { } enchantment)
-            {
-                start += enchantment.EnchantBlockAdditive(start);
-                start *= enchantment.EnchantBlockMultiplicative(start);
-            }
-            DecomposeBlock(modifiers, start, __result, target, props, cardSource, cardPlay, (model, amount) =>
-            {
-                var source = FlowCapture.Source(model, __state.Epoch);
-                if (CaptureRuntime.WithSource(__state.Epoch, source, transfer => CaptureRuntime.Backend.BlockModifier(__state.Epoch.Sequence, transfer, amount, RunContext.PlayerSlot(target.Player))) != 1)
-                    CaptureRuntime.Fail("block-modifier-report");
-            });
-        }
-        catch (Exception ex) { CaptureRuntime.Fail("block-modifier", ex); }
+        var command = Current;
+        if (command.Kind == CommandKind.Block) { command.Modifiers = Array.Empty<SourceCredit>(); command.Closed = true; }
+        builder.SetException(error);
     }
-    internal static void DecomposeBlock(IEnumerable<AbstractModel> modifiers, decimal start, decimal result, Creature target, ValueProp props,
-        CardModel card, CardPlay play, Action<AbstractModel, int> contribute)
+    internal static IEnumerable<CodeInstruction> BlockTranspiler(IEnumerable<CodeInstruction> instructions)
     {
-        decimal running = start;
-        var multiplicative = new List<AbstractModel>();
-        foreach (var model in modifiers)
+        var code = instructions.Select(instruction => new CodeInstruction(instruction)).ToList();
+        var replacements = new[]
         {
-            decimal addition = model switch
-            {
-                PowerModel power => power.ModifyBlockAdditive(target, running, props, card, play),
-                RelicModel relic => relic.ModifyBlockAdditive(target, running, props, card, play),
-                _ => 0m
-            };
-            running += addition;
-            if (addition > 0) contribute(model, ModifierCapture.Additive(addition, false));
-            else if (model is PowerModel or RelicModel)
-            {
-                if (multiplicative.Count == 64) { CaptureRuntime.Fail("block-modifier-cap"); return; }
-                multiplicative.Add(model);
-            }
-        }
-        foreach (var model in multiplicative)
+            (AccessTools.DeclaredMethod(typeof(Hook), "ModifyBlock"), AccessTools.DeclaredMethod(typeof(ModifierCapture), nameof(ModifierCapture.ModifyBlock))),
+            (AccessTools.DeclaredMethod(typeof(AsyncTaskMethodBuilder<decimal>), "SetResult", new[] { typeof(decimal) }), AccessTools.DeclaredMethod(typeof(CommandCapture), nameof(BlockCompleted))),
+            (AccessTools.DeclaredMethod(typeof(AsyncTaskMethodBuilder<decimal>), "SetException", new[] { typeof(Exception) }), AccessTools.DeclaredMethod(typeof(CommandCapture), nameof(BlockFailed)))
+        };
+        foreach (var (original, bridge) in replacements)
         {
-            decimal multiplier = model is PowerModel power ? power.ModifyBlockMultiplicative(target, running, props, card, play)
-                : ((RelicModel)model).ModifyBlockMultiplicative(target, running, props, card, play);
-            decimal before = running;
-            running *= multiplier;
-            if (multiplier <= 1) continue;
-            int amount = ModifierCapture.Increase(before, multiplier, result);
-            if (amount > 0) contribute(model, amount);
+            var matches = code.Where(instruction => instruction.Calls(original)).ToArray();
+            if (matches.Length != 1) throw new InvalidOperationException("Canonical block IL pattern changed: " + original.Name);
+            matches[0].opcode = OpCodes.Call;
+            matches[0].operand = bridge;
         }
+        return code;
     }
     internal static void BuffPrefix(object __instance, decimal amount, out BuffCapture __state)
     {
@@ -308,15 +291,15 @@ internal static class CommandCapture
         catch (Exception ex) { CaptureRuntime.Fail("creature-killed", ex); }
     }
     internal static void PatchCommand(Harmony harmony, MethodInfo method)
-        => CapturePatches.Patch(harmony, method, prefix: new HarmonyMethod(typeof(CommandCapture), nameof(Prefix)), postfix: new HarmonyMethod(typeof(CommandCapture), nameof(Postfix)), finalizer: new HarmonyMethod(typeof(CommandCapture), nameof(Finalizer)));
+    {
+        CapturePatches.Patch(harmony, method, prefix: new HarmonyMethod(typeof(CommandCapture), nameof(Prefix)), postfix: new HarmonyMethod(typeof(CommandCapture), nameof(Postfix)), finalizer: new HarmonyMethod(typeof(CommandCapture), nameof(Finalizer)));
+        if (method.Name == "GainBlock") CapturePatches.Patch(harmony, TemporalPowerCapture.Body(method), transpiler: new HarmonyMethod(typeof(CommandCapture), nameof(BlockTranspiler)));
+    }
     internal static void Install(Harmony harmony, Action<string> report)
     {
         PatchCommand(harmony, AccessTools.DeclaredMethod(typeof(CreatureCmd), "GainBlock", new[] { typeof(Creature), typeof(decimal), typeof(ValueProp), typeof(CardPlay), typeof(bool) }));
         PatchCommand(harmony, AccessTools.DeclaredMethod(typeof(ForgeCmd), "Forge", new[] { typeof(decimal), typeof(Player), typeof(AbstractModel) }));
         PatchCommand(harmony, AccessTools.DeclaredMethod(typeof(OstyCmd), "Summon", new[] { typeof(PlayerChoiceContext), typeof(Player), typeof(decimal), typeof(AbstractModel) }));
-        var prefix = new HarmonyMethod(typeof(CommandCapture), nameof(BlockModifierPrefix));
-        var postfix = new HarmonyMethod(typeof(CommandCapture), nameof(BlockModifierPostfix));
-        CapturePatches.Patch(harmony, AccessTools.DeclaredMethod(typeof(Hook), "ModifyBlock"), prefix: prefix, postfix: postfix);
         foreach (var entry in new[] { (typeof(BufferPower), "ModifyHpLostAfterOstyLate"), (typeof(IntangiblePower), "ModifyHpLostAfterOsty"), (typeof(HardenedShellPower), "ModifyHpLostBeforeOstyLate") })
             CapturePatches.Patch(harmony, AccessTools.DeclaredMethod(entry.Item1, entry.Item2), prefix: new HarmonyMethod(typeof(CommandCapture), nameof(BuffPrefix)), postfix: new HarmonyMethod(typeof(CommandCapture), nameof(BuffPostfix)));
         foreach (var entry in new[] { ("BlockGained", nameof(BlockGained)), ("OrbChanneled", nameof(OrbChanneled)), ("PotionUsed", nameof(PotionPostfix)) })

@@ -14,7 +14,6 @@ using MegaCrit.Sts2.Core.GameActions.Multiplayer;
 using MegaCrit.Sts2.Core.Hooks;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Powers;
-using MegaCrit.Sts2.Core.Models.Relics;
 using MegaCrit.Sts2.Core.Runs;
 using MegaCrit.Sts2.Core.ValueProps;
 
@@ -116,86 +115,26 @@ internal static class DamageCapture
             }
         }
         catch (Exception ex) { AbortToken(calculation); calculation = 0; CaptureRuntime.Fail("damage-live-begin", ex); }
-        decimal result = OriginalModifyDamage(runState, combatState, target, dealer, damage, props, cardSource, cardPlay, hookType, previewMode, out modifiers);
+        var scope = ModifierCapture.BeginCalculation(captured.Epoch, damage, calculation != 0 && evidence.Modifiers);
         try
         {
-            if (calculation != 0 && evidence.Modifiers && result > damage && modifiers != null)
+            decimal result = OriginalModifyDamage(runState, combatState, target, dealer, damage, props, cardSource, cardPlay, hookType, previewMode, out modifiers);
+            try
             {
-                Current = Current with { Calculation = 0 };
-                decimal start = damage;
-                if (cardSource?.Enchantment is { } enchantment)
+                if (scope.Frame != null)
                 {
-                    start += enchantment.EnchantDamageAdditive(start, props);
-                    start *= enchantment.EnchantDamageMultiplicative(start, props);
-                }
-                Decompose(modifiers, start, result, target, dealer, props, cardSource, (model, amount) =>
-                {
-                    var source = FlowCapture.Source(model, captured.Epoch);
-                    if (CaptureRuntime.WithSource(captured.Epoch, source, transfer => CaptureRuntime.Backend.DamageModifier(calculation, transfer, amount)) != 1)
-                        throw new InvalidOperationException("Damage modifier rejected");
-                });
-                Current = Current with { Calculation = calculation };
-            }
-        }
-        catch (Exception ex) { AbortToken(calculation); Current = Current with { Calculation = 0 }; CaptureRuntime.Fail("damage-live-modifier", ex); }
-        return result;
-    }
-    internal static void Decompose(IEnumerable<AbstractModel> modifiers, decimal start, decimal result, Creature target, Creature dealer,
-        ValueProp props, CardModel card, Action<AbstractModel, int> contribute)
-    {
-        var multiplicative = new List<AbstractModel>();
-        int observed = 0;
-        decimal running = start;
-        foreach (var model in modifiers)
-        {
-            if (model is PowerModel or RelicModel && ++observed > 64) throw new InvalidOperationException("Damage modifier capacity exceeded");
-            decimal addition = model switch
-            {
-                PowerModel power => power.ModifyDamageAdditive(target, running, props, dealer, card, null),
-                RelicModel relic => relic.ModifyDamageAdditive(target, running, props, dealer, card, null),
-                _ => 0m
-            };
-            running += addition;
-            if (addition != 0) contribute(model, ModifierCapture.Additive(addition, true));
-            else if (model is PowerModel or RelicModel) multiplicative.Add(model);
-        }
-        foreach (var model in multiplicative)
-        {
-            decimal multiplier = model is PowerModel power ? power.ModifyDamageMultiplicative(target, running, props, dealer, card, null)
-                : ((RelicModel)model).ModifyDamageMultiplicative(target, running, props, dealer, card, null);
-            decimal before = running;
-            running *= multiplier;
-            if (multiplier <= 1) continue;
-            if (model is VulnerablePower vulnerable && vulnerable.DynamicVars.TryGetValue("DamageIncrease", out var increase))
-            {
-                decimal composite = increase.BaseValue;
-                var parts = new List<(AbstractModel Model, decimal Delta)> { (vulnerable, composite - 1) };
-                var nested = new AbstractModel[] { dealer.Player?.GetRelic<PaperPhrog>(), dealer.GetPower<CrueltyPower>() ?? dealer.PetOwner?.Creature.GetPower<CrueltyPower>(), target.GetPower<DebilitatePower>() };
-                foreach (var part in nested)
-                {
-                    decimal after = part switch
-                    {
-                        PaperPhrog phrog => phrog.ModifyVulnerableMultiplier(target, composite, props, dealer, card),
-                        CrueltyPower cruelty => cruelty.ModifyVulnerableMultiplier(target, composite, props, dealer, card),
-                        DebilitatePower debilitate => debilitate.ModifyVulnerableMultiplier(target, composite, props, dealer, card),
-                        _ => composite
-                    };
-                    if (after != composite) parts.Add((part, after - composite));
-                    composite = after;
-                }
-                if (composite == multiplier && parts[0].Delta >= 0)
-                {
-                    foreach (var part in parts)
-                    {
-                        int value = ModifierCapture.Product(before, part.Delta, result);
-                        if (value > 0) contribute(part.Model, value);
-                    }
-                    continue;
+                    Current = Current with { Calculation = 0 };
+                    foreach (var contribution in scope.Frame.Contributions(result, true))
+                        if (CaptureRuntime.WithSource(captured.Epoch, contribution.Source, source => CaptureRuntime.Backend.DamageModifier(calculation, source, contribution.Amount)) != 1)
+                            throw new InvalidOperationException("Damage modifier rejected");
+                    Current = Current with { Calculation = calculation };
                 }
             }
-            int contribution = ModifierCapture.Increase(before, multiplier, result);
-            if (contribution > 0) contribute(model, contribution);
+            catch (Exception ex) { AbortToken(calculation); Current = Current with { Calculation = 0 }; CaptureRuntime.Fail("damage-live-modifier", ex); }
+            return result;
         }
+        catch { AbortToken(calculation); Current = Current with { Calculation = 0 }; throw; }
+        finally { ModifierCapture.EndCalculation(scope); }
     }
     internal static ResultKind Classify(CreatureDescriptor dealer, object dealerObject, bool card, CreatureDescriptor receiver, object receiverObject)
     {
@@ -257,8 +196,12 @@ internal static class DamageCapture
         int weak = 0;
         if (captured.Weak && receiver.Player && total > 0)
         {
-            weak = CaptureRuntime.Backend.CalculateWeakPrevention(total, receiver.Slot, receiver.Player,
-                captured.Weak, captured.Debilitate, captured.PaperKraneSlots);
+            try
+            {
+                weak = CaptureRuntime.Backend.CalculateWeakPrevention(total, receiver.Slot, receiver.Player,
+                    captured.Weak, captured.Debilitate, captured.PaperKraneSlots);
+            }
+            catch (Exception ex) { CaptureRuntime.Fail("weak-projection", ex); }
         }
         return new(total, result.UnblockedDamage, result.BlockedDamage,
             Classify(dealer, captured.Dealer, captured.ExplicitCard, receiver, result.Receiver), receiver.Slot, weak);

@@ -239,7 +239,7 @@ internal static class ProfilerSession
             || ProfilerNative.TurnStarted(epoch) != 1
             || ProfilerNative.DamageResultAppend(hit, 6, 4, 2, 0, 4, 0) != 1
             || ProfilerNative.DamageCalculationCommit(hit) != 1
-            || ProfilerNative.BlockGained(epoch, 5, source, 0) != 1
+            || ProfilerNative.BlockGained(epoch, 5, source, 0, Array.Empty<BlockModifier>(), false) != 1
             || ProfilerNative.DamageUnattributed(epoch, 3, 0, 3, 1, 0, 0) != 1
             || ProfilerNative.Forge(epoch, source, 2) != 1
             || EndCombat(epoch) != 1)

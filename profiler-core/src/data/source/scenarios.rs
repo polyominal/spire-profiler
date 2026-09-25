@@ -610,7 +610,10 @@ fn ally_block_preserves_mixed_suppliers_through_small_hits() {
     let first = case.card(10, "FIRST_SHIELD", 0);
     let second = case.card(11, "SECOND_SHIELD", 2);
     let mixed = case.mix(&[(first, 1), (second, 1)]);
-    assert_eq!(case.state.block_gained(7, 2, mixed, 1), 1);
+    assert_eq!(
+        case.state.block_gained(7, 2, mixed, 1, Default::default()),
+        1
+    );
     case.report(0, ATTRIBUTED, INCOMING, 0, 1, 1);
     assert_eq!(case.row("FIRST_SHIELD", 0).block_effective, 0);
     assert_eq!(case.row("SECOND_SHIELD", 2).block_effective, 0);
@@ -642,8 +645,8 @@ fn block_modifier_mixture_keeps_both_roots_across_consumption() {
     let first = case.card(11, "FIRST_DEXTERITY", 0);
     let second = case.card(12, "SECOND_DEXTERITY", 2);
     let mixed = case.mix(&[(first, 1), (second, 1)]);
-    assert_eq!(case.state.block_modifier_contribution(7, mixed, 2, 1), 1);
-    assert_eq!(case.state.block_gained(7, 4, producer, 1), 1);
+    let modifiers = case.state.parse_block_modifiers(7, &[(mixed, 2)], false);
+    assert_eq!(case.state.block_gained(7, 4, producer, 1, modifiers), 1);
     for _ in 0..2 {
         case.report(0, ATTRIBUTED, INCOMING, 1, 1, 1);
     }
@@ -672,9 +675,13 @@ fn retained_block_keeps_modifier_prefix_until_its_slot_is_cleared() {
     let mixed = case.mix(&[(first, 1), (second, 1)]);
     let ally_guard = case.card(13, "ALLY_GUARD", 1);
     let new_guard = case.card(14, "NEW_GUARD", 0);
-    assert_eq!(case.state.block_modifier_contribution(7, mixed, 4, 0), 1);
-    assert_eq!(case.state.block_gained(7, 8, guard, 0), 1);
-    assert_eq!(case.state.block_gained(7, 5, ally_guard, 1), 1);
+    let modifiers = case.state.parse_block_modifiers(7, &[(mixed, 4)], false);
+    assert_eq!(case.state.block_gained(7, 8, guard, 0, modifiers), 1);
+    assert_eq!(
+        case.state
+            .block_gained(7, 5, ally_guard, 1, Default::default()),
+        1
+    );
     case.report(0, ATTRIBUTED, INCOMING, 0, 2, 2);
     assert_eq!(case.row("GUARD", 0).block_effective, 1);
     assert_eq!(case.row("FIRST_DEXTERITY", 2).blk_modifier, 0);
@@ -687,7 +694,11 @@ fn retained_block_keeps_modifier_prefix_until_its_slot_is_cleared() {
     assert_eq!(case.row("SECOND_DEXTERITY", 3).blk_modifier, 1);
 
     assert_eq!(case.state.block_pool_clear(7, 0), 1);
-    assert_eq!(case.state.block_gained(7, 5, new_guard, 0), 1);
+    assert_eq!(
+        case.state
+            .block_gained(7, 5, new_guard, 0, Default::default()),
+        1
+    );
     case.report(0, ATTRIBUTED, INCOMING, 0, 5, 5);
     case.report(0, ATTRIBUTED, INCOMING, 1, 5, 5);
     assert_eq!(case.row("GUARD", 0).block_effective, 2);
@@ -862,7 +873,10 @@ fn defy_block_and_weak_trigger_juggernaut_and_sleight_suppliers() {
     case.attach(201, "SLEIGHT_OF_FLESH_POWER", PLAYER_A, 9, sleight);
     case.attach(202, "JUGGERNAUT_POWER", PLAYER_A, 6, juggernaut);
     let play = case.play(501, 12, "DEFY", 0, 0, defy);
-    assert_eq!(case.state.block_gained(7, 6, defy, 0), 1);
+    assert_eq!(
+        case.state.block_gained(7, 6, defy, 0, Default::default()),
+        1
+    );
     let block_proc = case.capture(2, 202);
     case.outgoing(block_proc, 2, ATTRIBUTED, 900, 4, 2);
     case.attach(203, "WEAK_POWER", (901, 1, 4), 1, defy);
@@ -998,7 +1012,10 @@ fn black_hole_star_gain_and_after_play_spend_preserve_supplier() {
     assert_eq!(case.state.card_play_finished(gain_play), 1);
     let cloak = case.card(12, "CLOAK_OF_STARS", 0);
     let spend_play = case.play(502, 12, "CLOAK_OF_STARS", 0, 0, cloak);
-    assert_eq!(case.state.block_gained(7, 7, cloak, 0), 1);
+    assert_eq!(
+        case.state.block_gained(7, 7, cloak, 0, Default::default()),
+        1
+    );
     case.assert_damage(&[("BLACK_HOLE", 0, [0, 6, 0], 3)], 3, 3);
     assert_eq!(case.state.card_play_finished(spend_play), 1);
     case.outgoing(black_hole, 2, ATTRIBUTED, 900, 3, 0);
@@ -1014,7 +1031,10 @@ fn boost_away_status_generation_triggers_smokestack_without_taking_block() {
     let boost = case.card(11, "BOOST_AWAY", 0);
     case.attach(201, "SMOKESTACK_POWER", PLAYER_A, 5, supplier);
     let play = case.play(501, 11, "BOOST_AWAY", 0, 0, boost);
-    assert_eq!(case.state.block_gained(7, 6, boost, 0), 1);
+    assert_eq!(
+        case.state.block_gained(7, 6, boost, 0, Default::default()),
+        1
+    );
     assert_eq!(case.state.card_generated(7, 101, boost, 1), 1);
     let dazed = case.state.source_capture(7, 1, 101, "DAZED", 0, 0, 1);
     case.assert_source(dazed, &[("BOOST_AWAY", 0, 1)]);
@@ -1039,7 +1059,11 @@ fn sacrifice_osty_hp_loss_credits_necro_mastery_and_preserves_block_owner() {
     let proc = case.capture(2, 201);
     case.outgoing(proc, 2, ATTRIBUTED, 900, 5, 0);
     case.outgoing(proc, 2, ATTRIBUTED, 901, 3, 0);
-    assert_eq!(case.state.block_gained(7, 15, sacrifice, 0), 1);
+    assert_eq!(
+        case.state
+            .block_gained(7, 15, sacrifice, 0, Default::default()),
+        1
+    );
     case.assert_damage(&[("NECRO_MASTERY", 0, [0, 8, 0], 0)], 8, 0);
     assert_eq!(case.row("SACRIFICE", 0).block_gained, 15);
     assert_eq!(case.row("SACRIFICE", 0).block_effective, -5);
@@ -1060,7 +1084,10 @@ fn pending_attack_thorns_and_inferno_keep_parent_modifier_budget() {
     let strength = case.capture(2, 201);
     let inferno = case.capture(2, 202);
     let thorns = case.capture(2, 203);
-    assert_eq!(case.state.block_gained(7, 1, defend, 0), 1);
+    assert_eq!(
+        case.state.block_gained(7, 1, defend, 0, Default::default()),
+        1
+    );
     let play = case.play(501, 10, "STRIKE", 0, 0, strike);
     let parent = case
         .state
@@ -1170,7 +1197,10 @@ fn saved_serpent_and_enemy_strangle_exclude_stacks_added_during_play() {
     let next = case.play(502, 13, "DEFY", 0, 0, defy);
     let next_serpent = case.capture(2, 201);
     let next_strangle = case.capture(2, 202);
-    assert_eq!(case.state.block_gained(7, 6, defy, 0), 1);
+    assert_eq!(
+        case.state.block_gained(7, 6, defy, 0, Default::default()),
+        1
+    );
     case.attach(203, "WEAK_POWER", ENEMY, 1, defy);
     assert_eq!(case.state.card_play_finished(next), 1);
     case.outgoing(next_serpent, 2, ATTRIBUTED, 900, 8, 0);
@@ -1492,11 +1522,19 @@ fn hibernate_frost_first_and_later_evoke_feed_both_players_block_pools() {
     let frost = case.capture(3, 301);
     case.assert_source(frost, &[("DISCOVERY", 0, 1)]);
     for receiver in [0, 1] {
-        assert_eq!(case.state.block_gained(7, 5, frost, receiver), 1);
+        assert_eq!(
+            case.state
+                .block_gained(7, 5, frost, receiver, Default::default()),
+            1
+        );
     }
     assert_eq!(case.state.orb_context_begin(7, 301, play, 1), 2);
     for receiver in [0, 1] {
-        assert_eq!(case.state.block_gained(7, 5, dualcast, receiver), 1);
+        assert_eq!(
+            case.state
+                .block_gained(7, 5, dualcast, receiver, Default::default()),
+            1
+        );
     }
     assert_eq!(case.state.card_play_finished(play), 1);
     case.report(0, ATTRIBUTED, INCOMING, 0, 7, 7);
@@ -1522,11 +1560,17 @@ fn equal_source_block_merge_after_partial_consumption_keeps_prefix() {
     let first = case.card(10, "FIRST_SHIELD", 0);
     let second = case.card(11, "SECOND_SHIELD", 2);
     let mixed = case.mix(&[(first, 1), (second, 1)]);
-    assert_eq!(case.state.block_gained(7, 4, mixed, 1), 1);
+    assert_eq!(
+        case.state.block_gained(7, 4, mixed, 1, Default::default()),
+        1
+    );
     case.report(0, ATTRIBUTED, INCOMING, 1, 1, 1);
     assert_eq!(case.row("FIRST_SHIELD", 0).block_effective, 0);
     assert_eq!(case.row("SECOND_SHIELD", 2).block_effective, 1);
-    assert_eq!(case.state.block_gained(7, 2, mixed, 1), 1);
+    assert_eq!(
+        case.state.block_gained(7, 2, mixed, 1, Default::default()),
+        1
+    );
     case.report(0, ATTRIBUTED, INCOMING, 1, 1, 1);
     assert_eq!(case.row("FIRST_SHIELD", 0).block_effective, 1);
     assert_eq!(case.row("SECOND_SHIELD", 2).block_effective, 1);

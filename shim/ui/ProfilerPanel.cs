@@ -188,8 +188,10 @@ internal sealed class ProfilerPanel
         if (_history && roster?.Count == 0 && !string.IsNullOrEmpty(view.Character))
             roster = view.Character.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).Take(4)
                 .Select((character, index) => new PlayerSummary(index, character)).ToArray();
-        _avatars = (roster ?? Array.Empty<PlayerSummary>()).Select(player => (player.Slot, Path: PanelTheme.PortraitPath(player.Character)))
-            .Where(player => player.Path != null).Select(player => new AvatarFact(player.Slot, _theme.Portrait(player.Path) != null, player.Path)).ToArray();
+        var portraits = (roster ?? Array.Empty<PlayerSummary>()).Select(player => (player.Slot, Path: PanelTheme.PortraitPath(player.Character)))
+            .Where(player => player.Path != null).ToArray();
+        _theme.RetainPortraits(portraits.Select(player => player.Path));
+        _avatars = portraits.Select(player => new AvatarFact(player.Slot, _theme.Portrait(player.Path) != null, player.Path)).ToArray();
         _avatarSlots = _avatars.Select(avatar => avatar.Slot).ToArray();
         _animation.SetTargets(_player, _avatarSlots);
         _scales = _animation.Values;

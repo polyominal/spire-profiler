@@ -5,7 +5,36 @@ The reference is commit `c928c477852e75ffcc35f8cd16c7ed03caad7c7f`.
 export. It never imports the managed port. Generated `ui_reference.json` records
 its outputs under ignored `tmp/`. `UiParityFixtures.cs` feeds the same inputs to
 the production managed projection and layout methods and compares their complete
-outputs.
+outputs, with the explicitly approved corrections below.
+
+## Approved corrections
+
+The original references and fingerprints remain unchanged. Corrections have
+independent expected outcomes; they do not regenerate expectations from the
+production implementation.
+
+- `defense_scale.patch` changes only the original Rust chart denominator in a
+  separate source export. The resulting `ui_approved.json` supplies full command
+  and pixel expectations. The denominator is the largest sum of positive
+  segments actually drawn in any defense row, including separately drawn
+  self-damage. Labels, accounting, ranking, and share percentages stay original.
+- Session comparisons replace two expected outcomes: an uncompleted replacement
+  run has no finalized history, and a new context with the same external
+  identity starts with zero completed combats. Its predecessor's interrupted
+  history remains available. All other session fields compare unchanged.
+- Native scenarios that exercise block allocation compare every field except
+  effective block and its modifier split. Unknown rows may first appear earlier
+  because missing block provenance is now recorded. Their other counters still
+  compare, as does the order of all named rows. Full and projected ledgers
+  remain available separately. Scenarios without these changes compare in full.
+- Independent native model tests cover FIFO ordering, bounded Unknown fallback,
+  accepted modifier batches, partial-consumption rounding, and conservation.
+  Managed hook tests require each game modifier callback to execute once and pin
+  its observed credit. The decimal arithmetic and original source-mixture
+  comparisons remain unchanged.
+- Host tests exercise portrait-cache replacement across more than eight paths
+  and verify the resulting portrait filters. Callback and async-lifetime tests
+  replace the original duplicate-callback and receiver-global staging behavior.
 
 The comparison includes ordered drawing commands, strings, colors, typography,
 alignment, textures, row and avatar hitboxes, metadata, tooltip lines, and
@@ -46,7 +75,8 @@ The managed adapter requires the production statistics DTOs, `ChartProjection`,
 `PanelLayout`, `PanelGeometry`, and `TooltipLayout`. Its entry point is
 `UiParityFixtures.Run(referencePath)`. It has no Godot dependency. A failed
 comparison reports the fixture name and the first differing JSON path; expected
-values must only change through a reviewed baseline regeneration.
+values change only through explicit correction specifications, independently of
+the production implementation.
 
 ## Data and presentation contracts
 
@@ -56,9 +86,9 @@ values must only change through a reviewed baseline regeneration.
 - Damage ranks by its positive contribution sum. Defense ranks by positive
   contributions minus self-damage. Positive defense and self-damage are drawn
   separately, including zero or negative net defense. Standalone self-damage
-  follows positive defense. Segment normalization uses the maximum absolute net
-  value before splitting; each segment clamps independently to 1000, so combined
-  segments can extend past the track.
+  follows positive defense. The original maximum-absolute-net denominator is
+  replaced by the approved displayed-segment denominator above, so bars stay
+  within their tracks.
 - Share percentages use all selected positive contributions, including
   candidates excluded by the admission cap. Tenths of a percent truncate.
   Segment widths truncate after per-mille normalization and again to whole

@@ -4,6 +4,19 @@ using System.Runtime.InteropServices;
 
 namespace SpireProfiler;
 
+[StructLayout(LayoutKind.Explicit, Size = 16)]
+internal readonly struct BlockModifier
+{
+    [FieldOffset(0)] internal readonly ulong Source;
+    [FieldOffset(8)] internal readonly long Credit;
+
+    internal BlockModifier(ulong source, long credit)
+    {
+        Source = source;
+        Credit = credit;
+    }
+}
+
 // One managed lifetime owns the native engine; only data crosses this boundary.
 internal static class ProfilerNative
 {
@@ -102,10 +115,7 @@ internal static class ProfilerNative
     private delegate int NativeBuffMitigation(ulong engine, ulong combatSeq, ulong sourceTransfer, int prevented);
     private static NativeBuffMitigation _buff_mitigation;
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    private delegate int NativeBlockModifierContribution(ulong engine, ulong combatSeq, ulong sourceTransfer, int amount, int receiverSlot);
-    private static NativeBlockModifierContribution _block_modifier_contribution;
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    private delegate int NativeBlockGained(ulong engine, ulong combatSeq, int amount, ulong sourceTransfer, int receiverSlot);
+    private delegate int NativeBlockGained(ulong engine, ulong combatSeq, int amount, ulong sourceTransfer, int receiverSlot, IntPtr modifiers, int count, int incomplete);
     private static NativeBlockGained _block_gained;
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int NativeForge(ulong engine, ulong combatSeq, ulong sourceTransfer, int amount);
@@ -194,7 +204,6 @@ internal static class ProfilerNative
                     _damage_calculation_abort,
                     _damage_unattributed,
                     _buff_mitigation,
-                    _block_modifier_contribution,
                     _block_gained,
                     _forge,
                     _osty_summoned,
@@ -242,7 +251,6 @@ internal static class ProfilerNative
                     GetExport<NativeDamageCalculationAbort>(lib, "spire_profiler_damage_calculation_abort"),
                     GetExport<NativeDamageUnattributed>(lib, "spire_profiler_damage_unattributed"),
                     GetExport<NativeBuffMitigation>(lib, "spire_profiler_buff_mitigation"),
-                    GetExport<NativeBlockModifierContribution>(lib, "spire_profiler_block_modifier_contribution"),
                     GetExport<NativeBlockGained>(lib, "spire_profiler_block_gained"),
                     GetExport<NativeForge>(lib, "spire_profiler_forge"),
                     GetExport<NativeOstySummoned>(lib, "spire_profiler_osty_summoned"),
@@ -350,8 +358,17 @@ internal static class ProfilerNative
     internal static int DamageCalculationAbort(ulong calculation) => _damage_calculation_abort(engine, calculation);
     internal static int DamageUnattributed(ulong combatSeq, int total, int unblocked, int blocked, int resultKind, int receiverSlot, int weakPrevented) => _damage_unattributed(engine, combatSeq, total, unblocked, blocked, resultKind, receiverSlot, weakPrevented);
     internal static int BuffMitigation(ulong combatSeq, ulong sourceTransfer, int prevented) => _buff_mitigation(engine, combatSeq, sourceTransfer, prevented);
-    internal static int BlockModifierContribution(ulong combatSeq, ulong sourceTransfer, int amount, int receiverSlot) => _block_modifier_contribution(engine, combatSeq, sourceTransfer, amount, receiverSlot);
-    internal static int BlockGained(ulong combatSeq, int amount, ulong sourceTransfer, int receiverSlot) => _block_gained(engine, combatSeq, amount, sourceTransfer, receiverSlot);
+    internal static int BlockGained(ulong combatSeq, int amount, ulong sourceTransfer, int receiverSlot, BlockModifier[] modifiers, bool incomplete)
+    {
+        if (modifiers.Length == 0)
+            return _block_gained(engine, combatSeq, amount, sourceTransfer, receiverSlot, IntPtr.Zero, 0, incomplete ? 1 : 0);
+        var pinned = GCHandle.Alloc(modifiers, GCHandleType.Pinned);
+        try
+        {
+            return _block_gained(engine, combatSeq, amount, sourceTransfer, receiverSlot, pinned.AddrOfPinnedObject(), modifiers.Length, incomplete ? 1 : 0);
+        }
+        finally { pinned.Free(); }
+    }
     internal static int Forge(ulong combatSeq, ulong sourceTransfer, int amount) => _forge(engine, combatSeq, sourceTransfer, amount);
     internal static int OstySummoned(ulong combatSeq, ulong sourceTransfer, int hpAmount, int ownerSlot) => _osty_summoned(engine, combatSeq, sourceTransfer, hpAmount, ownerSlot);
     internal static int OstyKilled(ulong combatSeq, int ownerSlot, ulong play) => _osty_killed(engine, combatSeq, ownerSlot, play);

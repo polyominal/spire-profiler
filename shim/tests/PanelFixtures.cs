@@ -19,7 +19,7 @@ internal static class PanelFixtures
             throw new InvalidOperationException("Damage shares must use the baseline's truncated tenths");
         var own = rows.Single(row => row.Section == ChartSection.Defense && row.Source.Player == 0 && row.Name == "SHARED" && !row.SelfDamage);
         if (own.Value != 8 || own.SegMilli[(int)ChartSegment.Direct] != 100 || own.SegMilli[(int)ChartSegment.Modifier] != 60)
-            throw new InvalidOperationException("Split defense bars must retain the net-defense section scale");
+            throw new InvalidOperationException("Defense segments must share a scale that includes displayed self-damage");
         var filtered = ChartProjection.Rows(cards, 1);
         if (filtered.Count != 2 || filtered.Any(row => row.Source.Player != 1) || filtered[0].ShareX10 != 1000)
             throw new InvalidOperationException("Player selection must retain source ownership and independent shares");
@@ -45,6 +45,40 @@ internal static class PanelFixtures
         animation.SetTargets(null, slots);
         animation.AdvanceFrame(20);
         if (animation.Values[1] != 1.1f) throw new InvalidOperationException("An idle period must not advance the next avatar transition");
+        (StatRow Card, int[] Segments, int? Child, long Value)[] defenseCases =
+        {
+            (new() { Id = "POSITIVE_NET", BlockEffective = 30, BlkModifier = 20, SelfDamage = 49 }, new[] { 600, 0, 400, 0, 0, 0, 0 }, 980, 50),
+            (new() { Id = "ZERO_NET", BlockEffective = 30, BlkModifier = 20, SelfDamage = 50 }, new[] { 600, 0, 400, 0, 0, 0, 0 }, 1000, 50),
+            (new() { Id = "NEGATIVE_NET", BlockEffective = 30, BlkModifier = 20, SelfDamage = 70 }, new[] { 428, 0, 285, 0, 0, 0, 0 }, 1000, 50),
+            (new() { Id = "NEGATIVE_MODIFIER", BlockEffective = 50, BlkModifier = -20, SelfDamage = 10 }, new[] { 1000, 0, 0, 0, 0, 0, 0 }, 200, 30),
+            (new() { Id = "CANCELED_DEFENSE", BlockEffective = 50, BlkModifier = -50, SelfDamage = 10 }, new[] { 833, 0, 0, 0, 0, 0, 166 }, null, -10),
+            (new() { Id = "WIDE_DRAWABLE_SUM", BlockEffective = long.MaxValue, BlkModifier = -long.MaxValue, MitigateBuff = long.MaxValue, SelfDamage = 1 }, new[] { 500, 0, 0, 0, 500, 0, 0 }, 0, long.MaxValue),
+        };
+        foreach (var fixture in defenseCases)
+        {
+            var projected = ChartProjection.Rows(new[] { fixture.Card });
+            if (projected.Count != (fixture.Child.HasValue ? 2 : 1) || projected[0].Value != fixture.Value
+                || projected[0].ShareX10 != (fixture.Child.HasValue ? 1000 : 0) || !projected[0].SegMilli.SequenceEqual(fixture.Segments))
+                throw new InvalidOperationException("Defense scale changed numeric accounting or drawable proportions: " + fixture.Card.Id);
+            if (fixture.Child is { } child && (projected[1].Value != -fixture.Card.SelfDamage
+                || projected[1].SegMilli[(int)ChartSegment.SelfDamage] != child || projected[1].ShareX10 != 0))
+                throw new InvalidOperationException("Self-damage must retain its own magnitude on the shared defense scale: " + fixture.Card.Id);
+            var layout = PanelLayout.Chart(UiTab.Combat, projected, new(), "", skipChrome: true);
+            var rectangles = layout.Body.OfType<RectCommand>().ToArray();
+            foreach (var track in rectangles.Where(rectangle => rectangle.Color == UiPalette.Track))
+                foreach (var fill in rectangles.Where(rectangle => rectangle.Color != UiPalette.Track && rectangle.Y == track.Y && rectangle.H == track.H))
+                    if (fill.X < track.X || fill.X + fill.W > track.X + track.W)
+                        throw new InvalidOperationException("A defense segment escaped its track: " + fixture.Card.Id);
+        }
+        var ranked = ChartProjection.Rows(new[]
+        {
+            new StatRow { Id = "MIXED", BlockEffective = 30, BlkModifier = 20, SelfDamage = 49 },
+            new StatRow { Id = "OTHER", BlockEffective = 20 }
+        });
+        string[] expectedNames = { "OTHER", "MIXED", "MIXED" };
+        if (!ranked.Select(row => row.Name).SequenceEqual(expectedNames)
+            || ranked[0].Value != 20 || ranked[1].Value != 50 || ranked[2].Value != -49)
+            throw new InvalidOperationException("Defense scaling must retain the existing net-value ranking and separate row labels");
         Console.WriteLine("MANAGED PANEL PROJECTION FIXTURES PASS");
     }
 }

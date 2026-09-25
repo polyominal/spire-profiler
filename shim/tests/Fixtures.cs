@@ -151,7 +151,8 @@ internal static class DamageFixture
     internal static Dictionary<Creature, (IEnumerable<AbstractModel> Modifiers, decimal Bonus)> ModifiersByTarget;
     internal static Exception Error;
     internal static int HookCalls, Enumerated, LateEnumerated;
-    internal static bool PreviewDuringDamage;
+    internal static bool PreviewDuringDamage, AllowOriginalHook;
+    internal static Action BeforeHook;
     internal static Action DuringLive;
     internal static Func<Task> Nested;
     internal static Action AfterGroup;
@@ -185,7 +186,7 @@ internal static class DamageFixture
     internal static decimal Preview(Creature target, Creature dealer, CardModel card)
         => Hook.ModifyDamage(null, (ICombatState)CaptureRuntime.Epoch.Combat, target, dealer, 10, ValueProp.Move, card, null, ModifyDamageHookType.All, CardPreviewMode.None, out _);
     internal static bool PreviewHookPrefix(decimal damage, ref decimal __result, ref IEnumerable<AbstractModel> modifiers)
-    { HookCalls++; modifiers = Array.Empty<AbstractModel>(); __result = damage; return false; }
+    { HookCalls++; if (AllowOriginalHook) { BeforeHook?.Invoke(); return true; } modifiers = Array.Empty<AbstractModel>(); __result = damage; return false; }
     internal static void ObserveTask(Task<IEnumerable<DamageResult>> __result) { OriginalTask = __result; }
     internal static decimal Modify(IRunState runState, ICombatState combatState, Creature target, Creature dealer, decimal damage, ValueProp props, CardModel cardSource, CardPlay cardPlay,
         ModifyDamageHookType hookType, CardPreviewMode previewMode, out IEnumerable<AbstractModel> modifiers)
@@ -193,7 +194,10 @@ internal static class DamageFixture
         HookCalls++;
         var values = ModifiersByTarget != null ? ModifiersByTarget[target] : (Modifiers, Bonus);
         modifiers = values.Item1;
-        return damage + values.Item2;
+        decimal result = damage;
+        foreach (var model in values.Item1) result += ModifierCapture.DamageAdditive(model, target, result, props, dealer, cardSource, cardPlay);
+        foreach (var model in values.Item1) result *= ModifierCapture.DamageMultiplicative(model, target, result, props, dealer, cardSource, cardPlay);
+        return result;
     }
 }
 internal static class GameProducerFixture
@@ -344,14 +348,20 @@ internal static class CommandFixture
     internal static Action During;
     internal static int Calls;
     internal static SourceSnapshot Frozen;
+    internal static bool Modify;
+    internal static Exception Error;
+    internal static CommandFrame Frame;
     [MethodImpl(MethodImplOptions.NoInlining)]
     internal static async Task<decimal> GainBlock(Creature creature, decimal amount, ValueProp props, CardPlay cardPlay, bool fast = false)
     {
         Calls++;
+        Frame = CommandCapture.Current;
+        if (Modify) amount = Hook.ModifyBlock((ICombatState)CaptureRuntime.Epoch.Combat, creature, amount, props, cardPlay?.Card, cardPlay, out _);
         await Pause;
+        if (Error != null) throw Error;
         Frozen = CommandCapture.Current.Source;
         During?.Invoke();
-        CommandCapture.BlockGained(CaptureRuntime.Epoch.Combat, creature, (int)amount);
+        if (amount > 0) CommandCapture.BlockGained(CaptureRuntime.Epoch.Combat, creature, (int)amount);
         return amount;
     }
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -390,6 +400,8 @@ internal sealed class FakeBackend : AttributionBackend
     internal readonly List<ResultPacket> Committed = new(), Fallback = new();
     internal readonly List<GenerationState> PlayGenerations = new();
     internal readonly List<(string Kind, int Amount, int Slot, SourceSnapshot Source)> CommandEvents = new();
+    internal readonly List<(int Amount, SourceCredit[] Modifiers, bool Incomplete)> BlockBatches = new();
+    internal Action DuringBlockPublish;
     internal readonly List<(ulong Batch, ulong Creature, ulong Power, int Hp)> DoomTargets = new();
     internal readonly List<ulong> DoomCommitted = new();
     internal readonly HashSet<ulong> DoomBatches = new();
@@ -545,10 +557,14 @@ internal sealed class FakeBackend : AttributionBackend
     internal override int DamageFallback(ulong epoch, ResultPacket packet) { Calls.Add("DamageFallback"); Fallback.Add(packet); return 1; }
     internal override int OrbChanneled(ulong epoch, ulong orb, ulong source)
     { if (Reject("OrbChanneled")) return 0; Sources[orb] = Read(source); return 1; }
-    internal override int BlockGained(ulong epoch, int amount, ulong source, int slot)
-    { CommandEvents.Add(("block", amount, slot, Read(source))); return 1; }
-    internal override int BlockModifier(ulong epoch, ulong source, int amount, int slot)
-    { if (Reject("BlockModifier")) return 0; CommandEvents.Add(("block-modifier", amount, slot, Read(source))); return 1; }
+    internal override int BlockGained(ulong epoch, int amount, ulong source, int slot, SourceCredit[] modifiers, bool incomplete)
+    {
+        DuringBlockPublish?.Invoke();
+        BlockBatches.Add((amount, modifiers, incomplete));
+        CommandEvents.Add(("block", amount, slot, Read(source)));
+        foreach (var credit in modifiers) CommandEvents.Add(("block-modifier", credit.Amount, slot, credit.Source));
+        return 1;
+    }
     internal override int Forge(ulong epoch, ulong source, int amount)
     { CommandEvents.Add(("forge", amount, 4, Read(source))); return 1; }
     internal override int OstySummoned(ulong epoch, ulong source, int hp, int slot)
@@ -573,6 +589,32 @@ internal sealed class FakeBackend : AttributionBackend
     internal override void Diagnostic(string category, Exception error) { Calls.Add("diagnostic:" + category); }
 }
 
+internal sealed class StatefulModifier : AbstractModel
+{
+    public override bool ShouldReceiveCombatHooks => true;
+    internal int DamageAdditions, DamageMultiplications, BlockAdditions, BlockMultiplications;
+    internal Action DuringDamage, DuringBlock;
+    internal Exception Error;
+    internal CardPlay DamagePlay, BlockPlay;
+    internal decimal? BlockAddition, BlockMultiplier;
+    public override decimal ModifyDamageAdditive(Creature target, decimal amount, ValueProp props, Creature dealer, CardModel cardSource, CardPlay cardPlay)
+    { DamageAdditions++; DamagePlay = cardPlay; if (Error != null) throw Error; DuringDamage?.Invoke(); return 3; }
+    public override decimal ModifyDamageMultiplicative(Creature target, decimal amount, ValueProp props, Creature dealer, CardModel cardSource, CardPlay cardPlay)
+    { DamageMultiplications++; DamagePlay = cardPlay; return 2; }
+    public override decimal ModifyBlockAdditive(Creature target, decimal block, ValueProp props, CardModel cardSource, CardPlay cardPlay)
+    { BlockAdditions++; BlockPlay = cardPlay; if (Error != null) throw Error; DuringBlock?.Invoke(); return BlockAddition ?? 2; }
+    public override decimal ModifyBlockMultiplicative(Creature target, decimal block, ValueProp props, CardModel cardSource, CardPlay cardPlay)
+    { BlockMultiplications++; BlockPlay = cardPlay; return BlockMultiplier ?? 1.5m; }
+}
+internal sealed class StatefulEnchantment : EnchantmentModel
+{
+    internal int DamageAdditions, DamageMultiplications, BlockAdditions, BlockMultiplications;
+    public override decimal EnchantDamageAdditive(decimal originalDamage, ValueProp props) { DamageAdditions++; return 2; }
+    public override decimal EnchantDamageMultiplicative(decimal originalDamage, ValueProp props) { DamageMultiplications++; return 1.5m; }
+    public override decimal EnchantBlockAdditive(decimal originalBlock) { BlockAdditions++; return 4; }
+    public override decimal EnchantBlockMultiplicative(decimal originalBlock) { BlockMultiplications++; return 2; }
+}
+
 internal sealed class BlockClearListener : AbstractModel
 {
     internal Func<Creature, Task> Cleared;
@@ -595,6 +637,18 @@ internal static partial class ManagedFixtures
     private static SourceSnapshot A, B;
     private static Harmony harmony;
     private static AbstractModel[] blockClearListeners;
+    private static List<Type> nestedModifierCalls;
+    private static bool skipBlockHook;
+    private static Action beforeBlockHook;
+    internal static void ObserveNestedModifier(object __instance) => nestedModifierCalls?.Add(__instance.GetType());
+    internal static bool SkipBlockHook(decimal block, ref decimal __result, ref IEnumerable<AbstractModel> modifiers)
+    {
+        beforeBlockHook?.Invoke();
+        if (!skipBlockHook) return true;
+        __result = block + 7;
+        modifiers = Array.Empty<AbstractModel>();
+        return false;
+    }
     internal static bool BlockClearListenersPrefix(ref IEnumerable<AbstractModel> __result)
     {
         if (blockClearListeners == null) return true;
@@ -607,7 +661,9 @@ internal static partial class ManagedFixtures
         SynchronizationContext.SetSynchronizationContext(context);
         var nativeDelegates = typeof(ProfilerNative).GetNestedTypes(BindingFlags.Public | BindingFlags.NonPublic)
             .Where(type => typeof(MulticastDelegate).IsAssignableFrom(type)).ToArray();
-        Check(nativeDelegates.Length == 46, "Complete compiled native delegate inventory");
+        Check(nativeDelegates.Length == 45, "Complete compiled native delegate inventory");
+        Check(Marshal.SizeOf<BlockModifier>() == 16 && Marshal.OffsetOf<BlockModifier>(nameof(BlockModifier.Source)).ToInt32() == 0
+            && Marshal.OffsetOf<BlockModifier>(nameof(BlockModifier.Credit)).ToInt32() == 8, "Atomic block batch matches native source/credit layout");
         int utf8Parameters = 0;
         foreach (var type in nativeDelegates)
         {
@@ -645,6 +701,9 @@ internal static partial class ManagedFixtures
             foreach (var group in targets.GroupBy(m => m.GetBaseDefinition().DeclaringType.Name)) Check(expectedRoots[group.Key] == group.Count(), "Exact producer root count");
             FlowCapture.Install(harmony, line => { inventory.WriteLine(line); if (!line.StartsWith("PRODUCER ", StringComparison.Ordinal)) Console.WriteLine(line); });
         }
+        foreach (var type in new[] { typeof(PaperPhrog), typeof(CrueltyPower), typeof(DebilitatePower) })
+            harmony.Patch(AccessTools.DeclaredMethod(type, "ModifyVulnerableMultiplier"), prefix: new HarmonyMethod(typeof(ManagedFixtures), nameof(ObserveNestedModifier)));
+        harmony.Patch(AccessTools.DeclaredMethod(typeof(Hook), "ModifyBlock"), prefix: new HarmonyMethod(typeof(ManagedFixtures), nameof(SkipBlockHook)) { priority = Priority.First });
         var clearDecision = Harmony.GetPatchInfo(AccessTools.DeclaredMethod(typeof(Hook), "ShouldClearBlock"));
         Check(clearDecision.Postfixes.Count(patch => patch.owner == harmony.Id
             && FlowCapture.SameMethod(patch.PatchMethod, AccessTools.DeclaredMethod(typeof(CommandCapture), nameof(CommandCapture.ClearBlockPostfix)))) == 1,
@@ -678,7 +737,7 @@ internal static partial class ManagedFixtures
             }
         DamageCapture.Patch(harmony, AccessTools.Method(typeof(DamageFixture), "Damage"));
         harmony.Patch(AccessTools.Method(typeof(DamageFixture), "Damage"), postfix: new HarmonyMethod(typeof(DamageFixture), nameof(DamageFixture.ObserveTask)));
-        harmony.Patch(DamageCapture.HookMethod, prefix: new HarmonyMethod(typeof(DamageFixture), nameof(DamageFixture.PreviewHookPrefix)));
+        harmony.Patch(DamageCapture.HookMethod, prefix: new HarmonyMethod(typeof(DamageFixture), nameof(DamageFixture.PreviewHookPrefix)) { priority = Priority.First });
         DamageCapture.OriginalModifyDamage = DamageFixture.Modify;
         DamageCapture.Inspect = (_, _, _) => default;
         foreach (var item in new (Type Type, string Method, int Boundaries)[]
@@ -745,6 +804,13 @@ internal static partial class ManagedFixtures
         Test("modifier/enemy/Weak rejection invalidates whole groups with evidence intact", CaptureStatusFailures);
         Test("block/Forge/summon immutable scopes, original kickoff timing and inheritance", CommandSources);
         Test("actual block-clear decisions preserve Barricade/Blur and later cross-player block", RetainedBlock);
+        Test("actual hooks observe modifier and enchantment callbacks once", ObservedModifiers);
+        Test("actual Vulnerable nested suppliers preserve scalar credits", ObservedVulnerable);
+        Test("modifier failure preserves original exceptions and physical results", ObservationFailures);
+        Test("earlier Harmony prefix previews cannot replace live modifier evidence", AdmissionPrefixPreview);
+        Test("earlier prefix canonical calculations preserve their parent's admission", AdmissionNestedCalculation);
+        Test("later async previews cannot reuse a finished modifier scope", DelayedModifierPreview);
+        Test("async block batches retain command and source ownership", BlockBatchLifetime);
         Test("native modifier credit preserves original decimal arithmetic", NativeModifierProjection);
         Test("native Weak policy uses frozen receiver evidence and preserves integer rounding", NativeWeakProjection);
         Test("Doom nested batches, original Task and synthetic fallback remainder", DoomBatches);
@@ -773,6 +839,10 @@ internal static partial class ManagedFixtures
         backend.NamedSources["B"] = B;
         CommandPause = null;
         blockClearListeners = null;
+        nestedModifierCalls = null;
+        skipBlockHook = false;
+        beforeBlockHook = null;
+        DamageFixture.BeforeHook = null;
         DuringBeforeApplied = null;
         DamageFixture.DuringLive = null;
         DamageFixture.Nested = null;
@@ -794,12 +864,17 @@ internal static partial class ManagedFixtures
         DamageFixture.Pause = Task.CompletedTask;
         DamageFixture.Error = null;
         DamageFixture.PreviewDuringDamage = false;
+        DamageFixture.AllowOriginalHook = false;
+        DamageCapture.OriginalModifyDamage = DamageFixture.Modify;
         DamageFixture.Modifiers = Array.Empty<AbstractModel>();
         DamageFixture.Bonus = 0;
         DamageCapture.Inspect = (_, _, _) => default;
         CommandFixture.Pause = Task.CompletedTask;
         CommandFixture.During = null;
         CommandFixture.Calls = 0;
+        CommandFixture.Modify = false;
+        CommandFixture.Error = null;
+        CommandFixture.Frame = null;
         DoomFixture.OriginalTask = Task.CompletedTask;
         DoomFixture.Error = null;
         DoomFixture.During = null;
@@ -1924,6 +1999,402 @@ internal static partial class ManagedFixtures
         context.Complete(Damage(incoming, enemy));
         Check(backend.Calls.Count(call => call == "DamageEnemyHit") == hits && backend.Fallback.Last().WeakPrevented == 2, "Dirty Strength blocks old native reduction capture without losing observed Weak evidence");
     }
+    private static void ObservedModifiers()
+    {
+        var world = GameWorld();
+        var card = GameCard<StrikeIronclad>(world.Owner, A);
+        var enchantment = Mutable<StatefulEnchantment>("ENCHANTMENT");
+        AccessTools.Field(typeof(CardModel), "<Enchantment>k__BackingField").SetValue(card, enchantment);
+        var play = (CardPlay)RuntimeHelpers.GetUninitializedObject(typeof(CardPlay));
+        AccessTools.Field(typeof(CardPlay), "<Card>k__BackingField").SetValue(play, card);
+        var modifier = Mutable<StatefulModifier>("MODIFIER");
+        backend.Descriptors[modifier] = new(CaptureKind.DirectModel, ProducerRole.Relic, "B", 1, 0, Combat: backend.Combat);
+        blockClearListeners = new AbstractModel[] { modifier };
+        DamageFixture.AllowOriginalHook = true;
+        DamageCapture.OriginalModifyDamage = Hook.ModifyDamage;
+        DamageCapture.Inspect = (_, _, _) => new(true, false, 0, null, false);
+        decimal unobserved = Hook.ModifyDamage(world.Owner.RunState, (ICombatState)backend.Combat, world.Enemy, world.Owner.Creature, 10, ValueProp.Move, card, play,
+            ModifyDamageHookType.All, CardPreviewMode.None, out _);
+        Check(unobserved == 42 && backend.DamageModifiers.Count == 0, "Unobserved original hook produces the independent physical result");
+        modifier.DamageAdditions = modifier.DamageMultiplications = enchantment.DamageAdditions = enchantment.DamageMultiplications = 0;
+        DamageCapture.Prefix(new object[] { null, new[] { world.Enemy }, 10m, ValueProp.Move, world.Owner.Creature, card, null }, out var previous);
+        try
+        {
+            decimal damage = DamageCapture.ModifyDamage(world.Owner.RunState, (ICombatState)backend.Combat, world.Enemy, world.Owner.Creature, 10, ValueProp.Move, card, play,
+                ModifyDamageHookType.All, CardPreviewMode.None, out _);
+            Check(damage == unobserved && ReferenceEquals(modifier.DamagePlay, play), "Observation preserves physical damage and the actual CardPlay");
+            Check(damage == 42 && modifier.DamageAdditions == 1 && modifier.DamageMultiplications == 1,
+                "Both original modifier passes execute once, including a model that modifies both passes");
+            Check(enchantment.DamageAdditions == 1 && enchantment.DamageMultiplications == 1, "Original enchantment passes execute once");
+            Check(backend.DamageModifiers.Select(item => item.Amount).SequenceEqual(new[] { 3, 21 }), "Contributions use observed enchanted inputs");
+            Check(backend.DamageModifiers.All(item => item.Source.Epoch == B.Epoch), "Modifier suppliers were frozen in the live epoch");
+            DamageCapture.ReportResultGroup(new() { new(world.Enemy, ValueProp.Move) { UnblockedDamage = (int)damage } });
+            ulong transient = TransientModifierSource();
+            modifier.DuringDamage = () =>
+            {
+                modifier.DuringDamage = null;
+                backend.NamedSources.Remove("B");
+                GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect(); SourceSnapshot.Collect();
+                Check(!backend.ReleasedSources.Contains(transient), "The original callback retains its captured source during collection");
+                var listeners = blockClearListeners;
+                blockClearListeners = Array.Empty<AbstractModel>();
+                Check(Hook.ModifyDamage(world.Owner.RunState, (ICombatState)backend.Combat, world.Enemy, world.Owner.Creature, 10, ValueProp.Move, null, null,
+                    ModifyDamageHookType.All, CardPreviewMode.None, out _) == 10, "Nested preview executes its original hook");
+                blockClearListeners = listeners;
+            };
+            damage = DamageCapture.ModifyDamage(world.Owner.RunState, (ICombatState)backend.Combat, world.Enemy, world.Owner.Creature, 10, ValueProp.Move, card, play,
+                ModifyDamageHookType.All, CardPreviewMode.None, out _);
+            Check(backend.DamageModifiers.Count == 4 && modifier.DamageAdditions == 2 && modifier.DamageMultiplications == 2,
+                "Nested previews neither capture contributions nor lose the parent observation frame");
+            DamageCapture.ReportResultGroup(new() { new(world.Enemy, ValueProp.Move) { UnblockedDamage = (int)damage } });
+            backend.NamedSources["B"] = B;
+            CommandCapture.Prefix(AccessTools.DeclaredMethod(typeof(CommandFixture), "GainBlock"), new object[] { world.Owner.Creature, 10m, ValueProp.Move, null, false }, out var command);
+            try
+            {
+                Check(Hook.ModifyBlock((ICombatState)backend.Combat, world.Owner.Creature, 10, ValueProp.Move, null, null, out _) == 18
+                    && !backend.CommandEvents.Any(item => item.Kind == "block-modifier"), "A pre-calculation preview cannot consume the command's block admission");
+                modifier.BlockAdditions = modifier.BlockMultiplications = 0;
+                modifier.DuringBlock = () =>
+                {
+                    modifier.DuringBlock = null;
+                    Check(Hook.ModifyBlock((ICombatState)backend.Combat, world.Owner.Creature, 10, ValueProp.Move, null, null, out _) == 18,
+                        "Nested block previews retain their original result");
+                };
+                decimal block = ModifierCapture.ModifyBlock((ICombatState)backend.Combat, world.Owner.Creature, 10, ValueProp.Move, card, play, out _);
+                Check(ReferenceEquals(modifier.BlockPlay, play), "Block callbacks receive the actual CardPlay");
+                Check(block == 45 && modifier.BlockAdditions == 2 && modifier.BlockMultiplications == 2,
+                    "Each original block modifier pass executes once for the canonical calculation and once for its own preview");
+                Check(enchantment.BlockAdditions == 1 && enchantment.BlockMultiplications == 1, "Original block enchantments execute once");
+                Check(backend.CommandEvents.Count == 0, "Block credits wait for the physical gain");
+                CommandCapture.BlockGained(backend.Combat, world.Owner.Creature, (int)block);
+                Check(backend.CommandEvents.Where(item => item.Kind == "block-modifier").Select(item => item.Amount).SequenceEqual(new[] { 2, 15 }),
+                    "Block attribution uses actual input after enchantments and both modifier stages");
+                Hook.ModifyBlock((ICombatState)backend.Combat, world.Owner.Creature, 10, ValueProp.Move, null, null, out _);
+                Check(backend.CommandEvents.Count(item => item.Kind == "block-modifier") == 2,
+                    "Nested and post-calculation previews never publish extra block attribution");
+            }
+            finally { CommandCapture.Finalizer(command); }
+        }
+        finally
+        {
+            DamageCapture.Abort(); DamageCapture.Finalizer(previous);
+            DamageCapture.OriginalModifyDamage = DamageFixture.Modify;
+            DamageFixture.AllowOriginalHook = false; blockClearListeners = null;
+        }
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static ulong TransientModifierSource()
+    {
+        var source = backend.CreateSource(epoch, new[] { new SourceShare((epoch << 32) | 64, 1) });
+        backend.NamedSources["B"] = source;
+        return source.Handle;
+    }
+    private static void ObservedVulnerable()
+    {
+        var world = GameWorld();
+        var vulnerable = GamePower<VulnerablePower>(world.Enemy, 1, A);
+        var cruelty = GamePower<CrueltyPower>(world.Owner.Creature, 25, B);
+        var debilitate = GamePower<DebilitatePower>(world.Enemy, 1, B);
+        AccessTools.Field(typeof(Creature), "_powers").SetValue(world.Owner.Creature, new List<PowerModel> { cruelty });
+        AccessTools.Field(typeof(Creature), "_powers").SetValue(world.Enemy, new List<PowerModel> { vulnerable, debilitate });
+        var phrog = Mutable<PaperPhrog>("PHROG");
+        phrog.Owner = world.Owner;
+        AccessTools.Field(typeof(Player), "_relics").SetValue(world.Owner, new List<RelicModel> { phrog });
+        RecordModel(phrog, B);
+        blockClearListeners = new AbstractModel[] { vulnerable };
+        DamageFixture.AllowOriginalHook = true;
+        DamageCapture.OriginalModifyDamage = Hook.ModifyDamage;
+        DamageCapture.Inspect = (_, _, _) => new(true, false, 0, null, false);
+        nestedModifierCalls = new();
+        Check(vulnerable.ModifyDamageMultiplicative(world.Enemy, 20, ValueProp.Move, world.Owner.Creature, null, null) == 3
+            && nestedModifierCalls.SequenceEqual(new[] { typeof(PaperPhrog), typeof(CrueltyPower), typeof(DebilitatePower) }),
+            "The unobserved Vulnerable composition invokes each nested supplier once");
+        nestedModifierCalls.Clear();
+        DamageCapture.Prefix(new object[] { null, new[] { world.Enemy }, 20m, ValueProp.Move, world.Owner.Creature, null, null }, out var previous);
+        try
+        {
+            decimal damage = DamageCapture.ModifyDamage(world.Owner.RunState, (ICombatState)backend.Combat, world.Enemy, world.Owner.Creature, 20, ValueProp.Move, null, null,
+                ModifyDamageHookType.All, CardPreviewMode.None, out _);
+            Check(nestedModifierCalls.SequenceEqual(new[] { typeof(PaperPhrog), typeof(CrueltyPower), typeof(DebilitatePower) }),
+                "Observation does not re-execute any nested Vulnerable callback");
+            Check(damage == 60, "Vulnerable, Phrog, Cruelty, and Debilitate original composition is retained");
+            Check(backend.DamageModifiers.Select(item => item.Amount).SequenceEqual(new[] { 10, 5, 5, 20 }),
+                "Each observed nested multiplier keeps its own numerical contribution");
+            Same(backend.DamageModifiers[0].Source, A, "Vulnerable baseline retains its supplier");
+            foreach (var contribution in backend.DamageModifiers.Skip(1)) Same(contribution.Source, B, "Nested modifier supplier is frozen independently");
+            DamageCapture.ReportResultGroup(new() { new(world.Enemy, ValueProp.Move) { UnblockedDamage = (int)damage } });
+        }
+        finally
+        {
+            DamageCapture.Abort(); DamageCapture.Finalizer(previous);
+            DamageCapture.OriginalModifyDamage = DamageFixture.Modify;
+            DamageFixture.AllowOriginalHook = false; blockClearListeners = null; nestedModifierCalls = null;
+        }
+    }
+    private static void ObservationFailures()
+    {
+        var world = GameWorld();
+        var card = GameCard<StrikeIronclad>(world.Owner, A);
+        var modifier = Mutable<StatefulModifier>("MODIFIER");
+        backend.Descriptors[modifier] = new(CaptureKind.DirectModel, ProducerRole.Relic, "B", 1, 0, Combat: backend.Combat);
+        var error = new InvalidOperationException("original modifier fault");
+        modifier.Error = error;
+        DamageFixture.Modifiers = new AbstractModel[] { modifier };
+        DamageCapture.Inspect = (_, _, _) => new(true, false, 0, null, false);
+        bool observed = false;
+        try { context.Complete(Damage(world.Enemy, world.Owner.Creature, card)); }
+        catch (InvalidOperationException actual) { observed = ReferenceEquals(actual, error); }
+        Check(observed && modifier.DamageAdditions == 1 && modifier.DamageMultiplications == 0,
+            "Original modifier exception and exactly-once call ordering are preserved");
+        Check(backend.OpenCalculations == 0 && ModifierCapture.Current == null && backend.DamageModifiers.Count == 0,
+            "Faulted original calculation abandons its observation scope and native batch");
+        DamageCapture.OriginalModifyDamage = Hook.ModifyDamage;
+        DamageFixture.Results = new() { new(world.Enemy, ValueProp.Move) { UnblockedDamage = 4 } };
+        try
+        {
+            context.Complete(Damage(world.Enemy, world.Owner.Creature, card));
+            Check(backend.Fallback.Count == 1 && backend.Fallback[0].Total == 4 && backend.OpenCalculations == 0,
+                "Another mod skipping the original hook preserves the complete result on Unknown");
+            Check(backend.Calls.Contains("diagnostic:modifier-hook-skipped"), "Skipped original evaluation reports incomplete coverage");
+        }
+        finally { DamageCapture.OriginalModifyDamage = DamageFixture.Modify; }
+        var dexterity = GamePower<DexterityPower>(world.Owner.Creature, 2, B);
+        blockClearListeners = Enumerable.Repeat<AbstractModel>(dexterity, 65).ToArray();
+        CommandCapture.Prefix(AccessTools.DeclaredMethod(typeof(CommandFixture), "GainBlock"), new object[] { world.Owner.Creature, 10m, ValueProp.Move, null, false }, out var command);
+        try
+        {
+            decimal result = ModifierCapture.ModifyBlock((ICombatState)backend.Combat, world.Owner.Creature, 10, ValueProp.Move, null, null, out _);
+            Check(result == 140, "Observation capacity failure never changes original block calculation");
+            CommandCapture.BlockGained(backend.Combat, world.Owner.Creature, (int)result);
+            Check(backend.CommandEvents.Count == 1 && backend.CommandEvents[0].Kind == "block", "Incomplete modifier observations publish no guessed contributions");
+            Same(backend.CommandEvents[0].Source, backend.Unknown(epoch), "Complete physical block result survives with Unknown provenance");
+            Check(backend.Calls.Contains("diagnostic:modifier-observation-cap") && backend.Calls.Contains("diagnostic:block-modifier"),
+                "Incomplete observation explicitly reports coverage failure");
+        }
+        finally { CommandCapture.Finalizer(command); blockClearListeners = null; }
+    }
+    private static void AdmissionPrefixPreview()
+    {
+        var world = GameWorld();
+        var card = GameCard<StrikeIronclad>(world.Owner, A);
+        var modifier = Mutable<StatefulModifier>("MODIFIER");
+        backend.Descriptors[modifier] = new(CaptureKind.DirectModel, ProducerRole.Relic, "B", 1, 0, Combat: backend.Combat);
+        blockClearListeners = new AbstractModel[] { modifier };
+        DamageCapture.OriginalModifyDamage = Hook.ModifyDamage;
+        DamageFixture.AllowOriginalHook = true;
+        DamageCapture.Inspect = (_, _, _) => new(true, false, 0, null, false);
+        DamageFixture.BeforeHook = () =>
+        {
+            DamageFixture.BeforeHook = null;
+            blockClearListeners = Array.Empty<AbstractModel>();
+            Check(Hook.ModifyDamage(world.Owner.RunState, (ICombatState)backend.Combat, world.Enemy, world.Owner.Creature, 7, ValueProp.Move, null, null,
+                ModifyDamageHookType.All, CardPreviewMode.None, out _) == 7, "Earlier damage prefix executes its original preview result");
+            blockClearListeners = new AbstractModel[] { modifier };
+        };
+        DamageCapture.Prefix(new object[] { null, new[] { world.Enemy }, 10m, ValueProp.Move, world.Owner.Creature, card, null }, out var previous);
+        try
+        {
+            decimal damage = DamageCapture.ModifyDamage(world.Owner.RunState, (ICombatState)backend.Combat, world.Enemy, world.Owner.Creature, 10, ValueProp.Move, card, null,
+                ModifyDamageHookType.All, CardPreviewMode.None, out _);
+            Check(damage == 26 && modifier.DamageAdditions == 1 && modifier.DamageMultiplications == 1, "Outer damage calculation still runs exactly once");
+            DamageCapture.ReportResultGroup(new() { new(world.Enemy, ValueProp.Move) { UnblockedDamage = (int)damage } });
+            Check(backend.DamageModifiers.Count == 0 && backend.Committed.Count == 0 && backend.Fallback.Single().Total == 26
+                && backend.Calls.Contains("diagnostic:modifier-admission"), "A displaced observation frame becomes incomplete rather than crediting preview evidence");
+        }
+        finally { DamageCapture.Abort(); DamageCapture.Finalizer(previous); }
+        CommandFixture.Modify = true;
+        FlowCapture.Current = new(CaptureRuntime.Epoch, card, A, ProducerRole.Card, DamageSegment.Direct);
+        beforeBlockHook = () =>
+        {
+            beforeBlockHook = null;
+            blockClearListeners = Array.Empty<AbstractModel>();
+            Check(Hook.ModifyBlock((ICombatState)backend.Combat, world.Owner.Creature, 7, ValueProp.Move, null, null, out _) == 7,
+                "Earlier block prefix executes its original preview result");
+            blockClearListeners = new AbstractModel[] { modifier };
+        };
+        context.Complete(CommandFixture.GainBlock(world.Owner.Creature, 10, ValueProp.Move, null));
+        Check(backend.BlockBatches.Single().Amount == 18 && backend.BlockBatches[0].Incomplete && backend.BlockBatches[0].Modifiers.Length == 0
+            && modifier.BlockAdditions == 1 && modifier.BlockMultiplications == 1, "Displaced block observations preserve physical gain and explicitly degrade only the uncertain split");
+        Same(backend.CommandEvents.Single().Source, A, "Earlier previews do not replace the trusted block producer");
+        FlowCapture.Current = ProducerFrame.Barrier;
+        blockClearListeners = null;
+    }
+    private static void AdmissionNestedCalculation()
+    {
+        var world = GameWorld();
+        var modifier = Mutable<StatefulModifier>("MODIFIER");
+        backend.Descriptors[modifier] = new(CaptureKind.DirectModel, ProducerRole.Relic, "B", 1, 0, Combat: backend.Combat);
+        blockClearListeners = new AbstractModel[] { modifier };
+        DamageFixture.AllowOriginalHook = true;
+        DamageCapture.OriginalModifyDamage = Hook.ModifyDamage;
+        DamageCapture.Inspect = (_, _, _) => new(true, false, 0, null, false);
+        DamageFixture.BeforeHook = () =>
+        {
+            DamageFixture.BeforeHook = null;
+            CommandCapture.Prefix(AccessTools.DeclaredMethod(typeof(CommandFixture), "GainBlock"), new object[] { world.Owner.Creature, 10m, ValueProp.Move, null, false }, out var command);
+            try
+            {
+                decimal gained = ModifierCapture.ModifyBlock((ICombatState)backend.Combat, world.Owner.Creature, 10, ValueProp.Move, null, null, out _);
+                CommandCapture.BlockGained(backend.Combat, world.Owner.Creature, (int)gained);
+            }
+            finally { CommandCapture.Finalizer(command); }
+        };
+        DamageCapture.Prefix(new object[] { null, new[] { world.Enemy }, 10m, ValueProp.Move, world.Owner.Creature, null, null }, out var previous);
+        try
+        {
+            decimal damage = DamageCapture.ModifyDamage(world.Owner.RunState, (ICombatState)backend.Combat, world.Enemy, world.Owner.Creature, 10, ValueProp.Move, null, null,
+                ModifyDamageHookType.All, CardPreviewMode.None, out _);
+            DamageCapture.ReportResultGroup(new() { new(world.Enemy, ValueProp.Move) { UnblockedDamage = (int)damage } });
+        }
+        finally { DamageCapture.Abort(); DamageCapture.Finalizer(previous); }
+        Check(backend.Committed.Single().Total == 26 && backend.DamageModifiers.Select(item => item.Amount).SequenceEqual(new[] { 3, 13 }),
+            "An earlier prefix's completed canonical block calculation cannot consume the parent's pending damage admission");
+        Check(backend.BlockBatches.Single().Amount == 18 && !backend.BlockBatches[0].Incomplete
+            && backend.BlockBatches[0].Modifiers.Select(item => item.Amount).SequenceEqual(new[] { 2, 6 }),
+            "The nested block command publishes only its own original modifier observations");
+        Check(!backend.Calls.Contains("diagnostic:modifier-admission"), "Restoring an open pending admission does not create false displacement");
+        blockClearListeners = null;
+    }
+    private static void DelayedModifierPreview()
+    {
+        var world = GameWorld();
+        var modifier = Mutable<StatefulModifier>("MODIFIER");
+        backend.Descriptors[modifier] = new(CaptureKind.DirectModel, ProducerRole.Relic, "B", 1, 0, Combat: backend.Combat);
+        blockClearListeners = new AbstractModel[] { modifier };
+        DamageCapture.OriginalModifyDamage = Hook.ModifyDamage;
+        DamageFixture.AllowOriginalHook = true;
+        DamageCapture.Inspect = (_, _, _) => new(true, false, 0, null, false);
+        var pause = Pause();
+        Task delayed = null;
+        ModifierFrame frozen = null;
+        async Task PreviewAfter()
+        {
+            await pause.Task;
+            Check(Hook.ModifyDamage(world.Owner.RunState, (ICombatState)backend.Combat, world.Enemy, world.Owner.Creature, 10, ValueProp.Move, null, null,
+                ModifyDamageHookType.All, CardPreviewMode.None, out _) == 26, "A delayed preview keeps its original physical result");
+        }
+        modifier.DuringDamage = () => { modifier.DuringDamage = null; frozen = ModifierCapture.Current; delayed = PreviewAfter(); };
+        DamageCapture.Prefix(new object[] { null, new[] { world.Enemy }, 10m, ValueProp.Move, world.Owner.Creature, null, null }, out var previous);
+        try
+        {
+            decimal result = DamageCapture.ModifyDamage(world.Owner.RunState, (ICombatState)backend.Combat, world.Enemy, world.Owner.Creature, 10, ValueProp.Move, null, null,
+                ModifyDamageHookType.All, CardPreviewMode.None, out _);
+            DamageCapture.ReportResultGroup(new() { new(world.Enemy, ValueProp.Move) { UnblockedDamage = (int)result } });
+        }
+        finally { DamageCapture.Abort(); DamageCapture.Finalizer(previous); }
+        Check(frozen.Finished && frozen.Observations.Count == 0, "Finished observation frames release source owners even when a descendant Task retains the frame");
+        pause.SetResult(1); context.Complete(delayed);
+        Check(backend.Committed.Single().Total == 26 && backend.DamageModifiers.Count == 2
+            && !backend.Calls.Contains("diagnostic:modifier-admission"), "A finished frame inherited by a later Task neither records preview credits nor reports a false displacement");
+        blockClearListeners = null;
+    }
+    private static void BlockBatchLifetime()
+    {
+        var world = GameWorld();
+        var modifier = Mutable<StatefulModifier>("MODIFIER");
+        modifier.BlockMultiplier = 1;
+        backend.Descriptors[modifier] = new(CaptureKind.DirectModel, ProducerRole.Relic, "B", 1, 0, Combat: backend.Combat);
+        blockClearListeners = new AbstractModel[] { modifier };
+        CommandFixture.Modify = true;
+        FlowCapture.Current = new(CaptureRuntime.Epoch, null, A, ProducerRole.Card, DamageSegment.Direct);
+        var firstPause = Pause(); CommandFixture.Pause = firstPause.Task;
+        var first = CommandFixture.GainBlock(world.Owner.Creature, 10, ValueProp.Move, null);
+        var firstFrame = CommandFixture.Frame;
+        modifier.BlockAddition = 5;
+        var secondPause = Pause(); CommandFixture.Pause = secondPause.Task;
+        var second = CommandFixture.GainBlock(world.Owner.Creature, 10, ValueProp.Move, null);
+        var secondFrame = CommandFixture.Frame;
+        Check(!ReferenceEquals(firstFrame, secondFrame) && backend.BlockBatches.Count == 0, "Overlapping gains own distinct unpublished batches");
+        secondPause.SetResult(1); context.Complete(second);
+        firstPause.SetResult(1); context.Complete(first);
+        Check(backend.BlockBatches.Select(batch => (batch.Amount, batch.Modifiers.Single().Amount)).SequenceEqual(new[] { (15, 5), (12, 2) }),
+            "Reverse completion order preserves each command's modifier amount on the same receiver");
+        Check(firstFrame.Closed && secondFrame.Closed && firstFrame.Modifiers.Length == 0 && secondFrame.Modifiers.Length == 0,
+            "Completed command frames release their modifier owners");
+        foreach (bool cancel in new[] { false, true })
+        {
+            int count = backend.BlockBatches.Count;
+            var pause = Pause(); CommandFixture.Pause = pause.Task;
+            var pending = CommandFixture.GainBlock(world.Owner.Creature, 10, ValueProp.Move, null);
+            var frame = CommandFixture.Frame;
+            var error = new InvalidOperationException("block command failed");
+            if (cancel) pause.SetCanceled();
+            else { CommandFixture.Error = error; pause.SetResult(1); }
+            bool original = false;
+            try { context.Complete(pending); }
+            catch (Exception ex) { original = cancel ? ex is OperationCanceledException : ReferenceEquals(ex, error); }
+            Check(original && frame.Closed && frame.Modifiers.Length == 0 && backend.BlockBatches.Count == count,
+                "Fault/cancellation preserves the original Task failure and discards unpublished modifier owners");
+            CommandFixture.Error = null;
+        }
+        CommandFixture.Pause = Task.CompletedTask;
+        modifier.BlockMultiplier = 0;
+        int before = backend.BlockBatches.Count;
+        context.Complete(CommandFixture.GainBlock(world.Owner.Creature, 10, ValueProp.Move, null));
+        Check(CommandFixture.Frame.Closed && CommandFixture.Frame.Modifiers.Length == 0 && backend.BlockBatches.Count == before,
+            "Zero physical gain completes without leaking pending modifiers");
+        modifier.BlockMultiplier = 1; modifier.BlockAddition = 2;
+        blockClearListeners = Enumerable.Repeat<AbstractModel>(modifier, 16).ToArray();
+        context.Complete(CommandFixture.GainBlock(world.Owner.Creature, 10, ValueProp.Move, null));
+        Check(backend.BlockBatches.Last().Modifiers.Length == 16 && !backend.BlockBatches.Last().Incomplete,
+            "All sixteen accepted modifiers reach the atomic gain batch");
+        blockClearListeners = Enumerable.Repeat<AbstractModel>(modifier, 17).ToArray();
+        context.Complete(CommandFixture.GainBlock(world.Owner.Creature, 10, ValueProp.Move, null));
+        Check(backend.BlockBatches.Last().Amount == 44 && backend.BlockBatches.Last().Incomplete && backend.BlockBatches.Last().Modifiers.Length == 0,
+            "Modifier overflow preserves the complete physical gain and explicitly degrades its uncertain split");
+        Same(backend.CommandEvents.Last().Source, A, "Incomplete modifiers retain the trusted producer of gross block gain");
+        modifier.BlockAddition = 0.01m;
+        context.Complete(CommandFixture.GainBlock(world.Owner.Creature, 10, ValueProp.Move, null));
+        Check(backend.BlockBatches.Last().Amount == 10 && !backend.BlockBatches.Last().Incomplete && backend.BlockBatches.Last().Modifiers.Length == 0,
+            "Fractional additions rounded to zero do not consume the modifier-credit capacity");
+        modifier.BlockAddition = 2;
+        skipBlockHook = true;
+        int additions = modifier.BlockAdditions;
+        context.Complete(CommandFixture.GainBlock(world.Owner.Creature, 10, ValueProp.Move, null));
+        Check(backend.BlockBatches.Last().Amount == 17 && backend.BlockBatches.Last().Incomplete && backend.BlockBatches.Last().Modifiers.Length == 0
+            && modifier.BlockAdditions == additions, "A skipped block hook preserves its physical result without inventing modifier evidence");
+        skipBlockHook = false;
+        var callbackError = new InvalidOperationException("block callback failed");
+        modifier.Error = callbackError;
+        int events = backend.BlockBatches.Count;
+        bool sameError = false;
+        try { context.Complete(CommandFixture.GainBlock(world.Owner.Creature, 10, ValueProp.Move, null)); }
+        catch (Exception error) { sameError = ReferenceEquals(error, callbackError); }
+        Check(sameError && modifier.BlockAdditions == additions + 1 && CommandFixture.Frame.Closed
+            && CommandFixture.Frame.Modifiers.Length == 0 && backend.BlockBatches.Count == events,
+            "An original block callback failure executes once, keeps its exception, and abandons its batch");
+        modifier.Error = null;
+        blockClearListeners = new AbstractModel[] { modifier };
+        var owned = backend.CreateSource(epoch, new[] { new SourceShare((epoch << 32) | 56, 1) });
+        ulong handle = owned.Handle;
+        var weak = new WeakReference<SourceSnapshot>(owned);
+        backend.NamedSources["B"] = owned;
+        var collectionPause = Pause(); CommandFixture.Pause = collectionPause.Task;
+        var collection = CommandFixture.GainBlock(world.Owner.Creature, 10, ValueProp.Move, null);
+        backend.NamedSources.Remove("B"); owned = null;
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect(); SourceSnapshot.Collect();
+        Check(weak.TryGetTarget(out _) && !backend.ReleasedSources.Contains(handle), "Suspended block batch owns its frozen modifier source through collection");
+        backend.DuringBlockPublish = () =>
+        {
+            GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect(); SourceSnapshot.Collect();
+            Check(!backend.ReleasedSources.Contains(handle), "The entire batch remains owned throughout its native consumer callback");
+        };
+        collectionPause.SetResult(1); context.Complete(collection);
+        backend.DuringBlockPublish = null;
+        backend.NamedSources["B"] = B;
+        var replacementPause = Pause(); CommandFixture.Pause = replacementPause.Task;
+        var stale = CommandFixture.GainBlock(world.Owner.Creature, 10, ValueProp.Move, null);
+        var staleFrame = CommandFixture.Frame;
+        int batches = backend.BlockBatches.Count;
+        CaptureRuntime.Register(backend, ++epoch, backend.Combat);
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect(); SourceSnapshot.Collect();
+        int calls = backend.Calls.Count;
+        replacementPause.SetResult(1); context.Complete(stale);
+        Check(staleFrame.Closed && staleFrame.Modifiers.Length == 0 && backend.BlockBatches.Count == batches && backend.Calls.Count == calls,
+            "A suspended prior-combat batch is discarded without native calls after combat replacement");
+        blockClearListeners = null;
+        FlowCapture.Current = ProducerFrame.Barrier;
+    }
     private static void NativeModifierProjection()
     {
         decimal basis = 0.9999999999999999999999999999m, multiplier = 2.0000000000000000000000000001m;
@@ -1968,8 +2439,13 @@ internal static partial class ManagedFixtures
         DamageCapture.Inspect = (_, _, _) => new(false, true, 0, weak, true, 2);
         DamageFixture.Results = new() { new(incoming, ValueProp.Move) { UnblockedDamage = int.MaxValue } };
         context.Complete(Damage(incoming, enemy));
-        Check(backend.Committed.Count == 0 && backend.Fallback.Count == 0 && backend.Calls.Contains("diagnostic:damage-report"),
-            "The original overflowing Weak estimate aborts reporting the result group");
+        Check(backend.Committed.Single().Total == int.MaxValue && backend.Committed[0].WeakPrevented == 0
+            && backend.Fallback.Count == 0 && backend.Calls.Contains("diagnostic:weak-projection"),
+            "Optional Weak overflow preserves physical damage and marks incomplete coverage");
+        DamageFixture.Results = new() { new(incoming, ValueProp.Move) { UnblockedDamage = int.MaxValue }, new(incoming, ValueProp.Move) { UnblockedDamage = 2 } };
+        context.Complete(Damage(incoming, enemy));
+        Check(backend.Committed.TakeLast(2).Select(packet => packet.Total).SequenceEqual(new[] { int.MaxValue, 2 })
+            && backend.Committed.Last().WeakPrevented == 8, "Weak projection failure cannot discard sibling results or their valid estimate");
     }
     private static void RetainedBlock()
     {
@@ -2062,9 +2538,16 @@ internal static partial class ManagedFixtures
         AccessTools.Field(typeof(PowerModel), "_owner").SetValue(dexterity, receiver);
         AccessTools.Field(typeof(PowerModel), "_amount").SetValue(dexterity, 2);
         backend.Descriptors[dexterity] = new(CaptureKind.PowerInstance, ProducerRole.Power, "B", 2, 1);
-        CommandCapture.BlockModifierPostfix(12, new(CaptureRuntime.Epoch, 10), receiver, ValueProp.Move, null, null, new[] { dexterity });
+        blockClearListeners = new AbstractModel[] { dexterity };
+        CommandCapture.Prefix(AccessTools.DeclaredMethod(typeof(CommandFixture), "GainBlock"), new object[] { receiver, 10m, ValueProp.Move, null, false }, out var blockCommand);
+        try
+        {
+            decimal gained = ModifierCapture.ModifyBlock((ICombatState)backend.Combat, receiver, 10, ValueProp.Move, null, null, out _);
+            CommandCapture.BlockGained(backend.Combat, receiver, (int)gained);
+        }
+        finally { CommandCapture.Finalizer(blockCommand); blockClearListeners = null; }
         Same(backend.CommandEvents.Last().Source, B, "Actual block modifier instance source retained");
-        Check(backend.CommandEvents.Last().Kind == "block-modifier" && backend.CommandEvents.Last().Amount == 2, "Original additive block decomposition preserved");
+        Check(backend.CommandEvents.Last().Kind == "block-modifier" && backend.CommandEvents.Last().Amount == 2, "Observed additive block credit preserved");
         pause = Pause(); CommandFixture.Pause = pause.Task;
         int count = backend.CommandEvents.Count;
         var forge = CommandFixture.Forge(3, player, card);

@@ -25,6 +25,7 @@ internal sealed class StatisticsStore
     private readonly string runsDirectory;
     private readonly Action<string> report;
     private StoreSnapshot history;
+    private uint lastAllocatedRunId;
     internal string GameVersion { get; }
     internal string ModVersion { get; }
 
@@ -52,12 +53,14 @@ internal sealed class StatisticsStore
             if (!uint.TryParse(id, NumberStyles.None, CultureInfo.InvariantCulture, out uint number) || number == 0)
             {
                 if (id != null) preservedIds = Array.AsReadOnly(preservedIds.Append(id).Distinct(StringComparer.Ordinal).ToArray());
-                uint maximum = snapshot.MaximumRunId;
+                // An interrupted combat can retain a run that has not written a file.
+                uint maximum = Math.Max(snapshot.MaximumRunId, lastAllocatedRunId);
                 foreach (string root in new[] { Path.Combine(dataDirectory, "runs"), Path.Combine(preservedDirectory, "runs"), runsDirectory })
                     foreach (string directory in Directories(root))
                         if (uint.TryParse(Path.GetFileName(directory), NumberStyles.None, CultureInfo.InvariantCulture, out uint reserved)) maximum = Math.Max(maximum, reserved);
                 if (maximum == uint.MaxValue) { report("run IDs exhausted"); return null; }
-                id = (maximum + 1).ToString(CultureInfo.InvariantCulture);
+                number = maximum + 1;
+                id = number.ToString(CultureInfo.InvariantCulture);
             }
             else if (id != number.ToString(CultureInfo.InvariantCulture))
             {
@@ -65,6 +68,7 @@ internal sealed class StatisticsStore
                 id = number.ToString(CultureInfo.InvariantCulture);
             }
             preservedIds = Array.AsReadOnly(preservedIds.Where(priorId => priorId != id).ToArray());
+            lastAllocatedRunId = Math.Max(lastAllocatedRunId, number);
             return requested with
             {
                 RunId = id,
@@ -114,7 +118,7 @@ internal sealed class StatisticsStore
         try
         {
             foreach (var (root, version) in Stores) ReadHeaders(root, version, strictHeaders: true);
-            if (!ReadCombats(run).Any(combat => MatchesStorage(combat.RunId, run))) return false;
+            if (!ReadCombats(run).Any(combat => Belongs(combat, run))) return false;
             string path = Path.Combine(versionDirectory, "runs.jsonl");
             string prior = File.Exists(path) ? Read(path) : "";
             if (prior.Length != 0 && !prior.EndsWith('\n')) prior += "\n";
