@@ -60,6 +60,7 @@ impl ProjectKind {
             Self::Tests => &[
                 "tests/Program.cs",
                 "tests/Fixtures.cs",
+                "tests/AuditFixtures.cs",
                 "tests/PanelFixtures.cs",
                 "tests/SessionFixtures.cs",
             ],
