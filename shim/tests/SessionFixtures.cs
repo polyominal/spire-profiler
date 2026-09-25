@@ -33,6 +33,9 @@ internal static class SessionFixtures
             NativeLifecycle(Path.Combine(scratch, "native"));
             ProfilerNative.Dispose();
             ProfilerNative.Load(nativeLibrary);
+            NativeOstySacrifice(Path.Combine(scratch, "osty-sacrifice"));
+            ProfilerNative.Dispose();
+            ProfilerNative.Load(nativeLibrary);
             NativeBlockBatches(Path.Combine(scratch, "block-batches"));
             ProfilerNative.Dispose();
             ProfilerNative.Load(nativeLibrary);
@@ -95,6 +98,12 @@ internal static class SessionFixtures
             Reject(() => StatisticsJson.ParseNative(document.ToJsonString()), "Malformed native snapshot must fail before publication");
         }
         Check(parsed.Cards.Single().DmgDirect == 6 && parsed.Coverage.Complete, "Rejected parses must not change a prior immutable snapshot");
+        foreach (string field in new[] { "damage_dealt", "damage_blocked", "block_gained", "forge", "dmg_direct", "dmg_attributed", "dmg_modifier", "blk_modifier", "mitigate_debuff", "mitigate_buff", "mitigate_str", "self_damage" })
+        {
+            var document = valid.DeepClone();
+            document["cards"][0][field] = -1;
+            Reject(() => StatisticsJson.ParseNative(document.ToJsonString()), "Only effective defense permits negative accounting: " + field);
+        }
         var huge = new SummaryView
         {
             Cards = new[] { new StatRow { Id = "A", DamageDealt = long.MaxValue, DmgDirect = long.MaxValue } },
@@ -118,6 +127,12 @@ internal static class SessionFixtures
         {
             new StatRow { Id = "A", BlockGained = long.MaxValue }, new StatRow { Id = "B", BlockGained = 1 }
         }), "Accepted block totals must fit the UI and aggregate accounting domain");
+        Reject(() => StatisticsJson.CheckRows(new[]
+        {
+            new StatRow { Id = "POSITIVE", BlockEffective = long.MaxValue },
+            new StatRow { Id = "NEGATIVE", Player = 1, BlockEffective = -long.MaxValue },
+            new StatRow { Id = "ONE", BlockEffective = 1 }
+        }), "Negative defense cannot hide an overflow exposed by player filtering");
         var run = Header("SCHEMA", 100) with { RunId = "7" };
         var runJson = JsonSerializer.SerializeToNode(run, StatisticsJson.Options);
         runJson.AsObject().Remove("schema_version");
@@ -508,6 +523,45 @@ internal static class SessionFixtures
             && !ProfilerSession.CurrentCombat.Coverage.Complete, "Incomplete modifier attribution degrades to Unknown");
         Check(ProfilerNative.Replay(ProfilerNative.Recording()) == ProfilerNative.Snapshot(),
             "Actual marshaled modifier batches replay exactly");
+        ProfilerSession.Suspend();
+    }
+
+    private static void NativeOstySacrifice(string directory)
+    {
+        var messages = new List<string>();
+        var run = Header("OSTY_SACRIFICE", 1350);
+        ProfilerSession.Initialize(directory, "g", "m", messages.Add);
+        ProfilerSession.StartRun(run, false);
+        ulong epoch = ProfilerSession.StartCombat("BONE_SHARDS", "Normal");
+        ulong summon = ProfilerNative.SourceCapture(epoch, 1, 100, "SUMMON", 0, 0, 0);
+        ulong shards = ProfilerNative.SourceCapture(epoch, 1, 101, "BONE_SHARDS", 0, 0, 0);
+        ulong play = ProfilerNative.CardPlayStarted(epoch, 1, 101, "BONE_SHARDS", 0, 0, 1, 0, shards);
+        Check(play != 0 && ProfilerNative.OstySummoned(epoch, summon, 5, 0) == 1
+            && ProfilerNative.BlockGained(epoch, 9, shards, 0, Array.Empty<BlockModifier>(), false) == 1
+            && ProfilerNative.OstyKilled(epoch, 0, play) == 1,
+            "Bone Shards gains block then sacrifices Osty's remaining five HP through the actual ABI");
+        ObserveDamage(epoch, 9);
+        Check(ProfilerSession.Refresh(), "A valid negative Osty credit must not reject the whole native snapshot");
+        var snapshot = ProfilerSession.CurrentCombat;
+        Check(snapshot.Cards.Single(row => row.Id == "BONE_SHARDS").BlockEffective == -5
+            && snapshot.Cards.Single(row => row.Id == "BONE_SHARDS").BlockGained == 9
+            && snapshot.Cards.Single(row => row.Id == "STRIKE").DamageDealt == 9 && snapshot.Coverage.Complete,
+            "Signed sacrifice credit, gross block, and unrelated damage must survive native parsing together");
+        Check(ProfilerNative.CardPlayFinished(play) == 1 && ProfilerNative.CardExecutionEnded(epoch, 1) == 1
+            && ProfilerSession.EndCombat(epoch) == 1 && ProfilerSession.CurrentRun.Combats == 1
+            && ProfilerSession.CurrentRun.Cards.Single(row => row.Id == "BONE_SHARDS").BlockEffective == -5,
+            "The completed run must retain the sacrifice instead of an empty interrupted combat");
+        ProfilerSession.EndRun(0);
+        ProfilerSession.Suspend();
+        ProfilerSession.StartRun(run, true);
+        Check(ProfilerSession.CurrentRun.Cards.Single(row => row.Id == "STRIKE").DamageDealt == 9
+            && ProfilerSession.CurrentRun.Cards.Single(row => row.Id == "BONE_SHARDS").BlockEffective == -5
+            && ProfilerSession.CurrentRun.Coverage.Complete,
+            "Stored signed combat accounting must survive a fresh session's continuation");
+        ProfilerSession.SelectHistory(run.Seed, run.StartedAt, run.Profile);
+        Check(ProfilerSession.SelectedHistory.Cards.Single(row => row.Id == "BONE_SHARDS").BlockEffective == -5
+            && ProfilerSession.SelectedHistory.Coverage.Complete && messages.Count == 0,
+            "History must read signed defense rows without dropping the combat or marking healthy capture partial");
         ProfilerSession.Suspend();
     }
 
