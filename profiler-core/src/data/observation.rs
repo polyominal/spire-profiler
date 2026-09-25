@@ -163,7 +163,7 @@ pub(crate) enum Observation {
         amount: i32,
         source_transfer: u64,
         receiver_slot: i32,
-        modifiers: Vec<(u64, i64)>,
+        modifiers: Box<[(u64, i64)]>,
         incomplete: bool,
     },
     Forge {

@@ -805,7 +805,7 @@ pub unsafe extern "C" fn spire_profiler_block_gained(
                     amount,
                     source_transfer,
                     receiver_slot,
-                    modifiers: entries,
+                    modifiers: entries.into_boxed_slice(),
                     incomplete,
                 },
                 result as u64,
