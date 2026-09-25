@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, anyhow, ensure};
 use serde_json::Value;
 
+mod poison;
+
 const MAX_LINE: u64 = 1024 * 1024;
 const MAX_FILE: u64 = 64 * 1024 * 1024;
 const MAX_EVENTS: usize = 100_000;
@@ -59,6 +61,7 @@ struct Native {
     cards: BTreeMap<Source, i64>,
 }
 
+#[derive(Clone)]
 enum Check {
     Match(String),
     Discrepancy(String),
@@ -101,7 +104,7 @@ pub(crate) fn run(input: &Path, output: Option<&Path>) -> Result<()> {
     writeln!(output, "# Poison audit\n")?;
     writeln!(
         output,
-        "Recorded events combine game values with capture metadata: sequence, execution, native identities and status are recorder claims. Native checkpoints are attribution claims. Checks establish recorded consistency, not capture completeness or whether FIFO is the desired policy. Checkpoint discrepancies may include interleaved effects and require review.\n"
+        "Recorded events combine game values with capture metadata: sequence, execution, native identities and status are recorder claims. Native checkpoints are attribution claims. Version 2 reconstructs supported Poison suppliers from raw game evidence; version 1 checks native consistency. Neither proves capture completeness or whether FIFO is the desired policy. Checkpoint discrepancies may include interleaved effects and require review.\n"
     )?;
     for path in files {
         let trace = Trace::read(BufReader::new(File::open(&path)?))?;
@@ -205,10 +208,10 @@ impl Trace {
             }
             previous = seq;
             if name == "combat_start" {
-                Self::versions(&data)?;
+                Self::versions(&data, true)?;
             }
             if let Some(native) = data.get("native").filter(|native| !native.is_null()) {
-                Self::versions(native)?;
+                Self::versions(native, false)?;
                 if let Some(epoch) = trace
                     .events
                     .first()
@@ -259,9 +262,12 @@ impl Trace {
         Ok(trace)
     }
 
-    fn versions(value: &Value) -> Result<()> {
+    fn versions(value: &Value, journal: bool) -> Result<()> {
         ensure!(
-            number(value, "audit_version")? == 1,
+            matches!(
+                (number(value, "audit_version")?, journal),
+                (1, _) | (2, true)
+            ),
             "unsupported audit version"
         );
         ensure!(
@@ -377,8 +383,16 @@ impl Trace {
         checks
     }
 
+    #[allow(clippy::too_many_lines)] // Both evidence modes share the same bounded report layout.
     fn report(&self, path: &Path) -> Result<String> {
-        let checks = self.checks();
+        let independent = self
+            .events
+            .first()
+            .filter(|event| event.data["audit_version"] == 2)
+            .map(|_| poison::Reconstruction::run(self));
+        let checks = independent
+            .as_ref()
+            .map_or_else(|| self.checks(), |result| result.checks.clone());
         let mut text = format!(
             "## Combat file {}\n\n",
             markdown(&path.display().to_string())
@@ -410,6 +424,11 @@ impl Trace {
             writeln!(text, "- {}", markdown(&issue))?;
         }
         text.push('\n');
+        if let Some(independent) = &independent {
+            independent.summary(&mut text)?;
+        } else {
+            text.push_str("Version 1: consistency checks only. Supplier identities are native claims, not independently reconstructed.\n\n");
+        }
         let mut turn = None;
         for event in &self.events {
             if turn != Some(event.turn) {
@@ -634,6 +653,20 @@ impl Event {
                 checks.push(compare(delta == i128::from(expected), format!("Tick #{}: {} (kind {}, player {}) expected indirect +{expected}, native delta {delta:+} from {damage} observed damage.", self.seq, source.id, source.kind, source.player)));
             }
         }
+        checks.extend(self.physical(results));
+        Ok(checks)
+    }
+
+    fn physical(&self, results: &[&Event]) -> Vec<Check> {
+        let mut checks = Vec::new();
+        let Some(last) = results.last() else {
+            return checks;
+        };
+        match (self.data["requested"].as_str(), self.data["poison_before"].as_u64()) {
+            (Some(requested), Some(amount)) => checks.push(compare(requested.parse::<u64>().ok() == Some(amount),
+                format!("Requested Poison damage {requested}; observed stacks at modifier entry {amount}. Equality assumes no intervening power mutation."))),
+            _ => checks.push(Check::Unverified("Requested Poison damage or modifier-entry stack count unavailable.".into())),
+        }
         if results.len() == 1
             && self.data["target"]["instance"]
                 .as_u64()
@@ -650,7 +683,7 @@ impl Event {
                 "HP conservation unavailable for redirected or unidentified receivers.".into(),
             ));
         }
-        Ok(checks)
+        checks
     }
 }
 
@@ -1070,7 +1103,7 @@ mod tests {
     #[test]
     fn unknown_versions_and_oversized_lines_are_rejected() {
         let mut fixture = Fixture::nine_turns();
-        fixture.events[0]["data"]["audit_version"] = json!(2);
+        fixture.events[0]["data"]["audit_version"] = json!(3);
         assert!(Trace::read(fixture.bytes().as_slice()).is_err());
         fixture.events[0]["data"]["audit_version"] = json!(1);
         fixture.events[0]["data"]["policy_version"] = json!(4);
