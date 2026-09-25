@@ -49,34 +49,28 @@ impl Scenario {
         let source = self.state.source_capture(7, kind, instance, "", 2, 4, 0);
         assert_ne!(
             source, 0,
-            "fixture capture has a valid epoch and lease capacity"
+            "fixture capture has a valid epoch and source capacity"
         );
         source
     }
 
     fn mix(&mut self, roots: &[(u64, u64)]) -> u64 {
-        let transfer = self.state.source_transfer_begin(7);
-        assert_ne!(transfer, 0);
-        for (source, amount) in roots {
-            assert_eq!(
-                self.state.source_count(*source),
-                1,
-                "fixture weights name individual roots"
-            );
-            let destination = self.state.source_destination(*source, 0);
-            let weight = self
-                .state
-                .source_weight(*source, 0)
-                .checked_mul(*amount)
-                .expect("small fixture weights fit u64");
-            assert_eq!(
-                self.state
-                    .source_transfer_add(transfer, destination, weight),
-                1
-            );
-        }
-        assert_eq!(self.state.source_transfer_seal(transfer), 1);
-        transfer
+        let entries = roots
+            .iter()
+            .map(|(handle, amount)| {
+                let snapshot = self
+                    .state
+                    .source_handle_read(*handle)
+                    .expect("fixture source exists");
+                assert_eq!(snapshot.shares().len(), 1);
+                (snapshot.shares()[0].destination(), u128::from(*amount))
+            })
+            .collect();
+        let epoch = CombatEpoch::from_wire(7).expect("fixture epoch is nonzero");
+        let rows = self.combat().cards.len();
+        let source =
+            SourceSnapshot::normalized(epoch, rows, entries).expect("fixture mixture fits");
+        self.state.source_export(source)
     }
 
     fn attach(
@@ -485,12 +479,12 @@ fn generated_unavailable_overrides_prior_native_ancestry() {
 }
 
 #[test]
-fn failed_regeneration_cannot_revive_released_source() {
+fn failed_regeneration_cannot_revive_invalid_source() {
     let mut case = Scenario::new();
     let first = case.card(10, "FIRST_GENERATOR", 0);
     let old = case.card(11, "OLD_GENERATOR", 1);
     assert_eq!(case.state.card_generated(7, 101, old, 1), 1);
-    assert_eq!(case.state.source_transfer_release(first), 1);
+    let first = first | 7;
     assert_eq!(case.state.card_generated(7, 101, first, 1), 0);
     let generated = case.state.source_capture(7, 1, 101, "GENERATED", 0, 2, 1);
     case.assert_source(generated, &[("UNATTRIBUTED", TEAM_SLOT, 1)]);
@@ -597,7 +591,7 @@ fn stale_cleanup_cannot_close_replacement_combat_lifetimes() {
     assert_eq!(case.state.card_execution_ended(7, 502), 0);
     assert_eq!(case.state.card_play_finished(old_play), 0);
     assert_eq!(case.state.power_removed(7, 201), 0);
-    assert_eq!(case.state.source_transfer_release(old_source), 0);
+    assert_eq!(case.state.source_count(old_source), -1);
     assert_eq!(case.state.damage_calculation_abort(old_calculation), 0);
     assert_eq!(case.state.orb_context_begin(8, 302, new_play, 0), 1);
     assert_eq!(case.state.orb_context_begin(8, 302, new_play, 0), 2);
@@ -1337,13 +1331,10 @@ fn unrepresentable_power_mixture_collapses_all_grants_before_consumption() {
     case.change(201, "STRENGTH_POWER", PLAYER_A, (1, 2), mixed_second);
     let lost = case.capture(2, 201);
     case.assert_source(lost, &[("UNATTRIBUTED", TEAM_SLOT, 1)]);
-    let first_diagnostic = case.state.source_transfers.diagnostics.reported;
+    let first_diagnostic = case.state.sources.diagnostics.reported;
 
     case.change(201, "STRENGTH_POWER", PLAYER_A, (2, 3), mixed_first);
-    assert_eq!(
-        case.state.source_transfers.diagnostics.reported,
-        first_diagnostic
-    );
+    assert_eq!(case.state.sources.diagnostics.reported, first_diagnostic);
     case.change(201, "STRENGTH_POWER", PLAYER_A, (3, 1), 0);
     let consumed = case.capture(2, 201);
     case.assert_source(consumed, &[("UNATTRIBUTED", TEAM_SLOT, 1)]);

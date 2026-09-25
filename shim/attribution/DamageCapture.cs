@@ -90,7 +90,7 @@ internal static class DamageCapture
                 {
                     evidence = Inspect(target, dealer, props);
                     Current = captured with { Calculation = 0, Weak = evidence.WeakPower != null, Debilitate = evidence.Debilitate, PaperKraneSlots = evidence.PaperKraneSlots };
-                    calculation = CaptureRuntime.Upload(captured.Epoch, source, transfer => CaptureRuntime.Backend.DamageBegin(captured.Epoch.Sequence, transfer, captured.Role, captured.Segment, targetIdentity.Identity));
+                    calculation = CaptureRuntime.WithSource(captured.Epoch, source, transfer => CaptureRuntime.Backend.DamageBegin(captured.Epoch.Sequence, transfer, captured.Role, captured.Segment, targetIdentity.Identity));
                     if (calculation != 0)
                     {
                         if (evidence.EnemyHit)
@@ -106,8 +106,8 @@ internal static class DamageCapture
                         {
                             var weakIdentity = IdentityCapture.Get(evidence.WeakPower, captured.Epoch);
                             var weak = weakIdentity == null || weakIdentity.Dirty ? SourceSnapshot.Unavailable
-                                : CaptureRuntime.Copy(captured.Epoch, CaptureKind.WeakHead, weakIdentity.Identity);
-                            if (CaptureRuntime.Upload(captured.Epoch, weak, transfer => CaptureRuntime.Backend.DamageWeak(calculation, transfer)) != 1)
+                                : CaptureRuntime.CaptureSource(captured.Epoch, CaptureKind.WeakHead, weakIdentity.Identity);
+                            if (CaptureRuntime.WithSource(captured.Epoch, weak, transfer => CaptureRuntime.Backend.DamageWeak(calculation, transfer)) != 1)
                                 throw new InvalidOperationException("Weak capture failed");
                         }
                         Current = captured with { Calculation = calculation, Weak = evidence.WeakPower != null, Debilitate = evidence.Debilitate, PaperKraneSlots = evidence.PaperKraneSlots };
@@ -131,7 +131,7 @@ internal static class DamageCapture
                 Decompose(modifiers, start, result, target, dealer, props, cardSource, (model, amount) =>
                 {
                     var source = FlowCapture.Source(model, captured.Epoch);
-                    if (CaptureRuntime.Upload(captured.Epoch, source, transfer => CaptureRuntime.Backend.DamageModifier(calculation, transfer, amount)) != 1)
+                    if (CaptureRuntime.WithSource(captured.Epoch, source, transfer => CaptureRuntime.Backend.DamageModifier(calculation, transfer, amount)) != 1)
                         throw new InvalidOperationException("Damage modifier rejected");
                 });
                 Current = Current with { Calculation = calculation };
@@ -156,14 +156,14 @@ internal static class DamageCapture
                 _ => 0m
             };
             running += addition;
-            if (addition != 0) contribute(model, Math.Abs(checked((int)addition)));
+            if (addition != 0) contribute(model, ModifierCapture.Additive(addition, true));
             else if (model is PowerModel or RelicModel) multiplicative.Add(model);
         }
         foreach (var model in multiplicative)
         {
             decimal multiplier = model is PowerModel power ? power.ModifyDamageMultiplicative(target, running, props, dealer, card, null)
                 : ((RelicModel)model).ModifyDamageMultiplicative(target, running, props, dealer, card, null);
-            decimal before = Math.Min(running, result);
+            decimal before = running;
             running *= multiplier;
             if (multiplier <= 1) continue;
             if (model is VulnerablePower vulnerable && vulnerable.DynamicVars.TryGetValue("DamageIncrease", out var increase))
@@ -187,13 +187,13 @@ internal static class DamageCapture
                 {
                     foreach (var part in parts)
                     {
-                        int value = checked((int)(before * part.Delta));
+                        int value = ModifierCapture.Product(before, part.Delta, result);
                         if (value > 0) contribute(part.Model, value);
                     }
                     continue;
                 }
             }
-            int contribution = checked((int)(before * (multiplier - 1)));
+            int contribution = ModifierCapture.Increase(before, multiplier, result);
             if (contribution > 0) contribute(model, contribution);
         }
     }
@@ -257,11 +257,8 @@ internal static class DamageCapture
         int weak = 0;
         if (captured.Weak && receiver.Player && total > 0)
         {
-            bool krane = receiver.Slot >= 0 && receiver.Slot < 4 && (captured.PaperKraneSlots & (1u << receiver.Slot)) != 0;
-            decimal multiplier = krane ? 0.60m : 0.75m;
-            if (captured.Debilitate) multiplier = 1m - (1m - multiplier) * 2m;
-            multiplier = Math.Max(multiplier, 0.1m);
-            weak = Math.Max(checked((int)Math.Round(total / multiplier - total)), 0);
+            weak = CaptureRuntime.Backend.CalculateWeakPrevention(total, receiver.Slot, receiver.Player,
+                captured.Weak, captured.Debilitate, captured.PaperKraneSlots);
         }
         return new(total, result.UnblockedDamage, result.BlockedDamage,
             Classify(dealer, captured.Dealer, captured.ExplicitCard, receiver, result.Receiver), receiver.Slot, weak);

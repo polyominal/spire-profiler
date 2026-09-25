@@ -79,7 +79,7 @@ impl SourceBlock {
     }
 }
 
-impl LedgerStage {
+impl LedgerStage<'_> {
     fn push_block(
         &mut self,
         slot: SourceSlot,
@@ -196,7 +196,7 @@ impl LedgerStage {
         }
         if remaining > 0 {
             let row = crate::data::ledger::get_or_create_card_kind(
-                &mut self.combat,
+                self.combat,
                 TEAM_SLOT,
                 "OSTY",
                 crate::source_kind::SourceKind::Osty,
@@ -235,7 +235,7 @@ impl State {
             if amount > 0 {
                 pool.pending.push((source, amount as u64));
             }
-            stage.commit(self)?;
+            stage.commit()?;
             Ok(())
         })();
         self.source_status(result)
@@ -266,7 +266,7 @@ impl State {
                 .ok_or(SourceFailure::Arithmetic)?;
             stage.source_credit(&source, CreditField::BlockGained, amount as u64)?;
             stage.push_block(slot, source, amount as u64)?;
-            stage.commit(self)?;
+            stage.commit()?;
             self.slot_index(i32::from(slot));
             Ok(())
         })();
@@ -288,7 +288,7 @@ impl State {
             let source = self.source_snapshot(epoch, transfer)?;
             let mut stage = LedgerStage::new(self)?;
             stage.source_credit(&source, field, amount as u64)?;
-            stage.commit(self)?;
+            stage.commit()?;
             Ok(())
         })();
         self.source_status(result)
@@ -332,7 +332,7 @@ impl State {
                     remaining: amount as u64,
                 });
             }
-            stage.commit(self)?;
+            stage.commit()?;
             self.slot_index(i32::from(slot));
             Ok(())
         })();
@@ -374,7 +374,7 @@ impl State {
                 }
             }
             stage.pool(owner)?.osty.clear();
-            stage.commit(self)?;
+            stage.commit()?;
             Ok(())
         })();
         self.source_status(result)

@@ -32,7 +32,7 @@ internal static class FlowCapture
                 if (metadata == null || metadata.Dirty) return SourceSnapshot.Unavailable;
                 if (descriptor.Kind == CaptureKind.PowerInstance && metadata.Detached != null) return metadata.Detached;
             }
-            return CaptureRuntime.Copy(epoch, descriptor.Kind, metadata?.Identity ?? 0, descriptor.Id, descriptor.SourceKind,
+            return CaptureRuntime.CaptureSource(epoch, descriptor.Kind, metadata?.Identity ?? 0, descriptor.Id, descriptor.SourceKind,
                 descriptor.Slot, metadata?.Generation ?? GenerationState.Unclassified);
         }
         catch (Exception ex) { CaptureRuntime.Fail("model-source", ex); return SourceSnapshot.Unavailable; }

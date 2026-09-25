@@ -1,4 +1,4 @@
-//! Build the production capture sources and deterministic managed fixtures
+//! Build the host reducer, managed runtime, and deterministic integration fixtures
 //! against the installed, version-checked game assemblies. Every invocation
 //! reserves and retains its own project under tmp/managed-tests for inspection.
 
@@ -7,13 +7,23 @@ use std::io;
 use anyhow::{Context, Result};
 use xshell::{Shell, cmd};
 
-use crate::{discover, dotnet, game_version, sha256_file, shim, workspace_root};
+use crate::{discover, dotnet, game_version, parity, sha256_file, shim, workspace_root};
 
-pub fn run(shell: &Shell) -> Result<()> {
+#[allow(clippy::too_many_lines)] // One build/run transaction shares project paths and scoped environment guards.
+pub fn run(shell: &Shell, reference: Option<&parity::Reference>) -> Result<()> {
     let game = discover::locate_game()?;
     game_version::check_pin(&game)?;
     let binary = dotnet::resolve_dotnet(shell)?;
     let root = workspace_root();
+    cmd!(shell, "cargo build --package profiler_core --locked").run()?;
+    let native = root.join("target/debug").join(format!(
+        "{}profiler_core{}",
+        std::env::consts::DLL_PREFIX,
+        std::env::consts::DLL_SUFFIX
+    ));
+    let native = native
+        .canonicalize()
+        .context("locating the host attribution reducer")?;
     let projects = root.join("tmp/managed-tests");
     std::fs::create_dir_all(&projects)?;
     let mut serial = 0_u32;
@@ -34,15 +44,16 @@ pub fn run(shell: &Shell) -> Result<()> {
     println!("managed-test: project retained at {}", project.display());
     shim::write_sources(&project, shim::ProjectKind::Tests)?;
     let project_file = project.join("SpireProfiler.ManagedTests.csproj");
-    std::fs::write(
-        &project_file,
-        shim::build_csproj(
-            &game.sts2_dll,
-            &game.harmony_dll,
-            &game.godot_sharp_dll,
-            shim::ProjectKind::Tests,
-        ),
-    )?;
+    let mut project_contents = shim::build_csproj(
+        &game.sts2_dll,
+        &game.harmony_dll,
+        &game.godot_sharp_dll,
+        shim::ProjectKind::Tests,
+    );
+    if let Some(reference) = reference {
+        reference.prepare_managed(&project, &mut project_contents)?;
+    }
+    std::fs::write(&project_file, project_contents)?;
     // The pinned SDK provides net9.0; no package feed belongs in this harness.
     std::fs::write(
         project.join("NuGet.Config"),
@@ -53,6 +64,7 @@ pub fn run(shell: &Shell) -> Result<()> {
         ("sts2.dll", &game.sts2_dll),
         ("0Harmony.dll", &game.harmony_dll),
         ("GodotSharp.dll", &game.godot_sharp_dll),
+        ("host-reducer", &native),
     ] {
         digests.push_str(&format!("{}  {label}\n", sha256_file(path)?));
     }
@@ -78,7 +90,19 @@ pub fn run(shell: &Shell) -> Result<()> {
         .sts2_dll
         .parent()
         .expect("discovery returns an assembly file path");
-    cmd!(shell, "{binary} {executable} {game_assemblies} {project}").run()?;
+    cmd!(
+        shell,
+        "{binary} {executable} {game_assemblies} {project} {native}"
+    )
+    .run()?;
+    if reference.is_some() {
+        let _oracle = shell.push_env(
+            "SOURCE_MIXTURE_ORACLE",
+            project.join("source-mixture-oracle.json"),
+        );
+        let _root = shell.push_dir(root);
+        cmd!(shell, "cargo test --package profiler_core --lib temporal_pairs_match_original_csharp --locked -- --ignored").run()?;
+    }
     println!("managed-test: PASS");
     Ok(())
 }

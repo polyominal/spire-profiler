@@ -1,68 +1,18 @@
-//! Native events carry explicit epochs and immutable source-transfer values.
+//! Test adapter for seeded event walks. Production uses explicitly owned engines.
+use super::state::{STATE, State};
 
-use std::path::Path;
-
-use crate::data::persistence::{
-    bind_log_path, ensure_data_dir, event_log, max_combat_id, reset_log_sink,
-};
-use crate::data::state::{PlayerFilter, STATE, State, StorePaths};
-use crate::marker;
-
-mod combat;
-mod run;
-mod self_test;
-#[cfg(test)]
-mod tests;
-
-pub use combat::{combat_ended, combat_started};
-pub use run::{
-    run_ended, run_history_clear, run_history_select, run_started, run_suspended, set_run_meta,
-};
-pub use self_test::self_test;
-
-pub fn init(data_dir: &Path) {
-    if STATE.with(|cell| cell.borrow().store_paths.is_some()) {
-        return;
-    }
-    STATE.with(|cell| {
-        let mut state = cell.borrow_mut();
-        state.store_paths = Some(StorePaths::new(data_dir));
-        state.run_profile = -1;
-    });
-    bind_log_path(&data_dir.join("profiler.log"));
-    let _ = ensure_data_dir();
-    // Seeded at the store's highest id; combat start increments before
-    // taking it, so the first new combat gets max+1.
-    STATE.with(|cell| cell.borrow_mut().next_combat_id = max_combat_id());
-    event_log!(
-        "profiler core initialized; data dir: {}",
-        data_dir.display()
-    );
-    marker!("core initialized, data dir: {}", data_dir.display());
-}
-
-/// The combat panel's avatar press. `current` keeps the finished combat
-/// between fights, so the row stays live then too; a no-op only with no
-/// combat on record.
-pub fn panel_filter_toggle(slot: u8) {
-    STATE.with(|cell| {
-        let mut state = cell.borrow_mut();
-        if state.current.is_none() {
-            return;
-        }
-        state.player_filter = state.player_filter.toggle(slot);
-        match state.player_filter {
-            PlayerFilter::Player(_) => marker!("panel filter: P{}", slot + 1),
-            PlayerFilter::All => marker!("panel filter: all"),
-        }
-    });
-}
-
-/// Clears module state so a test can start from a fresh core (the process
-/// lifetime of the game would never need this).
 pub fn test_reset() {
     STATE.with(|cell| *cell.borrow_mut() = State::default());
-    reset_log_sink();
+}
+pub fn combat_started(encounter: &str, kind: &str) -> u64 {
+    STATE.with(|cell| {
+        let mut state = cell.borrow_mut();
+        let seq = state.current.as_ref().map_or(1, |combat| combat.seq + 1);
+        state.combat_started(seq, encounter, kind, 1_786_579_200, 0)
+    })
+}
+pub fn combat_ended(epoch: u64) -> i32 {
+    STATE.with(|cell| cell.borrow_mut().combat_ended(epoch))
 }
 
 pub fn source_capture(
@@ -97,25 +47,6 @@ pub fn source_destination(transfer: u64, index: i32) -> u64 {
 
 pub fn source_weight(transfer: u64, index: i32) -> u64 {
     STATE.with(|cell| cell.borrow_mut().source_weight(transfer, index))
-}
-
-pub fn source_transfer_begin(combat_seq: u64) -> u64 {
-    STATE.with(|cell| cell.borrow_mut().source_transfer_begin(combat_seq))
-}
-
-pub fn source_transfer_add(transfer: u64, destination: u64, weight: u64) -> i32 {
-    STATE.with(|cell| {
-        cell.borrow_mut()
-            .source_transfer_add(transfer, destination, weight)
-    })
-}
-
-pub fn source_transfer_seal(transfer: u64) -> i32 {
-    STATE.with(|cell| cell.borrow_mut().source_transfer_seal(transfer))
-}
-
-pub fn source_transfer_release(transfer: u64) -> i32 {
-    STATE.with(|cell| cell.borrow_mut().source_transfer_release(transfer))
 }
 
 #[allow(clippy::too_many_arguments)]

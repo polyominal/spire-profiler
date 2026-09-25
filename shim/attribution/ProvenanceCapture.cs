@@ -111,7 +111,7 @@ internal static class ProvenanceCapture
                     throw new InvalidOperationException("Prior dirty provenance could not be invalidated");
                 var owner = IdentityCapture.Get(after.Owner, tracked.Epoch);
                 if (owner == null) throw new InvalidOperationException("Unavailable power owner identity");
-                int status = CaptureRuntime.Upload(tracked.Epoch, observed.Source, transfer => attachment
+                int status = CaptureRuntime.WithSource(tracked.Epoch, observed.Source, transfer => attachment
                     ? CaptureRuntime.Backend.PowerAttached(tracked.Epoch, tracked.Metadata.Identity, owner.Identity, after, transfer)
                     : CaptureRuntime.Backend.PowerChanged(tracked.Epoch, tracked.Metadata.Identity, owner.Identity, after, before.Amount, transfer));
                 if (status != 1) throw new InvalidOperationException("Observed power mutation rejected");
@@ -145,7 +145,7 @@ internal static class ProvenanceCapture
             var metadata = IdentityCapture.Get(card, epoch);
             if (metadata != null) metadata.Generation = GenerationState.GeneratedUnavailable;
             var source = FlowCapture.Supplied(null, epoch);
-            int status = CaptureRuntime.Upload(epoch, source, transfer => CaptureRuntime.Backend.CardGenerated(epoch.Sequence, metadata?.Identity ?? 0, transfer, FlowCapture.Current.Role));
+            int status = CaptureRuntime.WithSource(epoch, source, transfer => CaptureRuntime.Backend.CardGenerated(epoch.Sequence, metadata?.Identity ?? 0, transfer, FlowCapture.Current.Role));
             if (metadata != null && status == 1) metadata.Generation = GenerationState.GeneratedRecorded;
         }
         catch (Exception ex) { CaptureRuntime.Fail("card-generated", ex); }

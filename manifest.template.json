@@ -2,7 +2,7 @@
   "id": "spire-profiler",
   "name": "Spire Profiler",
   "author": "spire-profiler",
-  "description": "Tracks what each card, relic, power, and potion contributes in every Slay the Spire 2 combat: damage, block, mitigation, forge. Renders the results in an in-game chart and writes per-combat, per-run, and aggregate JSON stats to <game dir>/mod_data/spire-profiler/.",
+  "description": "Tracks card, relic, power, and potion contributions in Slay the Spire 2: damage, block, mitigation, and forge. Shows combat and run charts, and stores versioned run and combat JSON records under <game dir>/mod_data/spire-profiler/statistics-v1/.",
   "version": "@VERSION@",
   "has_dll": true,
   "has_pck": false,

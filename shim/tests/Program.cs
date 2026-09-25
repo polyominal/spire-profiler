@@ -9,7 +9,7 @@ internal static class ManagedTestProgram
 {
     private static int Main(string[] args)
     {
-        if (args.Length != 2) throw new ArgumentException("Expected installed managed assembly directory and generated project directory");
+        if (args.Length != 3) throw new ArgumentException("Expected game assemblies, generated project directory, and native engine library");
         AppDomain.CurrentDomain.AssemblyResolve += (_, request) =>
         {
             var path = Path.Combine(args[0], new AssemblyName(request.Name).Name + ".dll");
@@ -20,7 +20,16 @@ internal static class ManagedTestProgram
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static int Run(string[] args)
     {
-        try { ManagedFixtures.Run(args[1]); Console.WriteLine("MANAGED CAPTURE FIXTURES PASS"); return 0; }
+        try
+        {
+            ProfilerNative.Load(args[2]);
+            ManagedFixtures.Run(args[1]);
+            ProfilerNative.Dispose();
+            PanelFixtures.Run();
+            SessionFixtures.Run(args[1], args[2]);
+            Console.WriteLine("MANAGED CAPTURE FIXTURES PASS");
+            return 0;
+        }
         catch (Exception ex) { Console.Error.WriteLine(ex); return 1; }
     }
 }

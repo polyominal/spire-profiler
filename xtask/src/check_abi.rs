@@ -1,6 +1,6 @@
 //! ABI conformance between the production C# sources and the Rust core: every
 //! GetExport binding must match its `extern "C" fn` parameters and return,
-//! compared as canonical classes (int / long / ulong / double / string / void).
+//! compared as canonical scalar, UTF-8 string, and caller-owned buffer types.
 //! Returns support only scalars and void. Bound delegates accept whitespace and
 //! line-comment prefixes after a declaration boundary. The exact Cdecl delegate
 //! attribute is supported; other delegate attributes, trailing block comments,
@@ -130,10 +130,12 @@ fn compare_sources(
 fn map_rust_type(abi_type: &str) -> Result<&'static str, String> {
     match abi_type {
         "i32" => Ok("int"),
+        "u32" => Ok("uint"),
         "i64" => Ok("long"),
         "u64" => Ok("ulong"),
         "f64" => Ok("double"),
         "*const c_char" => Ok("string"),
+        "*mut u8" | "*const ModifierObservation" | "*mut ModifierCredit" => Ok("IntPtr"),
         _ => Err(format!("unsupported Rust parameter type '{abi_type}'")),
     }
 }
@@ -142,10 +144,12 @@ fn map_cs_type(abi_type: &str) -> Option<&'static str> {
     match abi_type {
         "void" => Some("void"),
         "int" => Some("int"),
+        "uint" => Some("uint"),
         "long" => Some("long"),
         "ulong" => Some("ulong"),
         "double" => Some("double"),
         "string" => Some("string"),
+        "IntPtr" => Some("IntPtr"),
         _ => None,
     }
 }
@@ -636,6 +640,19 @@ GetExport<NativeBar>(lib, "spire_profiler_bar");
             ("->\n f64", "double"),
         ] {
             assert_eq!(compare_returns(rust_return, cs_return), Ok(1));
+        }
+    }
+
+    #[test]
+    fn caller_owned_buffers_and_unsigned_sequences_preserve_wire_widths() {
+        let rust = "pub unsafe extern \"C\" fn spire_profiler_copy(epoch: u32, buffer: *mut u8, capacity: i32) -> i32 { 0 }";
+        let cs = "private delegate int NativeCopy(uint epoch, IntPtr buffer, int capacity);\nGetExport<NativeCopy>(lib, \"spire_profiler_copy\");";
+        assert_eq!(compare(rust, "abi.rs", cs), Ok(1));
+        for wrong in [
+            cs.replace("uint epoch", "int epoch"),
+            cs.replace("IntPtr buffer", "ulong buffer"),
+        ] {
+            assert!(compare(rust, "abi.rs", &wrong).is_err());
         }
     }
 

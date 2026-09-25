@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Numerics;
 using System.Reflection.Emit;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -370,6 +371,7 @@ internal static class DoomFixture
     internal static Task DoomKill(IReadOnlyList<Creature> creatures)
     { Calls++; During?.Invoke(); if (Error != null) throw Error; return OriginalTask; }
 }
+internal readonly record struct SourceShare(ulong Destination, ulong Weight);
 internal sealed class FakeBackend : AttributionBackend
 {
     internal object Combat;
@@ -378,7 +380,7 @@ internal sealed class FakeBackend : AttributionBackend
     internal readonly Dictionary<object, CreatureDescriptor> Creatures = new(ReferenceEqualityComparer.Instance);
     internal readonly Dictionary<ulong, SourceSnapshot> Sources = new();
     internal readonly Dictionary<string, SourceSnapshot> NamedSources = new();
-    private readonly Dictionary<ulong, List<SourceShare>> leases = new();
+    private readonly Dictionary<ulong, (ulong Epoch, SourceShare[] Shares)> interned = new();
     private readonly Dictionary<ulong, (SourceSnapshot Source, List<ResultPacket> Packets)> calculations = new();
     internal readonly Dictionary<ulong, (ulong Execution, int Slot, SourceSnapshot Source, bool Triggered)> Plays = new();
     internal readonly List<(string Kind, ulong Identity, int Before, int After, SourceSnapshot Source)> PowerEvents = new();
@@ -392,13 +394,11 @@ internal sealed class FakeBackend : AttributionBackend
     internal readonly List<ulong> DoomCommitted = new();
     internal readonly HashSet<ulong> DoomBatches = new();
     internal readonly List<string> Calls = new();
-    internal int Released, Started, Finished, ExecutionEnds;
+    internal int Started, Finished, ExecutionEnds;
     internal string Failure;
     internal int FailureCount = 1;
     internal int FailObservationAfter = -1;
-    internal SourceShare[] CapturePacket;
     private ulong serial;
-    internal int OpenLeases => leases.Count;
     internal int OpenCalculations => calculations.Count;
     private bool Reject(string category)
     {
@@ -433,23 +433,50 @@ internal sealed class FakeBackend : AttributionBackend
         var c = owner as ProbeCreature ?? p.Owner;
         return new(p, c, p.Name, 0, p.Slot, p.Amount, c?.Powers.Contains(p) == true);
     }
+    internal SourceSnapshot CreateSource(ulong epoch, ReadOnlySpan<SourceShare> entries)
+    {
+        var normalized = new SortedDictionary<ulong, BigInteger>();
+        foreach (var entry in entries) normalized[entry.Destination] = normalized.GetValueOrDefault(entry.Destination) + entry.Weight;
+        BigInteger gcd = normalized.Values.Aggregate(BigInteger.Zero, BigInteger.GreatestCommonDivisor);
+        var shares = normalized.Where(entry => entry.Value > 0).Select(entry => new SourceShare(entry.Key, checked((ulong)(entry.Value / gcd)))).ToArray();
+        foreach (var entry in interned)
+            if (entry.Value.Epoch == epoch && entry.Value.Shares.SequenceEqual(shares)) return SourceSnapshot.Own(epoch, entry.Key);
+        ulong handle = ++serial;
+        interned[handle] = (epoch, shares);
+        return SourceSnapshot.Own(epoch, handle);
+    }
+    internal SourceShare[] Entries(SourceSnapshot source) => source.Handle == 0 ? Array.Empty<SourceShare>() : interned[source.Handle].Shares;
+    internal SourceSnapshot Unknown(ulong epoch) => CreateSource(epoch, new[] { new SourceShare((epoch << 32) | 33, 1) });
     internal override ulong Capture(ulong epoch, CaptureKind kind, ulong instance, string id, int sourceKind, int slot, GenerationState generation)
     {
         if (Reject("Capture")) throw new InvalidOperationException("fixture capture failure");
-        SourceSnapshot source = Sources.GetValueOrDefault(instance) ?? NamedSources.GetValueOrDefault(id) ?? SourceSnapshot.Unknown(epoch);
-        if (generation is GenerationState.GeneratedUnavailable or GenerationState.Unclassified && kind == CaptureKind.CardInstance) source = SourceSnapshot.Unknown(epoch);
-        ulong token = ++serial;
-        leases[token] = CapturePacket?.ToList() ?? Enumerable.Range(0, source.Count).Select(i => source[i]).ToList();
-        return token;
+        SourceSnapshot source = Sources.GetValueOrDefault(instance) ?? NamedSources.GetValueOrDefault(id) ?? Unknown(epoch);
+        if (generation is GenerationState.GeneratedUnavailable or GenerationState.Unclassified && kind == CaptureKind.CardInstance) source = Unknown(epoch);
+        return source.Handle;
     }
-    internal override int SourceCount(ulong transfer) => Reject("SourceCount") ? -1 : leases[transfer].Count;
-    internal override ulong SourceDestination(ulong transfer, int index) => Reject("SourceDestination") ? 0 : leases[transfer][index].Destination;
-    internal override ulong SourceWeight(ulong transfer, int index) => Reject("SourceWeight") ? 0 : leases[transfer][index].Weight;
-    internal override ulong TransferBegin(ulong epoch) { if (Reject("TransferBegin")) return 0; ulong token = ++serial; leases[token] = new(); return token; }
-    internal override int TransferAdd(ulong transfer, ulong destination, ulong weight) { if (Reject("TransferAdd")) return 0; leases[transfer].Add(new(destination, weight)); return 1; }
-    internal override int TransferSeal(ulong transfer) => Reject("TransferSeal") ? 0 : 1;
-    internal override int TransferRelease(ulong transfer) { leases.Remove(transfer); Released++; Calls.Add("Release"); return 1; }
-    private SourceSnapshot Read(ulong transfer) => transfer == 0 ? SourceSnapshot.Unknown(CaptureRuntime.Epoch.Sequence) : SourceSnapshot.Create(CaptureRuntime.Epoch.Sequence, CollectionsMarshal.AsSpan(leases[transfer]));
+    internal readonly List<ulong> ReleasedSources = new();
+    internal override int SourceRelease(ulong handle) { ReleasedSources.Add(handle); return 1; }
+    internal override ulong SourceAccumulate(ulong epoch, ulong first, int before, ulong second, int after)
+    {
+        if (Reject("SourceAccumulate")) return 0;
+        int firstAmount = Math.Max(before, 0), secondAmount = checked(after - before);
+        if (secondAmount < 0) return 0;
+        if (firstAmount == 0) return second;
+        if (secondAmount == 0) return first;
+        var firstSource = Read(first); var secondSource = Read(second);
+        if (firstSource.Epoch != epoch || secondSource.Epoch != epoch) return 0;
+        var a = Entries(firstSource);
+        var b = Entries(secondSource);
+        BigInteger aTotal = a.Aggregate(BigInteger.Zero, (sum, entry) => sum + entry.Weight);
+        BigInteger bTotal = b.Aggregate(BigInteger.Zero, (sum, entry) => sum + entry.Weight);
+        var weights = new SortedDictionary<ulong, BigInteger>();
+        foreach (var entry in a) weights[entry.Destination] = weights.GetValueOrDefault(entry.Destination) + entry.Weight * bTotal * firstAmount;
+        foreach (var entry in b) weights[entry.Destination] = weights.GetValueOrDefault(entry.Destination) + entry.Weight * aTotal * secondAmount;
+        BigInteger gcd = weights.Values.Aggregate(BigInteger.Zero, BigInteger.GreatestCommonDivisor);
+        if (gcd == 0) return Unknown(epoch).Handle;
+        return CreateSource(epoch, weights.Where(entry => entry.Value > 0).Select(entry => new SourceShare(entry.Key, checked((ulong)(entry.Value / gcd)))).ToArray()).Handle;
+    }
+    private SourceSnapshot Read(ulong source) => source == 0 ? Unknown(CaptureRuntime.Epoch.Sequence) : SourceSnapshot.Own(interned[source].Epoch, source);
     internal override int PowerAttached(CaptureEpoch epoch, ulong identity, ulong owner, PowerObservation observed, ulong source)
     {
         if (Reject("PowerAttached")) return 0;
@@ -461,14 +488,14 @@ internal sealed class FakeBackend : AttributionBackend
     {
         if (Reject("PowerChanged")) return 0;
         PowerEvents.Add(("change", identity, before, observed.Amount, Read(source)));
-        Sources[identity] = observed.Amount == before ? Sources.GetValueOrDefault(identity) ?? SourceSnapshot.Unknown(epoch.Sequence) : Read(source);
+        Sources[identity] = observed.Amount == before ? Sources.GetValueOrDefault(identity) ?? Unknown(epoch.Sequence) : Read(source);
         return 1;
     }
     internal override int PowerRemoved(ulong epoch, ulong identity) { if (Reject("PowerRemoved")) return 0; Sources.Remove(identity); return 1; }
     internal override int PowerInvalidate(ulong epoch, ulong identity)
     {
         if (Reject("PowerInvalidate")) return 0;
-        Sources[identity] = SourceSnapshot.Unknown(epoch);
+        Sources[identity] = Unknown(epoch);
         return 1;
     }
     internal override int CardGenerated(ulong epoch, ulong identity, ulong source, ProducerRole role)
@@ -521,7 +548,7 @@ internal sealed class FakeBackend : AttributionBackend
     internal override int BlockGained(ulong epoch, int amount, ulong source, int slot)
     { CommandEvents.Add(("block", amount, slot, Read(source))); return 1; }
     internal override int BlockModifier(ulong epoch, ulong source, int amount, int slot)
-    { CommandEvents.Add(("block-modifier", amount, slot, Read(source))); return 1; }
+    { if (Reject("BlockModifier")) return 0; CommandEvents.Add(("block-modifier", amount, slot, Read(source))); return 1; }
     internal override int Forge(ulong epoch, ulong source, int amount)
     { CommandEvents.Add(("forge", amount, 4, Read(source))); return 1; }
     internal override int OstySummoned(ulong epoch, ulong source, int hp, int slot)
@@ -553,7 +580,7 @@ internal sealed class BlockClearListener : AbstractModel
     public override Task AfterBlockCleared(Creature creature) => Cleared(creature);
 }
 
-internal static class ManagedFixtures
+internal static partial class ManagedFixtures
 {
     private static FakeBackend backend;
     private static FixtureContext context;
@@ -580,7 +607,7 @@ internal static class ManagedFixtures
         SynchronizationContext.SetSynchronizationContext(context);
         var nativeDelegates = typeof(ProfilerNative).GetNestedTypes(BindingFlags.Public | BindingFlags.NonPublic)
             .Where(type => typeof(MulticastDelegate).IsAssignableFrom(type)).ToArray();
-        Check(nativeDelegates.Length == 52, "Complete compiled native delegate inventory");
+        Check(nativeDelegates.Length == 46, "Complete compiled native delegate inventory");
         int utf8Parameters = 0;
         foreach (var type in nativeDelegates)
         {
@@ -605,6 +632,8 @@ internal static class ManagedFixtures
         }
         Console.WriteLine($"DELEGATE METADATA Cdecl={nativeDelegates.Length} UTF8-string-parameters={utf8Parameters} return-marshalling=none");
         harmony = new Harmony("spire-profiler.capture-proof");
+        harmony.Patch(AccessTools.DeclaredMethod(typeof(RunState), "IterateHookListeners"),
+            prefix: new HarmonyMethod(typeof(ManagedFixtures), nameof(BlockClearListenersPrefix)));
         harmony.Patch(AccessTools.DeclaredMethod(typeof(Hook), "IterateCombatHookListeners"),
             prefix: new HarmonyMethod(typeof(ManagedFixtures), nameof(BlockClearListenersPrefix)));
         using (var inventory = new StreamWriter(Path.Combine(generatedDirectory, "installed-capture.log")))
@@ -687,8 +716,10 @@ internal static class ManagedFixtures
         Test("suspended, nested and overlapping flows on registered thread", AsyncScopes);
         Test("earlier Harmony skip preserves producer, pending, wrapper/orb and damage callers", SkippedPrefixes);
         Test("inherited stale epochs retain precedence across every scope combination", EntryEpochPrecedence);
-        Test("source snapshots copy span ownership and reject malformed packets", SourcePackets);
-        Test("source-copy and upload finally release on every failure", TransferFailures);
+        Test("combat-owned provenance handles survive supplier changes without scalar transfers", SourceHandles);
+        Test("weak source ownership survives collection, callbacks, awaits and combat replacement", SourceCollection);
+        Test("periodic source collection retains only live mixture owners", SourceCollectionStress);
+        Test("source capture/combine failure and stale epochs preserve explicit Unknown", SourceFailures);
         Test("accepted first attachment, stack ordering and notification exceptions", PowerMutations);
         Test("Misery clone zero-delta attachment and temporary null-card forwarding", TemporaryAndClone);
         Test("dirty provenance invalidation ordering and Unknown recovery", DirtyRecovery);
@@ -714,6 +745,8 @@ internal static class ManagedFixtures
         Test("modifier/enemy/Weak rejection invalidates whole groups with evidence intact", CaptureStatusFailures);
         Test("block/Forge/summon immutable scopes, original kickoff timing and inheritance", CommandSources);
         Test("actual block-clear decisions preserve Barricade/Blur and later cross-player block", RetainedBlock);
+        Test("native modifier credit preserves original decimal arithmetic", NativeModifierProjection);
+        Test("native Weak policy uses frozen receiver evidence and preserves integer rounding", NativeWeakProjection);
         Test("Doom nested batches, original Task and synthetic fallback remainder", DoomBatches);
         Test("orb channel failure and absent explicit Osty card source", OrbAndOsty);
         Test("Poison per-tick refresh rejects missing duration and unrelated targets", PoisonTicks);
@@ -726,8 +759,7 @@ internal static class ManagedFixtures
     private static void Check(bool value, string reason) { assertions++; if (!value) throw new InvalidOperationException("Assertion failed: " + reason); }
     private static void Same(SourceSnapshot actual, SourceSnapshot expected, string reason)
     {
-        Check(actual.Epoch == expected.Epoch && actual.Count == expected.Count
-            && Enumerable.Range(0, actual.Count).All(i => actual[i] == expected[i]), reason);
+        Check(actual.Epoch == expected.Epoch && backend.Entries(actual).SequenceEqual(backend.Entries(expected)), reason);
     }
     private static TaskCompletionSource<int> Pause() => new(TaskCreationOptions.RunContinuationsAsynchronously);
     private static void Test(string name, Action body)
@@ -735,8 +767,8 @@ internal static class ManagedFixtures
         backend = new FakeBackend { Combat = RuntimeHelpers.GetUninitializedObject(typeof(CombatState)) };
         CaptureRuntime.Register(backend, ++epoch, backend.Combat);
         FlowCapture.Current = ProducerFrame.Barrier;
-        A = SourceSnapshot.Create(epoch, new[] { new SourceShare(epoch << 32, 1) });
-        B = SourceSnapshot.Create(epoch, new[] { new SourceShare((epoch << 32) | 8, 1) });
+        A = backend.CreateSource(epoch, new[] { new SourceShare(epoch << 32, 1) });
+        B = backend.CreateSource(epoch, new[] { new SourceShare((epoch << 32) | 8, 1) });
         backend.NamedSources["A"] = A;
         backend.NamedSources["B"] = B;
         CommandPause = null;
@@ -774,7 +806,6 @@ internal static class ManagedFixtures
         DoomFixture.Calls = 0;
         DamageFixture.Enumerated = DamageFixture.LateEnumerated = DamageFixture.HookCalls = 0;
         body();
-        Check(backend.OpenLeases == 0, "No source transfer survives fixture");
         Check(backend.OpenCalculations == 0, "No unfinished calculation survives fixture");
         Check(backend.DoomBatches.Count == 0, "No unfinished Doom batch survives fixture");
         cases++;
@@ -925,54 +956,127 @@ internal static class ManagedFixtures
             CommandCapture.Finalizer(command);
         }
     }
-    private static void SourcePackets()
+    private static void SourceHandles()
     {
-        var entries = new[] { default(SourceShare), A[0], B[0], default(SourceShare) };
-        var snapshot = SourceSnapshot.Create(epoch, entries.AsSpan(1, 2));
-        Array.Clear(entries);
-        Check(snapshot.Count == 2 && snapshot[0] == A[0] && snapshot[1] == B[0], "Snapshot owns only the supplied span after its backing buffer is overwritten");
-        backend.CapturePacket = Enumerable.Range(0, SourceSnapshot.MaxDestinations).Select(i => new SourceShare((epoch << 32) | ((ulong)i << 3), 1)).ToArray();
-        var maximum = CaptureRuntime.Copy(CaptureRuntime.Epoch, CaptureKind.DirectModel, 0);
-        Check(maximum.Count == SourceSnapshot.MaxDestinations && Enumerable.Range(0, maximum.Count).All(i => maximum[i] == backend.CapturePacket[i]), "Maximum-size packet is fully copied before its lease is released");
-        Array.Clear(backend.CapturePacket);
-        Check(maximum[127] == new SourceShare((epoch << 32) | (127UL << 3), 1), "Captured snapshot survives later packet buffer reuse");
-        foreach (var packet in new SourceShare[][]
-        {
-            Array.Empty<SourceShare>(), new SourceShare[SourceSnapshot.MaxDestinations + 1],
-            new[] { A[0], A[0] }, new[] { new SourceShare(A[0].Destination, 0) },
-            new[] { new SourceShare((epoch << 32) | 2, 1) }, new[] { new SourceShare((epoch << 32) | 41, 1) },
-            new[] { new SourceShare((epoch + 1) << 32, 1) }, new[] { new SourceShare(A[0].Destination, 2) },
-            new[] { new SourceShare(A[0].Destination, ulong.MaxValue), B[0] }
-        })
-        {
-            backend.CapturePacket = packet;
-            int released = backend.Released;
-            Check(CaptureRuntime.Copy(CaptureRuntime.Epoch, CaptureKind.DirectModel, 0).Epoch == 0, "Malformed packet returns unavailable");
-            Check(backend.Released == released + 1 && backend.OpenLeases == 0, "Malformed packet releases its lease exactly once");
-        }
-        backend.CapturePacket = null;
+        int before = backend.Calls.Count;
+        var source = FlowCapture.Source(new ProbeModel("A"), CaptureRuntime.Epoch);
+        Check(source.Epoch == epoch && source.Handle == A.Handle, "Managed capture retains the engine's existing provenance identity");
+        Check(backend.Calls.Skip(before).SequenceEqual(new[] { "Capture" }), "Capturing a source needs one native operation and no scalar source reads");
+        backend.NamedSources["A"] = B;
+        ulong consumed = CaptureRuntime.WithSource(CaptureRuntime.Epoch, source, handle => handle);
+        Check(consumed == A.Handle, "Retained provenance survives later mutable supplier changes without an upload");
+        var combined = TemporalPowerCapture.AccumulateSources(CaptureRuntime.Epoch, A, 2, B, 3);
+        Same(combined, backend.CreateSource(epoch, new[] { new SourceShare(backend.Entries(A)[0].Destination, 2), new SourceShare(backend.Entries(B)[0].Destination, 1) }),
+            "Native mixture operation retains the exact weighted supplier ratio");
+        Check(backend.Calls.Last() == "SourceAccumulate", "Mixture crosses the boundary in one operation");
     }
-    private static void TransferFailures()
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static WeakReference<SourceSnapshot> AbandonedSource()
+        => new(TemporalPowerCapture.AccumulateSources(CaptureRuntime.Epoch,
+            FlowCapture.Source(new ProbeModel("A"), CaptureRuntime.Epoch), 13,
+            FlowCapture.Source(new ProbeModel("B"), CaptureRuntime.Epoch), 17));
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void ConsumeEphemeralSource()
     {
-        var a = new ProbeModel("A");
-        foreach (var failure in new[] { "SourceCount", "SourceDestination", "SourceWeight" })
+        int before = backend.ReleasedSources.Count;
+        CaptureRuntime.WithSource(CaptureRuntime.Epoch,
+            TemporalPowerCapture.AccumulateSources(CaptureRuntime.Epoch, A, 29, B, 37), handle =>
+            {
+                GC.Collect();
+                SourceSnapshot.Collect();
+                Check(!backend.ReleasedSources.Skip(before).Contains(handle), "An otherwise unrooted owner survives its native consumer callback");
+                return 0;
+            });
+    }
+    private static void SourceCollection()
+    {
+        var abandoned = AbandonedSource();
+        var a = FlowCapture.Source(new ProbeModel("A"), CaptureRuntime.Epoch);
+        Check(ReferenceEquals(a, FlowCapture.Source(new ProbeModel("A"), CaptureRuntime.Epoch)), "Every live handle has one managed owner shared by captures");
+        ulong released = CaptureRuntime.WithSource(CaptureRuntime.Epoch, a, handle =>
         {
-            backend.Failure = failure; backend.FailureCount = 1;
-            int released = backend.Released;
-            Check(FlowCapture.Source(a, CaptureRuntime.Epoch).Epoch == 0, "Malformed copy returns unavailable: " + failure);
-            Check(backend.Released == released + 1 && backend.OpenLeases == 0, "Read lease released in finally: " + failure);
-        }
-        foreach (var failure in new[] { "TransferBegin", "TransferAdd", "TransferSeal" })
+            GC.Collect();
+            SourceSnapshot.Collect();
+            Check(!backend.ReleasedSources.Contains(handle), "Synchronous native consumer keeps its owner alive through a nested collection");
+            return handle;
+        });
+        Check(released == a.Handle && !abandoned.TryGetTarget(out _), "Unowned mixtures become collectible");
+        Check(backend.ReleasedSources.Count == 1, "Only the abandoned mixture is released");
+        ConsumeEphemeralSource();
+        var pause = Pause();
+        var task = new ProbeModel("B").Suspended(pause.Task);
+        int beforeAsyncCollection = backend.ReleasedSources.Count;
+        GC.Collect();
+        SourceSnapshot.Collect();
+        Check(!backend.ReleasedSources.Skip(beforeAsyncCollection).Contains(B.Handle), "Suspended async producer retains its source owner");
+        pause.SetResult(1);
+        context.Complete(task);
+        Same(task.Result, B, "Async continuation consumes its original source after collection");
+        var oldEpoch = CaptureRuntime.Epoch;
+        var oldSource = FlowCapture.Source(new ProbeModel("B"), oldEpoch);
+        backend.Combat = RuntimeHelpers.GetUninitializedObject(typeof(CombatState));
+        CaptureRuntime.Register(backend, ++epoch, backend.Combat);
+        int releaseCount = backend.ReleasedSources.Count;
+        GC.Collect();
+        SourceSnapshot.Collect();
+        Check(backend.ReleasedSources.Count == releaseCount, "New combat drops old bookkeeping without releasing stale handles into the new engine state");
+        Check(CaptureRuntime.WithSource(CaptureRuntime.Epoch, oldSource, _ => true) == false, "Retained old owner cannot reach the replacement combat");
+        GC.KeepAlive(a);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void AddSourceBatch(Queue<SourceSnapshot> live, int offset)
+    {
+        for (int index = offset; index < offset + 100; index++)
         {
-            backend.Failure = failure; backend.FailureCount = 1;
-            int calls = 0;
-            int accepted = CaptureRuntime.Upload(CaptureRuntime.Epoch, A, lease => { calls++; Check(lease == 0, "Upload failure becomes explicit Unknown"); return 1; });
-            Check(accepted == 1 && calls == 1 && backend.OpenLeases == 0, "Upload consumer runs exactly once: " + failure);
+            if (live.Count == 8) live.Dequeue();
+            live.Enqueue(TemporalPowerCapture.AccumulateSources(CaptureRuntime.Epoch, A, 1, B, index + 2));
         }
+    }
+    private static void SourceCollectionStress()
+    {
+        var live = new Queue<SourceSnapshot>();
+        for (int batch = 0; batch < 10; batch++)
+        {
+            AddSourceBatch(live, batch * 100);
+            GC.Collect();
+            SourceSnapshot.Collect();
+            Check(backend.ReleasedSources.Count == (batch + 1) * 100 - live.Count, "Each sweep drops dead mixture owners and keeps exactly the active window");
+        }
+        foreach (var source in live)
+            Check(!backend.ReleasedSources.Contains(source.Handle), "Active mixtures remain valid after every sweep");
+        int released = backend.ReleasedSources.Count;
+        GC.Collect();
+        SourceSnapshot.Collect();
+        Check(backend.ReleasedSources.Count == released, "Removed weak entries cannot be released twice");
+        GC.KeepAlive(live);
+    }
+    private static void SourceFailures()
+    {
+        backend.Failure = "Capture";
+        var failed = FlowCapture.Source(new ProbeModel("A"), CaptureRuntime.Epoch);
+        Check(failed.Handle == 0, "Failed capture is explicitly unavailable");
+        int calls = 0;
+        Check(CaptureRuntime.WithSource(CaptureRuntime.Epoch, failed, handle => { calls++; return handle; }) == 0 && calls == 1,
+            "Unavailable provenance invokes the consumer exactly once with Unknown");
+        backend.Failure = "SourceAccumulate"; backend.FailureCount = 1;
+        Check(TemporalPowerCapture.AccumulateSources(CaptureRuntime.Epoch, A, 1, B, 2).Handle == 0, "Failed mixture cannot retain a partial supplier");
         backend.Failure = null;
         var error = new InvalidOperationException("consumer failed");
-        try { CaptureRuntime.Upload<int>(CaptureRuntime.Epoch, A, _ => throw error); } catch (InvalidOperationException actual) { Check(ReferenceEquals(error, actual), "Consumer exception preserved"); }
-        Check(backend.OpenLeases == 0, "Consumer exception releases sealed lease");
+        bool observed = false;
+        try { CaptureRuntime.WithSource<int>(CaptureRuntime.Epoch, A, _ => throw error); }
+        catch (InvalidOperationException actual) { observed = ReferenceEquals(error, actual); }
+        Check(observed, "Original consumer exception is preserved without a source lease lifecycle");
+        backend.Combat = RuntimeHelpers.GetUninitializedObject(typeof(CombatState));
+        CaptureRuntime.Register(backend, ++epoch, backend.Combat);
+        int staleCalls = 0;
+        CaptureRuntime.WithSource(CaptureRuntime.Epoch, A, _ => ++staleCalls);
+        Check(staleCalls == 0, "An opaque handle from a previous combat never reaches the consumer");
+        var selected = TemporalPowerCapture.AccumulateSources(CaptureRuntime.Epoch, SourceSnapshot.Unavailable, 0, A, 3);
+        Check(ReferenceEquals(selected, A), "A zero-weight mixture preserves the selected stale source identity");
+        CaptureRuntime.WithSource(CaptureRuntime.Epoch, selected, _ => ++staleCalls);
+        Check(staleCalls == 0, "The original stale selected source remains skipped rather than becoming Unknown credit");
+        Check(TemporalPowerCapture.AccumulateSources(CaptureRuntime.Epoch, A, 2, SourceSnapshot.Unavailable, 3).Handle == 0,
+            "A positive mixture validates every consumed source epoch");
     }
     private static void PowerMutations()
     {
@@ -1025,7 +1129,7 @@ internal static class ManagedFixtures
         backend.Failure = null; backend.Calls.Clear();
         power.SetAmount(4);
         Check(!metadata.Dirty && backend.Calls.IndexOf("PowerInvalidate") < backend.Calls.IndexOf("PowerChanged"), "Correctly ordered accepted recovery clears dirty");
-        Same(FlowCapture.Source(power, CaptureRuntime.Epoch), SourceSnapshot.Unknown(epoch), "Same-amount recovery cannot reclaim old balance");
+        Same(FlowCapture.Source(power, CaptureRuntime.Epoch), backend.Unknown(epoch), "Same-amount recovery cannot reclaim old balance");
     }
     private static void MutationFailures()
     {
@@ -1116,7 +1220,7 @@ internal static class ManagedFixtures
         Same(FlowCapture.Source(child, CaptureRuntime.Epoch), A, "Generated-card ancestry preserves root supplier");
         backend.Failure = "CardGenerated"; backend.FailureCount = 1; ProvenanceCapture.Generated(generated);
         Check(metadata.Generation == GenerationState.GeneratedUnavailable, "Failed regeneration overrides older successful record");
-        Same(FlowCapture.Source(generated, CaptureRuntime.Epoch), SourceSnapshot.Unknown(epoch), "Failed regeneration cannot revive old native source");
+        Same(FlowCapture.Source(generated, CaptureRuntime.Epoch), backend.Unknown(epoch), "Failed regeneration cannot revive old native source");
         var a = new CollisionModel(); var b = new CollisionModel();
         Check(IdentityCapture.Get(a, CaptureRuntime.Epoch).Identity != IdentityCapture.Get(b, CaptureRuntime.Epoch).Identity, "Weak identity allocator ignores hash collisions");
         for (int i = 0; i < IdentityCapture.PerCombat; i++) IdentityCapture.Get(new object(), CaptureRuntime.Epoch);
@@ -1148,10 +1252,10 @@ internal static class ManagedFixtures
         backend.NamedSources["TEMPORAL"] = A; power.AfterDamageReceived(card, 2);
         backend.NamedSources["TEMPORAL"] = B; power.AfterDamageReceived(card, 1);
         var accumulated = power.AfterCardPlayed(card, Task.CompletedTask); context.Complete(accumulated);
-        var expected = SourceSnapshot.Create(epoch, new[] { new SourceShare(A[0].Destination, 2), new SourceShare(B[0].Destination, 1) });
+        var expected = backend.CreateSource(epoch, new[] { new SourceShare(backend.Entries(A)[0].Destination, 2), new SourceShare(backend.Entries(B)[0].Destination, 1) });
         Same(accumulated.Result, expected, "Rupture accumulates actual per-increment suppliers at weights 2:1");
-        var mixture = SourceSnapshot.Create(epoch, new[] { new SourceShare(A[0].Destination, 1), new SourceShare(B[0].Destination, 1) });
-        Same(TemporalPowerCapture.Combine(CaptureRuntime.Epoch, mixture, 1, mixture, 1), mixture, "One-unit mixed suppliers are not rounded to one root");
+        var mixture = backend.CreateSource(epoch, new[] { new SourceShare(backend.Entries(A)[0].Destination, 1), new SourceShare(backend.Entries(B)[0].Destination, 1) });
+        Same(TemporalPowerCapture.AccumulateSources(CaptureRuntime.Epoch, mixture, 1, mixture, 2), mixture, "One-unit mixed suppliers are not rounded to one root");
         TemporalPowerCapture.Save(power, null, 2, A, CaptureRuntime.Epoch);
         Same(TemporalPowerCapture.TurnSource(power, CaptureRuntime.Epoch), A, "HelloWorld turn source is readable by the first callback");
         Same(TemporalPowerCapture.TurnSource(power, CaptureRuntime.Epoch), A, "Another player's callback cannot consume HelloWorld's turn source");
@@ -1248,7 +1352,7 @@ internal static class ManagedFixtures
         var world = GameWorld();
         var failedCard = GameCard<StrikeIronclad>(world.Owner, A);
         var cleanCard = GameCard<StrikeIronclad>(world.Other, B);
-        var laterModifier = SourceSnapshot.Create(epoch, new[] { new SourceShare((epoch << 32) | 16, 1) });
+        var laterModifier = backend.CreateSource(epoch, new[] { new SourceShare((epoch << 32) | 16, 1) });
         var firstStrength = GamePower<StrengthPower>(world.Owner.Creature, 3, A);
         var nextStrength = GamePower<StrengthPower>(world.Other.Creature, 2, laterModifier);
         DamageCapture.Inspect = (_, _, _) => new(true, false, 0, null, false);
@@ -1363,9 +1467,9 @@ internal static class ManagedFixtures
         AccessTools.DeclaredMethod(typeof(SleightOfFlesh), "OnUpgrade").Invoke(upgraded, null);
         context.Complete(PlayBody(upgraded, world.Other.Creature));
         Check(GameProducerFixture.Applications.Last().Amount == 13, "Pinned Sleight OnUpgrade and OnPlay supply thirteen stacks");
-        var defySource = SourceSnapshot.Create(epoch, new[] { new SourceShare((epoch << 32) | 16, 1) });
+        var defySource = backend.CreateSource(epoch, new[] { new SourceShare((epoch << 32) | 16, 1) });
         var defy = GameCard<Defy>(world.Owner, defySource);
-        var mixture = SourceSnapshot.Create(epoch, new[] { new SourceShare(A[0].Destination, 9), new SourceShare(B[0].Destination, 13) });
+        var mixture = backend.CreateSource(epoch, new[] { new SourceShare(backend.Entries(A)[0].Destination, 9), new SourceShare(backend.Entries(B)[0].Destination, 13) });
         foreach (var variant in new[] { (Amount: 9, Source: A), (Amount: 13, Source: B), (Amount: 22, Source: mixture) })
         {
             var sleight = GamePower<SleightOfFleshPower>(world.Owner.Creature, variant.Amount, variant.Source);
@@ -1469,9 +1573,9 @@ internal static class ManagedFixtures
         var world = GameWorld();
         var parentCard = GameCard<Defy>(world.Owner, A);
         var childCard = GameCard<Defy>(world.Other, B);
-        var parentModifier = SourceSnapshot.Create(epoch, new[] { new SourceShare((epoch << 32) | 16, 1) });
-        var childModifier = SourceSnapshot.Create(epoch, new[] { new SourceShare((epoch << 32) | 24, 1) });
-        var retaliationSource = SourceSnapshot.Create(epoch, new[] { new SourceShare((epoch << 32) | 32, 1) });
+        var parentModifier = backend.CreateSource(epoch, new[] { new SourceShare((epoch << 32) | 16, 1) });
+        var childModifier = backend.CreateSource(epoch, new[] { new SourceShare((epoch << 32) | 24, 1) });
+        var retaliationSource = backend.CreateSource(epoch, new[] { new SourceShare((epoch << 32) | 32, 1) });
         var parentStrength = GamePower<StrengthPower>(world.Owner.Creature, 3, parentModifier);
         var childStrength = GamePower<StrengthPower>(world.Other.Creature, 2, childModifier);
         var retaliation = GamePower<FlameBarrierPower>(world.Enemy, 4, retaliationSource);
@@ -1485,6 +1589,8 @@ internal static class ManagedFixtures
         DamageFixture.DuringLive = () => parentOperation = DamageCapture.Current;
         DamageFixture.Nested = async () =>
         {
+            GC.Collect();
+            SourceSnapshot.Collect();
             DamageFixture.Results = new() { new(world.Enemy, ValueProp.Move) { UnblockedDamage = 6, BlockedDamage = 1 } };
             DamageFixture.Pause = childPause.Task;
             DamageFixture.Modifiers = new[] { childStrength }; DamageFixture.Bonus = 2;
@@ -1538,7 +1644,7 @@ internal static class ManagedFixtures
         var world = GameWorld();
         var second = Creature(); var redirect = Creature();
         var card = GameCard<Defy>(world.Owner, A);
-        var otherModifierSource = SourceSnapshot.Create(epoch, new[] { new SourceShare((epoch << 32) | 16, 1) });
+        var otherModifierSource = backend.CreateSource(epoch, new[] { new SourceShare((epoch << 32) | 16, 1) });
         var firstStrength = GamePower<StrengthPower>(world.Owner.Creature, 2, B);
         var secondStrength = GamePower<StrengthPower>(world.Owner.Creature, 5, otherModifierSource);
         DamageFixture.ResultsByTarget = new()
@@ -1818,6 +1924,53 @@ internal static class ManagedFixtures
         context.Complete(Damage(incoming, enemy));
         Check(backend.Calls.Count(call => call == "DamageEnemyHit") == hits && backend.Fallback.Last().WeakPrevented == 2, "Dirty Strength blocks old native reduction capture without losing observed Weak evidence");
     }
+    private static void NativeModifierProjection()
+    {
+        decimal basis = 0.9999999999999999999999999999m, multiplier = 2.0000000000000000000000000001m;
+        Check(backend.CalculateModifierCredit(basis, multiplier, 2, decimal.MaxValue) == (int)(basis * (multiplier - 1)),
+            "Rust rounds decimal intermediates exactly as the original managed projection");
+        Check(backend.CalculateModifierCredit(0, -2.9999999999999999999999999999m, 0, decimal.MaxValue) == 2
+            && backend.CalculateModifierCredit(0, -2.9999999999999999999999999999m, 1, decimal.MaxValue) == -2,
+            "Rust truncates signed additions before applying the damage absolute value");
+        var random = new Random(0x328747);
+        decimal Next() => new(random.Next(int.MinValue, int.MaxValue), random.Next(int.MinValue, int.MaxValue),
+            random.Next(int.MinValue, int.MaxValue), random.Next(2) == 1, (byte)random.Next(29));
+        for (int index = 0; index < 12000; index++)
+        {
+            basis = Next(); decimal value = Next(), limit = Next(); int kind = index % 4;
+            int? expected = null, actual = null;
+            try { expected = kind switch { 0 => Math.Abs((int)value), 1 => (int)value, 2 => (int)(Math.Min(basis, limit) * (value - 1)), _ => (int)(Math.Min(basis, limit) * value) }; }
+            catch (OverflowException) { }
+            try { actual = backend.CalculateModifierCredit(basis, value, kind, limit); }
+            catch (OverflowException) { }
+            Check(expected == actual, $"Original .NET decimal oracle case {index}: {basis}, {value}, kind {kind}; expected {expected}, got {actual}");
+        }
+    }
+    private static void NativeWeakProjection()
+    {
+        foreach (var (debilitate, kraneSlots, expected) in new[] { (false, 0u, 2), (false, 2u, 4), (true, 0u, 6), (true, 2u, 24) })
+            Check(backend.CalculateWeakPrevention(6, 1, true, true, debilitate, kraneSlots) == expected,
+                "Rust estimates Weak from the observed Debilitate and receiver-specific Paper Krane flags");
+        Check(backend.CalculateWeakPrevention(6, 0, true, true, false, 2) == 2,
+            "A different receiver's Paper Krane does not alter the estimate");
+        Check(backend.CalculateWeakPrevention(6, 1, false, true, true, 2) == 0
+            && backend.CalculateWeakPrevention(6, 1, true, false, true, 2) == 0
+            && backend.CalculateWeakPrevention(0, 1, true, true, true, 2) == 0,
+            "Rust requires positive player damage and captured Weak evidence");
+        Check(backend.CalculateWeakPrevention(1, 0, true, true, false, 0) == 0
+            && backend.CalculateWeakPrevention(2, 0, true, true, false, 0) == 1,
+            "Weak integer rounding preserves the nearest whole damage estimate");
+        bool rejected = false;
+        try { backend.CalculateWeakPrevention(int.MaxValue, 1, true, true, true, 2); }
+        catch (InvalidOperationException) { rejected = true; }
+        Check(rejected, "An overflowing Weak estimate fails instead of wrapping into a plausible value");
+        var incoming = Creature(true, false, 1); var enemy = Creature(); var weak = new ProbePower("A");
+        DamageCapture.Inspect = (_, _, _) => new(false, true, 0, weak, true, 2);
+        DamageFixture.Results = new() { new(incoming, ValueProp.Move) { UnblockedDamage = int.MaxValue } };
+        context.Complete(Damage(incoming, enemy));
+        Check(backend.Committed.Count == 0 && backend.Fallback.Count == 0 && backend.Calls.Contains("diagnostic:damage-report"),
+            "The original overflowing Weak estimate aborts reporting the result group");
+    }
     private static void RetainedBlock()
     {
         var world = GameWorld();
@@ -1924,7 +2077,7 @@ internal static class ManagedFixtures
         pause.SetResult(1); context.Complete(summon); Same(CommandFixture.Frozen, B, "Summon supplier persists to internal generated powers");
         CommandFixture.Pause = Task.CompletedTask; backend.Failure = "Capture"; backend.FailureCount = 1;
         context.Complete(CommandFixture.Forge(2, player, card));
-        Same(backend.CommandEvents.Last().Source, SourceSnapshot.Unknown(epoch), "Failed explicit source capture retains positive Forge amount on Unknown");
+        Same(backend.CommandEvents.Last().Source, backend.Unknown(epoch), "Failed explicit source capture retains positive Forge amount on Unknown");
         CommandCapture.BuffPrefix(new ProbePower("A"), 8, out var buff);
         CommandCapture.BuffPostfix(1, buff, receiver);
         Check(backend.CommandEvents.Last().Kind == "buff" && backend.CommandEvents.Last().Amount == 7, "Defensive buff delta keeps existing nonnegative formula");
@@ -1985,7 +2138,7 @@ internal static class ManagedFixtures
         DamageFixture.Results = new() { new(enemy, ValueProp.Move) { UnblockedDamage = 5 } };
         FlowCapture.Current = Frame(new ProbePower("A"), A, ProducerRole.Power);
         context.Complete(Damage(enemy, osty));
-        Same(backend.Begun.Last().Source, SourceSnapshot.Unknown(epoch), "OstyDealt without canonical card excludes ambient producer");
+        Same(backend.Begun.Last().Source, backend.Unknown(epoch), "OstyDealt without canonical card excludes ambient producer");
         Check(backend.Committed.Last().Kind == ResultKind.OstyDealt, "Missing canonical card leaves specialized Osty classification");
         var strength = GamePower<StrengthPower>(osty, 3, B);
         AccessTools.Field(typeof(Creature), "_powers").SetValue(osty, new List<PowerModel> { strength });
@@ -2024,15 +2177,15 @@ internal static class ManagedFixtures
         Same(backend.Begun.Last().Source, B, "Later Poison canonical tick refreshes mixture after decrement");
         poison.Amount = 0;
         context.Complete(Damage(owner));
-        Same(backend.Begun.Last().Source, SourceSnapshot.Unknown(epoch), "Positive damage with zero actual Poison duration cannot borrow retained old source");
+        Same(backend.Begun.Last().Source, backend.Unknown(epoch), "Positive damage with zero actual Poison duration cannot borrow retained old source");
         poison.Amount = 2;
         DamageFixture.Results = new() { new(other, ValueProp.Unpowered) { UnblockedDamage = 3 } };
         context.Complete(Damage(other));
-        Same(backend.Begun.Last().Source, SourceSnapshot.Unknown(epoch), "Poison source cannot attach to an unrelated target");
-        backend.Failure = "SourceWeight"; backend.FailureCount = 1;
+        Same(backend.Begun.Last().Source, backend.Unknown(epoch), "Poison source cannot attach to an unrelated target");
+        backend.Failure = "Capture"; backend.FailureCount = 1;
         DamageFixture.Results = new() { new(owner, ValueProp.Unpowered) { UnblockedDamage = 3 } };
         context.Complete(Damage(owner));
-        Same(backend.Begun.Last().Source, SourceSnapshot.Unknown(epoch), "Missing positive Poison weights preserve outgoing damage on Unknown");
+        Same(backend.Begun.Last().Source, backend.Unknown(epoch), "Unavailable Poison provenance preserves outgoing damage on Unknown");
     }
     private static void StaleCommand()
     {
@@ -2063,7 +2216,7 @@ internal static class ManagedFixtures
         Check(backend.Calls.Count == calls, "Generation inside setup makes no pre-epoch native call");
         CaptureRuntime.Register(backend, ++epoch, backend.Combat);
         Check(IdentityCapture.Get(generated, CaptureRuntime.Epoch).Generation == GenerationState.GeneratedUnavailable, "Pre-epoch generated identity cannot become an ordinary named card");
-        Same(FlowCapture.Source(generated, CaptureRuntime.Epoch), SourceSnapshot.Unknown(epoch), "Missing startup provenance remains explicit Unknown");
+        Same(FlowCapture.Source(generated, CaptureRuntime.Epoch), backend.Unknown(epoch), "Missing startup provenance remains explicit Unknown");
         Check(IdentityCapture.Get(new ProbeModel("A"), CaptureRuntime.Epoch).Generation == GenerationState.Ordinary, "Preparation does not misclassify an unrelated ordinary card");
 
         var abandoned = new ProbeModel("A");

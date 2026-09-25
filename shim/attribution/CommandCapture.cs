@@ -81,12 +81,12 @@ internal static class CommandCapture
             if (amount <= 0) return;
             if (frame.Kind == CommandKind.Forge)
             {
-                if (CaptureRuntime.Upload(frame.Epoch, frame.Source, transfer => CaptureRuntime.Backend.Forge(frame.Epoch.Sequence, transfer, amount)) != 1)
+                if (CaptureRuntime.WithSource(frame.Epoch, frame.Source, transfer => CaptureRuntime.Backend.Forge(frame.Epoch.Sequence, transfer, amount)) != 1)
                     CaptureRuntime.Fail("forge-report");
             }
             else if (frame.Kind == CommandKind.Summon)
             {
-                if (CaptureRuntime.Upload(frame.Epoch, frame.Source, transfer => CaptureRuntime.Backend.OstySummoned(frame.Epoch.Sequence, transfer, amount, frame.Slot)) != 1)
+                if (CaptureRuntime.WithSource(frame.Epoch, frame.Source, transfer => CaptureRuntime.Backend.OstySummoned(frame.Epoch.Sequence, transfer, amount, frame.Slot)) != 1)
                     CaptureRuntime.Fail("summon-report");
             }
         }
@@ -109,7 +109,7 @@ internal static class CommandCapture
             var operation = Current;
             var source = operation.Kind == CommandKind.Block && ReferenceEquals(operation.Receiver, receiver) && CaptureRuntime.Valid(operation.Epoch)
                 ? operation.Source : SourceSnapshot.Unavailable;
-            if (CaptureRuntime.Upload(epoch, source, transfer => CaptureRuntime.Backend.BlockGained(epoch.Sequence, amount, transfer, target.Slot)) != 1)
+            if (CaptureRuntime.WithSource(epoch, source, transfer => CaptureRuntime.Backend.BlockGained(epoch.Sequence, amount, transfer, target.Slot)) != 1)
                 CaptureRuntime.Fail("block-report");
         }
         catch (Exception ex) { CaptureRuntime.Fail("block-report", ex); }
@@ -136,7 +136,7 @@ internal static class CommandCapture
             DecomposeBlock(modifiers, start, __result, target, props, cardSource, cardPlay, (model, amount) =>
             {
                 var source = FlowCapture.Source(model, __state.Epoch);
-                if (CaptureRuntime.Upload(__state.Epoch, source, transfer => CaptureRuntime.Backend.BlockModifier(__state.Epoch.Sequence, transfer, amount, RunContext.PlayerSlot(target.Player))) != 1)
+                if (CaptureRuntime.WithSource(__state.Epoch, source, transfer => CaptureRuntime.Backend.BlockModifier(__state.Epoch.Sequence, transfer, amount, RunContext.PlayerSlot(target.Player))) != 1)
                     CaptureRuntime.Fail("block-modifier-report");
             });
         }
@@ -156,7 +156,7 @@ internal static class CommandCapture
                 _ => 0m
             };
             running += addition;
-            if (addition > 0) contribute(model, checked((int)addition));
+            if (addition > 0) contribute(model, ModifierCapture.Additive(addition, false));
             else if (model is PowerModel or RelicModel)
             {
                 if (multiplicative.Count == 64) { CaptureRuntime.Fail("block-modifier-cap"); return; }
@@ -167,10 +167,10 @@ internal static class CommandCapture
         {
             decimal multiplier = model is PowerModel power ? power.ModifyBlockMultiplicative(target, running, props, card, play)
                 : ((RelicModel)model).ModifyBlockMultiplicative(target, running, props, card, play);
-            decimal before = Math.Min(running, result);
+            decimal before = running;
             running *= multiplier;
             if (multiplier <= 1) continue;
-            int amount = checked((int)(before * (multiplier - 1)));
+            int amount = ModifierCapture.Increase(before, multiplier, result);
             if (amount > 0) contribute(model, amount);
         }
     }
@@ -193,7 +193,7 @@ internal static class CommandCapture
             var receiver = CaptureRuntime.Backend.DescribeCreature(target);
             if (!receiver.Player || !ReferenceEquals(receiver.Combat, __state.Epoch.Combat) || (__state.Buffer && __result != 0)) return;
             int prevented = checked((int)(__state.Amount - __result));
-            if (prevented > 0 && CaptureRuntime.Upload(__state.Epoch, __state.Source, transfer => CaptureRuntime.Backend.BuffMitigation(__state.Epoch.Sequence, transfer, prevented)) != 1)
+            if (prevented > 0 && CaptureRuntime.WithSource(__state.Epoch, __state.Source, transfer => CaptureRuntime.Backend.BuffMitigation(__state.Epoch.Sequence, transfer, prevented)) != 1)
                 CaptureRuntime.Fail("buff-report");
         }
         catch (Exception ex) { CaptureRuntime.Fail("buff-report", ex); }
@@ -208,7 +208,7 @@ internal static class CommandCapture
             if (identity == null) return;
             identity.Dirty = true;
             var source = FlowCapture.Supplied(null, epoch);
-            if (CaptureRuntime.Upload(epoch, source, transfer => CaptureRuntime.Backend.OrbChanneled(epoch.Sequence, identity.Identity, transfer)) == 1) identity.Dirty = false;
+            if (CaptureRuntime.WithSource(epoch, source, transfer => CaptureRuntime.Backend.OrbChanneled(epoch.Sequence, identity.Identity, transfer)) == 1) identity.Dirty = false;
             else CaptureRuntime.Fail("orb-channel");
         }
         catch (Exception ex) { CaptureRuntime.Fail("orb-channel", ex); }

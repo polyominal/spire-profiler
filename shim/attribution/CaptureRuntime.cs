@@ -45,6 +45,7 @@ internal static class CaptureRuntime
         diagnostics.Clear();
         IdentityCapture.NewEpoch();
         TemporalPowerCapture.Clear();
+        SourceSnapshot.Reset();
     }
     internal static void InvalidateEpoch()
     {
@@ -52,6 +53,7 @@ internal static class CaptureRuntime
         Epoch = default;
         IdentityCapture.CancelPreparation();
         TemporalPowerCapture.Clear();
+        SourceSnapshot.Reset();
     }
     internal static bool Stale(CaptureEpoch captured) => captured.Sequence != 0
         && (captured.Sequence != Epoch.Sequence || !ReferenceEquals(captured.Combat, Epoch.Combat));
@@ -84,49 +86,22 @@ internal static class CaptureRuntime
         if (diagnostics.Add(category))
             try { Backend?.Diagnostic(category, error); } catch (Exception) { }
     }
-    internal static SourceSnapshot Copy(CaptureEpoch epoch, CaptureKind kind, ulong identity, string id = "", int sourceKind = 5, int slot = 4, GenerationState generation = GenerationState.Unclassified)
+    internal static SourceSnapshot CaptureSource(CaptureEpoch epoch, CaptureKind kind, ulong identity, string id = "", int sourceKind = 5, int slot = 4, GenerationState generation = GenerationState.Unclassified)
     {
-        ulong lease = 0;
         try
         {
             if (!Valid(epoch)) return SourceSnapshot.Unavailable;
-            lease = Backend.Capture(epoch.Sequence, kind, identity, id, sourceKind, slot, generation);
-            if (lease == 0) return SourceSnapshot.Unavailable;
-            int count = Backend.SourceCount(lease);
-            if (count < 1 || count > SourceSnapshot.MaxDestinations) throw new InvalidOperationException("Invalid source count");
-            Span<SourceShare> entries = stackalloc SourceShare[count];
-            for (int i = 0; i < count; i++) entries[i] = new(Backend.SourceDestination(lease, i), Backend.SourceWeight(lease, i));
-            return SourceSnapshot.Create(epoch.Sequence, entries);
+            SourceSnapshot.Collect();
+            ulong source = Backend.Capture(epoch.Sequence, kind, identity, id, sourceKind, slot, generation);
+            return SourceSnapshot.Own(epoch.Sequence, source);
         }
-        catch (Exception ex) { Fail("source-copy", ex); return SourceSnapshot.Unavailable; }
-        finally { Release(lease); }
+        catch (Exception ex) { Fail("source-capture", ex); return SourceSnapshot.Unavailable; }
     }
-    internal static T Upload<T>(CaptureEpoch epoch, SourceSnapshot source, Func<ulong, T> consume, T unavailable = default)
+    internal static T WithSource<T>(CaptureEpoch epoch, SourceSnapshot source, Func<ulong, T> consume, T unavailable = default)
     {
-        ulong lease = 0;
-        try
-        {
-            if (!Valid(epoch)) return unavailable;
-            if (source.Epoch == 0) return consume(0);
-            if (source.Epoch != epoch.Sequence) return unavailable;
-            try
-            {
-                lease = Backend.TransferBegin(epoch.Sequence);
-                if (lease == 0) return consume(0);
-                for (int i = 0; i < source.Count; i++)
-                    if (Backend.TransferAdd(lease, source[i].Destination, source[i].Weight) != 1)
-                        throw new InvalidOperationException("Source upload rejected");
-                if (Backend.TransferSeal(lease) != 1) throw new InvalidOperationException("Source seal rejected");
-            }
-            catch (Exception ex) { Fail("source-upload", ex); Release(lease); lease = 0; }
-            return consume(lease);
-        }
-        finally { Release(lease); }
-    }
-    private static void Release(ulong lease)
-    {
-        if (lease == 0) return;
-        try { if (Backend.TransferRelease(lease) != 1) Fail("source-release"); }
-        catch (Exception ex) { Fail("source-release", ex); }
+        if (!Valid(epoch)) return unavailable;
+        if (source.Epoch != 0 && source.Epoch != epoch.Sequence) return unavailable;
+        try { SourceSnapshot.Collect(); return consume(source.Handle); }
+        finally { GC.KeepAlive(source); }
     }
 }

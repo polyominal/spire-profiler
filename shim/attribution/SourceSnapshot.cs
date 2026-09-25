@@ -1,40 +1,45 @@
 using System;
+using System.Collections.Generic;
 
 namespace SpireProfiler;
 
-internal readonly record struct SourceShare(ulong Destination, ulong Weight);
+// One managed object owns each exported native handle. Async frames share that
+// object; native provenance retains independent Rc snapshots. Only the game
+// thread sweeps dead weak entries, after GC, so no finalizer calls into Rust.
 internal sealed class SourceSnapshot
 {
-    // A source can span at most the native contract's 128 distinct roots.
-    internal const int MaxDestinations = 128;
-    private readonly SourceShare[] shares;
+    private static Dictionary<ulong, WeakReference<SourceSnapshot>> owned = new();
+    private static int collections;
     internal ulong Epoch { get; }
-    internal int Count => shares.Length;
-    internal SourceShare this[int index] => shares[index];
-    internal static readonly SourceSnapshot Unavailable = new(0, Array.Empty<SourceShare>());
-    private SourceSnapshot(ulong epoch, SourceShare[] entries) { Epoch = epoch; shares = entries; }
-    internal static SourceSnapshot Create(ulong epoch, ReadOnlySpan<SourceShare> entries)
+    internal ulong Handle { get; }
+    internal static readonly SourceSnapshot Unavailable = new(0, 0);
+    private SourceSnapshot(ulong epoch, ulong handle) { Epoch = epoch; Handle = handle; }
+    internal static void Reset()
     {
-        if (epoch == 0 || epoch > uint.MaxValue || entries.Length < 1 || entries.Length > MaxDestinations)
-            throw new InvalidOperationException("Invalid source shape");
-        var copy = new SourceShare[entries.Length];
-        ulong total = 0, gcd = 0;
-        for (int i = 0; i < entries.Length; i++)
-        {
-            var share = entries[i];
-            var tag = share.Destination & 7;
-            var payload = (uint)share.Destination >> 3;
-            if (share.Weight == 0 || share.Destination >> 32 != epoch || tag > 1 || (tag == 1 && payload > 4))
-                throw new InvalidOperationException("Invalid source destination or weight");
-            for (int j = 0; j < i; j++)
-                if (copy[j].Destination == share.Destination) throw new InvalidOperationException("Duplicate source destination");
-            total = checked(total + share.Weight);
-            gcd = Gcd(gcd, share.Weight);
-            copy[i] = share;
-        }
-        if (gcd != 1) throw new InvalidOperationException("Source is not normalized");
-        return new SourceSnapshot(epoch, copy);
+        owned = new();
+        collections = GC.CollectionCount(0);
     }
-    internal static ulong Gcd(ulong a, ulong b) { while (b != 0) { (a, b) = (b, a % b); } return a; }
-    internal static SourceSnapshot Unknown(ulong epoch) => Create(epoch, stackalloc[] { new SourceShare((epoch << 32) | 33, 1) });
+    internal static SourceSnapshot Own(ulong epoch, ulong handle)
+    {
+        if (handle == 0) return Unavailable;
+        if (owned.TryGetValue(handle, out var weak) && weak.TryGetTarget(out var existing)) return existing;
+        var source = new SourceSnapshot(epoch, handle);
+        owned[handle] = new(source);
+        return source;
+    }
+    internal static void Collect()
+    {
+        int current = GC.CollectionCount(0);
+        if (current == collections) return;
+        collections = current;
+        List<ulong> dead = null;
+        foreach (var pair in owned)
+            if (!pair.Value.TryGetTarget(out _)) (dead ??= new()).Add(pair.Key);
+        if (dead == null) return;
+        foreach (ulong handle in dead)
+        {
+            if (CaptureRuntime.Backend.SourceRelease(handle) != 1) CaptureRuntime.Fail("source-release");
+            owned.Remove(handle);
+        }
+    }
 }

@@ -65,7 +65,7 @@ internal static class PlayCapture
             var source = FlowCapture.Source(card, epoch);
             var generation = metadata?.Generation ?? GenerationState.Unclassified;
             ulong executionId = CaptureRuntime.Valid(Execution.Epoch) && !Execution.Potion ? Execution.Identity : 0;
-            ulong token = CaptureRuntime.Upload(epoch, source, transfer => CaptureRuntime.Backend.PlayStarted(epoch.Sequence, executionId,
+            ulong token = CaptureRuntime.WithSource(epoch, source, transfer => CaptureRuntime.Backend.PlayStarted(epoch.Sequence, executionId,
                 metadata?.Identity ?? 0, id, slot, index, count, generation, transfer));
             Current = new(epoch, token, executionId, card, slot, source, prior);
         }

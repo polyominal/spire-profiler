@@ -91,12 +91,11 @@ pub(super) fn get_or_create_card_kind(
     {
         if !combat.row_capacity_logged {
             combat.row_capacity_logged = true;
-            crate::fail!("combat row capacity exhausted; using credited-slot Unknown");
         }
         return get_or_create_card_kind(combat, slot, "UNATTRIBUTED", SourceKind::Unknown);
     }
     if combat.cards.len() >= caps::COMBAT_CARDS {
-        crate::fail!("combat row invariant violated: no reserved Unknown slot");
+        combat.row_capacity_logged = true;
         return None;
     }
     let index = combat.cards.len();

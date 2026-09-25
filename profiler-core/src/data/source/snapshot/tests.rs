@@ -1,6 +1,4 @@
-use super::super::{State, Token, TokenKind};
 use super::*;
-use crate::data::state::{CardStat, Combat, SourceSlot};
 
 fn epoch() -> CombatEpoch {
     CombatEpoch::from_wire(7).expect("fixture epoch is nonzero and fits u32")
@@ -16,21 +14,6 @@ fn source(weights: &[(usize, u64)]) -> SourceSnapshot {
             .collect(),
     )
     .expect("fixture rows and positive weights fit the source bounds")
-}
-
-fn state(rows: usize) -> State {
-    State {
-        current: Some(Combat {
-            seq: epoch().0.get(),
-            cards: (0..rows).map(|_| CardStat::default()).collect(),
-            ..Combat::default()
-        }),
-        ..State::default()
-    }
-}
-
-fn unknown(slot: SourceSlot) -> u64 {
-    Destination::Unknown(slot).token(epoch())
 }
 
 #[test]
@@ -60,6 +43,104 @@ fn normalization_merges_roots_without_losing_small_suppliers() {
             ]
         ),
         Err(SourceFailure::Arithmetic)
+    );
+}
+
+#[test]
+fn temporal_pairs_preserve_common_units_order_and_checked_intermediates() {
+    for a in 1..=12_u128 {
+        for b in 1..=12_u128 {
+            let first = source(&[(2, a as u64), (0, 1)]);
+            let second = source(&[(1, b as u64), (2, 1)]);
+            let actual = SourceSnapshot::combine(epoch(), 3, first, 7, second, 11)
+                .expect("small temporal mixtures fit");
+            let mut expected = [
+                7 * a * (b + 1) + 11 * (a + 1),
+                7 * (b + 1),
+                11 * b * (a + 1),
+            ];
+            let divisor = expected.iter().copied().fold(0, SourceSnapshot::gcd);
+            expected.iter_mut().for_each(|weight| *weight /= divisor);
+            assert_eq!(
+                actual
+                    .shares
+                    .iter()
+                    .map(|share| (share.destination, u128::from(share.weight)))
+                    .collect::<Vec<_>>(),
+                [
+                    (Destination::Row(2), expected[0]),
+                    (Destination::Row(0), expected[1]),
+                    (Destination::Row(1), expected[2])
+                ]
+            );
+        }
+    }
+    let first = source(&[(0, u64::MAX - 1), (1, 1)]);
+    let second = source(&[(0, u64::MAX - 2), (1, 1)]);
+    assert_eq!(
+        SourceSnapshot::combine(epoch(), 2, first, i32::MAX as u32, second, 1),
+        Err(SourceFailure::Arithmetic)
+    );
+}
+
+#[test]
+#[ignore = "parity-test supplies independently executed original C# mixtures"]
+fn temporal_pairs_match_original_csharp() {
+    #[derive(serde::Deserialize)]
+    struct Case {
+        first: Vec<[u64; 2]>,
+        second: Vec<[u64; 2]>,
+        before: u32,
+        added: u32,
+        expected: Option<Vec<[u64; 2]>>,
+    }
+    let path =
+        std::env::var("SOURCE_MIXTURE_ORACLE").expect("parity-test supplies the oracle path");
+    let cases: Vec<Case> = serde_json::from_slice(&std::fs::read(path).expect("oracle exists"))
+        .expect("original C# oracle is valid JSON");
+    assert_eq!(cases.len(), 512);
+    let mut rejected = 0;
+    for (index, case) in cases.into_iter().enumerate() {
+        let snapshot = |shares: Vec<[u64; 2]>| {
+            SourceSnapshot::normalized(
+                epoch(),
+                3,
+                shares
+                    .into_iter()
+                    .map(|[destination, weight]| {
+                        assert_eq!(destination >> 32, 7);
+                        assert_eq!(destination & 7, 0);
+                        (
+                            Destination::Row(destination as u32 >> 3),
+                            u128::from(weight),
+                        )
+                    })
+                    .collect(),
+            )
+            .expect("original valid source")
+        };
+        let actual = SourceSnapshot::combine(
+            epoch(),
+            3,
+            snapshot(case.first),
+            case.before,
+            snapshot(case.second),
+            case.added,
+        )
+        .ok()
+        .map(|value| {
+            value
+                .shares
+                .iter()
+                .map(|share| [share.destination.token(epoch()), share.weight])
+                .collect::<Vec<_>>()
+        });
+        rejected += usize::from(case.expected.is_none());
+        assert_eq!(actual, case.expected, "original C# mixture {index}");
+    }
+    assert!(
+        rejected > 0 && rejected < 512,
+        "oracle covers both successful and overflowing mixtures"
     );
 }
 
@@ -310,227 +391,6 @@ fn mixtures_distinguish_unknown_roots_from_invalid_grants() {
 }
 
 #[test]
-fn transfer_round_trip_preserves_destinations_and_normalizes_duplicates() {
-    let mut state = state(1);
-    let transfer = state.source_transfer_begin(7);
-    assert_ne!(transfer, 0);
-    assert_eq!(state.source_count(transfer), -1);
-    assert_eq!(state.source_transfer_add(transfer, unknown(2), 6), 1);
-    let row = Destination::Row(0).token(epoch());
-    assert_eq!(state.source_transfer_add(transfer, row, 3), 1);
-    assert_eq!(state.source_transfer_add(transfer, unknown(2), 3), 1);
-    assert_eq!(state.source_transfer_seal(transfer), 1);
-    assert_eq!(state.source_count(transfer), 2);
-    assert_eq!(
-        (
-            state.source_destination(transfer, 0),
-            state.source_weight(transfer, 0)
-        ),
-        (unknown(2), 3)
-    );
-    assert_eq!(
-        (
-            state.source_destination(transfer, 1),
-            state.source_weight(transfer, 1)
-        ),
-        (row, 1)
-    );
-    for index in [i32::MIN, -1, 2, i32::MAX] {
-        assert_eq!(state.source_destination(transfer, index), 0);
-        assert_eq!(state.source_weight(transfer, index), 0);
-    }
-    assert_eq!(state.source_count(transfer), 2);
-    assert_eq!(state.source_transfer_release(transfer), 1);
-    assert_eq!(state.source_transfer_release(transfer), 0);
-    assert_eq!(state.source_count(transfer), -1);
-    let next = state.source_transfer_begin(7);
-    assert_ne!(next, transfer);
-    assert_eq!(state.source_transfer_release(transfer), 0);
-    assert_eq!(state.source_transfer_add(next, unknown(4), 1), 1);
-}
-
-#[test]
-fn malformed_transfer_writes_cannot_leave_a_partial_source_usable() {
-    let mut state = state(1);
-    let invalid_destinations = [
-        0,
-        u64::MAX,
-        unknown(0) ^ (1 << 32),
-        Destination::Row(1).token(epoch()),
-        (7_u64 << 32) | (5 << 3) | 1,
-        (7_u64 << 32) | 6,
-    ];
-    for destination in invalid_destinations {
-        let transfer = state.source_transfer_begin(7);
-        assert_eq!(state.source_transfer_add(transfer, unknown(0), 1), 1);
-        assert_eq!(state.source_transfer_add(transfer, destination, 1), 0);
-        assert_eq!(state.source_transfer_seal(transfer), 0);
-        assert_eq!(state.source_count(transfer), -1);
-        assert_eq!(state.source_transfer_release(transfer), 1);
-    }
-    let transfer = state.source_transfer_begin(7);
-    assert_eq!(state.source_transfer_add(transfer, unknown(0), 0), 0);
-    assert_eq!(state.source_transfer_add(transfer, unknown(0), 1), 0);
-    assert_eq!(state.source_transfer_seal(transfer), 0);
-    state.source_transfer_release(transfer);
-    let empty = state.source_transfer_begin(7);
-    assert_eq!(state.source_transfer_seal(empty), 0);
-    assert_eq!(state.source_count(empty), -1);
-}
-
-#[test]
-fn capacity_and_representation_failures_invalidate_then_release() {
-    let mut state = state(caps::SOURCE_DESTINATIONS + 1);
-    let mut transfers = Vec::new();
-    for _ in 0..caps::SOURCE_TRANSFERS {
-        let token = state.source_transfer_begin(7);
-        assert_ne!(token, 0);
-        transfers.push(token);
-    }
-    assert_eq!(state.source_transfer_begin(7), 0);
-    for transfer in transfers {
-        assert_eq!(state.source_transfer_release(transfer), 1);
-    }
-    let transfer = state.source_transfer_begin(7);
-    for row in 0..caps::SOURCE_DESTINATIONS {
-        assert_eq!(
-            state.source_transfer_add(transfer, Destination::Row(row as u32).token(epoch()), 1),
-            1
-        );
-    }
-    assert_eq!(
-        state.source_transfer_add(transfer, Destination::Row(0).token(epoch()), 1),
-        1
-    );
-    assert_eq!(
-        state.source_transfer_add(
-            transfer,
-            Destination::Row(caps::SOURCE_DESTINATIONS as u32).token(epoch()),
-            1
-        ),
-        0
-    );
-    assert_eq!(state.source_transfer_seal(transfer), 0);
-    assert_eq!(state.source_count(transfer), -1);
-    state.source_transfer_release(transfer);
-    let overflow = state.source_transfer_begin(7);
-    assert_eq!(state.source_transfer_add(overflow, unknown(0), u64::MAX), 1);
-    assert_eq!(
-        state.source_transfer_add(overflow, unknown(1), u64::MAX - 1),
-        1
-    );
-    assert_eq!(state.source_transfer_seal(overflow), 0);
-    assert_eq!(state.source_count(overflow), -1);
-}
-
-#[test]
-fn token_kind_epoch_membership_and_serial_exhaustion_are_checked() {
-    let last_row = Destination::Row(PAYLOAD_MAX);
-    assert_eq!(
-        Destination::from_token(last_row.token(epoch()), epoch(), PAYLOAD_MAX as usize + 1),
-        Ok(last_row)
-    );
-    assert_eq!(
-        Destination::from_token(last_row.token(epoch()), epoch(), PAYLOAD_MAX as usize),
-        Err(SourceFailure::Token)
-    );
-    assert_eq!(
-        SourceSnapshot::normalized(
-            epoch(),
-            PAYLOAD_MAX as usize + 2,
-            vec![(Destination::Row(PAYLOAD_MAX + 1), 1)]
-        ),
-        Err(SourceFailure::Token)
-    );
-    let mut state = state(1);
-    for wire in [0, u64::from(u32::MAX) + 1, u64::MAX, 6, 8] {
-        assert_eq!(state.source_transfer_begin(wire), 0);
-    }
-    let transfer = state.source_transfer_begin(7);
-    for invalid in [
-        0,
-        unknown(0),
-        Destination::Row(0).token(epoch()),
-        transfer + 8,
-        transfer ^ (1 << 32),
-        (7_u64 << 32) | 2,
-        u64::MAX,
-    ] {
-        assert_eq!(state.source_count(invalid), -1);
-        assert_eq!(state.source_transfer_release(invalid), 0);
-    }
-    for kind in [
-        TokenKind::DamageCalculation,
-        TokenKind::CardPlay,
-        TokenKind::DoomBatch,
-    ] {
-        let wrong_kind = Token {
-            epoch: epoch(),
-            kind,
-            payload: 1,
-        }
-        .encode();
-        assert_eq!(state.source_transfer_add(wrong_kind, unknown(0), 1), 0);
-        assert_eq!(state.source_count(wrong_kind), -1);
-    }
-    assert_eq!(state.source_transfer_add(transfer, unknown(0), 1), 1);
-    assert_eq!(state.source_transfer_seal(transfer), 1);
-    state.current.as_mut().expect("fixture combat exists").seq = 8;
-    assert_eq!(state.source_count(transfer), -1);
-    assert_eq!(state.source_transfer_release(transfer), 0);
-    state.source_epoch(8).expect("replacement epoch is active");
-    state.source_transfers.serial = PAYLOAD_MAX - 1;
-    let final_token = state.source_transfer_begin(8);
-    assert_ne!(final_token, 0);
-    assert_eq!(state.source_transfer_release(final_token), 1);
-    assert_eq!(state.source_transfer_begin(8), 0);
-}
-
-#[test]
-fn synchronous_source_copy_survives_release_without_retargeting_an_epoch() {
-    let mut state = state(0);
-    let current = state.provenance_epoch(7).expect("fixture combat is active");
-    assert_eq!(
-        state.source_snapshot(current, 0),
-        Ok(SourceSnapshot::unknown(epoch()))
-    );
-    let transfer = state.source_transfer_begin(7);
-    assert_eq!(state.source_transfer_add(transfer, unknown(1), 1), 1);
-    assert_eq!(state.source_transfer_add(transfer, unknown(3), 2), 1);
-    assert_eq!(state.source_transfer_seal(transfer), 1);
-    let saved = state
-        .source_snapshot(current, transfer)
-        .expect("sealed live lease can be copied");
-    assert_eq!(state.source_transfer_release(transfer), 1);
-    assert_eq!(
-        saved
-            .shares
-            .iter()
-            .map(|share| share.weight)
-            .collect::<Vec<_>>(),
-        [1, 2]
-    );
-    assert_eq!(
-        state.source_snapshot(current, transfer),
-        Err(SourceFailure::Token)
-    );
-    state.current.as_mut().expect("fixture combat exists").seq = 8;
-    assert_eq!(state.provenance_epoch(7), Err(SourceFailure::Epoch));
-    let replacement = state
-        .provenance_epoch(8)
-        .expect("replacement combat is active");
-    assert_eq!(
-        state.source_snapshot(replacement, transfer),
-        Err(SourceFailure::Epoch)
-    );
-    let forged = transfer ^ (7_u64 << 32) ^ (8_u64 << 32);
-    assert_eq!(
-        state.source_snapshot(replacement, forged),
-        Err(SourceFailure::Token)
-    );
-}
-
-#[test]
 fn monotone_prefixes_match_independent_per_seat_quotient_model() {
     let mut rng = 0x71_03_9a_88_u64;
     for _ in 0..512 {
@@ -619,24 +479,4 @@ fn wide_prefixes_are_monotone_and_cursor_overflow_is_transactional() {
         single.credit(u64::MAX).as_deref(),
         Ok([(Destination::Row(0), u64::MAX)].as_slice())
     );
-}
-
-#[test]
-fn forged_historical_serials_do_not_release_live_transfers() {
-    let mut state = state(0);
-    let first = state.source_transfer_begin(7);
-    assert_eq!(state.source_transfer_release(first), 1);
-    let live = state.source_transfer_begin(7);
-    let historical = Token {
-        epoch: epoch(),
-        kind: TokenKind::SourceTransfer,
-        payload: 1,
-    }
-    .encode();
-    assert_eq!(state.source_transfer_release(historical), 0);
-    assert_eq!(state.source_transfer_add(live, unknown(0), 1), 1);
-    assert_eq!(state.source_transfer_seal(live), 1);
-    assert_eq!(state.source_count(live), 1);
-    assert_eq!(state.source_transfer_release(live), 1);
-    assert_eq!(state.source_transfer_release(live), 0);
 }

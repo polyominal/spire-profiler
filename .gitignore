@@ -4,5 +4,6 @@
 /dotnet-sdk
 /zig-sdk
 tmp/
+/test-support/parity/*_reference.json
 SESSION.md
 .DS_Store

@@ -1,5 +1,5 @@
 //! `cargo xtask build`: assemble the cross-platform mod bundle under
-//! target/mods/: manifest + C# host dll + multi-key .gdextension + one
+//! target/mods/: manifest, managed host assembly, and one
 //! native library per platform key.
 
 use std::path::{Path, PathBuf};

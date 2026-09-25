@@ -1,12 +1,11 @@
-//! Combat facts and immutable supplier provenance. Runtime producer, credited
-//! destination, and damage segment are independent. Supplier identity includes
-//! its player slot and survives generation, application, and delayed effects.
-//! [`state`] defines player ownership; [`persistence`] defines the disk schema.
+//! Combat observations and immutable supplier provenance. The host owns run
+//! aggregation and persistence; the engine owns all source-weight arithmetic.
 
+#[cfg(any(test, feature = "test-support"))]
 pub mod events;
 pub mod ledger;
-pub mod persistence;
-pub mod records;
-pub mod run_history;
+pub(crate) mod modifiers;
+pub(crate) mod observation;
 mod source;
 pub mod state;
+mod summary;

@@ -29,13 +29,13 @@ impl ObservedDamage {
             unblocked: unblocked as u64,
             blocked: blocked as u64,
             kind: ResultKind::decode(kind, diagnostics),
-            receiver: super::super::state::clamp_source_slot(receiver),
+            receiver: diagnostics.slot(receiver),
             weak_prevented: weak as u64,
         })
     }
 }
 
-impl LedgerStage {
+impl LedgerStage<'_> {
     fn received(
         &mut self,
         result: &ObservedDamage,
@@ -138,13 +138,12 @@ impl State {
     ) -> u64 {
         let result = (|| {
             let epoch = self.provenance_epoch(combat_seq)?;
-            let role = ProducerRole::decode(producer_role, &mut self.source_transfers.diagnostics);
-            let mut segment =
-                match DamageSegment::decode(segment, &mut self.source_transfers.diagnostics) {
-                    DamageSegment::Direct => ProducerSegment::Direct,
-                    DamageSegment::Attributed => ProducerSegment::Attributed,
-                    DamageSegment::Modifier => return Err(SourceFailure::Packet),
-                };
+            let role = ProducerRole::decode(producer_role, &mut self.sources.diagnostics);
+            let mut segment = match DamageSegment::decode(segment, &mut self.sources.diagnostics) {
+                DamageSegment::Direct => ProducerSegment::Direct,
+                DamageSegment::Attributed => ProducerSegment::Attributed,
+                DamageSegment::Modifier => return Err(SourceFailure::Packet),
+            };
             if original_target == 0 {
                 return Err(SourceFailure::Packet);
             }
@@ -171,9 +170,7 @@ impl State {
                 serial,
                 group: Some(DamageGroup {
                     source,
-                    producer_role: role,
                     segment,
-                    original_target,
                     modifiers: Vec::new(),
                     results: Vec::new(),
                     weak: None,
@@ -191,7 +188,7 @@ impl State {
         match result {
             Ok(token) => token,
             Err(failure) => {
-                self.source_transfers.diagnostics.report(failure);
+                self.sources.diagnostics.report(failure);
                 0
             }
         }
@@ -323,7 +320,7 @@ impl State {
                 kind,
                 receiver,
                 weak_prevented,
-                &mut state.source_transfers.diagnostics,
+                &mut state.sources.diagnostics,
             )?;
             if calculation.results.len() == caps::DAMAGE_RESULTS {
                 return Err(SourceFailure::Capacity);
@@ -348,14 +345,9 @@ impl State {
                 .remove(index)
                 .group
                 .ok_or(SourceFailure::Packet)?;
-            crate::data::persistence::event_log!(
-                "  damage group: target {}, producer role {:?}",
-                calculation.original_target,
-                calculation.producer_role
-            );
             let mut stage = LedgerStage::new(self)?;
             stage.apply_group(&calculation)?;
-            stage.commit(self)?;
+            stage.commit()?;
             for result in calculation.results {
                 if matches!(
                     result.kind,
@@ -404,7 +396,7 @@ impl State {
                 kind,
                 receiver,
                 weak_prevented,
-                &mut self.source_transfers.diagnostics,
+                &mut self.sources.diagnostics,
             )?;
             let receiver = result.receiver;
             let received = matches!(
@@ -413,9 +405,7 @@ impl State {
             );
             let calculation = DamageGroup {
                 source: SourceSnapshot::unknown(epoch),
-                producer_role: ProducerRole::Unknown,
                 segment: ProducerSegment::Attributed,
-                original_target: 0,
                 modifiers: Vec::new(),
                 results: vec![result],
                 weak: None,
@@ -423,7 +413,7 @@ impl State {
             };
             let mut stage = LedgerStage::new(self)?;
             stage.apply_group(&calculation)?;
-            stage.commit(self)?;
+            stage.commit()?;
             if received {
                 self.slot_index(i32::from(receiver));
             }

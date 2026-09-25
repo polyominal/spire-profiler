@@ -109,8 +109,8 @@ impl State {
         if instance == 0 || owner == 0 || id.is_empty() {
             return Err(SourceFailure::Packet);
         }
-        let kind = CreatureKind::decode(owner_kind, &mut self.source_transfers.diagnostics);
-        let slot = super::super::state::clamp_source_slot(owner_slot);
+        let kind = CreatureKind::decode(owner_kind, &mut self.sources.diagnostics);
+        let slot = self.sources.diagnostics.slot(owner_slot);
         let incoming = self.source_snapshot(epoch, transfer)?;
         let index = self
             .provenance
@@ -148,9 +148,7 @@ impl State {
                     .grants
                     .push(PowerGrant::new(before as u32, power.source.clone()));
             }
-            self.source_transfers
-                .diagnostics
-                .report(SourceFailure::Packet);
+            self.sources.diagnostics.report(SourceFailure::Packet);
         }
         self.update_power_grants(&mut power, before, new, incoming.clone(), epoch)?;
         if id == "STRENGTH_POWER" && kind == CreatureKind::Enemy {
@@ -213,12 +211,10 @@ impl State {
                 > caps::POWER_GRANTS_TOTAL - caps::POWER_INSTANCES
         {
             power.grants = vec![PowerGrant::new(current, SourceSnapshot::unknown(epoch))];
-            self.source_transfers
-                .diagnostics
-                .report(SourceFailure::Capacity);
+            self.sources.diagnostics.report(SourceFailure::Capacity);
         }
         let rows = self.current.as_ref().map_or(0, |combat| combat.cards.len());
-        power.refresh_source(epoch, rows, &mut self.source_transfers.diagnostics);
+        power.refresh_source(epoch, rows, &mut self.sources.diagnostics);
         Ok(())
     }
 
@@ -306,9 +302,7 @@ impl State {
         if self.provenance.doom_batches.len() == caps::DOOM_BATCHES
             || self.provenance.doom_serial == PAYLOAD_MAX
         {
-            self.source_transfers
-                .diagnostics
-                .report(SourceFailure::Capacity);
+            self.sources.diagnostics.report(SourceFailure::Capacity);
             return 0;
         }
         let serial = self.provenance.doom_serial + 1;
@@ -405,14 +399,14 @@ impl State {
                     stage.damage(*destination, DamageSegment::Attributed, *amount, 0)?;
                 }
             }
-            stage.commit(self)?;
+            stage.commit()?;
             let rows = self.current.as_ref().map_or(0, |combat| combat.cards.len());
             for target in targets {
                 if let Some(power) = self.provenance.powers.iter_mut().find(|power| {
                     power.instance == target.power_instance && power.owner == target.creature
                 }) {
                     power.consume(target.debit);
-                    power.refresh_source(token.epoch, rows, &mut self.source_transfers.diagnostics);
+                    power.refresh_source(token.epoch, rows, &mut self.sources.diagnostics);
                 }
             }
             Ok(())

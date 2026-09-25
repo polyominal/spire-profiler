@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use crate::cross::MATRIX;
 use crate::{sha256_file, workspace_root};
 
-const PRODUCTION_SOURCES: [&str; 21] = [
+const PRODUCTION_SOURCES: [&str; 33] = [
     "SpireProfilerMod.cs",
     "NativeLibrarySelector.g.cs",
     "native/ProfilerNative.cs",
@@ -18,6 +18,16 @@ const PRODUCTION_SOURCES: [&str; 21] = [
     "run/RunPatches.cs",
     "ui/ProfilerPanels.cs",
     "ui/RunHistoryPatches.cs",
+    "ui/ProfilerPanel.cs",
+    "ui/PanelTheme.cs",
+    "ui/ChartProjection.cs",
+    "ui/PanelLayout.cs",
+    "ui/PanelGeometry.cs",
+    "ui/TooltipLayout.cs",
+    "session/Statistics.cs",
+    "session/StatisticsJson.cs",
+    "session/StatisticsStore.cs",
+    "session/ProfilerSession.cs",
     "attribution/SourceSnapshot.cs",
     "attribution/AttributionBackend.cs",
     "attribution/CaptureRuntime.cs",
@@ -27,6 +37,8 @@ const PRODUCTION_SOURCES: [&str; 21] = [
     "attribution/CapturePatches.cs",
     "attribution/ProvenanceCapture.cs",
     "attribution/DamageCapture.cs",
+    "attribution/ModifierCapture.cs",
+    "attribution/DecimalWords.cs",
     "attribution/TemporalPowerCapture.cs",
     "attribution/PlayCapture.cs",
     "attribution/CommandCapture.cs",
@@ -43,7 +55,12 @@ impl ProjectKind {
     fn sources(self) -> impl Iterator<Item = &'static str> {
         let fixtures: &[&str] = match self {
             Self::Mod => &[],
-            Self::Tests => &["tests/Program.cs", "tests/Fixtures.cs"],
+            Self::Tests => &[
+                "tests/Program.cs",
+                "tests/Fixtures.cs",
+                "tests/PanelFixtures.cs",
+                "tests/SessionFixtures.cs",
+            ],
         };
         PRODUCTION_SOURCES
             .into_iter()

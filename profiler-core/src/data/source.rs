@@ -1,10 +1,13 @@
-//! Immutable supplier vectors and synchronous transfer leases. A snapshot owns
+//! Combat-owned immutable supplier vectors. A snapshot owns
 //! distinct positive weights in first-seen order, reduced by their gcd, with a
 //! checked u64 total. Row indices belong only to its nonzero combat epoch.
+//! Exported handles retain shared snapshots until the host releases them.
+//! Serials never repeat within an epoch; native consumers retain their own Rc.
 //! Completed damage groups fix each root's budget before consuming results.
 //! Pool prefixes instead retain original weights and a monotone credit cursor;
 //! merging a grant or correcting outer residue never changes those weights.
 
+use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 
 use super::state::{Combat, SourceSlot, State, TEAM_SLOT, caps};
@@ -24,13 +27,12 @@ const KIND_MASK: u64 = (1 << KIND_BITS) - 1;
 const _: () = assert!(KIND_BITS + PAYLOAD_BITS == 32);
 const _: () = assert!(caps::COMBAT_CARDS <= PAYLOAD_MAX as usize);
 const _: () = assert!(caps::SOURCE_DESTINATIONS == 128);
-const _: () = assert!(caps::SOURCE_TRANSFERS == 16);
 const _: () = assert!(caps::POWER_GRANTS_TOTAL >= caps::POWER_INSTANCES);
 const _: () = assert!(caps::POWER_GRANTS_PER_INSTANCE <= caps::POWER_GRANTS_TOTAL);
 const _: () = assert!(caps::DAMAGE_RESULTS == 2);
 const _: () = assert!(caps::DAMAGE_DESTINATIONS >= caps::SOURCE_DESTINATIONS);
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct CombatEpoch(NonZeroU32);
 
 impl CombatEpoch {
@@ -48,7 +50,7 @@ impl CombatEpoch {
 enum TokenKind {
     RowDestination = 0,
     UnknownDestination = 1,
-    SourceTransfer = 2,
+    SourceHandle = 2,
     DamageCalculation = 3,
     CardPlay = 4,
     DoomBatch = 5,
@@ -56,7 +58,7 @@ enum TokenKind {
 
 const _: () = assert!(TokenKind::RowDestination as u8 == 0);
 const _: () = assert!(TokenKind::UnknownDestination as u8 == 1);
-const _: () = assert!(TokenKind::SourceTransfer as u8 == 2);
+const _: () = assert!(TokenKind::SourceHandle as u8 == 2);
 const _: () = assert!(TokenKind::DamageCalculation as u8 == 3);
 const _: () = assert!(TokenKind::CardPlay as u8 == 4);
 const _: () = assert!(TokenKind::DoomBatch as u8 == 5);
@@ -73,7 +75,7 @@ impl Token {
         let kind = match wire & KIND_MASK {
             0 => TokenKind::RowDestination,
             1 => TokenKind::UnknownDestination,
-            2 => TokenKind::SourceTransfer,
+            2 => TokenKind::SourceHandle,
             3 => TokenKind::DamageCalculation,
             4 => TokenKind::CardPlay,
             5 => TokenKind::DoomBatch,
@@ -83,7 +85,7 @@ impl Token {
         if (kind == TokenKind::UnknownDestination && payload > u32::from(TEAM_SLOT))
             || (matches!(
                 kind,
-                TokenKind::SourceTransfer
+                TokenKind::SourceHandle
                     | TokenKind::DamageCalculation
                     | TokenKind::CardPlay
                     | TokenKind::DoomBatch
@@ -109,27 +111,14 @@ impl Token {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Destination {
     Row(u32),
     Unknown(SourceSlot),
 }
 
 impl Destination {
-    fn from_token(wire: u64, epoch: CombatEpoch, rows: usize) -> Result<Self, SourceFailure> {
-        let token = Token::decode(wire)?;
-        if token.epoch != epoch {
-            return Err(SourceFailure::Epoch);
-        }
-        match token.kind {
-            TokenKind::RowDestination if (token.payload as usize) < rows => {
-                Ok(Self::Row(token.payload))
-            }
-            TokenKind::UnknownDestination => Ok(Self::Unknown(token.payload as SourceSlot)),
-            _ => Err(SourceFailure::Token),
-        }
-    }
-
+    #[cfg(any(test, feature = "test-support"))]
     fn token(self, epoch: CombatEpoch) -> u64 {
         let (kind, payload) = match self {
             Self::Row(row) => (TokenKind::RowDestination, row),
@@ -156,45 +145,39 @@ enum SourceFailure {
 #[derive(Default)]
 struct SourceDiagnostics {
     reported: u8,
+    failures: u64,
 }
 
 impl SourceDiagnostics {
     fn report(&mut self, failure: SourceFailure) {
+        self.failures = self.failures.saturating_add(1);
         let bit = 1 << failure as u8;
         if self.reported & bit == 0 {
             self.reported |= bit;
-            crate::fail!("source provenance rejected: {failure:?}");
         }
     }
 }
 
-enum TransferValue {
-    Upload(Vec<(Destination, u128)>),
-    Sealed(SourceSnapshot),
-    Invalid,
-}
-
-struct Transfer {
-    serial: u32,
-    value: TransferValue,
-}
-
 #[derive(Default)]
-pub(super) struct SourceTransfers {
+pub(super) struct SourceArena {
     epoch: Option<CombatEpoch>,
+    entries: BTreeMap<u32, SourceSnapshot>,
+    index: BTreeMap<SourceSnapshot, u32>,
     serial: u32,
-    entries: Vec<Transfer>,
     diagnostics: SourceDiagnostics,
 }
 
 impl State {
     fn source_epoch(&mut self, wire: u64) -> Result<CombatEpoch, SourceFailure> {
+        if self.poisoned {
+            return Err(SourceFailure::Packet);
+        }
         let result = CombatEpoch::from_wire(wire).and_then(|epoch| {
             if Combat::active(&self.current).is_some_and(|combat| combat.seq == epoch.0.get()) {
-                if self.source_transfers.epoch != Some(epoch) {
-                    self.source_transfers = SourceTransfers {
+                if self.sources.epoch != Some(epoch) {
+                    self.sources = SourceArena {
                         epoch: Some(epoch),
-                        ..SourceTransfers::default()
+                        ..SourceArena::default()
                     };
                 }
                 Ok(epoch)
@@ -203,47 +186,35 @@ impl State {
             }
         });
         if let Err(failure) = result {
-            self.source_transfers.diagnostics.report(failure);
+            self.sources.diagnostics.report(failure);
         }
         result
     }
 
-    fn source_transfer_token(&mut self, wire: u64) -> Result<Token, SourceFailure> {
+    fn source_handle_token(&mut self, wire: u64) -> Result<Token, SourceFailure> {
         let result = Token::decode(wire).and_then(|token| {
-            if token.kind != TokenKind::SourceTransfer {
+            if token.kind != TokenKind::SourceHandle {
                 return Err(SourceFailure::Token);
             }
             self.source_epoch(u64::from(token.epoch.0.get()))?;
-            if token.payload > self.source_transfers.serial {
+            if !self.sources.entries.contains_key(&token.payload) {
                 return Err(SourceFailure::Token);
             }
             Ok(token)
         });
         if let Err(failure) = result {
-            self.source_transfers.diagnostics.report(failure);
+            self.sources.diagnostics.report(failure);
         }
         result
     }
 
-    fn source_transfer_read(&mut self, wire: u64) -> Result<&SourceSnapshot, SourceFailure> {
-        let token = self.source_transfer_token(wire)?;
-        let found = self
-            .source_transfers
+    fn source_handle_read(&mut self, wire: u64) -> Result<&SourceSnapshot, SourceFailure> {
+        let token = self.source_handle_token(wire)?;
+        Ok(self
+            .sources
             .entries
-            .iter()
-            .find(|entry| entry.serial == token.payload);
-        if let Some(Transfer {
-            value: TransferValue::Sealed(snapshot),
-            ..
-        }) = found
-        {
-            Ok(snapshot)
-        } else {
-            self.source_transfers
-                .diagnostics
-                .report(SourceFailure::Token);
-            Err(SourceFailure::Token)
-        }
+            .get(&token.payload)
+            .expect("the validated handle owns a live snapshot"))
     }
 
     fn source_snapshot(
@@ -259,136 +230,18 @@ impl State {
         if transfer == 0 {
             return Ok(SourceSnapshot::unknown(epoch));
         }
-        self.source_transfer_read(transfer).cloned()
+        self.source_handle_read(transfer).cloned()
     }
 
-    pub(crate) fn source_transfer_begin(&mut self, combat_seq: u64) -> u64 {
-        let Ok(epoch) = self.source_epoch(combat_seq) else {
-            return 0;
-        };
-        let transfers = &mut self.source_transfers;
-        if transfers.entries.len() == caps::SOURCE_TRANSFERS || transfers.serial == PAYLOAD_MAX {
-            transfers.diagnostics.report(SourceFailure::Capacity);
-            return 0;
-        }
-        let serial = transfers.serial + 1;
-        transfers.entries.push(Transfer {
-            serial,
-            value: TransferValue::Upload(Vec::new()),
-        });
-        transfers.serial = serial;
-        Token {
-            epoch,
-            kind: TokenKind::SourceTransfer,
-            payload: serial,
-        }
-        .encode()
-    }
-
-    pub(crate) fn source_transfer_add(
-        &mut self,
-        transfer: u64,
-        destination: u64,
-        weight: u64,
-    ) -> i32 {
-        let Ok(token) = self.source_transfer_token(transfer) else {
-            return 0;
-        };
-        let rows = self.current.as_ref().map_or(0, |combat| combat.cards.len());
-        let result = (|| {
-            let entry = self
-                .source_transfers
-                .entries
-                .iter_mut()
-                .find(|entry| entry.serial == token.payload)
-                .ok_or(SourceFailure::Token)?;
-            let previous = std::mem::replace(&mut entry.value, TransferValue::Invalid);
-            let TransferValue::Upload(mut entries) = previous else {
-                return Err(SourceFailure::Token);
-            };
-            let destination = Destination::from_token(destination, token.epoch, rows)?;
-            let destination = if let Destination::Row(row) = destination {
-                self.current
-                    .as_ref()
-                    .and_then(|combat| combat.cards.get(row as usize))
-                    .filter(|row| row.kind == crate::source_kind::SourceKind::Unknown)
-                    .map_or(destination, |row| Destination::Unknown(row.player))
-            } else {
-                destination
-            };
-            if weight == 0 {
-                return Err(SourceFailure::Packet);
-            }
-            if let Some((_, existing)) = entries.iter_mut().find(|(key, _)| *key == destination) {
-                *existing = existing
-                    .checked_add(u128::from(weight))
-                    .ok_or(SourceFailure::Arithmetic)?;
-            } else {
-                if entries.len() == caps::SOURCE_DESTINATIONS {
-                    return Err(SourceFailure::Capacity);
-                }
-                entries.push((destination, u128::from(weight)));
-            }
-            entry.value = TransferValue::Upload(entries);
-            Ok(())
-        })();
-        if let Err(failure) = result {
-            self.source_transfers.diagnostics.report(failure);
-            return 0;
-        }
-        1
-    }
-
-    pub(crate) fn source_transfer_seal(&mut self, transfer: u64) -> i32 {
-        let Ok(token) = self.source_transfer_token(transfer) else {
-            return 0;
-        };
-        let rows = self.current.as_ref().map_or(0, |combat| combat.cards.len());
-        let result = (|| {
-            let entry = self
-                .source_transfers
-                .entries
-                .iter_mut()
-                .find(|entry| entry.serial == token.payload)
-                .ok_or(SourceFailure::Token)?;
-            let previous = std::mem::replace(&mut entry.value, TransferValue::Invalid);
-            let TransferValue::Upload(entries) = previous else {
-                return Err(SourceFailure::Token);
-            };
-            entry.value =
-                TransferValue::Sealed(SourceSnapshot::normalized(token.epoch, rows, entries)?);
-            Ok(())
-        })();
-        if let Err(failure) = result {
-            self.source_transfers.diagnostics.report(failure);
-            return 0;
-        }
-        1
-    }
-
-    pub(crate) fn source_transfer_release(&mut self, transfer: u64) -> i32 {
-        let Ok(token) = self.source_transfer_token(transfer) else {
-            return 0;
-        };
-        let Some(index) = self
-            .source_transfers
-            .entries
-            .iter()
-            .position(|entry| entry.serial == token.payload)
-        else {
-            return 0;
-        };
-        self.source_transfers.entries.remove(index);
-        1
-    }
-
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn source_count(&mut self, transfer: u64) -> i32 {
-        self.source_transfer_read(transfer)
+        self.source_handle_read(transfer)
             .map_or(-1, |snapshot| snapshot.shares().len() as i32)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn source_destination(&mut self, transfer: u64, index: i32) -> u64 {
-        let result = self.source_transfer_read(transfer).and_then(|snapshot| {
+        let result = self.source_handle_read(transfer).and_then(|snapshot| {
             let share = usize::try_from(index)
                 .ok()
                 .and_then(|index| snapshot.shares().get(index))
@@ -398,14 +251,15 @@ impl State {
         match result {
             Ok(destination) => destination,
             Err(failure) => {
-                self.source_transfers.diagnostics.report(failure);
+                self.sources.diagnostics.report(failure);
                 0
             }
         }
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn source_weight(&mut self, transfer: u64, index: i32) -> u64 {
-        let result = self.source_transfer_read(transfer).and_then(|snapshot| {
+        let result = self.source_handle_read(transfer).and_then(|snapshot| {
             usize::try_from(index)
                 .ok()
                 .and_then(|index| snapshot.shares().get(index))
@@ -415,7 +269,7 @@ impl State {
         match result {
             Ok(weight) => weight,
             Err(failure) => {
-                self.source_transfers.diagnostics.report(failure);
+                self.sources.diagnostics.report(failure);
                 0
             }
         }
@@ -460,7 +314,6 @@ struct PowerProvenance {
 struct GeneratedSource {
     instance: u64,
     source: SourceSnapshot,
-    producer_role: ProducerRole,
 }
 
 struct InstanceSource {
@@ -471,7 +324,6 @@ struct InstanceSource {
 struct ActiveSourcePlay {
     serial: u32,
     execution: u64,
-    card_instance: u64,
     owner_slot: SourceSlot,
     source: SourceSnapshot,
     first_orb_used: bool,
@@ -507,9 +359,7 @@ struct DamageCalculation {
 
 struct DamageGroup {
     source: SourceSnapshot,
-    producer_role: ProducerRole,
     segment: ProducerSegment,
-    original_target: u64,
     modifiers: Vec<allocation::ModifierContribution>,
     results: Vec<ObservedDamage>,
     weak: Option<SourceSnapshot>,
@@ -574,6 +424,9 @@ const _: () = assert!(caps::PENDING_BLOCK_CONTRIBS >= SourceBlock::MAX_MODS);
 const _: () = assert!(caps::MAX_PLAYER_SLOTS == 5);
 
 impl SourceDiagnostics {
+    fn slot(&mut self, slot: i32) -> SourceSlot {
+        self.clamp(slot, i32::from(TEAM_SLOT)) as SourceSlot
+    }
     fn clamp(&mut self, value: i32, maximum: i32) -> i32 {
         let clamped = value.clamp(0, maximum);
         if clamped != value {
@@ -599,7 +452,7 @@ impl State {
         match result {
             Ok(()) => 1,
             Err(failure) => {
-                self.source_transfers.diagnostics.report(failure);
+                self.sources.diagnostics.report(failure);
                 0
             }
         }
@@ -615,24 +468,80 @@ impl State {
     }
 
     fn source_export(&mut self, source: SourceSnapshot) -> u64 {
-        let transfer = self.source_transfer_begin(u64::from(source.epoch().0.get()));
-        if transfer == 0 {
+        let arena = &mut self.sources;
+        if let Some(&serial) = arena.index.get(&source) {
+            return Token {
+                epoch: source.epoch(),
+                kind: TokenKind::SourceHandle,
+                payload: serial,
+            }
+            .encode();
+        }
+        if arena.serial == PAYLOAD_MAX {
+            arena.diagnostics.report(SourceFailure::Capacity);
             return 0;
         }
-        let serial = (transfer as u32) >> KIND_BITS;
-        if let Some(entry) = self
-            .source_transfers
+        arena.serial += 1;
+        let token = Token {
+            epoch: source.epoch(),
+            kind: TokenKind::SourceHandle,
+            payload: arena.serial,
+        }
+        .encode();
+        arena.index.insert(source.clone(), arena.serial);
+        arena.entries.insert(arena.serial, source);
+        token
+    }
+
+    pub(crate) fn source_release(&mut self, handle: u64) -> i32 {
+        let Ok(token) = self.source_handle_token(handle) else {
+            return 0;
+        };
+        let source = self
+            .sources
             .entries
-            .iter_mut()
-            .find(|entry| entry.serial == serial)
-        {
-            entry.value = TransferValue::Sealed(source);
-            transfer
-        } else {
-            self.source_transfers
-                .diagnostics
-                .report(SourceFailure::Token);
-            0
+            .remove(&token.payload)
+            .expect("the validated handle owns a live snapshot");
+        let serial = self.sources.index.remove(&source);
+        debug_assert_eq!(
+            serial,
+            Some(token.payload),
+            "the content index must identify the released handle"
+        );
+        1
+    }
+
+    pub(crate) fn source_accumulate(
+        &mut self,
+        combat_seq: u64,
+        first: u64,
+        before: i32,
+        second: u64,
+        after: i32,
+    ) -> u64 {
+        let result = (|| {
+            let epoch = self.provenance_epoch(combat_seq)?;
+            let added = after.checked_sub(before).ok_or(SourceFailure::Arithmetic)?;
+            let before = before.max(0) as u32;
+            let added = u32::try_from(added).map_err(|_| SourceFailure::Packet)?;
+            if before == 0 {
+                return Ok(second);
+            }
+            if added == 0 {
+                return Ok(first);
+            }
+            let first = self.source_snapshot(epoch, first)?;
+            let second = self.source_snapshot(epoch, second)?;
+            let rows = self.current.as_ref().map_or(0, |combat| combat.cards.len());
+            SourceSnapshot::combine(epoch, rows, first, before, second, added)
+                .map(|source| self.source_export(source))
+        })();
+        match result {
+            Ok(source) => source,
+            Err(failure) => {
+                self.sources.diagnostics.report(failure);
+                0
+            }
         }
     }
 
@@ -650,12 +559,11 @@ impl State {
         let Ok(epoch) = self.provenance_epoch(combat_seq) else {
             return 0;
         };
-        let capture =
-            SourceCaptureKind::decode(capture_kind, &mut self.source_transfers.diagnostics);
-        let generation =
-            GenerationState::decode(generation_state, &mut self.source_transfers.diagnostics);
-        let kind = crate::source_kind::SourceKind::from_c(source_kind);
-        let slot = super::state::clamp_source_slot(source_slot);
+        let capture = SourceCaptureKind::decode(capture_kind, &mut self.sources.diagnostics);
+        let generation = GenerationState::decode(generation_state, &mut self.sources.diagnostics);
+        let kind =
+            crate::source_kind::SourceKind::from_c(self.sources.diagnostics.clamp(source_kind, 5));
+        let slot = self.sources.diagnostics.slot(source_slot);
         let unknown = SourceSnapshot::unknown(epoch);
         let source = match capture {
             SourceCaptureKind::CardInstance => {
@@ -739,38 +647,74 @@ enum CreditField {
     Forge,
 }
 
-struct LedgerStage {
-    combat: Combat,
-    pools: Vec<SourcePool>,
+struct CombatCounters {
+    plays: u32,
+    generated_plays: u32,
+    generation_triggers: u32,
+    damage_received: i64,
+    block_total: i64,
+    row_capacity_logged: bool,
+}
+
+struct LedgerStage<'a> {
+    combat: &'a mut Combat,
+    pools: &'a mut Vec<SourcePool>,
+    diagnostics: &'a mut SourceDiagnostics,
+    counters: CombatCounters,
+    original_rows: Vec<(usize, super::state::CardStat)>,
+    original_pools: Vec<(usize, SourcePool)>,
+    row_count: usize,
+    pool_count: usize,
+    committed: bool,
     capacity_lost: bool,
 }
 
-impl LedgerStage {
-    fn new(state: &State) -> Result<Self, SourceFailure> {
-        let combat = Combat::active(&state.current)
-            .ok_or(SourceFailure::Epoch)?
-            .clone();
+impl<'a> LedgerStage<'a> {
+    fn new(state: &'a mut State) -> Result<Self, SourceFailure> {
+        let combat = Combat::active_mut(&mut state.current).ok_or(SourceFailure::Epoch)?;
+        let counters = CombatCounters {
+            plays: combat.plays,
+            generated_plays: combat.generated_plays,
+            generation_triggers: combat.generation_triggers,
+            damage_received: combat.damage_received,
+            block_total: combat.block_total,
+            row_capacity_logged: combat.row_capacity_logged,
+        };
+        let row_count = combat.cards.len();
+        let pool_count = state.provenance.pools.len();
         Ok(Self {
             combat,
-            pools: state.provenance.pools.clone(),
+            pools: &mut state.provenance.pools,
+            diagnostics: &mut state.sources.diagnostics,
+            counters,
+            row_count,
+            pool_count,
+            original_rows: Vec::new(),
+            original_pools: Vec::new(),
+            committed: false,
             capacity_lost: false,
         })
     }
 
     fn row(&mut self, destination: Destination) -> Result<usize, SourceFailure> {
-        match destination {
-            Destination::Row(row) if (row as usize) < self.combat.cards.len() => Ok(row as usize),
+        let index = match destination {
+            Destination::Row(row) if (row as usize) < self.combat.cards.len() => row as usize,
             Destination::Unknown(slot) if slot <= TEAM_SLOT => {
                 crate::data::ledger::get_or_create_card_kind(
-                    &mut self.combat,
+                    self.combat,
                     slot,
                     "UNATTRIBUTED",
                     crate::source_kind::SourceKind::Unknown,
                 )
-                .ok_or(SourceFailure::Capacity)
+                .ok_or(SourceFailure::Capacity)?
             }
-            _ => Err(SourceFailure::Token),
+            _ => return Err(SourceFailure::Token),
+        };
+        if index < self.row_count && !self.original_rows.iter().any(|(row, _)| *row == index) {
+            self.original_rows
+                .push((index, self.combat.cards[index].clone()));
         }
+        Ok(index)
     }
 
     fn credit(
@@ -871,25 +815,49 @@ impl LedgerStage {
         if slot > TEAM_SLOT {
             return Err(SourceFailure::Packet);
         }
-        while self.pools.len() <= usize::from(slot) {
+        let slot = usize::from(slot);
+        if slot < self.pool_count && !self.original_pools.iter().any(|(index, _)| *index == slot) {
+            self.original_pools.push((slot, self.pools[slot].clone()));
+        }
+        while self.pools.len() <= slot {
             self.pools.push(SourcePool::default());
         }
-        Ok(&mut self.pools[usize::from(slot)])
+        Ok(&mut self.pools[slot])
     }
 
-    fn commit(self, state: &mut State) -> Result<(), SourceFailure> {
+    fn commit(mut self) -> Result<(), SourceFailure> {
         if !crate::data::state::CardStat::arithmetic_representable(&self.combat.cards) {
             return Err(SourceFailure::Arithmetic);
         }
-        state.current = Some(self.combat);
-        state.provenance.pools = self.pools;
         if self.capacity_lost {
-            state
-                .source_transfers
-                .diagnostics
-                .report(SourceFailure::Capacity);
+            self.diagnostics.report(SourceFailure::Capacity);
         }
+        self.committed = true;
         Ok(())
+    }
+}
+
+impl Drop for LedgerStage<'_> {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        // The exclusive State borrow hides provisional values. Failure or unwind
+        // restores only touched rows/slots and removes appended entries.
+        self.combat.cards.truncate(self.row_count);
+        for (index, row) in self.original_rows.drain(..) {
+            self.combat.cards[index] = row;
+        }
+        self.pools.truncate(self.pool_count);
+        for (index, pool) in self.original_pools.drain(..) {
+            self.pools[index] = pool;
+        }
+        self.combat.plays = self.counters.plays;
+        self.combat.generated_plays = self.counters.generated_plays;
+        self.combat.generation_triggers = self.counters.generation_triggers;
+        self.combat.damage_received = self.counters.damage_received;
+        self.combat.block_total = self.counters.block_total;
+        self.combat.row_capacity_logged = self.counters.row_capacity_logged;
     }
 }
 
@@ -902,7 +870,6 @@ impl State {
                 .turns
                 .checked_add(1)
                 .ok_or(SourceFailure::Arithmetic)?;
-            crate::data::persistence::event_log!("  turn {} started", combat.turns);
             Ok(())
         })();
         self.source_status(result)
@@ -924,16 +891,21 @@ impl State {
     pub(crate) fn player_died(&mut self, combat_seq: u64, player_slot: i32) -> i32 {
         let result = (|| {
             self.provenance_epoch(combat_seq)?;
-            self.slot_state_mut(player_slot).died = true;
+            let slot = self.sources.diagnostics.slot(player_slot);
+            self.slot_state_mut(i32::from(slot)).died = true;
             Ok(())
         })();
         self.source_status(result)
     }
 
-    pub(crate) fn finished_combat(&mut self, combat_seq: u64) -> Option<Combat> {
-        self.provenance_epoch(combat_seq).ok()?;
-        let combat = Combat::active_mut(&mut self.current)?;
-        let defeated = if combat.players.is_empty() {
+    pub fn combat_ended(&mut self, combat_seq: u64) -> i32 {
+        if self.provenance_epoch(combat_seq).is_err() {
+            return 0;
+        }
+        let Some(combat) = Combat::active_mut(&mut self.current) else {
+            return 0;
+        };
+        let defeated = if combat.player_count == 0 {
             !self.per_player.is_empty()
                 && self
                     .per_player
@@ -941,9 +913,9 @@ impl State {
                     .take(caps::MAX_PLAYERS)
                     .all(|player| player.died)
         } else {
-            combat.players.iter().all(|player| {
+            (0..combat.player_count).all(|slot| {
                 self.per_player
-                    .get(usize::from(player.slot))
+                    .get(slot)
                     .is_some_and(|tracked| tracked.died)
             })
         };
@@ -952,9 +924,10 @@ impl State {
         } else {
             super::state::CombatResult::Completed
         });
-        let finished = combat.clone();
-        self.clear_combat_sources();
-        Some(finished)
+        self.provenance = Provenance::default();
+        self.sources.entries.clear();
+        self.sources.index.clear();
+        1
     }
 }
 
@@ -965,7 +938,7 @@ mod scenarios;
 
 impl State {
     pub(crate) fn clear_combat_sources(&mut self) {
-        self.source_transfers = SourceTransfers::default();
+        self.sources = SourceArena::default();
         self.provenance = Provenance::default();
     }
 }
@@ -974,5 +947,23 @@ impl State {
     pub(crate) fn discard_combat(&mut self) {
         self.current = None;
         self.clear_combat_sources();
+    }
+}
+
+impl SourceArena {
+    pub(super) fn append_coverage(&self, coverage: &mut super::state::Coverage) {
+        if self.diagnostics.failures == 0 {
+            return;
+        }
+        coverage.complete = false;
+        coverage.failures = coverage.failures.saturating_add(self.diagnostics.failures);
+        for (index, reason) in ["epoch", "source-handle", "packet", "capacity", "arithmetic"]
+            .into_iter()
+            .enumerate()
+        {
+            if self.diagnostics.reported & (1 << index) != 0 {
+                coverage.add_reason(reason);
+            }
+        }
     }
 }
