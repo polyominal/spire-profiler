@@ -45,7 +45,7 @@ language does not establish metric comparability.
 
 Set `SPIRE_PROFILER_AUDIT=1` in the game process environment before startup.
 This also enables observation recording. Combat journals appear under
-`audit-v1/run-<id>/combat-<epoch>-<attempt>.audit.jsonl` in the profiler data
+`audit-v2/run-<id>/combat-<epoch>-<attempt>.audit.jsonl` in the profiler data
 directory. The attempt identifier distinguishes retries, continued runs, and
 console-started encounters. Keep the journal, adjacent statistics under
 `statistics-v2`, and the matching build together.
@@ -53,16 +53,31 @@ console-started encounters. Keep the journal, adjacent statistics under
 Generate a readable report from one journal or a directory:
 
 ```sh
-cargo xtask audit-report /path/to/audit-v1 --output tmp/poison-audit.md
+cargo xtask audit-report /path/to/audit-v2 --output tmp/poison-audit.md
 ```
 
-The journal records observed card plays, requested and accepted poison amounts,
-target HP/block/Artifact, damage results, and living opponents' Accelerant
-stacks. Separate native checkpoints expose ordered poison grants and credited
-totals. Game evidence and native claims are distinct: replaying native
-observations can reproduce an attribution error, but cannot establish that
-capture was correct. The report checks the evidence available and identifies
-unresolved comparisons; it is not formal verification of all game mechanics.
+The journal records card origin, accepted Poison and Envenom mutations, command
+completion, target HP/block/Artifact, physical damage results, and living
+opponents' Accelerant stacks. Envenom callbacks identify their triggering hit.
+Source frames preserve the raw cause at the moment attribution captures it,
+before later hooks can change the power. Separate native checkpoints expose the
+reducer's ordered grants and credited totals as claims to check.
+
+For supported ordinary-card and Envenom causes, the report reconstructs FIFO
+suppliers from raw mutations, allocates actual outgoing poison damage
+independently, and compares the resulting ownership and per-tick credits with
+native claims. Missing or ambiguous causal evidence makes the affected
+reconstruction unverifiable; native suppliers never fill those gaps.
+Generated-card ancestry and other unsupported causes remain explicit
+limitations. An eligible Envenom callback without a captured canonical power
+command is unresolved, since the game can refuse an application before that
+command is reached.
+
+The report retains independent poison subtotals. A row's full indirect-damage
+total can include other effects, so it is not automatically equal to that
+subtotal. Version 1 journals remain readable as consistency checks without
+independent supplier verification. Neither mode formally verifies every game
+mechanic or proves that all game activity was observed.
 
 The current poison allocation rule is documented in the [provenance
 module](../profiler-core/src/data/source/power.rs). Audit mode does not change
