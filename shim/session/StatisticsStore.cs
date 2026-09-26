@@ -38,12 +38,13 @@ internal sealed class StatisticsStore : IDisposable
             string directory = Path.Combine(dataDirectory, "statistics-v3");
             Directory.CreateDirectory(directory);
             native = new NativeStatisticsStore(Path.Combine(directory, "statistics.sqlite3"));
-            if (!Request(new { op = "import_status" }, false)
-                && !Request(new LegacyStatisticsImport(dataDirectory, report).ReadArchive(), false))
+            var (statusRead, imported) = RequestResult(new { op = "import_status" }, false);
+            if (!statusRead)
             {
-                native.Dispose();
-                native = null;
+                Dispose();
+                return;
             }
+            if (!imported && !Request(new LegacyStatisticsImport(dataDirectory, report).ReadArchive(), false)) Dispose();
         }
         catch (Exception error) when (RecordFailure(error))
         {
