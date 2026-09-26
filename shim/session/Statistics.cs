@@ -184,46 +184,79 @@ internal sealed record SummaryView
     internal SummaryView Add(SummaryView combat)
     {
         var rows = StatRow.MergeRows(Cards, combat.Cards);
-        if (rows == null) return this with { Coverage = Coverage.WithFailure("summary-overflow") };
-        var merged = this with
+        if (rows == null) return RejectCombat(combat.Coverage);
+        try
         {
-            PolicyVersion = PolicyVersion ?? combat.PolicyVersion,
-            Cards = rows,
-            Turns = unchecked(Turns + combat.Turns),
-            Plays = unchecked(Plays + combat.Plays),
-            Combats = unchecked(Combats + combat.Combats),
-            PotionsUsed = unchecked(PotionsUsed + combat.PotionsUsed),
-            DamageReceived = unchecked(DamageReceived + combat.DamageReceived),
-            BlockTotal = unchecked(BlockTotal + combat.BlockTotal),
-            Coverage = Coverage.Merge(combat.Coverage)
-        };
-        if (PolicyVersion.HasValue && combat.PolicyVersion.HasValue && PolicyVersion != combat.PolicyVersion)
-            merged = merged with { Coverage = merged.Coverage.WithFailure("mixed-attribution-policies") };
-        return merged;
+            // Run chart plays come from rows, independently of observed combat plays.
+            _ = CheckedRowPlays(rows);
+            checked
+            {
+                var merged = this with
+                {
+                    PolicyVersion = PolicyVersion ?? combat.PolicyVersion,
+                    Cards = rows,
+                    Turns = Turns + combat.Turns,
+                    Plays = Plays + combat.Plays,
+                    Combats = Combats + combat.Combats,
+                    PotionsUsed = PotionsUsed + combat.PotionsUsed,
+                    DamageReceived = DamageReceived + combat.DamageReceived,
+                    BlockTotal = BlockTotal + combat.BlockTotal,
+                    Coverage = Coverage.Merge(combat.Coverage)
+                };
+                if (PolicyVersion.HasValue && combat.PolicyVersion.HasValue && PolicyVersion != combat.PolicyVersion)
+                    merged = merged with { Coverage = merged.Coverage.WithFailure("mixed-attribution-policies") };
+                return merged;
+            }
+        }
+        catch (OverflowException) { return RejectCombat(combat.Coverage); }
     }
 
     internal SummaryView AddHistory(CombatStatistics combat)
     {
-        var team = StatRow.MergeRows(Cards, combat.Cards.Select(row => row with { Player = 4 }), team: true) ?? Cards;
+        int? policy = combat.PolicyVersion > 0 ? combat.PolicyVersion : null;
+        var team = StatRow.MergeRows(Cards, combat.Cards.Select(row => row with { Player = 4 }), team: true);
+        if (team == null) return RejectCombat(combat.Coverage);
         var players = new Dictionary<int, IReadOnlyList<StatRow>>();
         foreach (var player in Players)
         {
             var prior = PlayerCards.TryGetValue(player.Slot, out var rows) ? rows : Array.Empty<StatRow>();
-            players[player.Slot] = StatRow.MergeRows(prior, combat.Cards.Where(row => row.Player == player.Slot), team: true) ?? prior;
+            var merged = StatRow.MergeRows(prior, combat.Cards.Where(row => row.Player == player.Slot), team: true);
+            if (merged == null) return RejectCombat(combat.Coverage);
+            players[player.Slot] = merged;
         }
-        uint plays = 0;
-        foreach (var row in team) plays = unchecked(plays + row.Plays);
-        return this with
+        try
         {
-            Cards = team,
-            PlayerCards = new System.Collections.ObjectModel.ReadOnlyDictionary<int, IReadOnlyList<StatRow>>(players),
-            Turns = unchecked(Turns + combat.Turns),
-            Combats = unchecked(Combats + 1),
-            Plays = plays,
-            DamageReceived = unchecked(DamageReceived + combat.DamageReceived),
-            EndedAt = Outcome is "active" or "suspended" or "" ? Math.Max(EndedAt, combat.StartedAt) : EndedAt,
-            Coverage = Coverage.Merge(combat.Coverage)
-        };
+            uint plays = CheckedRowPlays(team);
+            checked
+            {
+                var merged = this with
+                {
+                    PolicyVersion = PolicyVersion ?? policy,
+                    Cards = team,
+                    PlayerCards = new System.Collections.ObjectModel.ReadOnlyDictionary<int, IReadOnlyList<StatRow>>(players),
+                    Turns = Turns + combat.Turns,
+                    Combats = Combats + 1,
+                    Plays = plays,
+                    DamageReceived = DamageReceived + combat.DamageReceived,
+                    EndedAt = Outcome is "active" or "suspended" or "" ? Math.Max(EndedAt, combat.StartedAt) : EndedAt,
+                    Coverage = Coverage.Merge(combat.Coverage)
+                };
+                if (PolicyVersion.HasValue && policy.HasValue && PolicyVersion != policy)
+                    merged = merged with { Coverage = merged.Coverage.WithFailure("mixed-attribution-policies") };
+                return merged;
+            }
+        }
+        catch (OverflowException) { return RejectCombat(combat.Coverage); }
+    }
+
+    private SummaryView RejectCombat(CoverageSummary incoming)
+        => this with { Coverage = Coverage.Merge(incoming).WithFailure("summary-overflow") };
+
+    private static uint CheckedRowPlays(IReadOnlyList<StatRow> rows)
+    {
+        uint plays = 0;
+        checked { foreach (var row in rows) plays += row.Plays; }
+        return plays;
     }
 }
 
@@ -290,7 +323,7 @@ internal sealed record CombatStatistics
 
     internal SummaryView View(IReadOnlyList<PlayerSummary> players, RunRecord run = null) => new()
     {
-        PolicyVersion = PolicyVersion,
+        PolicyVersion = PolicyVersion > 0 ? PolicyVersion : null,
         Title = EncounterId,
         Subtitle = EncounterType,
         Character = run?.Character ?? "",
