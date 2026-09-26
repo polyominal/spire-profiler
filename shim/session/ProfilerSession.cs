@@ -33,6 +33,7 @@ internal static class ProfilerSession
     {
         thread = Environment.CurrentManagedThreadId;
         report = diagnostic;
+        store?.Dispose();
         store = new StatisticsStore(dataDirectory, gameVersion, modVersion, diagnostic);
         run = null;
         combatRun = null;
@@ -176,7 +177,7 @@ internal static class ProfilerSession
             Outcome = outcome switch { 0 => "victory", 1 => "defeat", 2 => "abandoned", _ => "defeat" },
             EndedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
         };
-        store.SaveRun(ended);
+        if (!store.SaveRun(ended)) completedRun = completedRun with { Coverage = completedRun.Coverage.WithFailure("statistics-write-failed") };
         CurrentRun = completedRun with { Outcome = ended.Outcome, EndedAt = ended.EndedAt };
         run = null;
         Revision++;
@@ -197,6 +198,13 @@ internal static class ProfilerSession
         LiveFilterGeneration++;
         if (suspended) ClearHistory();
         Revision++;
+    }
+
+    internal static void Shutdown()
+    {
+        Suspend();
+        store?.Dispose();
+        store = null;
     }
 
     internal static void SelectHistory(string seed, long startedAt, int profile)

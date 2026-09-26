@@ -125,7 +125,7 @@ internal static class StatisticsJson
         if (version == 1) run = PreserveVersionOneLinks(run, node, header: true);
         if (expectedId != null && run.RunId != expectedId
             || !(version == 1 ? NumericId(run.RunId) || Guid.TryParseExact(run.RunId, "N", out _) : CurrentRunId(run.RunId)) || run.StartedAt < 0 || run.EndedAt < 0
-            || run.Profile < -1 || run.Seed == null || run.GameVersion == null || run.ModVersion == null
+            || run.Profile < -1 || run.Seed == null || run.GameVersion == null || run.ModVersion == null || run.Character == null || run.GameMode == null
             || run.PreservedRunIds == null || run.PreservedRunIds.Any(id => id == "0" || id == run.RunId || !(NumericId(id) || Guid.TryParseExact(id, "N", out _)))
             || run.PreservedRunIds.Distinct(StringComparer.Ordinal).Count() != run.PreservedRunIds.Count
             || run.Outcome is not ("active" or "suspended" or "victory" or "defeat" or "abandoned")
@@ -150,10 +150,10 @@ internal static class StatisticsJson
         var record = JsonSerializer.Deserialize<CombatRecord>(document.RootElement, Options)
             ?? throw new InvalidDataException("Combat record is missing");
         var combat = record.Combat;
-        if (record.RunId != runId || record.Ordinal != ordinal
+        if (record.RunId != runId || record.Ordinal != ordinal || ordinal == 0 || record.GameVersion == null || record.ModVersion == null
             || !(version == 1 ? NumericId(runId) || Guid.TryParseExact(runId, "N", out _) : runId == "0" || CurrentRunId(runId))
             || combat == null || uint.TryParse(runId, out _) && combat.CombatId != ordinal || combat.CombatId == 0 || combat.PolicyVersion <= 0 || combat.StartedAt < 0
-            || combat.DamageReceived < 0 || combat.Cards == null || combat.Coverage == null
+            || combat.DamageReceived < 0 || combat.BlockTotal < 0 || combat.EncounterId == null || combat.EncounterType == null || combat.Cards == null || combat.Coverage == null
             || combat.Coverage.Quality is not (CaptureQuality.Unknown or CaptureQuality.Complete or CaptureQuality.Partial)
             || combat.Coverage.Reasons == null || combat.Coverage.Reasons.Count > 32
             || combat.Coverage.Reasons.Any(string.IsNullOrEmpty)
@@ -166,6 +166,9 @@ internal static class StatisticsJson
         {
             if (version == 1) run = PreserveVersionOneLinks(run, document.RootElement.GetProperty("run"), header: false);
             else run = ParseRun(document.RootElement.GetProperty("run"), runId, version);
+            if (run.Profile < -1 || run.StartedAt < 0 || run.EndedAt < 0 || run.Seed == null
+                || run.GameVersion == null || run.ModVersion == null || run.Character == null || run.GameMode == null)
+                throw new InvalidDataException("Invalid embedded run metadata");
         }
         return record with
         {
