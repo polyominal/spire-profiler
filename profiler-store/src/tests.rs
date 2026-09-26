@@ -83,14 +83,35 @@ fn save_combat(store: &mut Store, record: Value) -> Value {
 }
 
 fn load_run(store: &mut Store, id: &str) -> Value {
-    execute(store, json!({"op": "load_run", "run_id": id}))
+    read_view(store, json!({"op": "read_begin_load", "run_id": id}))
 }
 
 fn select(store: &mut Store, seed: &str, started_at: i64) -> Value {
-    execute(
+    read_view(
         store,
-        json!({"op": "select", "profile": 0, "seed": seed, "started_at": started_at}),
+        json!({"op": "read_begin_select", "profile": 0, "seed": seed, "started_at": started_at}),
     )
+}
+
+fn read_view(store: &mut Store, request: Value) -> Value {
+    let run = execute(store, request);
+    if run.is_null() {
+        return Value::Null;
+    }
+    let mut combats = Vec::new();
+    loop {
+        let page = execute(store, json!({"op":"read_page"}));
+        combats.extend(
+            page["combats"]
+                .as_array()
+                .expect("page has combats")
+                .iter()
+                .cloned(),
+        );
+        if page["done"] == true {
+            return json!({"run":run,"combats":combats,"reasons":page["reasons"],"last_ordinal":page["last_ordinal"]});
+        }
+    }
 }
 
 fn combat_ids(view: &Value) -> Vec<u32> {
@@ -336,7 +357,7 @@ fn archive_request() -> Value {
     first["ended_at"] = json!(600);
     let second = run(ARCHIVE_GUID, "PRESERVED", 501);
     json!({
-        "op": "import", "max_run_id": 40, "max_combat_id": 50,
+        "max_run_id": 40, "max_combat_id": 50,
         "runs": [
             {"source_key":"archive-a", "run":first, "finalized":true, "reasons":[],
              "combats":[record(&first,50,50,9,3),record(&first,4,4,4,3),record(&first,4,4,5,3)]},
@@ -348,17 +369,52 @@ fn archive_request() -> Value {
     })
 }
 
+fn import_archive(store: &mut Store, archive: &Value) -> super::Result<Value> {
+    store.execute(
+        &json!({"op":"import_begin","max_run_id":archive["max_run_id"],
+        "max_combat_id":archive["max_combat_id"]})
+        .to_string(),
+    )?;
+    for entry in archive["runs"].as_array().expect("archive runs") {
+        let mut header = entry.clone();
+        let combats = header
+            .as_object_mut()
+            .expect("run entry")
+            .remove("combats")
+            .expect("combats");
+        store.execute(&json!({"op":"import_run","entry":header}).to_string())?;
+        for record in combats.as_array().expect("combat list") {
+            store.execute(
+                &json!({"op":"import_record","source_key":entry["source_key"],
+                "record":record})
+                .to_string(),
+            )?;
+        }
+    }
+    for identity in archive["ambiguous"]
+        .as_array()
+        .expect("ambiguous identities")
+    {
+        store.execute(&json!({"op":"import_ambiguous","identity":identity}).to_string())?;
+    }
+    store.execute(
+        &json!({"op":"import_end","complete":archive["complete"],
+        "reasons":archive["reasons"]})
+        .to_string(),
+    )
+}
+
 #[test]
 fn archive_import_rolls_back_all_runs_and_reserved_ids_on_failure() {
     let (_directory, _path, mut store) = database();
     store
         .connection
         .execute_batch(
-            "CREATE TEMP TRIGGER fail_second_import BEFORE INSERT ON runs
+            "CREATE TRIGGER fail_second_import BEFORE INSERT ON runs
          WHEN NEW.source_key='archive-b' BEGIN SELECT RAISE(FAIL, 'injected import failure'); END;",
         )
         .expect("fixture installs a transaction failure");
-    assert!(store.execute(&archive_request().to_string()).is_err());
+    assert!(import_archive(&mut store, &archive_request()).is_err());
     assert_eq!(
         execute(&mut store, json!({"op":"import_status"})),
         json!(false)
@@ -368,11 +424,14 @@ fn archive_import_rolls_back_all_runs_and_reserved_ids_on_failure() {
 }
 
 #[test]
-fn archive_import_preserves_order_duplicates_and_ids_after_idempotent_retry() {
+fn archive_import_preserves_order_duplicates_and_rejects_reimport() {
     let (_directory, _path, mut store) = database();
     let request = archive_request();
-    assert_eq!(execute(&mut store, request.clone()), json!(true));
-    assert_eq!(execute(&mut store, request), json!(true));
+    assert_eq!(
+        import_archive(&mut store, &request).expect("archive imports"),
+        json!(true)
+    );
+    assert!(import_archive(&mut store, &request).is_err());
     assert_eq!(
         execute(&mut store, json!({"op":"import_status"})),
         json!(true)
@@ -434,4 +493,171 @@ fn archive_import_preserves_order_duplicates_and_ids_after_idempotent_retry() {
         "victory"
     );
     assert_eq!(open_run(&mut store, "NEW", 503)["run_id"], "42");
+}
+
+#[test]
+fn interrupted_import_reopens_without_partial_rows_or_reserved_ids() {
+    let (_directory, path, mut store) = database();
+    let archive = archive_request();
+    execute(
+        &mut store,
+        json!({"op":"import_begin","max_run_id":40,"max_combat_id":50}),
+    );
+    let mut first = archive["runs"][0].clone();
+    first.as_object_mut().expect("run entry").remove("combats");
+    execute(&mut store, json!({"op":"import_run","entry":first}));
+    execute(
+        &mut store,
+        json!({"op":"import_record","source_key":"archive-a",
+        "record":archive["runs"][0]["combats"][0]}),
+    );
+    drop(store);
+
+    let mut reopened = Store::open(&path).expect("unfinished import rolls back on close");
+    assert_eq!(
+        execute(&mut reopened, json!({"op":"import_status"})),
+        json!(false)
+    );
+    assert_eq!(
+        execute(&mut reopened, json!({"op":"max_combat_id"})),
+        json!(0)
+    );
+    assert!(select(&mut reopened, "ARCHIVE", 500).is_null());
+    assert_eq!(
+        import_archive(&mut reopened, &archive).expect("clean retry"),
+        json!(true)
+    );
+    assert_eq!(
+        combat_ids(&select(&mut reopened, "ARCHIVE", 500)),
+        [50, 4, 4]
+    );
+}
+
+#[test]
+fn malformed_command_aborts_import_before_end_can_publish_it() {
+    let (_directory, _path, mut store) = database();
+    execute(
+        &mut store,
+        json!({"op":"import_begin","max_run_id":40,"max_combat_id":50}),
+    );
+    assert!(store.execute("{").is_err());
+    assert!(
+        store
+            .execute(r#"{"op":"import_end","complete":true}"#)
+            .is_err()
+    );
+    assert_eq!(
+        execute(&mut store, json!({"op":"import_status"})),
+        json!(false)
+    );
+    assert_eq!(execute(&mut store, json!({"op":"max_combat_id"})), json!(0));
+}
+
+#[test]
+fn read_pages_keep_order_last_ordinal_and_corruption_reasons() {
+    let (_directory, _path, mut store) = database();
+    let owner = open_run(&mut store, "PAGED", 600);
+    for id in (1..=130).rev() {
+        save_combat(&mut store, record(&owner, id, id, i64::from(id), 3));
+    }
+    store
+        .connection
+        .execute(
+            "UPDATE combats SET record_json='broken' WHERE native_id=2",
+            [],
+        )
+        .expect("fixture corrupts one payload");
+    store
+        .connection
+        .execute("UPDATE combats SET record_json=NULL WHERE native_id=3", [])
+        .expect("fixture retains one missing intent");
+    let mut final_run = owner.clone();
+    final_run["outcome"] = json!("victory");
+    final_run["ended_at"] = json!(700);
+    execute(&mut store, json!({"op":"save_run","run":final_run}));
+
+    let header = execute(
+        &mut store,
+        json!({"op":"read_begin_select","profile":0,
+        "seed":"PAGED","started_at":600}),
+    );
+    assert_eq!(header["outcome"], "victory");
+    let first = execute(&mut store, json!({"op":"read_page"}));
+    assert_eq!(first["done"], false);
+    assert_eq!(first["last_ordinal"], 130);
+    assert_eq!(
+        combat_ids(&first),
+        (1..=128)
+            .filter(|&id| id != 2 && id != 3)
+            .collect::<Vec<_>>()
+    );
+    let second = execute(&mut store, json!({"op":"read_page"}));
+    assert_eq!(second["done"], true);
+    assert_eq!(combat_ids(&second), [129, 130]);
+    assert_eq!(
+        second["reasons"],
+        json!(["statistics-read-failed", "statistics-record-missing"])
+    );
+    assert_eq!(execute(&mut store, json!({"op":"read_end"})), json!(true));
+}
+
+#[test]
+fn byte_budget_splits_history_before_the_record_count_limit() {
+    let (_directory, _path, mut store) = database();
+    let owner = open_run(&mut store, "WIDE", 601);
+    for id in 1..=5 {
+        let mut wide = record(&owner, id, id, 1, 3);
+        wide["combat"]["encounter_id"] = json!("X".repeat(1_100_000));
+        save_combat(&mut store, wide);
+    }
+    execute(
+        &mut store,
+        json!({"op":"read_begin_load","run_id":owner["run_id"]}),
+    );
+    let first = execute(&mut store, json!({"op":"read_page"}));
+    assert_eq!(first["done"], false);
+    assert_eq!(combat_ids(&first), [1, 2, 3]);
+    let second = execute(&mut store, json!({"op":"read_page"}));
+    assert_eq!(second["done"], true);
+    assert_eq!(combat_ids(&second), [4, 5]);
+    assert_eq!(second["reasons"], json!([]));
+}
+
+#[test]
+fn pages_advance_across_rows_with_missing_native_ids() {
+    let (_directory, _path, mut store) = database();
+    let owner = open_run(&mut store, "NULL-IDS", 602);
+    let id: u32 = owner["run_id"]
+        .as_str()
+        .expect("run ID")
+        .parse()
+        .expect("numeric ID");
+    let transaction = store
+        .connection
+        .transaction()
+        .expect("fixture transaction begins");
+    for ordinal in 1..=130_u32 {
+        transaction
+            .execute(
+                "INSERT INTO combats(run_id,ordinal,imported) VALUES (?1,?2,0)",
+                rusqlite::params![id, ordinal],
+            )
+            .expect("fixture inserts a missing intent");
+    }
+    transaction
+        .commit()
+        .expect("fixture commits missing intents");
+    execute(
+        &mut store,
+        json!({"op":"read_begin_select","profile":0,
+        "seed":"NULL-IDS","started_at":602}),
+    );
+    let first = execute(&mut store, json!({"op":"read_page"}));
+    assert_eq!(first["done"], false);
+    assert_eq!(first["combats"], json!([]));
+    let second = execute(&mut store, json!({"op":"read_page"}));
+    assert_eq!(second["done"], true);
+    assert_eq!(second["combats"], json!([]));
+    assert_eq!(second["last_ordinal"], 130);
+    assert_eq!(second["reasons"], json!(["statistics-record-missing"]));
 }

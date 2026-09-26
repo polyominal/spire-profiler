@@ -3,13 +3,14 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
 namespace SpireProfiler;
 
 // The managed importer retains the historical JSON parsers and alias rules.
-// Its one snapshot enters SQLite atomically; later reads never revisit old files.
+// Its source metadata enters one SQLite transaction; later reads never revisit old files.
 internal sealed class LegacyStatisticsImport
 {
     private const int SchemaVersion = StatisticsStore.SchemaVersion;
@@ -19,6 +20,7 @@ internal sealed class LegacyStatisticsImport
     private readonly string preservedDirectory;
     private readonly string versionDirectory;
     private readonly Action<string> report;
+    private readonly Dictionary<string, byte[]> fingerprints = new(StringComparer.Ordinal);
 
     internal LegacyStatisticsImport(string dataDirectory, Action<string> report)
     {
@@ -28,7 +30,7 @@ internal sealed class LegacyStatisticsImport
         this.report = report;
     }
 
-    internal object ReadArchive()
+    internal bool Import(Func<object, bool> send)
     {
         var snapshot = ReadStore();
         uint maximumRun = snapshot.MaximumRunId;
@@ -54,33 +56,53 @@ internal sealed class LegacyStatisticsImport
             }
             catch (Exception error) when (RecordFailure(error)) { report($"cannot reserve preserved run IDs: {error.Message}"); }
         }
-        foreach (var combat in snapshot.Combats) maximumCombat = Math.Max(maximumCombat, combat.Combat.CombatId);
-        var runs = new List<object>();
-        var ambiguous = new List<RunIdentity>();
+        foreach (var combat in snapshot.Combats) maximumCombat = Math.Max(maximumCombat, combat.CombatId);
         var identities = snapshot.Headers.Select(run => run.Identity)
             .Concat(snapshot.Combats.Select(combat => combat.Run?.Identity)).Concat(snapshot.InvalidImports)
-            .Where(identity => identity != null).Distinct();
+            .Where(identity => identity != null).Distinct().ToArray();
+        if (!send(new { op = "import_begin", max_run_id = maximumRun, max_combat_id = maximumCombat })) return false;
         foreach (var identity in identities)
         {
             var run = Match(snapshot, identity);
-            if (run == null) { ambiguous.Add(identity); continue; }
-            var combats = snapshot.Combats.Where(combat => Belongs(combat, run))
-                .Select(combat => combat with { RunId = run.RunId, Run = combat.Run with { RunId = run.RunId, PreservedRunIds = run.PreservedRunIds } }).ToArray();
-            var summary = run.EmptySummary() with { Combats = (uint)combats.Length };
-            var reasons = snapshot.Read.Apply(summary, run).Coverage.Reasons;
-            runs.Add(new
+            if (run == null)
             {
-                source_key = JsonSerializer.Serialize(new { identity, run.RunId }, StatisticsJson.Options),
-                run,
-                combats,
-                reasons,
-                finalized = run.Outcome is "victory" or "defeat" or "abandoned"
-            });
+                if (!send(new { op = "import_ambiguous", identity })) return false;
+                continue;
+            }
+            string sourceKey = JsonSerializer.Serialize(new { identity, run.RunId }, StatisticsJson.Options);
+            var sources = snapshot.Combats.Where(combat => Belongs(combat, run)).ToArray();
+            var summary = run.EmptySummary() with { Combats = (uint)sources.Length };
+            var reasons = snapshot.Read.Apply(summary, run).Coverage.Reasons;
+            if (!send(new
+            {
+                op = "import_run",
+                entry = new
+                {
+                    source_key = sourceKey,
+                    run,
+                    reasons,
+                    finalized = run.Outcome is "victory" or "defeat" or "abandoned"
+                }
+            })) return false;
+            foreach (var source in sources)
+            {
+                var combat = ReadCombat(source.Path, source.Version, source.RunId, source.Ordinal, source.GuidHeader);
+                if (combat.Combat.CombatId != source.CombatId || combat.Run?.Identity != source.Run?.Identity)
+                    throw new InvalidDataException("Legacy combat changed during import");
+                combat = combat with
+                {
+                    RunId = run.RunId,
+                    Run = source.Run with { RunId = run.RunId, PreservedRunIds = run.PreservedRunIds }
+                };
+                if (!send(new { op = "import_record", source_key = sourceKey, record = combat })) return false;
+            }
         }
-        return new { op = "import", max_run_id = maximumRun, max_combat_id = maximumCombat, runs, ambiguous, complete = true };
+        VerifySources();
+        return send(new { op = "import_end", complete = true });
     }
 
-    private sealed record StoreSnapshot(IReadOnlyList<RunRecord> Headers, IReadOnlyList<CombatRecord> Combats, IReadOnlySet<RunIdentity> InvalidImports, uint MaximumRunId, ReadState Read);
+    private sealed record CombatSource(string Path, int Version, string RunId, uint Ordinal, uint CombatId, RunRecord Run, RunRecord GuidHeader);
+    private sealed record StoreSnapshot(IReadOnlyList<RunRecord> Headers, IReadOnlyList<CombatSource> Combats, IReadOnlySet<RunIdentity> InvalidImports, uint MaximumRunId, ReadState Read);
 
     private sealed record ReadGap(int Version, string RunId, IReadOnlySet<RunIdentity> Owners, string Reason);
 
@@ -122,7 +144,7 @@ internal sealed class LegacyStatisticsImport
     private static bool MatchesStorage(string id, RunRecord run)
         => id == run.RunId || run.PreservedRunIds.Contains(id, StringComparer.Ordinal);
 
-    private static bool Belongs(CombatRecord combat, RunRecord run)
+    private static bool Belongs(CombatSource combat, RunRecord run)
         => combat.Run != null && MatchesStorage(combat.RunId, run)
             && combat.Run.Identity != null && combat.Run.Identity == run.Identity;
 
@@ -131,7 +153,7 @@ internal sealed class LegacyStatisticsImport
     private StoreSnapshot ReadStore()
     {
         var headers = new List<RunRecord>();
-        var combats = new List<CombatRecord>();
+        var combats = new List<CombatSource>();
         var invalidImports = new HashSet<RunIdentity>();
         var read = new ReadState();
         uint maximum = 0;
@@ -148,16 +170,16 @@ internal sealed class LegacyStatisticsImport
             headers.AddRange(sourceHeaders);
             combats.AddRange(sourceCombats);
         }
-        combats.Sort((left, right) => left.Combat.CombatId.CompareTo(right.Combat.CombatId));
+        combats.Sort((left, right) => left.CombatId.CompareTo(right.CombatId));
         return new(headers, combats, invalidImports, maximum, read);
     }
 
-    private static void NormalizeVersionOneStore(List<RunRecord> headers, List<CombatRecord> combats, HashSet<RunIdentity> invalid)
+    private static void NormalizeVersionOneStore(List<RunRecord> headers, List<CombatSource> combats, HashSet<RunIdentity> invalid)
     {
         var ordered = headers.OrderBy(run => run.PreservedRunIds.Count != 0 && uint.TryParse(run.RunId, out _)).ToArray();
         headers.Clear();
         headers.AddRange(ordered);
-        var candidates = headers.Concat(combats.OrderByDescending(combat => combat.Combat.CombatId).Select(combat => combat.Run)).Where(run => run?.Identity != null);
+        var candidates = headers.Concat(combats.OrderByDescending(combat => combat.CombatId).Select(combat => combat.Run)).Where(run => run?.Identity != null);
         var normalized = new Dictionary<(RunIdentity, string), (string Id, IReadOnlyList<string> Preserved)>();
         foreach (var group in candidates.GroupBy(run => run.Identity))
         {
@@ -195,37 +217,36 @@ internal sealed class LegacyStatisticsImport
         incomplete = false;
         var headers = new List<RunRecord>();
         string headerPath = Path.Combine(root, "runs.jsonl");
-        string[] lines = Array.Empty<string>();
         try
         {
-            if (File.Exists(headerPath) || Directory.Exists(headerPath)) lines = Read(headerPath).Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            if (File.Exists(headerPath) || Directory.Exists(headerPath))
+                foreach (string line in ReadLines(headerPath))
+                {
+                    if (string.IsNullOrWhiteSpace(line)) continue;
+                    try
+                    {
+                        RunRecord header;
+                        if (version != 0)
+                            header = version == 1 ? StatisticsJson.ParseVersionOneRun(line) : StatisticsJson.ParseRun(line);
+                        else header = LegacyHeader(JsonSerializer.Deserialize<LegacyRun>(line, StatisticsJson.Options)
+                            ?? throw new InvalidDataException("Missing legacy header"));
+                        if (header.RunId != "0" && header.Outcome is "victory" or "defeat" or "abandoned") headers.Add(header);
+                    }
+                    catch (Exception ex) when (RecordFailure(ex)) { incomplete = true; report($"cannot parse run header: {ex.Message}"); }
+                }
         }
         catch (Exception ex) when (RecordFailure(ex))
         {
+            headers.Clear();
             incomplete = true;
             report($"cannot read run headers: {ex.Message}");
-        }
-        foreach (string line in lines)
-        {
-            if (string.IsNullOrWhiteSpace(line)) continue;
-            try
-            {
-                RunRecord header;
-                if (version != 0)
-                {
-                    header = version == 1 ? StatisticsJson.ParseVersionOneRun(line) : StatisticsJson.ParseRun(line);
-                }
-                else header = LegacyHeader(JsonSerializer.Deserialize<LegacyRun>(line, StatisticsJson.Options) ?? throw new InvalidDataException("Missing legacy header"));
-                if (header.RunId != "0" && header.Outcome is "victory" or "defeat" or "abandoned") headers.Add(header);
-            }
-            catch (Exception ex) when (RecordFailure(ex)) { incomplete = true; report($"cannot parse run header: {ex.Message}"); }
         }
         return headers;
     }
 
-    private List<CombatRecord> ReadCombats(string root, int version, ReadState read, List<RunRecord> headers)
+    private List<CombatSource> ReadCombats(string root, int version, ReadState read, List<RunRecord> headers)
     {
-        var combats = new List<CombatRecord>();
+        var combats = new List<CombatSource>();
         string[] directories;
         try { directories = Directories(Path.Combine(root, "runs")); }
         catch (Exception ex) when (RecordFailure(ex))
@@ -247,7 +268,7 @@ internal sealed class LegacyStatisticsImport
             if (!numeric)
             {
                 if (version != 1 || !Guid.TryParseExact(id, "N", out _)) continue;
-                try { guidHeader = StatisticsJson.ParseVersionOneRun(Read(Path.Combine(directory, "run.json")), id); }
+                try { guidHeader = StatisticsJson.ParseVersionOneRun(ReadDocument(Path.Combine(directory, "run.json")), id); }
                 catch (Exception ex) when (RecordFailure(ex))
                 {
                     report($"cannot read preserved run: {ex.Message}");
@@ -267,19 +288,11 @@ internal sealed class LegacyStatisticsImport
                 try
                 {
                     string sourcePath = numeric ? Path.Combine(sourceDirectory, $"{ordinal}.json") : path;
-                    CombatRecord record;
-                    if (version != 0)
-                    {
-                        string json = Read(sourcePath);
-                        record = version == 1 ? StatisticsJson.ParseVersionOneCombat(json, id, ordinal) : StatisticsJson.ParseCombat(json, id, ordinal);
-                        if (guidHeader != null) record = record with { Run = guidHeader with { Outcome = "", EndedAt = 0, Players = Array.Empty<PlayerSummary>() } };
-                    }
-                    else record = LegacyCombatRecord(Read(sourcePath), id, ordinal);
+                    var record = ReadCombat(sourcePath, version, id, ordinal, guidHeader);
                     if (numeric && (id == "0" ? record.Run != null : record.Run?.RunId != id)) throw new InvalidDataException("Combat run identity differs from directory");
                     if (headerOwners.Count != 0 && !headerOwners.Contains(record.Run?.Identity)) throw new InvalidDataException("Combat identity differs from finalized headers");
-                    if (record.Run != null) record = record with { Run = record.Run with { Outcome = "", EndedAt = 0, Players = Array.Empty<PlayerSummary>() } };
                     if (record.Run?.Identity != null) owners.Add(record.Run.Identity);
-                    combats.Add(record);
+                    combats.Add(new(sourcePath, version, id, ordinal, record.Combat.CombatId, record.Run, guidHeader));
                 }
                 catch (Exception ex) when (RecordFailure(ex)) { report($"cannot parse combat '{path}': {ex.Message}"); reasons.Add("statistics-read-failed"); }
             }
@@ -287,6 +300,17 @@ internal sealed class LegacyStatisticsImport
         }
         read.Finalized.UnionWith(headers.Where(header => header.Identity != null).Select(header => header.Identity));
         return combats;
+    }
+
+    private CombatRecord ReadCombat(string path, int version, string id, uint ordinal, RunRecord guidHeader)
+    {
+        string json = ReadDocument(path);
+        CombatRecord record = version == 0 ? LegacyCombatRecord(json, id, ordinal)
+            : version == 1 ? StatisticsJson.ParseVersionOneCombat(json, id, ordinal)
+            : StatisticsJson.ParseCombat(json, id, ordinal);
+        if (guidHeader != null) record = record with { Run = guidHeader with { Outcome = "", EndedAt = 0, Players = Array.Empty<PlayerSummary>() } };
+        if (record.Run != null) record = record with { Run = record.Run with { Outcome = "", EndedAt = 0, Players = Array.Empty<PlayerSummary>() } };
+        return record;
     }
 
     private static RunRecord LegacyHeader(LegacyRun run)
@@ -349,13 +373,56 @@ internal sealed class LegacyStatisticsImport
         };
     }
 
-    private static string Read(string path)
+    private IEnumerable<string> ReadLines(string path)
+    {
+        using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        using var line = new MemoryStream();
+        byte[] buffer = new byte[64 * 1024];
+        int count;
+        while ((count = file.Read(buffer)) != 0)
+        {
+            hash.AppendData(buffer, 0, count);
+            int start = 0;
+            for (int index = 0; index < count; index++)
+            {
+                if (buffer[index] != (byte)'\n') continue;
+                if (line.Length + index - start > MaxDocumentBytes) throw new InvalidDataException("Statistics record exceeds size limit");
+                line.Write(buffer, start, index - start);
+                if (line.Length != 0) yield return Utf8.GetString(line.ToArray());
+                line.SetLength(0);
+                start = index + 1;
+            }
+            if (line.Length + count - start > MaxDocumentBytes) throw new InvalidDataException("Statistics record exceeds size limit");
+            line.Write(buffer, start, count - start);
+        }
+        if (line.Length != 0) yield return Utf8.GetString(line.ToArray());
+        fingerprints.Add(path, hash.GetHashAndReset());
+    }
+
+    private string ReadDocument(string path)
     {
         using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
         if (file.Length > MaxDocumentBytes) throw new InvalidDataException("Statistics document exceeds size limit");
         byte[] bytes = new byte[checked((int)file.Length)];
         file.ReadExactly(bytes);
+        byte[] hash = SHA256.HashData(bytes);
+        if (fingerprints.TryGetValue(path, out byte[] expected))
+        {
+            if (!hash.SequenceEqual(expected)) throw new InvalidDataException("Legacy source changed during import");
+        }
+        else fingerprints.Add(path, hash);
         return Utf8.GetString(bytes);
+    }
+
+    private void VerifySources()
+    {
+        foreach (var (path, expected) in fingerprints)
+        {
+            using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            if (!SHA256.HashData(file).SequenceEqual(expected))
+                throw new InvalidDataException("Legacy source changed during import");
+        }
     }
     private static string[] Directories(string root) => Directory.Exists(root) || File.Exists(root) ? Directory.GetFileSystemEntries(root) : Array.Empty<string>();
     private static string[] Files(string root) => Directory.Exists(root) || File.Exists(root) ? Directory.GetFiles(root, "*.json") : Array.Empty<string>();

@@ -24,6 +24,7 @@ internal static class SessionFixtures
             ProfilerNative.Load(nativeLibrary);
             ParserAndAggregateContracts();
             SqliteStore(Path.Combine(scratch, "store"));
+            PagedHistory(Path.Combine(scratch, "paged"));
             LegacyHistory(Path.Combine(scratch, "legacy"));
             PreservedGuidHistory(Path.Combine(scratch, "guid"));
             PreservedCombatIdCollisions(Path.Combine(scratch, "collisions"));
@@ -221,6 +222,22 @@ internal static class SessionFixtures
             "Ambiguous continuation refuses that identity without disabling the database");
         Check(File.Exists(Path.Combine(directory, "statistics-v3", "statistics.sqlite3")) && diagnostics.Count > 0,
             "Storage uses the versioned SQLite database and reports rejected records");
+    }
+
+    private static void PagedHistory(string directory)
+    {
+        using var store = new StatisticsStore(directory, "game-v", "mod-v", _ => { });
+        var run = store.OpenRun(Header("PAGED-HISTORY", 2100), false);
+        for (uint id = 1; id <= 140; id++)
+            if (!store.SaveCombat(Record(run, id, 1))) throw new InvalidOperationException("Paged fixture could not save a combat");
+        var loaded = store.LoadRun(run);
+        Check(loaded.LastOrdinal == 140 && loaded.Summary.Combats == 140
+            && loaded.Summary.Cards.Single().DamageDealt == 140 && loaded.Summary.Coverage.Complete,
+            "Continued-run summary folds all native history pages in ID order");
+        Check(store.SaveRun(run with { Outcome = "victory", EndedAt = 2200 })
+            && store.Select(run.Identity) is { Combats: 140, Outcome: "victory" } selected
+            && selected.Cards.Single().DamageDealt == 140 && selected.Coverage.Complete,
+            "Selected history folds pages before reporting complete coverage");
     }
 
     private static void LegacyHistory(string directory)

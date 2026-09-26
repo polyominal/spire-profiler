@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 const UNAVAILABLE: &str = r#"{"ok":false,"error":"native storage unavailable"}"#;
-const MAX_DOCUMENT_BYTES: usize = 64 * 1024 * 1024;
+const MAX_TRANSPORT_BYTES: usize = 64 * 1024 * 1024;
 // The game needs one store; extra handles support independent tools and fixtures.
 const MAX_STORES: usize = 16;
 static NEXT_STORE: AtomicU64 = AtomicU64::new(1);
@@ -33,19 +33,25 @@ impl Entry {
         if self.poisoned {
             return;
         }
-        struct PanicGuard<'a>(&'a mut bool);
+        struct PanicGuard<'a>(&'a mut Entry);
         impl Drop for PanicGuard<'_> {
             fn drop(&mut self) {
                 if std::thread::panicking() {
-                    *self.0 = true;
+                    self.0.poisoned = true;
+                    self.0.database = None;
                 }
             }
         }
-        let _guard = PanicGuard(&mut self.poisoned);
-        let result = if request.len() > MAX_DOCUMENT_BYTES {
-            Err("storage request exceeds size limit".to_owned())
-        } else if let Some(database) = &mut self.database {
+        let guard = PanicGuard(self);
+        let entry = &mut *guard.0;
+        #[cfg(test)]
+        if request == r#"{"op":"panic_for_test"}"# {
+            panic!("injected storage command panic");
+        }
+        let result = if let Some(database) = &mut entry.database {
             database.execute(request).map_err(|error| error.to_string())
+        } else if request.len() > MAX_TRANSPORT_BYTES {
+            Err("storage request exceeds size limit".to_owned())
         } else {
             serde_json::from_str::<OpenRequest>(request)
                 .map_err(|error| error.to_string())
@@ -55,7 +61,7 @@ impl Entry {
                     }
                     let database =
                         Store::open(Path::new(&path)).map_err(|error| error.to_string())?;
-                    self.database = Some(database);
+                    entry.database = Some(database);
                     Ok(json!(true))
                 })
         };
@@ -64,7 +70,7 @@ impl Entry {
             Err(error) => json!({ "ok": false, "error": error }),
         }
         .to_string();
-        self.response = if response.len() < MAX_DOCUMENT_BYTES {
+        entry.response = if response.len() < MAX_TRANSPORT_BYTES {
             response.into_boxed_str()
         } else {
             r#"{"ok":false,"error":"storage response exceeds size limit"}"#.into()
@@ -247,5 +253,111 @@ mod tests {
         assert_eq!(execute(first, "malformed"), 0);
         assert_eq!(response(second, |_| 1), 1);
         destroy(second);
+    }
+
+    #[test]
+    fn oversized_abi_command_aborts_an_open_import() {
+        let handle = create();
+        let directory = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../tmp")
+            .join(format!("store-oversized-{}-{handle}", std::process::id()));
+        assert!(
+            !directory.exists(),
+            "fixture owns a fresh scratch directory"
+        );
+        let path = directory.join("statistics.sqlite3");
+        let reply = |handle| {
+            let mut value = Value::Null;
+            response(handle, |json| {
+                value = serde_json::from_str(json).expect("ABI returns a JSON envelope");
+                1
+            });
+            value
+        };
+        assert_eq!(
+            execute(handle, &json!({"op":"open","path":path}).to_string()),
+            1
+        );
+        assert_eq!(reply(handle)["ok"], true);
+        assert_eq!(
+            execute(
+                handle,
+                r#"{"op":"import_begin","max_run_id":40,"max_combat_id":50}"#
+            ),
+            1
+        );
+        assert_eq!(reply(handle)["ok"], true);
+        assert_eq!(execute(handle, &"x".repeat(MAX_TRANSPORT_BYTES + 1)), 1);
+        assert_eq!(reply(handle)["ok"], false);
+        assert_eq!(execute(handle, r#"{"op":"import_end","complete":true}"#), 1);
+        assert_eq!(reply(handle)["ok"], false);
+        assert_eq!(execute(handle, r#"{"op":"import_status"}"#), 1);
+        assert_eq!(reply(handle)["value"], false);
+        assert_eq!(execute(handle, r#"{"op":"max_combat_id"}"#), 1);
+        assert_eq!(reply(handle)["value"], 0);
+        destroy(handle);
+        std::fs::remove_dir_all(directory).expect("closed fixture owns its database");
+    }
+
+    #[test]
+    fn panic_drops_an_active_read_transaction_before_another_store_writes() {
+        let reader = create();
+        let writer = create();
+        let directory = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../tmp")
+            .join(format!("store-panic-{}-{reader}", std::process::id()));
+        assert!(
+            !directory.exists(),
+            "fixture owns a fresh scratch directory"
+        );
+        let path = directory.join("statistics.sqlite3");
+        let open = json!({"op":"open","path":path}).to_string();
+        assert_eq!(execute(reader, &open), 1);
+        assert_eq!(execute(writer, &open), 1);
+        let run = |seed| {
+            json!({"schema_version":2,"game_version":"g","mod_version":"m",
+            "run_id":"","preserved_run_ids":[],"profile":0,"seed":seed,"started_at":100,
+            "ended_at":0,"character":"IRONCLAD","ascension":0,"game_mode":"normal",
+            "outcome":"active","players":[]})
+        };
+        assert_eq!(
+            execute(
+                writer,
+                &json!({"op":"open_run","run":run("FIRST"),"continued":false}).to_string()
+            ),
+            1
+        );
+        assert_eq!(
+            execute(reader, r#"{"op":"read_begin_load","run_id":"1"}"#),
+            1
+        );
+        response(reader, |json| {
+            let reply: Value = serde_json::from_str(json).expect("read header is JSON");
+            assert_eq!(reply["ok"], true);
+            1
+        });
+        let injected = std::ffi::CString::new(r#"{"op":"panic_for_test"}"#)
+            .expect("fixture command contains no NUL");
+        // SAFETY: CString owns a terminated request for the duration of the ABI call.
+        let result = unsafe { crate::abi::spire_profiler_store_execute(reader, injected.as_ptr()) };
+        assert_eq!(result, 0);
+        assert_eq!(
+            execute(
+                writer,
+                &json!({"op":"open_run","run":run("SECOND"),"continued":false}).to_string()
+            ),
+            1
+        );
+        response(writer, |json| {
+            let reply: Value = serde_json::from_str(json).expect("writer response is JSON");
+            assert_eq!(
+                reply["ok"], true,
+                "read lock must be released after panic: {json}"
+            );
+            1
+        });
+        destroy(reader);
+        destroy(writer);
+        std::fs::remove_dir_all(directory).expect("closed fixtures own their database");
     }
 }
