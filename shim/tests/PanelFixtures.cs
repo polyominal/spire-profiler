@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.Linq;
 
 namespace SpireProfiler;
@@ -44,13 +45,60 @@ internal static class PanelFixtures
             || playerMeta.Turns != 4 || playerMeta.Combats != 2 || playerMeta.DamageTaken != 3
             || ChartProjection.Meta(summary with { Turns = 0 }, UiTab.Combat).DpsX10 != 0)
             throw new InvalidOperationException("Headlines must distinguish observed combat plays, summed source plays, and selected history totals without filtering run-wide counters");
+        var maximumDamage = new SummaryView
+        {
+            Cards = new[] { new StatRow { DamageDealt = long.MaxValue } },
+            Turns = 1,
+        };
+        var wideMeta = ChartProjection.Meta(maximumDamage, UiTab.Combat);
+        string wideLine = $"DPS {long.MaxValue}.0 · 1 turns · 0 plays · took 0";
+        if (wideMeta.DpsX10 != (Int128)long.MaxValue * 10 || PanelLayout.MetaLine(UiTab.Combat, wideMeta) != wideLine
+            || !PanelLayout.Chart(UiTab.Combat, Array.Empty<ChartRow>(), wideMeta, "").Header
+                .OfType<TextCommand>().Any(command => command.Text == wideLine))
+            throw new InvalidOperationException("DPS above Int32 must retain its full value through the rendered headline");
         int hanging = rows.Select((row, index) => (row, index)).Single(item => item.row.SelfDamage && !item.row.SoloSelf).index;
-        var terse = ChartProjection.Detail(rows, hanging, cards);
+        var terse = ChartProjection.Detail(rows, hanging);
         if (terse.Stats.Count != 1 || terse.Stats[0].Label != "self dmg" || terse.Stats[0].Value != "20")
             throw new InvalidOperationException("Hanging self-damage detail must stay terse");
-        var detail = ChartProjection.Detail(rows, 0, cards);
+        var detail = ChartProjection.Detail(rows, 0);
         if (!detail.Stats.Any(stat => stat.Label == "forge" && stat.Value == "4") || detail.Title != "SHARED x0")
             throw new InvalidOperationException("Raw source IDs and non-chart statistics must remain in tooltips");
+        string sharedPrefix = new('X', 64);
+        var sourceCases = new[]
+        {
+            new StatRow { Id = sharedPrefix + "A", Player = 0, DmgDirect = 1, Forge = 11 },
+            new StatRow { Id = sharedPrefix + "B", Player = 0, DmgDirect = 2, Forge = 22 },
+            new StatRow { Id = "REUSED", Player = 0, Kind = 0, DmgDirect = 3, Forge = 33 },
+            new StatRow { Id = "REUSED", Player = 0, Kind = 1, DmgDirect = 4, Forge = 44 },
+        };
+        var sourceRows = ChartProjection.Rows(sourceCases);
+        foreach (var source in sourceCases)
+        {
+            int index = sourceRows.Select((row, rowIndex) => (row, rowIndex))
+                .Single(item => item.row.Section == ChartSection.Damage && ReferenceEquals(item.row.Source, source)).rowIndex;
+            var sourceDetail = ChartProjection.Detail(sourceRows, index);
+            if (sourceDetail.Title != $"{UiPalette.Prefix(source.Kind).Text}{source.Id} x{source.Plays}"
+                || !sourceDetail.Stats.Any(stat => stat.Label == "forge" && stat.Value == source.Forge.ToString(CultureInfo.InvariantCulture)))
+                throw new InvalidOperationException("Detail must use the exact row source when full IDs share a display prefix or kind differs");
+        }
+        var longSelfSource = new StatRow { Id = sharedPrefix + "SELF", Kind = 1, BlockEffective = 1, SelfDamage = 2 };
+        var longSelfRows = ChartProjection.Rows(new[] { longSelfSource });
+        var longSelfDetail = ChartProjection.Detail(longSelfRows, 1);
+        if (longSelfDetail.Title != "[R] " + longSelfSource.Id || longSelfDetail.Stats.Single().Value != "2")
+            throw new InvalidOperationException("Hanging self-damage detail must retain the full source ID");
+        string emoji = string.Concat(Enumerable.Repeat("😀", 19));
+        var wrapped = TooltipLayout.Shape(new(emoji, new[]
+        {
+            new DetailStat("é " + new string('界', 25), "1", UiPalette.Damage)
+        }), 20);
+        if (wrapped.Count != 4 || wrapped[0].Text != string.Concat(Enumerable.Repeat("😀", 18))
+            || wrapped[1].Text != "😀" || wrapped[2].Text != "é " + new string('界', 22)
+            || wrapped[3].Text != new string('界', 3) + " 1")
+            throw new InvalidOperationException("Tooltip wrapping must count and split complete Unicode runes in titles and statistics");
+        var asciiWrapped = TooltipLayout.Shape(new("AB " + new string('x', 20), Array.Empty<DetailStat>()), 20);
+        if (asciiWrapped.Count != 2 || asciiWrapped[0].Text != "AB " + new string('x', 15)
+            || asciiWrapped[1].Text != new string('x', 5))
+            throw new InvalidOperationException("Tooltip wrapping must preserve ASCII word splitting");
         if (PanelGeometry.DragState(false, true, true, true) || !PanelGeometry.DragState(true, true, true, false))
             throw new InvalidOperationException("A held cursor must not start a drag, and active drags must survive leaving the track");
         var scrolling = PanelLayout.Chart(UiTab.Combat, ChartProjection.Rows(Enumerable.Range(0, 12)
@@ -128,6 +176,31 @@ internal static class PanelFixtures
         if (!ranked.Select(row => row.Name).SequenceEqual(expectedNames)
             || ranked[0].Value != 20 || ranked[1].Value != 50 || ranked[2].Value != -49)
             throw new InvalidOperationException("Defense scaling must retain the existing net-value ranking and separate row labels");
+        var crowdedCards = Enumerable.Range(0, 129)
+            .Select(index => new StatRow { Id = "LOW_" + index, DmgDirect = 1 })
+            .Concat(new[]
+            {
+                new StatRow { Id = "LATE_A", DmgDirect = 500 },
+                new StatRow { Id = "LATE_B", DmgDirect = 500 },
+            }).ToArray();
+        var crowded = ChartProjection.Rows(crowdedCards).Where(row => row.Section == ChartSection.Damage).ToArray();
+        if (crowded.Length != ChartProjection.MaxCandidates || crowded[0].Source != crowdedCards[129]
+            || crowded[1].Source != crowdedCards[130] || crowded[2].Source != crowdedCards[0]
+            || crowded[^1].Source != crowdedCards[125])
+            throw new InvalidOperationException("Damage candidates must rank before the limit while preserving source order for ties");
+        var defenseCards = Enumerable.Range(0, 126)
+            .Select(index => new StatRow { Id = "BLOCK_" + index, BlockEffective = 1 })
+            .Concat(new[]
+            {
+                new StatRow { Id = "SELF_SMALL", SelfDamage = 100 },
+                new StatRow { Id = "SELF_LARGE", SelfDamage = 200 },
+                new StatRow { Id = "LATE_BLOCK", BlockEffective = 500 },
+            }).ToArray();
+        var defense = ChartProjection.Rows(defenseCards).Where(row => row.Section == ChartSection.Defense).ToArray();
+        if (defense.Length != ChartProjection.MaxCandidates || defense[0].Source != defenseCards[^1]
+            || defense[1].Source != defenseCards[0] || defense[126].Source != defenseCards[125]
+            || defense[^1].Source != defenseCards[127] || defense.Any(row => row.Source == defenseCards[126]))
+            throw new InvalidOperationException("Defense candidates must rank before the limit and keep self-only rows after positive defense");
         var healthy = new SummaryView { Coverage = CoverageSummary.Healthy, Cards = cards };
         foreach (var coverage in new[] { healthy.Coverage.WithFailure("snapshot-read-failed"), CoverageSummary.Unknown })
         {

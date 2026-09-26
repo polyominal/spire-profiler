@@ -118,7 +118,7 @@ internal static class SessionFixtures
             "The full accepted signed domain must rank by magnitude without overflowing and retain drawable segment scaling");
         var signedLayout = PanelLayout.Chart(UiTab.Combat, signedRows, new(), "");
         Check(signedLayout.Body.OfType<TextCommand>().Any(text => text.Text == "-9223372036854775808")
-            && ChartProjection.Detail(signedRows, 0, signedCombat.Cards).Stats.Any(stat => stat.Label == "self dmg" && stat.Value == "1"),
+            && ChartProjection.Detail(signedRows, 0).Stats.Any(stat => stat.Label == "self dmg" && stat.Value == "1"),
             "Minimum signed defense must remain displayable in chart labels and source details");
         foreach (long credit in new[] { 2_147_484L, long.MaxValue })
         {
