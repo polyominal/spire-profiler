@@ -215,7 +215,7 @@ internal static class GameProducerFixture
 
     // Only command, targeting and presentation boundaries change; pinned producer
     // conditions, amounts, order, awaits and actual production scope patches run.
-    internal static IEnumerable<CodeInstruction> Boundaries(IEnumerable<CodeInstruction> instructions)
+    internal static IEnumerable<CodeInstruction> Boundaries(IEnumerable<CodeInstruction> instructions, MethodBase __originalMethod)
     {
         foreach (var instruction in instructions)
         {
@@ -241,8 +241,12 @@ internal static class GameProducerFixture
                             ? AccessTools.DeclaredMethod(typeof(CommandFixture), nameof(CommandFixture.GainBlock)) : AccessTools.DeclaredMethod(typeof(GameProducerFixture), nameof(Block)),
                         "Damage" => AccessTools.DeclaredMethod(typeof(GameProducerFixture), call.GetParameters()[1].ParameterType == typeof(IEnumerable<Creature>)
                             ? nameof(EmitManyDamage) : call.GetParameters().Length == 6 ? nameof(EmitCardDamage) : nameof(EmitDamage)),
+                        "LoseBlock" => AccessTools.DeclaredMethod(typeof(GameProducerFixture), nameof(LoseBlock)),
                         _ => null
                     };
+                else if (__originalMethod.DeclaringType?.DeclaringType == typeof(SturdyClamp)
+                    && call.DeclaringType == typeof(RelicModel) && call.Name == "Flash")
+                    replacement = AccessTools.DeclaredMethod(typeof(GameProducerFixture), nameof(NoFlash));
                 else if (call.DeclaringType == typeof(Cmd) && call.Name == "Wait")
                     replacement = AccessTools.DeclaredMethod(typeof(GameProducerFixture), nameof(Wait));
                 else if (call.DeclaringType == typeof(Cmd) && call.Name == "CustomScaledWait")
@@ -275,6 +279,9 @@ internal static class GameProducerFixture
     internal static Task Animation(Creature creature, string name, float delay) => Task.CompletedTask;
     internal static Task<decimal> Block(Creature creature, BlockVar amount, CardPlay play, bool fast)
         => Task.FromResult(amount.BaseValue);
+    internal static Task LoseBlock(PlayerChoiceContext choice, Creature target, decimal amount, Creature remover)
+    { target.LoseBlockInternal(amount); return Task.CompletedTask; }
+    internal static void NoFlash(RelicModel relic) { }
     internal static Task Wait(float seconds, bool ignoreCombatEnd) => WaitTask;
     internal static Task ScaledWait(float fast, float standard, bool ignoreCombatEnd, CancellationToken cancellation) => WaitTask;
     internal static MegaCrit.Sts2.Core.Nodes.Rooms.NCombatRoom NoCombatRoom() => null;
@@ -401,6 +408,8 @@ internal sealed class FakeBackend : AttributionBackend
     internal readonly List<GenerationState> PlayGenerations = new();
     internal readonly List<(string Kind, int Amount, int Slot, SourceSnapshot Source)> CommandEvents = new();
     internal readonly List<(int Amount, SourceCredit[] Modifiers, bool Incomplete)> BlockBatches = new();
+    internal readonly List<(int Slot, int Amount)> BlockLosses = new();
+    internal bool ForwardNativeBlockLoss;
     internal Action DuringBlockPublish;
     internal readonly List<(ulong Batch, ulong Creature, ulong Power, int Hp)> DoomTargets = new();
     internal readonly List<ulong> DoomCommitted = new();
@@ -582,6 +591,12 @@ internal sealed class FakeBackend : AttributionBackend
     internal override int DoomAbort(ulong batch) { Calls.Add("DoomAbort"); DoomBatches.Remove(batch); return 1; }
     internal override int TurnStarted(ulong epoch) { Calls.Add("TurnStarted"); return 1; }
     internal override int BlockCleared(ulong epoch, int slot) { Calls.Add("BlockCleared:" + slot); return 1; }
+    internal override int BlockLost(ulong epoch, int slot, int amount)
+    {
+        BlockLosses.Add((slot, amount));
+        Calls.Add("BlockLost:" + slot + ":" + amount);
+        return ForwardNativeBlockLoss ? ProfilerNative.BlockPoolLoss(epoch, slot, amount) : 1;
+    }
     internal override int PlayerDied(ulong epoch, int slot) { Calls.Add("PlayerDied:" + slot); return 1; }
     internal override int PotionUsed(ulong epoch) { Calls.Add("PotionUsed"); return 1; }
     internal override ulong CombatStarted(string encounter, string type) { Calls.Add("CombatStarted"); return CaptureRuntime.Epoch.Sequence + 1; }
@@ -661,7 +676,7 @@ internal static partial class ManagedFixtures
         SynchronizationContext.SetSynchronizationContext(context);
         var nativeDelegates = typeof(ProfilerNative).GetNestedTypes(BindingFlags.Public | BindingFlags.NonPublic)
             .Where(type => typeof(MulticastDelegate).IsAssignableFrom(type)).ToArray();
-        Check(nativeDelegates.Length == 45, "Complete compiled native delegate inventory");
+        Check(nativeDelegates.Length == 46, "Complete compiled native delegate inventory");
         Check(Marshal.SizeOf<BlockModifier>() == 16 && Marshal.OffsetOf<BlockModifier>(nameof(BlockModifier.Source)).ToInt32() == 0
             && Marshal.OffsetOf<BlockModifier>(nameof(BlockModifier.Credit)).ToInt32() == 8, "Atomic block batch matches native source/credit layout");
         int utf8Parameters = 0;
@@ -710,6 +725,12 @@ internal static partial class ManagedFixtures
             "The actual block-clear decision has exactly one owned capture postfix");
         Check(Harmony.GetPatchInfo(AccessTools.DeclaredMethod(typeof(Hook), "AfterBlockCleared"))?.Owners.Contains(harmony.Id) != true,
             "The unconditional after-block notification has no capture patch");
+        var loss = Harmony.GetPatchInfo(AccessTools.DeclaredMethod(typeof(Creature), "LoseBlockInternal", new[] { typeof(decimal) }));
+        Check(loss.Prefixes.Count(patch => patch.owner == harmony.Id
+            && FlowCapture.SameMethod(patch.PatchMethod, AccessTools.DeclaredMethod(typeof(CommandCapture), nameof(CommandCapture.BlockLossPrefix)))) == 1
+            && loss.Finalizers.Count(patch => patch.owner == harmony.Id
+            && FlowCapture.SameMethod(patch.PatchMethod, AccessTools.DeclaredMethod(typeof(CommandCapture), nameof(CommandCapture.BlockLossFinalizer)))) == 1,
+            "The synchronous physical loss has one owned before/after capture pair");
         foreach (var name in new[] { "Synchronous", "ReturnTask", "Throw", "Suspended", "Nested", "DoDamage" }) FlowCapture.PatchProducer(harmony, AccessTools.Method(typeof(ProbeModel), name));
         foreach (var name in new[] { "BeforeApplied", "AfterPowerAmountChanged" }) FlowCapture.PatchProducer(harmony, AccessTools.Method(typeof(ProbePower), name));
         foreach (var name in new[] { "OnPlayWrapper", "OnUseWrapper" }) PlayCapture.PatchWrapper(harmony, AccessTools.Method(typeof(ProbeModel), name));
@@ -748,7 +769,8 @@ internal static partial class ManagedFixtures
             (typeof(SleightOfFleshPower), "AfterPowerAmountChanged", 1),
             (typeof(CacophonyPower), "AfterCardDrawn", 3), (typeof(FlameBarrierPower), "AfterDamageReceived", 1),
             (typeof(RollingBoulderPower), "DoDamage", 1), (typeof(PoisonPower), "Trigger", 3), (typeof(Outbreak), "OnPlay", 8),
-            (typeof(SentryModePower), "BeforeHandDraw", 2), (typeof(FrostOrb), "Passive", 3), (typeof(FrostOrb), "get_PassiveVal", 1)
+            (typeof(SentryModePower), "BeforeHandDraw", 2), (typeof(FrostOrb), "Passive", 3), (typeof(FrostOrb), "get_PassiveVal", 1),
+            (typeof(SturdyClamp), "AfterPreventingBlockClear", 2)
         })
         {
             var body = TemporalPowerCapture.Body(AccessTools.DeclaredMethod(item.Type, item.Method));
@@ -825,6 +847,7 @@ internal static partial class ManagedFixtures
         Test("modifier/enemy/Weak rejection invalidates whole groups with evidence intact", CaptureStatusFailures);
         Test("block/Forge/summon immutable scopes, original kickoff timing and inheritance", CommandSources);
         Test("actual block-clear decisions preserve Barricade/Blur and later cross-player block", RetainedBlock);
+        Test("Sturdy Clamp and direct loss report only physical player block removed", PartialBlockLoss);
         Test("actual hooks observe modifier and enchantment callbacks once", ObservedModifiers);
         Test("actual Vulnerable nested suppliers preserve scalar credits", ObservedVulnerable);
         Test("modifier failure preserves original exceptions and physical results", ObservationFailures);
@@ -2533,6 +2556,42 @@ internal static partial class ManagedFixtures
             && backend.Calls.Count == calls, "Old combat and stale creature decisions cannot clear replacement-combat pools");
         blockClearListeners = null;
     }
+    private static void PartialBlockLoss()
+    {
+        var world = GameWorld();
+        var owner = world.Owner.Creature;
+        var other = world.Other.Creature;
+        var clamp = Mutable<SturdyClamp>("STURDY_CLAMP");
+        clamp.Owner = world.Owner;
+        RecordModel(clamp, A);
+        blockClearListeners = new AbstractModel[] { clamp };
+        owner.GainBlockInternal(22);
+        AccessTools.Field(typeof(PlayerCombatState), "<TurnNumber>k__BackingField").SetValue(world.Owner.PlayerCombatState, 2);
+        context.Complete(owner.AfterTurnStart(CombatSide.Player));
+        Check(owner.Block == 10 && backend.BlockLosses.SequenceEqual(new[] { (0, 12) })
+            && !backend.Calls.Any(call => call.StartsWith("BlockCleared:", StringComparison.Ordinal)),
+            "The installed Sturdy Clamp body retains ten and reports its actual twelve-point loss once");
+
+        blockClearListeners = Array.Empty<AbstractModel>();
+        owner.LoseBlockInternal(0);
+        owner.LoseBlockInternal(0.5m);
+        owner.LoseBlockInternal(100);
+        other.GainBlockInternal(9);
+        other.LoseBlockInternal(2);
+        world.Enemy.GainBlockInternal(5);
+        world.Enemy.LoseBlockInternal(2);
+        Check(owner.Block == 0 && other.Block == 7 && backend.BlockLosses.SequenceEqual(new[] { (0, 12), (0, 1), (0, 9), (1, 2) }),
+            "No-op, fractional, oversized, other-player and enemy losses use only each observed physical delta");
+
+        var replacement = RuntimeHelpers.GetUninitializedObject(typeof(CombatState));
+        backend.Combat = replacement;
+        CaptureRuntime.Register(backend, ++epoch, replacement);
+        int calls = backend.BlockLosses.Count;
+        other.LoseBlockInternal(3);
+        Check(other.Block == 4 && backend.BlockLosses.Count == calls,
+            "A creature from the previous combat cannot debit the replacement combat");
+        blockClearListeners = null;
+    }
     private static void CommandSources()
     {
         var player = (Player)RuntimeHelpers.GetUninitializedObject(typeof(Player));
@@ -2747,7 +2806,13 @@ internal static partial class ManagedFixtures
         pause.SetResult(1); context.Complete(pending);
         Check(pending.Result.Epoch == prior.Sequence && !CaptureRuntime.Valid(prior), "Old immutable source survives locally but is rejected after combat replacement");
         int calls = backend.Calls.Count;
-        Task.Run(() => { Check(FlowCapture.Source(model, CaptureRuntime.Epoch).Epoch == 0, "Off-thread capture returns unavailable"); }).GetAwaiter().GetResult();
+        var creature = Creature(true, false, 0);
+        creature.GainBlockInternal(2);
+        Task.Run(() =>
+        {
+            Check(FlowCapture.Source(model, CaptureRuntime.Epoch).Epoch == 0, "Off-thread capture returns unavailable");
+            creature.LoseBlockInternal(1);
+        }).GetAwaiter().GetResult();
         Check(backend.Calls.Count == calls && CaptureRuntime.WrongThreadObserved, "Wrong-thread gameplay records release-blocking evidence without native STATE access");
     }
 }

@@ -54,6 +54,7 @@ internal abstract class AttributionBackend
     internal virtual int DoomAbort(ulong batch) => 0;
     internal virtual int TurnStarted(ulong epoch) => 0;
     internal virtual int BlockCleared(ulong epoch, int slot) => 0;
+    internal virtual int BlockLost(ulong epoch, int slot, int amount) => 0;
     internal virtual int PlayerDied(ulong epoch, int slot) => 0;
     internal virtual int PotionUsed(ulong epoch) => 0;
     internal virtual ulong CombatStarted(string encounter, string type) => 0;

@@ -3,8 +3,11 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using MegaCrit.Sts2.Core.Entities.Creatures;
+using MegaCrit.Sts2.Core.ValueProps;
 
 #pragma warning disable CA1861
 
@@ -42,6 +45,9 @@ internal static class SessionFixtures
             ProfilerNative.Dispose();
             ProfilerNative.Load(nativeLibrary);
             NativeBlockBatches(Path.Combine(scratch, "block-batches"));
+            ProfilerNative.Dispose();
+            ProfilerNative.Load(nativeLibrary);
+            NativeBlockLoss(Path.Combine(scratch, "block-loss"));
             ProfilerNative.Dispose();
             ProfilerNative.Load(nativeLibrary);
             OverlappingRunContexts(Path.Combine(scratch, "overlap"));
@@ -529,6 +535,51 @@ internal static class SessionFixtures
             && !ProfilerSession.CurrentCombat.Coverage.Complete, "Incomplete modifier attribution degrades to Unknown");
         Check(ProfilerNative.Replay(ProfilerNative.Recording()) == ProfilerNative.Snapshot(),
             "Actual marshaled modifier batches replay exactly");
+        ProfilerSession.Suspend();
+    }
+
+    private static void NativeBlockLoss(string directory)
+    {
+        ProfilerSession.Initialize(directory, "g", "m", _ => { });
+        ProfilerSession.StartRun(Header("BLOCK_LOSS", 1450), false);
+        Check(ProfilerNative.RecordingBegin(), "Block-loss recording begins before combat");
+        ulong epoch = ProfilerSession.StartCombat("BLOCK_LOSS", "Normal");
+        ulong first = ProfilerNative.SourceCapture(epoch, 1, 1, "FIRST", 0, 0, 0);
+        ulong second = ProfilerNative.SourceCapture(epoch, 1, 2, "SECOND", 0, 0, 0);
+        ulong fresh = ProfilerNative.SourceCapture(epoch, 1, 3, "FRESH", 0, 0, 0);
+        Check(ProfilerNative.BlockGained(epoch, 12, first, 0, Array.Empty<BlockModifier>(), false) == 1
+            && ProfilerNative.BlockGained(epoch, 8, second, 0, Array.Empty<BlockModifier>(), false) == 1,
+            "Two source grants enter the native FIFO before physical loss");
+        var backend = new FakeBackend { Combat = new object(), ForwardNativeBlockLoss = true };
+        var creature = (Creature)RuntimeHelpers.GetUninitializedObject(typeof(Creature));
+        backend.Creatures[creature] = new(true, false, 0, backend.Combat);
+        CaptureRuntime.Register(backend, epoch, backend.Combat);
+        creature.GainBlockInternal(20);
+        creature.LoseBlockInternal(10);
+        Check(creature.Block == 10 && backend.BlockLosses.SequenceEqual(new[] { (0, 10) }),
+            "The installed game mutation emits one ten-point native loss through Harmony");
+        Check(creature.DamageBlockInternal(5, ValueProp.Move) == 5
+            && ProfilerNative.DamageUnattributed(epoch, 5, 0, 5, 1, 0, 0) == 1 && ProfilerSession.Refresh(),
+            "Damage consumes only surviving source block after the captured loss");
+        Check(ProfilerSession.CurrentCombat.Cards.Single(row => row.Id == "FIRST").BlockEffective == 2
+            && ProfilerSession.CurrentCombat.Cards.Single(row => row.Id == "SECOND").BlockEffective == 3,
+            "The first hit credits two old points and three newer points after FIFO loss");
+        creature.LoseBlockInternal(100);
+        Check(creature.Block == 0 && backend.BlockLosses.Last() == (0, 5),
+            "The native event uses five physically removed points, not the hundred requested");
+        Check(ProfilerNative.BlockGained(epoch, 4, fresh, 0, Array.Empty<BlockModifier>(), false) == 1,
+            "A later grant enters the emptied native pool");
+        creature.GainBlockInternal(4);
+        Check(creature.DamageBlockInternal(4, ValueProp.Move) == 4
+            && ProfilerNative.DamageUnattributed(epoch, 4, 0, 4, 1, 0, 0) == 1 && ProfilerSession.Refresh(),
+            "The next hit absorbs only the later grant");
+        Check(ProfilerSession.CurrentCombat.Cards.Single(row => row.Id == "FRESH").BlockEffective == 4
+            && ProfilerSession.CurrentCombat.Cards.Single(row => row.Id == "SECOND").BlockEffective == 3
+            && ProfilerSession.CurrentCombat.Coverage.Complete,
+            "Discarded source block never becomes later defense or incomplete coverage");
+        Check(ProfilerNative.Replay(ProfilerNative.Recording()) == ProfilerNative.Snapshot(),
+            "Captured game block loss replays through the new native observation");
+        CaptureRuntime.InvalidateEpoch();
         ProfilerSession.Suspend();
     }
 

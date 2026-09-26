@@ -34,6 +34,7 @@ internal sealed record CommandFrame(CaptureEpoch Epoch, CommandKind Kind, Source
 }
 internal readonly record struct CommandState(CommandFrame Previous, ProducerFrame Producer);
 internal sealed record BuffCapture(CaptureEpoch Epoch, SourceSnapshot Source, decimal Amount, bool Buffer);
+internal readonly record struct BlockLossState(CaptureEpoch Epoch, int Slot, int Before);
 internal static class CommandCapture
 {
     private static readonly AsyncLocal<CommandFrame> current = new();
@@ -252,6 +253,30 @@ internal static class CommandCapture
         }
         catch (Exception ex) { CaptureRuntime.Fail("block-clear", ex); }
     }
+    internal static void BlockLossPrefix(Creature __instance, out BlockLossState __state)
+    {
+        __state = default;
+        try
+        {
+            var epoch = CaptureRuntime.EntryEpoch();
+            if (!CaptureRuntime.Valid(epoch)) return;
+            var target = CaptureRuntime.Backend.DescribeCreature(__instance);
+            if (target.Player && ReferenceEquals(target.Combat, epoch.Combat))
+                __state = new(epoch, target.Slot, __instance.Block);
+        }
+        catch (Exception ex) { CaptureRuntime.Fail("block-loss-entry", ex); }
+    }
+    internal static void BlockLossFinalizer(Creature __instance, BlockLossState __state)
+    {
+        try
+        {
+            if (!CaptureRuntime.Valid(__state.Epoch)) return;
+            int lost = __state.Before - __instance.Block;
+            if (lost > 0 && CaptureRuntime.Backend.BlockLost(__state.Epoch.Sequence, __state.Slot, lost) != 1)
+                CaptureRuntime.Fail("block-loss");
+        }
+        catch (Exception ex) { CaptureRuntime.Fail("block-loss", ex); }
+    }
     internal static void PotionPostfix(object combatState)
     {
         try
@@ -309,8 +334,10 @@ internal static class CommandCapture
         CapturePatches.Patch(harmony, AccessTools.DeclaredMethod(typeof(CombatRoom), "OnCombatEnded"), postfix: new HarmonyMethod(typeof(CommandCapture), nameof(CombatEndedPostfix)));
         CapturePatches.Patch(harmony, AccessTools.DeclaredMethod(typeof(Hook), "AfterSideTurnStart"), prefix: new HarmonyMethod(typeof(CommandCapture), nameof(TurnPrefix)));
         CapturePatches.Patch(harmony, AccessTools.DeclaredMethod(typeof(Hook), "ShouldClearBlock"), postfix: new HarmonyMethod(typeof(CommandCapture), nameof(ClearBlockPostfix)));
+        CapturePatches.Patch(harmony, AccessTools.DeclaredMethod(typeof(Creature), "LoseBlockInternal", new[] { typeof(decimal) }),
+            prefix: new HarmonyMethod(typeof(CommandCapture), nameof(BlockLossPrefix)), finalizer: new HarmonyMethod(typeof(CommandCapture), nameof(BlockLossFinalizer)));
         CapturePatches.Patch(harmony, AccessTools.DeclaredMethod(typeof(CreatureCmd), "Kill", new[] { typeof(Creature), typeof(bool) }), prefix: new HarmonyMethod(typeof(CommandCapture), nameof(KillPrefix)));
         CapturePatches.Patch(harmony, AccessTools.DeclaredMethod(typeof(CreatureCmd), "Kill", new[] { typeof(IReadOnlyCollection<Creature>), typeof(bool) }), prefix: new HarmonyMethod(typeof(CommandCapture), nameof(KillManyPrefix)));
-        report("COMMAND CAPTURE block=1 forge=1 summon=1 block_modifier=1 buffs=3 histories=3 lifecycle=4 kill=2");
+        report("COMMAND CAPTURE block=1 forge=1 summon=1 block_modifier=1 block_loss=1 buffs=3 histories=3 lifecycle=4 kill=2");
     }
 }

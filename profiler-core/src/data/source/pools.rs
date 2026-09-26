@@ -444,6 +444,46 @@ impl State {
         })();
         self.source_status(result)
     }
+
+    pub(crate) fn block_pool_loss(
+        &mut self,
+        combat_seq: u64,
+        player_slot: i32,
+        amount: i32,
+    ) -> i32 {
+        let result = (|| {
+            self.provenance_epoch(combat_seq)?;
+            if amount < 0 {
+                return Err(SourceFailure::Packet);
+            }
+            let slot = self.sources.diagnostics.slot(player_slot);
+            if amount == 0 {
+                return Ok(());
+            }
+            let mut stage = LedgerStage::new(self)?;
+            let mut remaining = amount as u64;
+            while remaining > 0 {
+                let pool = stage.pool(slot)?;
+                let Some(block) = pool.blocks.first_mut() else {
+                    break;
+                };
+                let take = remaining.min(block.remaining);
+                // Loss advances the modifier prefix without defense credit.
+                drop(block.consume(take)?);
+                remaining -= take;
+                if block.remaining == 0 {
+                    pool.blocks.remove(0);
+                }
+            }
+            if remaining > 0 {
+                stage.diagnostics.report(SourceFailure::Token);
+            }
+            stage.commit()?;
+            self.slot_index(i32::from(slot));
+            Ok(())
+        })();
+        self.source_status(result)
+    }
 }
 
 #[cfg(test)]
