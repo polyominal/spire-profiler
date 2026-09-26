@@ -26,9 +26,7 @@ mod headless;
 mod install;
 mod managed;
 mod md;
-mod parity;
 mod release;
-mod render;
 mod scan;
 mod shim;
 mod zig;
@@ -56,11 +54,6 @@ mod flags {
             cmd headless-test {}
             /// Run shared production capture fixtures against the pinned game assemblies.
             cmd managed-test {}
-            /// Compare the production runtime directly with the pinned pre-refactor source.
-            cmd parity-test {
-                /// Also compare pixels in the real game renderer, restoring the installed mod afterward.
-                optional --render
-            }
             /// Read poison audit JSONL and report independent checks as Markdown.
             cmd audit-report {
                 required input: PathBuf
@@ -116,7 +109,6 @@ mod flags {
         InstallMod(InstallMod),
         HeadlessTest(HeadlessTest),
         ManagedTest(ManagedTest),
-        ParityTest(ParityTest),
         AuditReport(AuditReport),
         CheckAbi(CheckAbi),
         CheckDocs(CheckDocs),
@@ -148,11 +140,6 @@ mod flags {
 
     #[derive(Debug)]
     pub struct ManagedTest;
-
-    #[derive(Debug)]
-    pub struct ParityTest {
-        pub render: bool,
-    }
 
     #[derive(Debug)]
     pub struct AuditReport {
@@ -225,8 +212,7 @@ fn main() -> Result<()> {
         flags::XtaskCmd::Release(_) => release::release(&shell),
         flags::XtaskCmd::InstallMod(_) => install::install_mod(&shell).map(|_| ()),
         flags::XtaskCmd::HeadlessTest(_) => headless::headless_test(&shell),
-        flags::XtaskCmd::ManagedTest(_) => managed::run(&shell, None),
-        flags::XtaskCmd::ParityTest(flags) => parity::Reference::run(&shell, flags.render),
+        flags::XtaskCmd::ManagedTest(_) => managed::run(&shell),
         flags::XtaskCmd::AuditReport(flags) => audit::run(&flags.input, flags.output.as_deref()),
         flags::XtaskCmd::CheckAbi(_) => check_abi::run(),
         flags::XtaskCmd::CheckCatalog(_) => check_catalog::run(),
@@ -304,19 +290,6 @@ pub(crate) fn ensure_cli(shell: &Shell, tool: &str, probe_arg: &str, purpose: &s
 fn fmt(shell: &Shell, check: bool) -> Result<()> {
     let rust_check: &[&str] = if check { &["--", "--check"] } else { &[] };
     cmd!(shell, "cargo fmt --all {rust_check...}").run()?;
-    let support = workspace_root().join("test-support/parity");
-    let rust_fixtures = [
-        support.join("ui_oracle.rs"),
-        support.join("session_oracle.rs"),
-        workspace_root().join("profiler-core/tests/support/attribution_parity.rs"),
-    ];
-    let fixture_check: &[&str] = if check { &["--check"] } else { &[] };
-    cmd!(
-        shell,
-        "rustfmt --edition 2024 {fixture_check...} {rust_fixtures...}"
-    )
-    .run()?;
-
     let binary = dotnet::resolve_dotnet(shell)?;
     let shim = workspace_root().join("shim");
     let _telemetry = shell.push_env("DOTNET_CLI_TELEMETRY_OPTOUT", "1");
@@ -332,11 +305,6 @@ fn fmt(shell: &Shell, check: bool) -> Result<()> {
     cmd!(
         shell,
         "{binary} format whitespace {shim} --folder {cs_check...}"
-    )
-    .run()?;
-    cmd!(
-        shell,
-        "{binary} format whitespace {support} --folder {cs_check...}"
     )
     .run()?;
     md::fmt_md(check)

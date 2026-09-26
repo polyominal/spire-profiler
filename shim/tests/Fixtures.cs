@@ -787,6 +787,27 @@ internal static partial class ManagedFixtures
         Test("detached callback provenance and death removal batches", DetachedPowers);
         Test("generation ancestry, cross-player supplier, regeneration and identity budget", Generation);
         Test("saved dictionary sources exclude later stacks; Rupture exact increments", Temporal);
+        Test("temporal overflow preserves the game amount and releases stale provenance", () =>
+        {
+            var power = new ProbeModel("TEMPORAL", ProducerRole.Power);
+            var cards = Enumerable.Range(0, TemporalPowerCapture.MaxPending + 1).Select(_ => Card()).ToArray();
+            var captured = CaptureRuntime.Epoch;
+            FlowCapture.Current = Frame(power, A, ProducerRole.Power);
+            for (int index = 0; index < TemporalPowerCapture.MaxPending; index++)
+                TemporalPowerCapture.Save(power, cards[index], index == 0 ? int.MaxValue : 1, A, captured);
+            TemporalPowerCapture.Save(power, cards[^1], 1, B, captured);
+            Check(TemporalPowerCapture.Take(power, cards[^1], captured).Handle == 0, "A full pending table rejects another source");
+            var amounts = new Dictionary<CardModel, int> { [cards[0]] = int.MaxValue };
+            TemporalPowerCapture.Accumulate(amounts, cards[0], int.MinValue);
+            Check(amounts[cards[0]] == int.MinValue && TemporalPowerCapture.Take(power, cards[0], captured).Handle == 0,
+                "Observer overflow preserves the assigned game value without reusing the prior source");
+            TemporalPowerCapture.Save(power, cards[^1], 1, B, captured);
+            Same(TemporalPowerCapture.Take(power, cards[^1], captured), B, "An unrelated capture can reuse the released pending slot");
+            Check(cards.Skip(1).Take(TemporalPowerCapture.MaxPending - 1).All(card => TemporalPowerCapture.Take(power, card, captured).Handle != 0),
+                "Overflow leaves every other pending source intact");
+            Check(backend.Calls.Contains("diagnostic:temporal-accumulate") && !backend.Calls.Contains("SourceAccumulate"),
+                "Invalid observed arithmetic reports lost evidence before native combination");
+        });
         Test("nested card/potion cleanup and outer orb flag restoration", NestedPlays);
         Test("canonical live bridge, complete group seal and original Task/result identity", DamageGroups);
         Test("capture/append/commit fallback, exception abort and overlapping damage", DamageFailures);
@@ -811,7 +832,7 @@ internal static partial class ManagedFixtures
         Test("earlier prefix canonical calculations preserve their parent's admission", AdmissionNestedCalculation);
         Test("later async previews cannot reuse a finished modifier scope", DelayedModifierPreview);
         Test("async block batches retain command and source ownership", BlockBatchLifetime);
-        Test("native modifier credit preserves original decimal arithmetic", NativeModifierProjection);
+        Test("native modifier credit follows .NET decimal arithmetic", NativeModifierProjection);
         Test("native Weak policy uses frozen receiver evidence and preserves integer rounding", NativeWeakProjection);
         Test("Doom nested batches, original Task and synthetic fallback remainder", DoomBatches);
         Test("orb channel failure and absent explicit Osty card source", OrbAndOsty);
@@ -2399,7 +2420,7 @@ internal static partial class ManagedFixtures
     {
         decimal basis = 0.9999999999999999999999999999m, multiplier = 2.0000000000000000000000000001m;
         Check(backend.CalculateModifierCredit(basis, multiplier, 2, decimal.MaxValue) == (int)(basis * (multiplier - 1)),
-            "Rust rounds decimal intermediates exactly as the original managed projection");
+            "Rust rounds modifier-credit intermediates with .NET decimal precision");
         Check(backend.CalculateModifierCredit(0, -2.9999999999999999999999999999m, 0, decimal.MaxValue) == 2
             && backend.CalculateModifierCredit(0, -2.9999999999999999999999999999m, 1, decimal.MaxValue) == -2,
             "Rust truncates signed additions before applying the damage absolute value");
@@ -2414,7 +2435,7 @@ internal static partial class ManagedFixtures
             catch (OverflowException) { }
             try { actual = backend.CalculateModifierCredit(basis, value, kind, limit); }
             catch (OverflowException) { }
-            Check(expected == actual, $"Original .NET decimal oracle case {index}: {basis}, {value}, kind {kind}; expected {expected}, got {actual}");
+            Check(expected == actual, $".NET decimal arithmetic case {index}: {basis}, {value}, kind {kind}; expected {expected}, got {actual}");
         }
     }
     private static void NativeWeakProjection()
