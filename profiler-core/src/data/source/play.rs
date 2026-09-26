@@ -5,7 +5,6 @@ use super::*;
 use crate::data::state::SourceKind;
 
 impl State {
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn card_source(
         &mut self,
         epoch: CombatEpoch,
@@ -89,7 +88,10 @@ impl State {
         self.source_status(result)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the ABI and replay pass one card-play event as separate wire fields"
+    )]
     pub(crate) fn card_play_started(
         &mut self,
         combat_seq: u64,

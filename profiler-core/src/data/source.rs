@@ -547,7 +547,10 @@ impl State {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the ABI and replay pass one source capture as separate wire fields"
+    )]
     pub(crate) fn source_capture(
         &mut self,
         combat_seq: u64,

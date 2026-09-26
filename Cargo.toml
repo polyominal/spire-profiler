@@ -11,6 +11,7 @@ num-bigint = "0.4.6"
 rusqlite = { version = "=0.40.2", features = ["bundled"] }
 
 [workspace.lints.clippy]
+allow_attributes_without_reason = "deny"
 too_many_lines = "deny"
 undocumented_unsafe_blocks = "deny"
 missing_safety_doc = "deny"

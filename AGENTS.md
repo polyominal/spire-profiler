@@ -203,6 +203,10 @@ manual re-verification:
 
 ## Rust specifics
 
+- Lint suppressions (`allow` and `expect`, including those inside `cfg_attr`)
+  carry a nonblank string literal `reason = "..."` explaining why the exception
+  is necessary. Keep suppression rationale in that field, not adjacent comments;
+  remove stale suppressions and prefer fixing the warning.
 - `expect` over `unwrap`, with a message that says why it cannot fail: not "no
   NUL", but why there is no NUL.
 - `Option<T>` over sentinel pairs (`has_x: bool` + `x: T`), `PathBuf` over

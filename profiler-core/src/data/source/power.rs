@@ -46,7 +46,10 @@ impl PowerProvenance {
 }
 
 impl State {
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the ABI and replay pass one power attachment as separate wire fields"
+    )]
     pub(crate) fn power_attached(
         &mut self,
         combat_seq: u64,
@@ -67,7 +70,10 @@ impl State {
         self.source_status(result)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the ABI and replay pass one power transition as separate wire fields"
+    )]
     pub(crate) fn power_amount_changed(
         &mut self,
         combat_seq: u64,
@@ -97,7 +103,10 @@ impl State {
         self.source_status(result)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "attachment and amount-change events share one provenance transition"
+    )]
     fn power_observed(
         &mut self,
         combat_seq: u64,
