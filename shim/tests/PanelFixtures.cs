@@ -16,13 +16,34 @@ internal static class PanelFixtures
         var rows = ChartProjection.Rows(cards);
         var damage = rows.Where(row => row.Section == ChartSection.Damage).ToArray();
         if (damage.Length != 2 || damage[0].ShareX10 != 666 || damage[1].ShareX10 != 333)
-            throw new InvalidOperationException("Damage shares must use the baseline's truncated tenths");
+            throw new InvalidOperationException("Damage shares must truncate to tenths of a percent");
         var own = rows.Single(row => row.Section == ChartSection.Defense && row.Source.Player == 0 && row.Name == "SHARED" && !row.SelfDamage);
         if (own.Value != 8 || own.SegMilli[(int)ChartSegment.Direct] != 100 || own.SegMilli[(int)ChartSegment.Modifier] != 60)
             throw new InvalidOperationException("Defense segments must share a scale that includes displayed self-damage");
         var filtered = ChartProjection.Rows(cards, 1);
         if (filtered.Count != 2 || filtered.Any(row => row.Source.Player != 1) || filtered[0].ShareX10 != 1000)
             throw new InvalidOperationException("Player selection must retain source ownership and independent shares");
+        var summary = new SummaryView
+        {
+            Cards = new[]
+            {
+                new StatRow { Id = "A", Player = 0, Plays = 4, DamageDealt = 9, DmgDirect = 9 },
+                new StatRow { Id = "B", Player = 1, Plays = 2, DamageDealt = 6, DmgDirect = 6 },
+            },
+            Turns = 4,
+            Plays = 7,
+            Combats = 2,
+            DamageReceived = 3,
+        };
+        var combatMeta = ChartProjection.Meta(summary, UiTab.Combat);
+        var runMeta = ChartProjection.Meta(summary, UiTab.Run);
+        var playerMeta = ChartProjection.Meta(summary with { Cards = new[] { summary.Cards[1] } }, UiTab.Run);
+        if (combatMeta.Plays != 7 || combatMeta.TotalDamage != 15 || combatMeta.DpsX10 != 37
+            || runMeta.Plays != 6 || runMeta.TotalDamage != 15 || runMeta.DpsX10 != 37
+            || playerMeta.Plays != 2 || playerMeta.TotalDamage != 6 || playerMeta.DpsX10 != 15
+            || playerMeta.Turns != 4 || playerMeta.Combats != 2 || playerMeta.DamageTaken != 3
+            || ChartProjection.Meta(summary with { Turns = 0 }, UiTab.Combat).DpsX10 != 0)
+            throw new InvalidOperationException("Headlines must distinguish observed combat plays, summed source plays, and selected history totals without filtering run-wide counters");
         int hanging = rows.Select((row, index) => (row, index)).Single(item => item.row.SelfDamage && !item.row.SoloSelf).index;
         var terse = ChartProjection.Detail(rows, hanging, cards);
         if (terse.Stats.Count != 1 || terse.Stats[0].Label != "self dmg" || terse.Stats[0].Value != "20")
@@ -32,6 +53,34 @@ internal static class PanelFixtures
             throw new InvalidOperationException("Raw source IDs and non-chart statistics must remain in tooltips");
         if (PanelGeometry.DragState(false, true, true, true) || !PanelGeometry.DragState(true, true, true, false))
             throw new InvalidOperationException("A held cursor must not start a drag, and active drags must survive leaving the track");
+        var scrolling = PanelLayout.Chart(UiTab.Combat, ChartProjection.Rows(Enumerable.Range(0, 12)
+            .Select(index => new StatRow { Id = "CARD_" + index, DamageDealt = 1, DmgDirect = 1 }).ToArray()), new(), "");
+        var panel = new UiRect(100, 50, scrolling.Width, 400);
+        var band = PanelGeometry.BodyBand(panel.H, false, scrolling.HeaderBottom);
+        var hit = scrolling.RowHits[5];
+        float scroll = hit.Y0 - band.Top;
+        if (PanelGeometry.Hover(scrolling.RowHits, panel, new(panel.X + 1, panel.Y + band.Top + 1), scroll, band) != hit.FlatIndex
+            || PanelGeometry.Hover(scrolling.RowHits, panel, new(panel.X + 1, panel.Y + band.Top - 1), scroll, band) != null
+            || PanelGeometry.Hover(scrolling.RowHits, panel, new(panel.X + 1, panel.Y + band.Bottom), scroll, band) != null
+            || PanelGeometry.Hover(scrolling.RowHits, panel, new(panel.X - 1, panel.Y + band.Top + 1), scroll, band) != null)
+            throw new InvalidOperationException("Scrolled row hit-testing must transform screen coordinates and exclude the fixed header, footer, and outside panel");
+        float maximumScroll = scrolling.Height - panel.H;
+        var scrollbar = PanelGeometry.Scrollbar(new(panel.W, panel.H), false, band, scrolling.Height, maximumScroll);
+        if (scrollbar == null || scrollbar.Track.Y != band.Top || scrollbar.Track.Y + scrollbar.Track.H != band.Bottom
+            || scrollbar.Grabber.Y + scrollbar.Grabber.H != band.Bottom
+            || PanelGeometry.ApplyScroll(0, -60, panel.H, scrolling.Height) != 0
+            || PanelGeometry.ApplyScroll(maximumScroll, 60, panel.H, scrolling.Height) != maximumScroll)
+            throw new InvalidOperationException("Scrolling must stay within content bounds and keep the track below the fixed header");
+        var portraits = new[] { new AvatarFact(2, false, "missing"), new AvatarFact(0, true, "loaded") };
+        string[] portraitPaths = { "missing", "loaded" };
+        foreach (var layout in new[]
+        {
+            PanelLayout.Chart(UiTab.Combat, rows, new(), "", avatars: portraits),
+            PanelLayout.History(summary, rows, new(), portraits),
+        })
+            if (!layout.PortraitPaths.SequenceEqual(portraitPaths) || layout.AvatarHits.Single().Slot != 0
+                || layout.Header.OfType<TextureCommand>().Single(texture => texture.Icon == IconId.Character).Slot != 1)
+                throw new InvalidOperationException("A failed portrait must not redirect another player's texture or hit target");
         var animation = new AvatarAnimation();
         int[] slots = { 0, 1 };
         animation.SetTargets(null, slots);
