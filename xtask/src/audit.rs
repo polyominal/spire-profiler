@@ -160,7 +160,10 @@ impl Trace {
         Ok(files)
     }
 
-    #[allow(clippy::too_many_lines)] // Framing, sequence and version checks share one bounded stream.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Framing, sequence and version checks share one bounded stream."
+    )]
     fn read(mut reader: impl BufRead) -> Result<Self> {
         let mut trace = Self {
             events: Vec::new(),
@@ -277,7 +280,10 @@ impl Trace {
         Ok(())
     }
 
-    #[allow(clippy::too_many_lines)] // Correlation needs both earlier checkpoints and later outcomes.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Correlation needs both earlier checkpoints and later outcomes."
+    )]
     fn checks(&self) -> BTreeMap<u64, Vec<Check>> {
         let mut checks: BTreeMap<u64, Vec<Check>> = BTreeMap::new();
         let header = self.events.first();
@@ -383,7 +389,10 @@ impl Trace {
         checks
     }
 
-    #[allow(clippy::too_many_lines)] // Both evidence modes share the same bounded report layout.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Both evidence modes share the same bounded report layout."
+    )]
     fn report(&self, path: &Path) -> Result<String> {
         let independent = self
             .events
@@ -507,7 +516,10 @@ impl Event {
         Ok(())
     }
 
-    #[allow(clippy::too_many_lines)] // Owner, quantity and FIFO checks share the same mutation evidence.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Owner, quantity and FIFO checks share the same mutation evidence."
+    )]
     fn change(&self, previous: &BTreeMap<u64, Poison>, epoch: u64) -> Result<Vec<Check>> {
         let before = number(&self.data, "before")?;
         let observed_after = number(&self.data, "after")?;
@@ -584,7 +596,10 @@ impl Event {
         Ok(checks)
     }
 
-    #[allow(clippy::too_many_lines)] // Group identity and physical results bound one allocation comparison.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Group identity and physical results bound one allocation comparison."
+    )]
     fn damage(&self, results: &[&Event], epoch: u64) -> Result<Vec<Check>> {
         for (index, result) in results.iter().enumerate() {
             ensure!(

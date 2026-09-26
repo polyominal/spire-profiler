@@ -89,7 +89,6 @@ impl Fixture {
         self.apply(true, amount, frame, Self::card(card), 0, card);
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn apply(
         &mut self,
         poison: bool,

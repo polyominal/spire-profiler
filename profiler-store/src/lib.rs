@@ -140,7 +140,10 @@ struct Identity {
 }
 
 impl Store {
-    #[allow(clippy::too_many_lines)] // Version guards and one transactional bootstrap share a connection.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Version guards and one transactional bootstrap share a connection."
+    )]
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path
             .parent()
@@ -225,7 +228,10 @@ impl Store {
         })
     }
 
-    #[allow(clippy::too_many_lines)] // Session guards and command dispatch form one boundary.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Session guards and command dispatch form one boundary."
+    )]
     pub fn execute(&mut self, request_json: &str) -> Result<Value> {
         if request_json.len() > MAX_TRANSPORT_BYTES {
             self.import = None;
@@ -663,7 +669,10 @@ impl Store {
         Ok(value)
     }
 
-    #[allow(clippy::too_many_lines)] // One ordered pass advances the cursor across valid and damaged rows.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "One ordered pass advances the cursor across valid and damaged rows."
+    )]
     fn read_page(&mut self) -> Result<Value> {
         let session = self.read.as_mut().ok_or("no statistics read is active")?;
         let mut query = session.connection.prepare(

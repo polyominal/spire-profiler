@@ -37,7 +37,10 @@ pub(super) struct Reconstruction {
 }
 
 impl Reconstruction {
-    #[allow(clippy::too_many_lines)] // Prefix-bounded causal joins and ordered replay share one evidence boundary.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Prefix-bounded causal joins and ordered replay share one evidence boundary."
+    )]
     pub(super) fn run(trace: &Trace) -> Self {
         let mut result = Self {
             checks: BTreeMap::new(),
@@ -287,7 +290,10 @@ impl Reconstruction {
         frame.source.clone().map_err(|reason| anyhow!(reason))
     }
 
-    #[allow(clippy::too_many_lines)] // Physical attachment transitions and provenance update form one transaction.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Physical attachment transitions and provenance update form one transaction."
+    )]
     fn change(&mut self, event: &Event, indexed: &BTreeMap<u64, &Event>) -> Result<()> {
         let model = string(&event.data, "power")?.to_owned();
         ensure!(
@@ -579,7 +585,10 @@ impl Reconstruction {
         Ok(checks)
     }
 
-    #[allow(clippy::too_many_lines)] // Frozen source, grouped physical damage and measured counter delta are one check.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Frozen source, grouped physical damage and measured counter delta are one check."
+    )]
     fn tick(&mut self, tick: &Event, indexed: &BTreeMap<u64, &Event>) -> Result<()> {
         let results: Vec<_> = indexed
             .values()

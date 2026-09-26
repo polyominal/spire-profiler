@@ -9,7 +9,10 @@ use xshell::{Shell, cmd};
 
 use crate::{discover, dotnet, game_version, sha256_file, shim, workspace_root};
 
-#[allow(clippy::too_many_lines)] // One build/run transaction shares project paths and scoped environment guards.
+#[allow(
+    clippy::too_many_lines,
+    reason = "One build/run transaction shares project paths and scoped environment guards."
+)]
 pub fn run(shell: &Shell) -> Result<()> {
     let game = discover::locate_game()?;
     game_version::check_pin(&game)?;
