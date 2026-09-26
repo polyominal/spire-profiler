@@ -1,8 +1,8 @@
 # Managed and native integration
 
 The game loads the managed mod assembly. Its runtime selector loads the matching
-attribution library by absolute path; ship the assembly and native library from
-the same build. [check-abi](../xtask/src/check_abi.rs) verifies the exported C
+native library by absolute path; ship the assembly and native library from the
+same build. [check-abi](../xtask/src/check_abi.rs) verifies the exported C
 signatures against managed delegates. The ownership and failure contracts live
 in the [native boundary](../profiler-core/src/abi.rs) and [crate
 overview](../profiler-core/src/lib.rs).
@@ -24,9 +24,11 @@ validate Godot object lifetimes.
 ## Reproducing attribution failures
 
 Set `SPIRE_PROFILER_RECORD=1` in the game process environment before startup to
-record observations alongside completed combat records. Each `.trace.json` file
-belongs to the adjacent combat ordinal. Keep the matching summary, game version,
-and mod build when reporting a failure.
+record observations under
+`statistics-v3/traces/<run-id>/<combat-id>.trace.json`. Keep the matching
+statistics database, game version, and mod build when reporting a failure.
+Observation recordings and audit journals remain optional file artifacts,
+separate from the statistics database.
 
 The [observation module](../profiler-core/src/data/observation.rs) defines trace
 compatibility and size limits. A truncated recording is explicitly rejected for
@@ -47,8 +49,8 @@ Set `SPIRE_PROFILER_AUDIT=1` in the game process environment before startup.
 This also enables observation recording. Combat journals appear under
 `audit-v2/run-<id>/combat-<epoch>-<attempt>.audit.jsonl` in the profiler data
 directory. The attempt identifier distinguishes retries, continued runs, and
-console-started encounters. Keep the journal, adjacent statistics under
-`statistics-v2`, and the matching build together.
+console-started encounters. Keep the journal, statistics under `statistics-v3`,
+and the matching build together.
 
 Generate a readable report from one journal or a directory:
 
@@ -95,15 +97,26 @@ earlier runs.
 
 ## Storage inspection
 
-[StatisticsStore](../shim/session/StatisticsStore.cs) owns file locations and
-atomic writes; [StatisticsJson](../shim/session/StatisticsJson.cs) validates
-stored and native records before publishing immutable views. Use a separate
-`SPIRE_PROFILER_DATA_DIR` for experiments. Headless tests set this
-automatically, so their synthetic runs do not enter normal play history.
+[The Rust store](../profiler-store/src/lib.rs) owns SQLite and its persistence
+contract. The managed host supplies finalized records and aggregates returned
+records into views. Storage has a separate native handle from attribution;
+database failure leaves live capture available with partial coverage.
+
+Use a separate `SPIRE_PROFILER_DATA_DIR` for experiments. New databases live at
+`statistics-v3/statistics.sqlite3`. On first use, legacy JSON records are read
+once and imported atomically; their original files are preserved. Unknown
+database versions are rejected without replacement. Close the game before
+copying the database and any adjacent journal for diagnosis.
+
+The managed/native protocol caps each request and response at 64 MiB. This
+includes the entire one-time legacy import and each selected run's records. An
+oversized import leaves that session's persistence unavailable; an oversized
+history query is rejected. Source files remain untouched.
 
 The history lookup uses the game's exact profile, seed, and start time. The
 first matching finalized header supplies the outcome and roster; interrupted
 combats can provide an unfinished history view without a header. Ambiguous run
-identities remain unselectable. New records live under `statistics-v2`. Legacy
-files and numeric/GUID records in `statistics-v1` remain read-only, and missing
-legacy metadata stays unknown.
+identities remain unselectable. The importer accepts unversioned records,
+numeric/GUID records in `statistics-v1`, and schema-2 records in
+`statistics-v2`; missing legacy metadata stays unknown. An import cannot recover
+records already absent from the source archive.

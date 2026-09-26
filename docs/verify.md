@@ -15,10 +15,13 @@
   recommended .NET 9 analyzer warnings fail the build. Each invocation retains
   an isolated project and source, assembly, and native-library hashes under
   `tmp/managed-tests/`. The fixtures check capture and async scope restoration,
-  exact patch bridges, chart projection, parser boundaries, atomic persistence,
+  exact patch bridges, chart projection, parser boundaries, SQLite persistence,
   and native session/replay behavior. Expected outcomes come from explicit
   fixtures and independent models, without building historical revisions. These
   fixtures do not launch Godot.
+- Rust storage fixtures use temporary databases to check transactional import,
+  identity ownership, immutable records, missing-payload detection, and recovery
+  from failed writes. SQLite's lock timeout bounds contention, not disk latency.
 - `cargo xtask headless-test` first runs `managed-test`, then requires
   successful game exit, this mod's `OWN PATCHES` minimum, and the `CAPTURE
   VERIFIED` marker with exact producer and damage/temporal bridge inventories.

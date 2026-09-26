@@ -33,6 +33,7 @@ internal static class ProfilerSession
     {
         thread = Environment.CurrentManagedThreadId;
         report = diagnostic;
+        store?.Dispose();
         store = new StatisticsStore(dataDirectory, gameVersion, modVersion, diagnostic);
         run = null;
         combatRun = null;
@@ -127,17 +128,14 @@ internal static class ProfilerSession
             Combat = finished
         };
         combat = finished;
-        CurrentCombat = finished.View(combatRun?.Players ?? Array.Empty<PlayerSummary>(), combatRun);
+        if (!store.SaveCombat(record))
+            combat = finished with { Coverage = finished.Coverage.WithFailure("statistics-write-failed") };
+        CurrentCombat = combat.View(combatRun?.Players ?? Array.Empty<PlayerSummary>(), combatRun);
         if (run != null && combatRun != null && run.RunId == combatRun.RunId
             && run.Seed == combatRun.Seed && run.Profile == combatRun.Profile && run.StartedAt == combatRun.StartedAt)
         {
             completedRun = completedRun.Add(CurrentCombat);
             CurrentRun = completedRun;
-        }
-        if (!store.SaveCombat(record))
-        {
-            combat = finished with { Coverage = finished.Coverage.WithFailure("statistics-write-failed") };
-            CurrentCombat = combat.View(combatRun?.Players ?? Array.Empty<PlayerSummary>(), combatRun);
         }
         if (recording) store.SaveTrace(record.RunId, record.Ordinal, ProfilerNative.Recording());
         PoisonAudit.Finish(finished.Result, combat.Coverage);
@@ -179,7 +177,7 @@ internal static class ProfilerSession
             Outcome = outcome switch { 0 => "victory", 1 => "defeat", 2 => "abandoned", _ => "defeat" },
             EndedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
         };
-        store.SaveRun(ended);
+        if (!store.SaveRun(ended)) completedRun = completedRun with { Coverage = completedRun.Coverage.WithFailure("statistics-write-failed") };
         CurrentRun = completedRun with { Outcome = ended.Outcome, EndedAt = ended.EndedAt };
         run = null;
         Revision++;
@@ -200,6 +198,13 @@ internal static class ProfilerSession
         LiveFilterGeneration++;
         if (suspended) ClearHistory();
         Revision++;
+    }
+
+    internal static void Shutdown()
+    {
+        Suspend();
+        store?.Dispose();
+        store = null;
     }
 
     internal static void SelectHistory(string seed, long startedAt, int profile)

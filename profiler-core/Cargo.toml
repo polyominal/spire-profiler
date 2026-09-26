@@ -22,6 +22,7 @@ test-support = []
 serde = { workspace = true }
 serde_json = { workspace = true }
 num-bigint = { workspace = true }
+profiler_store = { path = "../profiler-store" }
 
 [dev-dependencies]
 insta = "1.48.0"
