@@ -153,6 +153,178 @@ internal static class SessionFixtures
             && failed.Turns == 4 && failed.Combats == 1 && !failed.Coverage.Complete,
             "Late aggregate overflow must reject the whole merge and mark its retained result incomplete");
         Check(huge.Coverage.Complete && incoming.Cards.Count == 2, "Rejected aggregation must leave both input summaries unchanged");
+        var partialIncoming = incoming with { Coverage = CoverageSummary.Healthy.WithFailure("missing-hook") };
+        failed = huge.Add(partialIncoming);
+        Check(failed.Coverage.Reasons.Contains("missing-hook") && failed.Coverage.Reasons.Contains("summary-overflow")
+            && failed.Coverage.Failures == 2 && failed.Cards.Count == 1,
+            "Rejected combat accounting must retain its independent capture failure");
+        var scalarPrior = new SummaryView
+        {
+            Cards = new[] { new StatRow { Id = "PRIOR", DamageDealt = 7, DmgDirect = 7 } },
+            Turns = 3,
+            Plays = 1,
+            Combats = 1,
+            PotionsUsed = 1,
+            DamageReceived = 4,
+            BlockTotal = 5,
+            Coverage = CoverageSummary.Healthy
+        };
+        var scalarIncoming = new SummaryView
+        {
+            Cards = new[] { new StatRow { Id = "NEXT", DamageDealt = 2, DmgDirect = 2 } },
+            Turns = 1,
+            Plays = 1,
+            Combats = 1,
+            PotionsUsed = 1,
+            DamageReceived = 1,
+            BlockTotal = 1,
+            Coverage = CoverageSummary.Healthy
+        };
+        foreach (var prior in new[]
+        {
+            scalarPrior with { Turns = uint.MaxValue }, scalarPrior with { Plays = uint.MaxValue },
+            scalarPrior with { Combats = uint.MaxValue }, scalarPrior with { PotionsUsed = uint.MaxValue },
+            scalarPrior with { DamageReceived = long.MaxValue }, scalarPrior with { BlockTotal = long.MaxValue }
+        })
+        {
+            var rejected = prior.Add(scalarIncoming);
+            Check(rejected.Cards.SequenceEqual(prior.Cards) && rejected.Turns == prior.Turns && rejected.Plays == prior.Plays
+                && rejected.Combats == prior.Combats && rejected.PotionsUsed == prior.PotionsUsed
+                && rejected.DamageReceived == prior.DamageReceived && rejected.BlockTotal == prior.BlockTotal
+                && rejected.Coverage.Reasons.Contains("summary-overflow") && prior.Coverage.Complete,
+                "Every live headline overflow must reject the incoming combat without changing a published summary");
+        }
+        var rowPlayPrior = scalarPrior with
+        {
+            Cards = new[] { new StatRow { Id = "PRIOR", Plays = uint.MaxValue } }
+        };
+        var rowPlayIncoming = scalarIncoming with
+        {
+            Cards = new[] { new StatRow { Id = "NEXT", Plays = 1 } }
+        };
+        var rowPlayFailed = rowPlayPrior.Add(rowPlayIncoming);
+        Check(rowPlayFailed.Cards.Single().Plays == uint.MaxValue && rowPlayFailed.Plays == rowPlayPrior.Plays
+            && rowPlayFailed.Combats == rowPlayPrior.Combats && rowPlayFailed.Coverage.Reasons.Contains("summary-overflow"),
+            "Run chart plays derived from source rows must stay representable even when observed combat plays fit");
+        var historyRun = Header("HISTORY-OVERFLOW", 99) with
+        {
+            Players = Array.AsReadOnly(new[] { new PlayerSummary(0, "IRONCLAD"), new PlayerSummary(1, "SILENT") })
+        };
+        var historyPrior = historyRun.EmptySummary().AddHistory(new CombatStatistics
+        {
+            PolicyVersion = 1,
+            Cards = new[]
+            {
+                new StatRow { Id = "UNATTRIBUTED", Kind = 5, Player = 0, BlockEffective = long.MaxValue },
+                new StatRow { Id = "UNATTRIBUTED", Kind = 5, Player = 1, BlockEffective = long.MinValue }
+            },
+            Turns = 2,
+            DamageReceived = 3,
+            Coverage = CoverageSummary.Healthy
+        });
+        Check(historyPrior.Coverage.Complete && historyPrior.Cards.Single().BlockEffective == -1
+            && historyPrior.PlayerCards[0].Single().BlockEffective == long.MaxValue,
+            "History fixture must have valid team and player projections before the next combat");
+        var historyIncoming = new CombatStatistics
+        {
+            PolicyVersion = 1,
+            Cards = new[] { new StatRow { Id = "UNATTRIBUTED", Kind = 5, Player = 0, BlockEffective = 1 } },
+            StartedAt = 123,
+            Turns = 1,
+            DamageReceived = 1,
+            Coverage = CoverageSummary.Healthy.WithFailure("missing-hook")
+        };
+        var historyFailed = historyPrior.AddHistory(historyIncoming);
+        Check(historyFailed.Cards.Single().BlockEffective == -1
+            && historyFailed.PlayerCards[0].Single().BlockEffective == long.MaxValue
+            && historyFailed.PlayerCards[1].Single().BlockEffective == long.MinValue
+            && historyFailed.Turns == 2 && historyFailed.Combats == 1 && historyFailed.DamageReceived == 3
+            && historyFailed.EndedAt == historyPrior.EndedAt && historyFailed.PolicyVersion == historyPrior.PolicyVersion
+            && historyFailed.Coverage.Reasons.Contains("missing-hook")
+            && historyFailed.Coverage.Reasons.Contains("summary-overflow")
+            && historyFailed.Coverage.Failures == 2 && historyPrior.Coverage.Complete
+            && historyPrior.Cards.Single().BlockEffective == -1
+            && historyPrior.PlayerCards[0].Single().BlockEffective == long.MaxValue,
+            "A player-only overflow must reject the whole history combat and retain both capture and accounting warnings");
+        var teamPrior = historyRun.EmptySummary().AddHistory(new CombatStatistics
+        {
+            PolicyVersion = 1,
+            Cards = new[] { new StatRow { Id = "UNATTRIBUTED", Kind = 5, Player = 0, DamageDealt = long.MaxValue, DmgDirect = long.MaxValue } },
+            Coverage = CoverageSummary.Healthy
+        });
+        var teamFailed = teamPrior.AddHistory(new CombatStatistics
+        {
+            PolicyVersion = 1,
+            Cards = new[] { new StatRow { Id = "UNATTRIBUTED", Kind = 5, Player = 0, DamageDealt = 1, DmgDirect = 1 } },
+            Turns = 1,
+            DamageReceived = 1,
+            Coverage = CoverageSummary.Healthy
+        });
+        Check(teamFailed.Cards.Single().DamageDealt == long.MaxValue
+            && teamFailed.PlayerCards[0].Single().DamageDealt == long.MaxValue
+            && teamFailed.Turns == teamPrior.Turns && teamFailed.Combats == teamPrior.Combats
+            && teamFailed.DamageReceived == teamPrior.DamageReceived
+            && teamFailed.Coverage.Reasons.Contains("summary-overflow") && teamPrior.Coverage.Complete,
+            "A team-row overflow must leave every history projection and headline unchanged");
+        var historyScalarPrior = historyRun.EmptySummary().AddHistory(new CombatStatistics
+        {
+            PolicyVersion = 1,
+            Cards = new[] { new StatRow { Id = "PRIOR", Player = 0, Plays = uint.MaxValue } },
+            Turns = 2,
+            DamageReceived = 3,
+            Coverage = CoverageSummary.Healthy
+        });
+        var historyScalarIncoming = new CombatStatistics
+        {
+            PolicyVersion = 1,
+            Cards = new[] { new StatRow { Id = "NEXT", Player = 1, Plays = 1 } },
+            Turns = 1,
+            DamageReceived = 1,
+            Coverage = CoverageSummary.Healthy
+        };
+        var historySafePrior = historyRun.EmptySummary().AddHistory(new CombatStatistics
+        {
+            PolicyVersion = 1,
+            Cards = new[] { new StatRow { Id = "PRIOR", Player = 0, Plays = 1 } },
+            Turns = 2,
+            DamageReceived = 3,
+            Coverage = CoverageSummary.Healthy
+        });
+        foreach (var prior in new[]
+        {
+            historyScalarPrior, historySafePrior with { Turns = uint.MaxValue },
+            historySafePrior with { Combats = uint.MaxValue },
+            historySafePrior with { DamageReceived = long.MaxValue }
+        })
+        {
+            var rejected = prior.AddHistory(historyScalarIncoming);
+            Check(rejected.Cards.SequenceEqual(prior.Cards)
+                && rejected.PlayerCards[0].SequenceEqual(prior.PlayerCards[0])
+                && rejected.PlayerCards[1].SequenceEqual(prior.PlayerCards[1])
+                && rejected.Turns == prior.Turns && rejected.Plays == prior.Plays
+                && rejected.Combats == prior.Combats && rejected.DamageReceived == prior.DamageReceived
+                && rejected.Coverage.Reasons.Contains("summary-overflow") && prior.Coverage.Complete,
+                "History headline and derived play overflows must reject all team and player accounting");
+        }
+        var firstPolicy = new CombatStatistics
+        {
+            PolicyVersion = 1,
+            Cards = new[] { new StatRow { Id = "FIRST", Player = 0, DamageDealt = 3, DmgDirect = 3 } },
+            Coverage = CoverageSummary.Healthy
+        };
+        var laterPolicy = firstPolicy with
+        {
+            PolicyVersion = 2,
+            Cards = new[] { new StatRow { Id = "LATER", Player = 1, DamageDealt = 4, DmgDirect = 4 } }
+        };
+        var liveMixed = historyRun.EmptySummary().Add(firstPolicy.View(historyRun.Players)).Add(laterPolicy.View(historyRun.Players));
+        var historyMixed = historyRun.EmptySummary().AddHistory(firstPolicy).AddHistory(laterPolicy);
+        Check(liveMixed.Coverage.Reasons.Contains("mixed-attribution-policies")
+            && historyMixed.Coverage.Reasons.Contains("mixed-attribution-policies")
+            && historyMixed.PolicyVersion == liveMixed.PolicyVersion && historyMixed.PolicyVersion == 1
+            && historyMixed.Cards.Single(card => card.Id == "FIRST").DamageDealt == 3
+            && historyMixed.Cards.Single(card => card.Id == "LATER").DamageDealt == 4,
+            "A mixed-policy history must retain its observed totals and warn like the continued run");
         Reject(() => StatisticsJson.CheckRows(new[]
         {
             new StatRow { Id = "A", BlockGained = long.MaxValue }, new StatRow { Id = "B", BlockGained = 1 }
@@ -324,13 +496,15 @@ internal static class SessionFixtures
         File.WriteAllText(Path.Combine(unrelatedDirectory, "11.json"), "unrelated corrupt record");
         using var store = new StatisticsStore(directory, "g", "m", _ => { });
         var continued = store.OpenRun(Header("GUID", 800), true);
+        var loaded = store.LoadRun(continued).Summary;
         Check(continued.RunId == "43" && continued.PreservedRunIds.Order(StringComparer.Ordinal).SequenceEqual(new[] { previous.RunId, "42" })
-            && store.LoadRun(continued).Summary.Combats == 3, "Import flattens GUID and legacy aliases while preserving a numeric continuation");
+            && loaded.Combats == 3 && loaded.PolicyVersion == 1 && loaded.Coverage.Quality == CaptureQuality.Unknown,
+            "Import flattens GUID and legacy aliases while preserving a numeric continuation without inventing a legacy policy");
         Check(store.SaveCombat(Record(continued, 12, 2)) && store.SaveRun(continued with { Outcome = "defeat", EndedAt = 1100 }),
             "Imported alias chains accept new SQLite records");
         var selected = store.Select(previous.Identity);
         Check(selected.Combats == 4 && selected.Cards.Single().DamageDealt == 20 && selected.Outcome == "victory"
-            && selected.Coverage.Quality == CaptureQuality.Unknown,
+            && selected.PolicyVersion == 1 && selected.Coverage.Quality == CaptureQuality.Unknown,
             "Imported history keeps first finalization and is not tainted by an unrelated version reusing its alias");
         Check(store.Select(unrelated.Identity).Coverage.Quality == CaptureQuality.Partial,
             "Unreadable imported records retain loss evidence under their own identity");
