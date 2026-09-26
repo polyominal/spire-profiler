@@ -275,7 +275,7 @@ impl Store {
     }
 
     fn open_run(&mut self, mut run: Run, continued: bool) -> Result<Value> {
-        run.validate(true, false)?;
+        run.validate(true, true)?;
         let prior = if continued {
             self.match_identity(run.profile, &run.seed, run.started_at)?
         } else {

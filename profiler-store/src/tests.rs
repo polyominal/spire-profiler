@@ -394,6 +394,20 @@ fn archive_import_preserves_order_duplicates_and_ids_after_idempotent_retry() {
         imported["combats"][1]["combat"]["cards"][0]["dmg_direct"],
         0
     );
+    let resumed = execute(
+        &mut store,
+        json!({"op":"open_run","run":run(ARCHIVE_GUID,"PRESERVED",501),"continued":true}),
+    );
+    assert_eq!(resumed["run_id"], "41");
+    assert_eq!(resumed["preserved_run_ids"], json!([ARCHIVE_GUID]));
+    assert_eq!(combat_ids(&load_run(&mut store, "41")), [6, 7]);
+    let mut unallocated = run(ARCHIVE_GUID, "PRESERVED", 501);
+    unallocated["outcome"] = json!("victory");
+    assert!(
+        store
+            .execute(&json!({"op":"save_run","run":unallocated}).to_string())
+            .is_err()
+    );
     assert!(select(&mut store, "BLOCKED", 502).is_null());
     assert!(
         execute(
