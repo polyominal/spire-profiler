@@ -11,6 +11,31 @@ fn fixture() -> State {
     }
 }
 
+fn started_fixture() -> State {
+    let mut state = State::default();
+    assert_eq!(state.combat_started(7, "LIMITS", "normal", 0, 2), 7);
+    state
+}
+
+fn destination(state: &mut State, source: u64) -> Destination {
+    assert_ne!(source, 0, "a capture returns a source handle");
+    let epoch = state.provenance_epoch(7).expect("fixture combat is active");
+    let snapshot = state
+        .source_snapshot(epoch, source)
+        .expect("capture belongs to the fixture combat");
+    assert_eq!(snapshot.shares().len(), 1);
+    snapshot.shares()[0].destination()
+}
+
+fn assert_capacity_coverage(state: &State) {
+    let combat = state.current.as_ref().expect("fixture combat exists");
+    let coverage = state.snapshot_coverage(combat);
+    assert!(!coverage.complete);
+    assert_eq!(coverage.failures, 1);
+    assert_eq!(coverage.reasons.len(), 1);
+    assert_eq!(coverage.reasons[0].as_ref(), "capacity");
+}
+
 fn card(state: &mut State, id: &str, slot: i32) -> u64 {
     let instance = state
         .current
@@ -125,6 +150,109 @@ fn exhausted_instance_table_does_not_retarget_a_missing_power() {
         state.source_destination(known, 0),
         state.source_destination(a, 0)
     );
+}
+
+#[test]
+fn generated_instance_capacity_preserves_known_ancestry_and_falls_back_for_new_card() {
+    let mut state = started_fixture();
+    let a = card(&mut state, "A", 0);
+    let b = card(&mut state, "B", 1);
+    let first = 100_u64;
+    let beyond = first + caps::GENERATED_INSTANCES as u64;
+    for instance in first..beyond {
+        assert_eq!(state.card_generated(7, instance, a, 1), 1);
+    }
+    assert_eq!(state.card_generated(7, beyond, b, 1), 0);
+
+    let missing = state.source_capture(7, 1, beyond, "COPY", 0, 1, 1);
+    assert_eq!(
+        destination(&mut state, missing),
+        Destination::Unknown(TEAM_SLOT)
+    );
+    for instance in [first, beyond - 1] {
+        let known = state.source_capture(7, 1, instance, "COPY", 0, 1, 1);
+        assert_eq!(destination(&mut state, known), destination(&mut state, a));
+    }
+
+    assert_eq!(state.card_generated(7, first, b, 1), 1);
+    let replaced = state.source_capture(7, 1, first, "COPY", 0, 1, 1);
+    assert_eq!(
+        destination(&mut state, replaced),
+        destination(&mut state, b)
+    );
+    let untouched = state.source_capture(7, 1, beyond - 1, "COPY", 0, 1, 1);
+    assert_eq!(
+        destination(&mut state, untouched),
+        destination(&mut state, a)
+    );
+    assert_capacity_coverage(&state);
+}
+
+#[test]
+fn active_play_capacity_is_per_slot_and_recovers_when_a_frame_finishes() {
+    let mut state = started_fixture();
+    let a = card(&mut state, "A", 0);
+    let b = card(&mut state, "B", 1);
+    let mut plays = Vec::new();
+    for execution in 1..=caps::ACTIVE_PLAYS_PER_SLOT as u64 {
+        let play = state.card_play_started(7, execution, 1, "A", 0, 0, 1, 0, a);
+        assert_ne!(play, 0);
+        plays.push(play);
+    }
+    assert_eq!(state.card_play_started(7, 100, 1, "A", 0, 0, 1, 0, a), 0);
+    let other = state.card_play_started(7, 101, 2, "B", 1, 0, 1, 0, b);
+    assert_ne!(other, 0);
+    assert_eq!(state.card_play_finished(plays[0]), 1);
+    let recovered = state.card_play_started(7, 102, 1, "A", 0, 0, 1, 0, a);
+    assert_ne!(recovered, 0);
+    assert_eq!(state.card_play_finished(plays[1]), 1);
+    assert_eq!(state.card_play_finished(other), 1);
+    assert_eq!(state.card_play_finished(recovered), 1);
+
+    let combat = state.current.as_ref().expect("fixture combat exists");
+    assert_eq!(combat.plays, caps::ACTIVE_PLAYS_PER_SLOT as u32 + 3);
+    assert_eq!(
+        combat.cards[0].plays,
+        caps::ACTIVE_PLAYS_PER_SLOT as u32 + 2
+    );
+    assert_eq!(combat.cards[1].plays, 1);
+    assert_capacity_coverage(&state);
+}
+
+#[test]
+fn orb_source_capacity_preserves_known_suppliers_and_falls_back_for_new_orb() {
+    let mut state = started_fixture();
+    let a = card(&mut state, "A", 0);
+    let b = card(&mut state, "B", 1);
+    let first = 100_u64;
+    let beyond = first + caps::ORB_SOURCES as u64;
+    for instance in first..beyond {
+        assert_eq!(state.orb_channeled(7, instance, a), 1);
+    }
+    assert_eq!(state.orb_channeled(7, beyond, b), 0);
+
+    let missing = state.source_capture(7, 3, beyond, "", 4, 0, 0);
+    assert_eq!(
+        destination(&mut state, missing),
+        Destination::Unknown(TEAM_SLOT)
+    );
+    for instance in [first, beyond - 1] {
+        let known = state.source_capture(7, 3, instance, "", 4, 0, 0);
+        assert_eq!(destination(&mut state, known), destination(&mut state, a));
+    }
+
+    assert_eq!(state.orb_channeled(7, first, b), 1);
+    let replaced = state.source_capture(7, 3, first, "", 4, 0, 0);
+    assert_eq!(
+        destination(&mut state, replaced),
+        destination(&mut state, b)
+    );
+    let untouched = state.source_capture(7, 3, beyond - 1, "", 4, 0, 0);
+    assert_eq!(
+        destination(&mut state, untouched),
+        destination(&mut state, a)
+    );
+    assert_capacity_coverage(&state);
 }
 
 #[test]
