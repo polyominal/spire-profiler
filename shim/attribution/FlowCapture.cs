@@ -110,6 +110,8 @@ internal static class FlowCapture
             if (!expected.TryGetValue(group.Key, out int count) || group.Count() != count) throw new InvalidOperationException("Producer root inventory changed: " + group.Key);
         report($"PRODUCER TARGET INVENTORY COUNT: {targets.Count}");
         foreach (var group in targets.GroupBy(m => m.GetBaseDefinition().DeclaringType.Name).OrderBy(g => g.Key)) report($"Producer root {group.Key}: {group.Count()}");
+        // Hook commands before rewriting callers that can inline their wrappers.
+        CommandCapture.Install(harmony, report);
         foreach (var target in targets)
         {
             report($"PRODUCER {target.DeclaringType.FullName}::{target}");
@@ -125,7 +127,6 @@ internal static class FlowCapture
         TemporalPowerCapture.Install(harmony, report);
         ModifierCapture.Install(harmony);
         DamageCapture.Install(harmony, report);
-        CommandCapture.Install(harmony, report);
         DoomCapture.Install(harmony, report);
         CapturePatches.Verify(harmony, report);
         report($"CAPTURE INSTALL MILLISECONDS: {timer.ElapsedMilliseconds}");

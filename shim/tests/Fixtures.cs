@@ -655,7 +655,15 @@ internal static partial class ManagedFixtures
     private static List<Type> nestedModifierCalls;
     private static bool skipBlockHook;
     private static Action beforeBlockHook;
+    private static List<(Creature Receiver, decimal Amount, CommandKind Kind, SourceSnapshot CommandSource, SourceSnapshot ProducerSource)> producerBlocks;
     internal static void ObserveNestedModifier(object __instance) => nestedModifierCalls?.Add(__instance.GetType());
+    internal static bool InterceptProducerBlock(Creature creature, decimal amount, ref Task<decimal> __result)
+    {
+        if (producerBlocks == null) return true;
+        producerBlocks.Add((creature, amount, CommandCapture.Current.Kind, CommandCapture.Current.Source, FlowCapture.Current.Source));
+        __result = Task.FromResult(amount);
+        return false;
+    }
     internal static bool SkipBlockHook(decimal block, ref decimal __result, ref IEnumerable<AbstractModel> modifiers)
     {
         beforeBlockHook?.Invoke();
@@ -809,6 +817,7 @@ internal static partial class ManagedFixtures
         Test("detached callback provenance and death removal batches", DetachedPowers);
         Test("generation ancestry, cross-player supplier, regeneration and identity budget", Generation);
         Test("saved dictionary sources exclude later stacks; Rupture exact increments", Temporal);
+        Test("actual block producers enter command hooks with saved one/two-stack sources", BlockProducerInstallation);
         Test("temporal overflow preserves the game amount and releases stale provenance", () =>
         {
             var power = new ProbeModel("TEMPORAL", ProducerRole.Power);
@@ -1383,6 +1392,68 @@ internal static partial class ManagedFixtures
         var originalError = new ArgumentException();
         try { power.Amounts.Add(card, 1); power.BeforeCardPlayed(card, 1).GetAwaiter().GetResult(); } catch (ArgumentException) { originalError = null; }
         Check(originalError == null, "Dictionary Add exception preserved by exact bridge");
+    }
+    private static void BlockProducerInstallation()
+    {
+        // Rewriting these game callbacks after capture installation can hide
+        // command-hook ordering defects, so intercept only the command boundary.
+        var world = GameWorld();
+        var card = GameCard<StrikeIronclad>(world.Owner, B);
+        var play = (CardPlay)RuntimeHelpers.GetUninitializedObject(typeof(CardPlay));
+        AccessTools.Field(typeof(CardPlay), "<Card>k__BackingField").SetValue(play, card);
+        AccessTools.Field(typeof(CardPlay), "<Player>k__BackingField").SetValue(play, world.Owner);
+        var power = Mutable<AfterimagePower>("AfterimagePower");
+        AccessTools.Field(typeof(PowerModel), "_owner").SetValue(power, world.Owner.Creature);
+        AccessTools.Field(typeof(PowerModel), "_amount").SetValue(power, 1);
+        AccessTools.Field(typeof(PowerModel), "_canonicalInstance").SetValue(power, power);
+        AccessTools.Field(typeof(PowerModel), "_internalData").SetValue(power,
+            Activator.CreateInstance(typeof(AfterimagePower).GetNestedType("Data", BindingFlags.NonPublic), true));
+        RecordModel(power, A);
+        var command = AccessTools.DeclaredMethod(typeof(CreatureCmd), "GainBlock",
+            new[] { typeof(Creature), typeof(decimal), typeof(ValueProp), typeof(CardPlay), typeof(bool) });
+        harmony.Patch(command, prefix: new HarmonyMethod(typeof(ManagedFixtures), nameof(InterceptProducerBlock)) { priority = Priority.Last });
+        producerBlocks = new();
+        try
+        {
+            context.Complete(power.BeforeCardPlayed(play));
+            var twoStacks = backend.CreateSource(epoch, new[]
+            {
+                new SourceShare(backend.Entries(A)[0].Destination, 1), new SourceShare(backend.Entries(B)[0].Destination, 1)
+            });
+            AccessTools.Field(typeof(PowerModel), "_amount").SetValue(power, 2);
+            RecordModel(power, twoStacks);
+            context.Complete(power.AfterCardPlayed(null, play));
+            Check(producerBlocks.Count == 1, "Actual Afterimage enters the installed GainBlock wrapper for one saved stack");
+            var first = producerBlocks[0];
+            Check(ReferenceEquals(first.Receiver, world.Owner.Creature) && first.Amount == 1 && first.Kind == CommandKind.Block,
+                "Afterimage sends its owner one saved stack to the block command");
+            Same(first.CommandSource, A, "One saved Afterimage stack excludes the later supplier");
+            Same(first.ProducerSource, A, "The block command inherits the saved Afterimage producer");
+
+            context.Complete(power.BeforeCardPlayed(play));
+            var threeStacks = backend.CreateSource(epoch, new[]
+            {
+                new SourceShare(backend.Entries(A)[0].Destination, 1), new SourceShare(backend.Entries(B)[0].Destination, 2)
+            });
+            AccessTools.Field(typeof(PowerModel), "_amount").SetValue(power, 3);
+            RecordModel(power, threeStacks);
+            context.Complete(power.AfterCardPlayed(null, play));
+            Check(producerBlocks.Count == 2, "Actual Afterimage enters the installed GainBlock wrapper for two saved stacks");
+            var second = producerBlocks[1];
+            Check(ReferenceEquals(second.Receiver, world.Owner.Creature) && second.Amount == 2 && second.Kind == CommandKind.Block,
+                "Afterimage sends its owner two saved stacks to the block command");
+            Same(second.CommandSource, twoStacks, "Two saved Afterimage stacks exclude the later third supplier");
+            Same(second.ProducerSource, twoStacks, "The second block command inherits the saved Afterimage producer");
+
+            var plating = GamePower<PlatingPower>(world.Enemy, 3, A);
+            context.Complete(plating.BeforeSideTurnStart(null, CombatSide.Player, new[] { world.Enemy }, (ICombatState)backend.Combat));
+            Check(producerBlocks.Count == 3, "Synchronous Plating producer enters the installed GainBlock wrapper");
+            var third = producerBlocks[2];
+            Check(ReferenceEquals(third.Receiver, world.Enemy) && third.Amount == 3 && third.Kind == CommandKind.Block,
+                "Plating forwards its owner and amount through command capture");
+            Same(third.CommandSource, A, "Synchronous producer retains its source through command capture");
+        }
+        finally { producerBlocks = null; }
     }
     private static void NestedPlays()
     {
