@@ -1,8 +1,10 @@
 //! Deterministic combat attribution. The managed host owns game observations,
-//! run identity, clocks, storage, and Godot objects. Each native engine owns one
+//! run lifecycle, clocks, and Godot objects. Each native engine owns one
 //! [`data::state::State`]; source handles never expose weighted provenance.
 //! Observations update accounting under a versioned policy. JSON snapshots
 //! contain measured totals, assigned source credit, and capture coverage.
+//! The ABI also hosts independent [`profiler_store`] connections; storage never
+//! mutates attribution state or participates in observation replay.
 //! Only [`abi`] contains unsafe code, for C strings and caller-owned buffers.
 
 #![deny(unsafe_code)]

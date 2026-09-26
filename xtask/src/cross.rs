@@ -1,4 +1,4 @@
-//! The native reducer matrix drives artifact names, the managed runtime
+//! The native library matrix drives artifact names, the managed runtime
 //! selector, and platform release archives.
 
 use std::path::{Path, PathBuf};

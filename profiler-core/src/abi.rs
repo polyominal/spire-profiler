@@ -7,6 +7,8 @@ use std::ffi::{CStr, c_char};
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod storage;
+
 use crate::data::modifiers::{ModifierObservation, WeakObservation};
 use crate::data::observation::Observation;
 use crate::data::state::State;
@@ -136,6 +138,55 @@ pub extern "C" fn spire_profiler_engine_destroy(engine: u64) {
             cell.borrow_mut().entries.retain(|(id, _)| *id != engine);
         })
     });
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_store_create() -> u64 {
+    contain("store_create", 0, storage::create)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_store_destroy(store: u64) {
+    contain("store_destroy", (), || storage::destroy(store));
+}
+
+/// Executes once and retains its JSON result until the next request. Transport
+/// success is 1; the response carries database errors separately.
+/// # Safety
+/// A non-null request is readable through a NUL and unmodified during the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn spire_profiler_store_execute(store: u64, request: *const c_char) -> i32 {
+    contain("store_execute", 0, || {
+        // SAFETY: the caller supplies a terminated, unmodified request.
+        unsafe { with_c_str(request, |request| storage::execute(store, request)) }
+    })
+}
+
+/// Copies the cached response without executing the operation again. Returns
+/// required bytes including NUL; null/short buffers remain untouched.
+/// # Safety
+/// A non-null buffer is writable for capacity bytes and does not alias inputs.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn spire_profiler_store_response(
+    store: u64,
+    buffer: *mut u8,
+    capacity: i32,
+) -> i32 {
+    contain("store_response", 0, || {
+        storage::response(store, |json| {
+            let Ok(size) = i32::try_from(json.len() + 1) else {
+                return 0;
+            };
+            if !buffer.is_null() && capacity >= size {
+                // SAFETY: capacity covers the cached response and buffers cannot alias.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(json.as_ptr(), buffer, json.len());
+                    buffer.add(json.len()).write(0);
+                }
+            }
+            size
+        })
+    })
 }
 
 #[unsafe(no_mangle)]

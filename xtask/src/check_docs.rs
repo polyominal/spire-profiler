@@ -3,7 +3,7 @@
 //! budget.
 //!
 //! The density metric is comment lines / (comment lines + code lines)
-//! over the three in-house Rust roots. A line is a comment when its first
+//! over the in-house Rust roots. A line is a comment when its first
 //! non-blank characters begin `//` (doc comments `///` and `//!`
 //! included) or `/*`, or when it sits inside a `/* */` block; string
 //! literal contents never start a comment, and a line where a block
@@ -23,7 +23,12 @@ use crate::scan;
 const DENSITY_LIMIT_PERCENT: f64 = 15.0;
 
 /// Tests included.
-const RUST_ROOTS: &[&str] = &["profiler-core/src", "profiler-core/tests", "xtask/src"];
+const RUST_ROOTS: &[&str] = &[
+    "profiler-core/src",
+    "profiler-core/tests",
+    "profiler-store/src",
+    "xtask/src",
+];
 
 /// Doc-only files hold preserved spec content, not slashable offenders.
 const MIN_CODE_LINES: usize = 20;

@@ -34,7 +34,11 @@ const PINS: &[(&str, usize)] = &[
     ("xtask/src/game_version.rs", 1),
 ];
 
-const COMMENT_ROOTS: &[&str] = &["profiler-core/src", "profiler-core/tests"];
+const COMMENT_ROOTS: &[&str] = &[
+    "profiler-core/src",
+    "profiler-core/tests",
+    "profiler-store/src",
+];
 
 pub fn run() -> Result<()> {
     let root = workspace_root();

@@ -31,8 +31,8 @@
 
 Comment density in in-house Rust stays at most 15% of comment+code lines,
 measured by `cargo xtask check-docs` over `profiler-core/src`,
-`profiler-core/tests`, and `xtask/src` (doc comments count). The gate also fails
-on any `cargo doc` warning.
+`profiler-core/tests`, `profiler-store/src`, and `xtask/src` (doc comments
+count). The gate also fails on any `cargo doc` warning.
 
 Clarity first, size second. Comment when the reader would otherwise have to
 reverse-engineer the code: invariants it must uphold, non-obvious why (algorithm
@@ -74,8 +74,8 @@ comments or docs.
 - Every sentence must teach something the code cannot, in the fewest words that
   carry it. If deleting a paragraph loses nothing, delete it.
 - Canonical facts live in exactly one place (the on-disk schema in
-  `StatisticsStore.cs`, the player-slot model in the `state` module doc);
-  everywhere else points there.
+  `profiler-store`, the player-slot model in the `state` module doc); everywhere
+  else points there.
 - The code is the ground truth: a doc that disagrees with it is a bug in the
   doc. Fix the doc, never annotate the disagreement.
 
@@ -92,9 +92,9 @@ comments or docs.
 ## State and borrowing
 
 - Each native engine owns its combat attribution `State`; `ProfilerSession` owns
-  run lifecycle and storage on the game thread. Independent mutable state stays
-  with its lifetime owner. No locks or atomics for gameplay-state coordination;
-  engine initialization and tests may use them.
+  run lifecycle and an independent native store handle on the game thread.
+  Independent mutable state stays with its lifetime owner. No locks or atomics
+  for gameplay-state coordination; engine initialization and tests may use them.
 - Native observations never call back into managed code. Diagnostics and capture
   completeness travel with snapshots; the host owns logging.
 - Fixed-capacity tables are bounded `Vec`s with caps named in `caps`: overflow
@@ -152,14 +152,17 @@ required by the production API.
 
 ## Persistence
 
-- Managed storage owns an explicit schema version and separate attribution
-  policy version. Unknown fields are ignored; required version and identity
-  fields are parsed before records enter the application.
-- Breaking schemas use a fresh versioned directory. Preserve old data; legacy
-  history is read-only and missing coverage metadata means unknown quality. Keep
-  the schema contract in `StatisticsStore.cs` consistent with its parser.
-- Writes are atomic (temp file + rename): the game can kill the process at any
-  point, and a torn record must never appear.
+- `profiler-store` owns the SQLite schema and record validation. Database,
+  payload, and attribution policy versions are separate. Unknown payload fields
+  are ignored; required version and identity fields are parsed before records
+  enter the application.
+- Breaking storage formats use a fresh versioned directory. Import legacy
+  history without rewriting its files; missing coverage metadata means unknown
+  quality. Keep the schema contract in `profiler-store` consistent with its
+  parser.
+- Statistics mutations use SQLite transactions. Keep finalized-combat intent
+  separate from its payload so a failed payload write leaves completeness
+  evidence. A store failure must not stop live attribution.
 
 ## Game updates
 
@@ -193,9 +196,10 @@ manual re-verification:
   defines the timestamp limits. Extend the walk when adding mechanics.
 - Property tests compare against an independent naive model, not the
   implementation itself.
-- Managed fixtures exercise record parsing, atomic retry, history identity,
-  legacy preservation, and native session/replay behavior. Seeded Rust models
-  pin attribution independently of capture and presentation.
+- Managed fixtures exercise record parsing, history identity, legacy import, and
+  native session/replay behavior. Rust storage tests exercise transaction
+  failure and recovery. Seeded Rust models pin attribution independently of
+  capture and presentation.
 
 ## Rust specifics
 

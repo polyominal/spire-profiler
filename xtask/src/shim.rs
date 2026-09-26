@@ -9,10 +9,11 @@ use anyhow::{Context, Result};
 use crate::cross::MATRIX;
 use crate::{sha256_file, workspace_root};
 
-const PRODUCTION_SOURCES: [&str; 35] = [
+const PRODUCTION_SOURCES: [&str; 37] = [
     "SpireProfilerMod.cs",
     "NativeLibrarySelector.g.cs",
     "native/ProfilerNative.cs",
+    "native/NativeStatisticsStore.cs",
     "native/NativeAttributionBackend.cs",
     "run/RunContext.cs",
     "run/RunPatches.cs",
@@ -27,6 +28,7 @@ const PRODUCTION_SOURCES: [&str; 35] = [
     "session/Statistics.cs",
     "session/StatisticsJson.cs",
     "session/StatisticsStore.cs",
+    "session/LegacyStatisticsImport.cs",
     "session/ProfilerSession.cs",
     "audit/AuditJournal.cs",
     "audit/PoisonAudit.cs",

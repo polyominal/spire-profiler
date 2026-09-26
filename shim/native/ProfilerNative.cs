@@ -25,6 +25,7 @@ internal static class ProfilerNative
     // Delegate entry points remain valid after an engine is disposed.
     private static IntPtr library;
     private static string libraryPath;
+    internal static IntPtr Library => library != IntPtr.Zero ? library : throw new InvalidOperationException("Native library is not loaded");
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate ulong NativeEngineCreate();
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]

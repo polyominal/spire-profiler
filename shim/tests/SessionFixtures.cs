@@ -29,7 +29,7 @@ internal static class SessionFixtures
             PreservedCombatIdCollisions(Path.Combine(scratch, "collisions"));
             ImportedDamage(Path.Combine(scratch, "damaged"));
             ImportBoundaries(Path.Combine(scratch, "boundaries"));
-            UnavailableStorage(Path.Combine(scratch, "unavailable"));
+            UnavailableStorage(Path.Combine(scratch, "unavailable"), nativeLibrary);
             ProfilerNative.Dispose();
             ProfilerNative.Load(nativeLibrary);
             NativeLifecycle(Path.Combine(scratch, "native"));
@@ -394,10 +394,12 @@ internal static class SessionFixtures
             "Imported ambiguity remains a refusal after the original files are no longer consulted");
     }
 
-    private static void UnavailableStorage(string directory)
+    private static void UnavailableStorage(string directory, string nativeLibrary)
     {
         foreach (string failure in new[] { "directory", "database" })
         {
+            ProfilerNative.Dispose();
+            ProfilerNative.Load(nativeLibrary);
             string root = Path.Combine(directory, failure), version = Path.Combine(root, "statistics-v3");
             Directory.CreateDirectory(root);
             if (failure == "directory") File.WriteAllText(version, "obstruction");
