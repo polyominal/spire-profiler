@@ -1,5 +1,10 @@
 //! Accepted mutations of actual power instances retain complete supplier grants.
 //! Decreases consume FIFO; a drained attachment keeps its last captured source.
+//! Poison ticks credit the mixture of remaining supplier stacks as indirect
+//! damage. Earlier grants absorb decay first, so later suppliers can outlive
+//! them. Additional ticks, including Accelerant's, use that same mixture;
+//! causing a tick alone earns no separate credit. Empty or untrusted poison
+//! provenance captures Unknown instead of its retained last mixture.
 
 use super::*;
 

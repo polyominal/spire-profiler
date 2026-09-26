@@ -29,6 +29,8 @@ internal static class IdentityCapture
         pendingPreparation = new object();
     }
     internal static void CancelPreparation() => pendingPreparation = null;
+    internal static ulong Existing(object model, ulong epoch) => model != null && identities.TryGetValue(model, out var metadata)
+        && metadata.Epoch == epoch ? metadata.Identity : 0;
     internal static void NewEpoch()
     {
         activePreparation = pendingPreparation;

@@ -230,6 +230,7 @@ internal static class CommandCapture
     }
     internal static void TurnPrefix(object combatState, CombatSide side)
     {
+        PoisonAudit.Checkpoint("turn", combatState, side);
         try
         {
             var epoch = CaptureRuntime.EntryEpoch();

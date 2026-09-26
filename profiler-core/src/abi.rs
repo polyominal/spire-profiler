@@ -184,6 +184,40 @@ pub extern "C" fn spire_profiler_source_release(engine: u64, handle: u64) -> i32
     })
 }
 
+/// Returns required UTF-8 bytes including the NUL without changing engine state.
+/// A null/short buffer is not written, and an unavailable engine returns zero.
+/// # Safety
+/// A non-null buffer is writable for capacity bytes and does not alias inputs.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn spire_profiler_audit_snapshot(
+    engine: u64,
+    buffer: *mut u8,
+    capacity: i32,
+) -> i32 {
+    contain("audit_snapshot", 0, || {
+        ENGINES.with(|cell| {
+            let Ok(engines) = cell.try_borrow() else {
+                return 0;
+            };
+            let Some((_, state)) = engines.entries.iter().find(|(id, _)| *id == engine) else {
+                return 0;
+            };
+            let json = state.audit_snapshot();
+            let Ok(size) = i32::try_from(json.len() + 1) else {
+                return 0;
+            };
+            if !buffer.is_null() && capacity >= size {
+                // SAFETY: capacity covers this byte count and the buffers cannot alias.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(json.as_ptr(), buffer, json.len());
+                    buffer.add(json.len()).write(0);
+                }
+            }
+            size
+        })
+    })
+}
+
 /// # Safety
 /// Non-null strings are readable through a NUL and unmodified during the call.
 #[unsafe(no_mangle)]
@@ -1320,6 +1354,105 @@ mod tests {
         assert_eq!(summary["encounter_id"], "");
         assert_eq!(summary["encounter_type"], "");
         spire_profiler_engine_destroy(engine);
+    }
+
+    #[test]
+    fn audit_queries_are_readonly_and_use_the_snapshot_buffer_contract() {
+        let engine = spire_profiler_engine_create();
+        assert_eq!(spire_profiler_recording_begin(engine), 1);
+        started(engine, 7);
+        // SAFETY: immutable literals own every native string input through each call.
+        unsafe {
+            let source = spire_profiler_source_capture(engine, 7, 1, 100, c"毒".as_ptr(), 0, 0, 0);
+            assert_eq!(
+                spire_profiler_power_attached(
+                    engine,
+                    7,
+                    200,
+                    c"POISON_POWER".as_ptr(),
+                    900,
+                    1,
+                    4,
+                    3,
+                    source
+                ),
+                1
+            );
+        }
+        let before = (
+            spire_profiler_revision(engine),
+            json(engine, false),
+            json(engine, true),
+        );
+        // SAFETY: null requests sizing without writing any bytes.
+        let required = unsafe { spire_profiler_audit_snapshot(engine, std::ptr::null_mut(), 0) };
+        assert!(required > 5);
+        let mut bytes = vec![0x55; required as usize + 1];
+        for capacity in [-1, 0, required - 1] {
+            assert_eq!(
+                // SAFETY: the vector owns capacity bytes whenever capacity is positive.
+                unsafe { spire_profiler_audit_snapshot(engine, bytes.as_mut_ptr(), capacity) },
+                required
+            );
+            assert!(bytes.iter().all(|byte| *byte == 0x55));
+        }
+        assert_eq!(
+            // SAFETY: the vector owns the required bytes and a sentinel beyond them.
+            unsafe { spire_profiler_audit_snapshot(engine, bytes.as_mut_ptr(), required) },
+            required
+        );
+        assert_eq!(bytes[required as usize - 1], 0);
+        assert_eq!(bytes[required as usize], 0x55);
+        let audit: serde_json::Value =
+            serde_json::from_slice(&bytes[..required as usize - 1]).expect("audit parses");
+        assert_eq!(audit["audit_version"], 1);
+        assert_eq!(audit["policy_version"], 3);
+        assert_eq!(audit["combat_id"], 7);
+        assert_eq!(audit["poison"][0]["amount"], 3);
+        assert_eq!(audit["cards"][0]["id"], "毒");
+        assert_eq!(
+            before,
+            (
+                spire_profiler_revision(engine),
+                json(engine, false),
+                json(engine, true)
+            )
+        );
+        let replay = spire_profiler_engine_create();
+        let recording = CString::new(before.2).expect("JSON has no literal NUL");
+        assert_eq!(
+            // SAFETY: CString owns the terminated recording through replay.
+            unsafe { spire_profiler_replay(replay, recording.as_ptr()) },
+            1
+        );
+        assert_eq!(json(replay, false), before.1);
+        spire_profiler_engine_destroy(replay);
+        spire_profiler_engine_destroy(engine);
+    }
+
+    #[test]
+    fn audit_distinguishes_absent_combat_from_unavailable_engine() {
+        let engine = spire_profiler_engine_create();
+        assert_eq!(
+            // SAFETY: null requests sizing without writing any bytes.
+            unsafe { spire_profiler_audit_snapshot(engine, std::ptr::null_mut(), 0) },
+            5
+        );
+        std::thread::spawn(move || {
+            assert_eq!(
+                // SAFETY: null requests sizing without writing any bytes.
+                unsafe { spire_profiler_audit_snapshot(engine, std::ptr::null_mut(), 0) },
+                0
+            );
+        })
+        .join()
+        .expect("foreign-thread probe completes");
+        spire_profiler_engine_destroy(engine);
+        assert_eq!(
+            // SAFETY: null requests sizing without writing any bytes.
+            unsafe { spire_profiler_audit_snapshot(engine, std::ptr::null_mut(), 0) },
+            0
+        );
     }
 
     #[test]

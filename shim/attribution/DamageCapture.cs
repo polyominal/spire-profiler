@@ -20,7 +20,7 @@ using MegaCrit.Sts2.Core.ValueProps;
 namespace SpireProfiler;
 
 internal sealed record DamageOperation(CaptureEpoch Epoch, SourceSnapshot Source, ProducerRole Role, DamageSegment Segment, object Dealer,
-    bool ExplicitCard, object PoisonOwner, ulong Calculation = 0, bool Weak = false, bool Debilitate = false, uint PaperKraneSlots = 0)
+    bool ExplicitCard, object PoisonOwner, ulong Calculation = 0, bool Weak = false, bool Debilitate = false, uint PaperKraneSlots = 0, AuditTick Audit = null, AuditSource AuditSource = null)
 {
     internal static readonly DamageOperation Barrier = new(default, SourceSnapshot.Unavailable, ProducerRole.Unknown, DamageSegment.Attributed, null, false, null);
 }
@@ -39,13 +39,14 @@ internal static class DamageCapture
     internal static void Prefix(object[] __args, out DamageOperation __state)
     {
         __state = Current;
-        Current = DamageOperation.Barrier;
+        var raw = PoisonAudit.DamageSource(__args);
+        Current = DamageOperation.Barrier with { AuditSource = raw };
         try
         {
             var epoch = CaptureRuntime.EntryEpoch(__state.Epoch);
             object dealer = __args[4], card = __args[5];
             // Classification metadata survives a later source-capture failure.
-            Current = new(epoch, SourceSnapshot.Unavailable, ProducerRole.Unknown, DamageSegment.Attributed, dealer, card != null, null);
+            Current = new(epoch, SourceSnapshot.Unavailable, ProducerRole.Unknown, DamageSegment.Attributed, dealer, card != null, null, AuditSource: raw);
             if (!CaptureRuntime.Valid(epoch)) return;
             var producer = FlowCapture.Current;
             if (card != null)
@@ -75,6 +76,8 @@ internal static class DamageCapture
     {
         Abort();
         var captured = Current;
+        var audit = PoisonAudit.Tick(FlowCapture.Current.Audit, target, dealer, damage, props, cardSource, captured.AuditSource);
+        if (audit != null) captured = captured with { Audit = audit };
         Current = captured with { Calculation = 0, Weak = false, Debilitate = false };
         DamageEvidence evidence = default;
         ulong calculation = 0;
@@ -145,10 +148,10 @@ internal static class DamageCapture
     }
     internal static List<DamageResult>.Enumerator ReportResultGroup(List<DamageResult> results)
     {
+        var captured = Current;
         try
         {
-            var captured = Current;
-            Current = captured with { Calculation = 0 };
+            Current = captured with { Calculation = 0, Audit = null };
             if (!CaptureRuntime.Valid(captured.Epoch)) return results.GetEnumerator();
             ulong token = captured.Calculation;
             if (results.Count > MaxResults)
@@ -184,6 +187,7 @@ internal static class DamageCapture
             }
         }
         catch (Exception ex) { CaptureRuntime.Fail("damage-report", ex); }
+        finally { PoisonAudit.Damage(captured.Audit, results); }
         return results.GetEnumerator();
     }
     private static ResultPacket Packet(DamageOperation captured, DamageResult result)
@@ -215,7 +219,8 @@ internal static class DamageCapture
     internal static void Abort()
     {
         var captured = Current;
-        Current = captured with { Calculation = 0 };
+        Current = captured with { Calculation = 0, Audit = null };
+        if (captured.Audit != null) PoisonAudit.Diagnostic("audit-damage-result-missing");
         try { if (CaptureRuntime.Valid(captured.Epoch)) AbortToken(captured.Calculation); }
         catch (Exception ex) { CaptureRuntime.Fail("damage-abort", ex); }
     }

@@ -7,6 +7,7 @@ use std::path::Path;
 use anyhow::Result;
 use xshell::{Shell, cmd};
 
+mod audit;
 mod build;
 mod bundle;
 mod catalog;
@@ -60,6 +61,11 @@ mod flags {
                 /// Also compare pixels in the real game renderer, restoring the installed mod afterward.
                 optional --render
             }
+            /// Read poison audit JSONL and report independent checks as Markdown.
+            cmd audit-report {
+                required input: PathBuf
+                optional --output output: PathBuf
+            }
             /// Check shim<->core ABI conformance.
             cmd check-abi {}
             /// Fail on cargo doc warnings and report the comment-density budget.
@@ -111,6 +117,7 @@ mod flags {
         HeadlessTest(HeadlessTest),
         ManagedTest(ManagedTest),
         ParityTest(ParityTest),
+        AuditReport(AuditReport),
         CheckAbi(CheckAbi),
         CheckDocs(CheckDocs),
         CheckCitations(CheckCitations),
@@ -145,6 +152,13 @@ mod flags {
     #[derive(Debug)]
     pub struct ParityTest {
         pub render: bool,
+    }
+
+    #[derive(Debug)]
+    pub struct AuditReport {
+        pub input: PathBuf,
+
+        pub output: Option<PathBuf>,
     }
 
     #[derive(Debug)]
@@ -213,6 +227,7 @@ fn main() -> Result<()> {
         flags::XtaskCmd::HeadlessTest(_) => headless::headless_test(&shell),
         flags::XtaskCmd::ManagedTest(_) => managed::run(&shell, None),
         flags::XtaskCmd::ParityTest(flags) => parity::Reference::run(&shell, flags.render),
+        flags::XtaskCmd::AuditReport(flags) => audit::run(&flags.input, flags.output.as_deref()),
         flags::XtaskCmd::CheckAbi(_) => check_abi::run(),
         flags::XtaskCmd::CheckCatalog(_) => check_catalog::run(),
         flags::XtaskCmd::CheckDocs(flags) => check_docs::check_docs(&shell, flags.top),

@@ -23,6 +23,7 @@ internal static class ManagedTestProgram
         try
         {
             ProfilerNative.Load(args[2]);
+            AuditFixtures.Run(args[1], args[2]);
             ManagedFixtures.Run(args[1]);
             ProfilerNative.Dispose();
             PanelFixtures.Run();

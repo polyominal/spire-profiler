@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use crate::cross::MATRIX;
 use crate::{sha256_file, workspace_root};
 
-const PRODUCTION_SOURCES: [&str; 33] = [
+const PRODUCTION_SOURCES: [&str; 35] = [
     "SpireProfilerMod.cs",
     "NativeLibrarySelector.g.cs",
     "native/ProfilerNative.cs",
@@ -28,6 +28,8 @@ const PRODUCTION_SOURCES: [&str; 33] = [
     "session/StatisticsJson.cs",
     "session/StatisticsStore.cs",
     "session/ProfilerSession.cs",
+    "audit/AuditJournal.cs",
+    "audit/PoisonAudit.cs",
     "attribution/SourceSnapshot.cs",
     "attribution/AttributionBackend.cs",
     "attribution/CaptureRuntime.cs",
@@ -58,6 +60,7 @@ impl ProjectKind {
             Self::Tests => &[
                 "tests/Program.cs",
                 "tests/Fixtures.cs",
+                "tests/AuditFixtures.cs",
                 "tests/PanelFixtures.cs",
                 "tests/SessionFixtures.cs",
             ],
