@@ -6,7 +6,12 @@ using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Threading.Tasks;
+using HarmonyLib;
 using MegaCrit.Sts2.Core.Entities.Creatures;
+using MegaCrit.Sts2.Core.Multiplayer.Game.Lobby;
+using MegaCrit.Sts2.Core.Runs;
+using MegaCrit.Sts2.Core.Saves;
 using MegaCrit.Sts2.Core.ValueProps;
 
 #pragma warning disable CA1861
@@ -16,6 +21,7 @@ namespace SpireProfiler;
 internal static class SessionFixtures
 {
     private static int assertions;
+    private static Task pendingSetup;
     internal static void Run(string projectDirectory, string nativeLibrary)
     {
         string scratch = Path.Combine(projectDirectory, "session-fixtures");
@@ -37,6 +43,9 @@ internal static class SessionFixtures
             ProfilerNative.Dispose();
             ProfilerNative.Load(nativeLibrary);
             NativeLifecycle(Path.Combine(scratch, "native"));
+            ProfilerNative.Dispose();
+            ProfilerNative.Load(nativeLibrary);
+            RunSetupHooks(Path.Combine(scratch, "run-hooks"), nativeLibrary);
             ProfilerNative.Dispose();
             ProfilerNative.Load(nativeLibrary);
             NativeOstySacrifice(Path.Combine(scratch, "osty-sacrifice"));
@@ -696,6 +705,118 @@ internal static class SessionFixtures
         ProfilerSession.ClearHistory();
         Check(!ProfilerSession.HistoryOpen && ProfilerSession.SelectedHistory == null, "Closing history clears selection");
     }
+
+    private static void RunSetupHooks(string directory, string nativeLibrary)
+    {
+        var harmony = new Harmony("spire-profiler.run-setup-fixture");
+        var manager = RunManager.Instance;
+        var startTimeField = AccessTools.Field(typeof(RunManager), "_startTime");
+        long originalStartTime = (long)startTimeField.GetValue(manager);
+        try
+        {
+            harmony.Patch(AccessTools.DeclaredMethod(typeof(RunContext), nameof(RunContext.CurrentProfileId)),
+                prefix: new HarmonyMethod(typeof(SessionFixtures), nameof(ProfileZeroPrefix)));
+            foreach (var (name, patchType, saved) in new[]
+            {
+                (nameof(RunManager.SetUpNewSingleplayer), typeof(PatchRunStartSingleplayer), false),
+                (nameof(RunManager.SetUpNewMultiplayer), typeof(PatchRunStartMultiplayer), false),
+                (nameof(RunManager.SetUpSavedSingleplayer), typeof(PatchRunResumeSingleplayer), true),
+                (nameof(RunManager.SetUpSavedMultiplayer), typeof(PatchRunResumeMultiplayer), true)
+            })
+            {
+                var target = AccessTools.DeclaredMethod(typeof(RunManager), name);
+                harmony.Patch(target,
+                    prefix: new HarmonyMethod(typeof(SessionFixtures), saved ? nameof(SkipSavedSetup) : nameof(SkipNewSetup)),
+                    postfix: new HarmonyMethod(AccessTools.DeclaredMethod(patchType, "Postfix")));
+                Check(Harmony.GetPatchInfo(target).Postfixes.Count(patch => patch.owner == harmony.Id) == 1,
+                    "The installed setup hook must bind exactly once: " + name);
+            }
+            CaptureRuntime.Initialize(new FakeBackend());
+            foreach (bool multiplayer in new[] { false, true })
+            {
+                string mode = multiplayer ? "multiplayer" : "singleplayer";
+                string storeDirectory = Path.Combine(directory, mode);
+                const long startedAt = 1_790_184_988;
+                var state = (RunState)RuntimeHelpers.GetUninitializedObject(typeof(RunState));
+                var player = (MegaCrit.Sts2.Core.Entities.Players.Player)RuntimeHelpers.GetUninitializedObject(typeof(MegaCrit.Sts2.Core.Entities.Players.Player));
+                AccessTools.Field(typeof(RunState), "_players").SetValue(state, new List<MegaCrit.Sts2.Core.Entities.Players.Player> { player });
+                AccessTools.Field(typeof(RunState), "<Rng>k__BackingField").SetValue(state, new RunRngSet("RESUME-HOOK-" + mode));
+                var save = new SerializableRun { StartTime = startedAt };
+                var lobby = (LoadRunLobby)RuntimeHelpers.GetUninitializedObject(typeof(LoadRunLobby));
+                AccessTools.Field(typeof(LoadRunLobby), "<Run>k__BackingField").SetValue(lobby, save);
+
+                var diagnostics = new List<string>();
+                ProfilerSession.Initialize(storeDirectory, "g", "m", diagnostics.Add);
+                startTimeField.SetValue(manager, startedAt);
+                if (multiplayer) manager.SetUpNewMultiplayer(state, null, true, null);
+                else manager.SetUpNewSingleplayer(state, true, null);
+                Check(ProfilerSession.CurrentRun?.StartedAt == startedAt && ProfilerSession.InRun
+                    && ProfilerSession.CurrentRun.Players.Count == 1,
+                    "Fresh setup captures the manager's initialized start time: " + mode);
+                ulong first = ProfilerSession.StartCombat("FIRST", "Normal");
+                Check(first != 0, "Fresh setup starts a native combat: " + mode + "; " + string.Join("; ", diagnostics));
+                ObserveDamage(first, 5);
+                Check(ProfilerSession.EndCombat(first) == 1, "Fresh setup persists its first combat: " + mode);
+                ProfilerSession.Shutdown();
+                ProfilerNative.Dispose();
+                ProfilerNative.Load(nativeLibrary);
+
+                ProfilerSession.Initialize(storeDirectory, "g", "m", _ => { });
+                startTimeField.SetValue(manager, 0L);
+                var coldSetup = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                pendingSetup = coldSetup.Task;
+                Task cold = multiplayer ? manager.SetUpSavedMultiplayer(state, lobby) : manager.SetUpSavedSingleplayer(state, save);
+                Check(ReferenceEquals(cold, coldSetup.Task) && !cold.IsCompleted
+                    && ProfilerSession.CurrentRun?.StartedAt == startedAt
+                    && ProfilerSession.CurrentRun.Combats == 1 && ProfilerSession.CurrentRun.Cards.Single().DamageDealt == 5,
+                    "Cold resume joins the original combat before the setup task completes while manager time is zero: " + mode);
+                startTimeField.SetValue(manager, startedAt);
+                coldSetup.SetResult(true);
+                cold.GetAwaiter().GetResult();
+                ulong second = ProfilerSession.StartCombat("SECOND", "Normal");
+                ObserveDamage(second, 7);
+                Check(ProfilerSession.EndCombat(second) == 1, "Cold resume persists its next combat: " + mode);
+                ProfilerSession.Suspend();
+
+                startTimeField.SetValue(manager, 999L);
+                var warmSetup = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                pendingSetup = warmSetup.Task;
+                Task warm = multiplayer ? manager.SetUpSavedMultiplayer(state, lobby) : manager.SetUpSavedSingleplayer(state, save);
+                Check(ReferenceEquals(warm, warmSetup.Task) && !warm.IsCompleted
+                    && ProfilerSession.CurrentRun?.StartedAt == startedAt
+                    && ProfilerSession.CurrentRun.Combats == 2 && ProfilerSession.CurrentRun.Cards.Single().DamageDealt == 12,
+                    "Repeated resume retains both combats before completion despite a stale manager start time: " + mode);
+                startTimeField.SetValue(manager, startedAt);
+                warmSetup.SetResult(true);
+                warm.GetAwaiter().GetResult();
+                ulong third = ProfilerSession.StartCombat("THIRD", "Normal");
+                ObserveDamage(third, 3);
+                Check(ProfilerSession.EndCombat(third) == 1, "Repeated resume persists its final combat: " + mode);
+                ProfilerSession.EndRun(0);
+                ProfilerSession.SelectHistory(state.Rng.StringSeed, startedAt, 0);
+                Check(ProfilerSession.SelectedHistory?.Combats == 3
+                    && ProfilerSession.SelectedHistory.Cards.Single().DamageDealt == 15
+                    && ProfilerSession.SelectedHistory.Outcome == "victory",
+                    "History contains one run identity and all completed combat totals: " + mode);
+                ProfilerSession.Shutdown();
+                ProfilerNative.Dispose();
+                ProfilerNative.Load(nativeLibrary);
+            }
+        }
+        finally
+        {
+            ProfilerSession.Shutdown();
+            pendingSetup = null;
+            startTimeField.SetValue(manager, originalStartTime);
+            harmony.UnpatchAll(harmony.Id);
+            CaptureRuntime.InvalidateEpoch();
+            RunContext.CaptureRunPlayers(null);
+        }
+    }
+
+    private static bool ProfileZeroPrefix(ref int __result) { __result = 0; return false; }
+    private static bool SkipNewSetup() => false;
+    private static bool SkipSavedSetup(ref Task __result) { __result = pendingSetup; return false; }
 
     private static void NativeBlockBatches(string directory)
     {
