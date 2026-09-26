@@ -77,12 +77,15 @@ internal static class StatisticsJson
             if (row == null || string.IsNullOrEmpty(row.Id) || row.Kind is < 0 or > 5 || row.Player is < 0 or > 4
                 || !keys.Add((row.Player, row.Kind, row.Id))) throw new InvalidDataException("Invalid source identity");
             if (row.DamageDealt < 0 || row.DamageBlocked < 0 || row.DamageBlocked > row.DamageDealt
-                || row.BlockGained < 0 || row.BlockEffective < 0 || row.Forge < 0 || row.DmgDirect < 0
+                || row.BlockGained < 0 || row.Forge < 0 || row.DmgDirect < 0
                 || row.DmgAttributed < 0 || row.DmgModifier < 0 || row.BlkModifier < 0 || row.MitigateDebuff < 0
                 || row.MitigateBuff < 0 || row.MitigateStr < 0 || row.SelfDamage < 0
                 || checked(row.DmgDirect + row.DmgAttributed + row.DmgModifier) != row.DamageDealt)
                 throw new InvalidDataException("Invalid source accounting");
         }
+        // Effective defense includes the surviving Osty HP debited to a sacrifice.
+        // Signed rows must still fit independently when player filters omit others.
+        StatRow.CheckRepresentable(rows);
         CheckAggregate(rows);
     }
 

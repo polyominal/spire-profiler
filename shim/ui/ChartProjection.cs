@@ -9,12 +9,12 @@ namespace SpireProfiler;
 internal enum UiTab { Combat, Run }
 internal enum ChartSection { Damage, Defense }
 internal enum ChartSegment { Direct, Attributed, Modifier, MitigateDebuff, MitigateBuff, MitigateStr, SelfDamage }
-internal sealed record ChartRow(StatRow Source, ChartSection Section, int Flags, string Name, long Value, int ShareX10, IReadOnlyList<int> SegMilli)
+internal sealed record ChartRow(StatRow Source, ChartSection Section, int Flags, string Name, long Value, Int128 ShareX10, IReadOnlyList<int> SegMilli)
 {
     internal bool SelfDamage => (Flags & 2) != 0;
     internal bool SoloSelf => (Flags & 4) != 0;
 }
-internal sealed record ChartMeta(uint Turns = 0, uint Plays = 0, uint Combats = 0, long TotalDamage = 0, long DamageTaken = 0, int DpsX10 = 0, string Encounter = "");
+internal sealed record ChartMeta(uint Turns = 0, uint Plays = 0, uint Combats = 0, long TotalDamage = 0, long DamageTaken = 0, int DpsX10 = 0, string Encounter = "", CaptureQuality Quality = CaptureQuality.Complete);
 internal sealed record DetailStat(string Label, string Value, UiColor Color);
 internal sealed record RowDetail(string Title, IReadOnlyList<DetailStat> Stats)
 {
@@ -53,7 +53,7 @@ internal static class ChartProjection
             }).ToArray();
             var kept = candidates.Where(row => row.Value > 0 || (section == ChartSection.Defense && row.Card.SelfDamage > 0))
                 .Take(MaxCandidates).OrderBy(row => section == ChartSection.Defense && row.Card.SelfDamage > 0 && row.Positive == 0)
-                .ThenByDescending(row => Math.Abs(row.Value)).ToArray();
+                .ThenByDescending(row => Int128.Abs(row.Value)).ToArray();
             Int128 maximum = kept.Length == 0 ? 0 : kept.Max(row => row.Scale);
             long total = candidates.Sum(row => row.Positive);
             foreach (var item in kept)
@@ -73,7 +73,7 @@ internal static class ChartProjection
 
     private static ChartRow MakeRow(StatRow source, ChartSection section, int flags, long value, long[] segments, Int128 maximum, long total)
     {
-        int share = (flags & 2) == 0 && total > 0 && value > 0 ? (int)((Int128)value * 1000 / total) : 0;
+        Int128 share = (flags & 2) == 0 && total > 0 && value > 0 ? (Int128)value * 1000 / total : 0;
         var milli = new int[7];
         if (maximum > 0)
             for (int index = 0; index < milli.Length; index++)
@@ -88,7 +88,8 @@ internal static class ChartProjection
         long damage = cards.Sum(card => card.DamageDealt);
         uint plays = tab == UiTab.Combat ? view.Plays : (uint)cards.Sum(card => (long)card.Plays);
         return new(view.Turns, plays, view.Combats, damage, view.DamageReceived,
-            view.Turns == 0 ? 0 : (int)((Int128)damage * 10 / view.Turns), tab == UiTab.Combat ? TruncateBytes(view.Title, 64) : "");
+            view.Turns == 0 ? 0 : (int)((Int128)damage * 10 / view.Turns), tab == UiTab.Combat ? TruncateBytes(view.Title, 64) : "",
+            view.Coverage.Quality);
     }
 
     internal static string Footer(SummaryView view, UiTab tab)
@@ -105,7 +106,7 @@ internal static class ChartProjection
         var row = rows[index];
         string prefix = UiPalette.Prefix(row.Source.Kind).Text;
         if (row.SelfDamage && !row.SoloSelf)
-            return new(prefix + row.Name, new[] { new DetailStat("self dmg", Math.Abs(row.Value).ToString(CultureInfo.InvariantCulture), UiPalette.Self) });
+            return new(prefix + row.Name, new[] { new DetailStat("self dmg", Int128.Abs(row.Value).ToString(CultureInfo.InvariantCulture), UiPalette.Self) });
         var card = cards.FirstOrDefault(card => card.Player == row.Source.Player && card.Id == row.Name);
         if (card == null) return RowDetail.Empty;
         var stats = new List<DetailStat>();

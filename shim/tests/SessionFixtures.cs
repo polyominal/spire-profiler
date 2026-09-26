@@ -33,6 +33,12 @@ internal static class SessionFixtures
             NativeLifecycle(Path.Combine(scratch, "native"));
             ProfilerNative.Dispose();
             ProfilerNative.Load(nativeLibrary);
+            NativeOstySacrifice(Path.Combine(scratch, "osty-sacrifice"));
+            ProfilerNative.Dispose();
+            ProfilerNative.Load(nativeLibrary);
+            IncompleteCombat(Path.Combine(scratch, "incomplete"));
+            ProfilerNative.Dispose();
+            ProfilerNative.Load(nativeLibrary);
             NativeBlockBatches(Path.Combine(scratch, "block-batches"));
             ProfilerNative.Dispose();
             ProfilerNative.Load(nativeLibrary);
@@ -95,6 +101,39 @@ internal static class SessionFixtures
             Reject(() => StatisticsJson.ParseNative(document.ToJsonString()), "Malformed native snapshot must fail before publication");
         }
         Check(parsed.Cards.Single().DmgDirect == 6 && parsed.Coverage.Complete, "Rejected parses must not change a prior immutable snapshot");
+        foreach (string field in new[] { "damage_dealt", "damage_blocked", "block_gained", "forge", "dmg_direct", "dmg_attributed", "dmg_modifier", "blk_modifier", "mitigate_debuff", "mitigate_buff", "mitigate_str", "self_damage" })
+        {
+            var document = valid.DeepClone();
+            document["cards"][0][field] = -1;
+            Reject(() => StatisticsJson.ParseNative(document.ToJsonString()), "Only effective defense permits negative accounting: " + field);
+        }
+        var signed = valid.DeepClone();
+        signed["cards"] = JsonNode.Parse("""
+            [{"id":"MINIMUM","block_gained":9,"block_effective":-9223372036854775807,"self_damage":1},
+             {"id":"OTHER","block_effective":2}]
+            """);
+        var signedCombat = StatisticsJson.ParseNative(signed.ToJsonString());
+        var signedRows = ChartProjection.Rows(signedCombat.Cards);
+        Check(signedRows.Count == 2 && signedRows[0].Name == "MINIMUM" && signedRows[0].Value == long.MinValue
+            && signedRows[0].SegMilli[(int)ChartSegment.SelfDamage] == 500 && signedRows[1].Value == 2,
+            "The full accepted signed domain must rank by magnitude without overflowing and retain drawable segment scaling");
+        var signedLayout = PanelLayout.Chart(UiTab.Combat, signedRows, new(), "");
+        Check(signedLayout.Body.OfType<TextCommand>().Any(text => text.Text == "-9223372036854775808")
+            && ChartProjection.Detail(signedRows, 0, signedCombat.Cards).Stats.Any(stat => stat.Label == "self dmg" && stat.Value == "1"),
+            "Minimum signed defense must remain displayable in chart labels and source details");
+        foreach (long credit in new[] { 2_147_484L, long.MaxValue })
+        {
+            signed["cards"][0]["block_effective"] = credit;
+            signed["cards"][0]["self_damage"] = 0;
+            signed["cards"][1]["block_effective"] = 1 - credit;
+            signedCombat = StatisticsJson.ParseNative(signed.ToJsonString());
+            signedRows = ChartProjection.Rows(signedCombat.Cards);
+            Check(signedRows.Count == 1 && signedRows[0].ShareX10 == (Int128)credit * 1000,
+                "Signed defense cancellation must preserve percentages beyond the int and long domains");
+            string expectedLabel = credit == long.MaxValue ? "9223372036854775807  (922337203685477580700.0%)" : "2147484  (214748400.0%)";
+            Check(PanelLayout.Chart(UiTab.Combat, signedRows, new(), "").Body.OfType<TextCommand>().Any(text => text.Text == expectedLabel),
+                "Large signed-defense percentages must display their actual magnitude without wrapping or clamping");
+        }
         var huge = new SummaryView
         {
             Cards = new[] { new StatRow { Id = "A", DamageDealt = long.MaxValue, DmgDirect = long.MaxValue } },
@@ -118,6 +157,12 @@ internal static class SessionFixtures
         {
             new StatRow { Id = "A", BlockGained = long.MaxValue }, new StatRow { Id = "B", BlockGained = 1 }
         }), "Accepted block totals must fit the UI and aggregate accounting domain");
+        Reject(() => StatisticsJson.CheckRows(new[]
+        {
+            new StatRow { Id = "POSITIVE", BlockEffective = long.MaxValue },
+            new StatRow { Id = "NEGATIVE", Player = 1, BlockEffective = -long.MaxValue },
+            new StatRow { Id = "ONE", BlockEffective = 1 }
+        }), "Negative defense cannot hide an overflow exposed by player filtering");
         var run = Header("SCHEMA", 100) with { RunId = "7" };
         var runJson = JsonSerializer.SerializeToNode(run, StatisticsJson.Options);
         runJson.AsObject().Remove("schema_version");
@@ -511,6 +556,45 @@ internal static class SessionFixtures
         ProfilerSession.Suspend();
     }
 
+    private static void NativeOstySacrifice(string directory)
+    {
+        var messages = new List<string>();
+        var run = Header("OSTY_SACRIFICE", 1350);
+        ProfilerSession.Initialize(directory, "g", "m", messages.Add);
+        ProfilerSession.StartRun(run, false);
+        ulong epoch = ProfilerSession.StartCombat("BONE_SHARDS", "Normal");
+        ulong summon = ProfilerNative.SourceCapture(epoch, 1, 100, "SUMMON", 0, 0, 0);
+        ulong shards = ProfilerNative.SourceCapture(epoch, 1, 101, "BONE_SHARDS", 0, 0, 0);
+        ulong play = ProfilerNative.CardPlayStarted(epoch, 1, 101, "BONE_SHARDS", 0, 0, 1, 0, shards);
+        Check(play != 0 && ProfilerNative.OstySummoned(epoch, summon, 5, 0) == 1
+            && ProfilerNative.BlockGained(epoch, 9, shards, 0, Array.Empty<BlockModifier>(), false) == 1
+            && ProfilerNative.OstyKilled(epoch, 0, play) == 1,
+            "Bone Shards gains block then sacrifices Osty's remaining five HP through the actual ABI");
+        ObserveDamage(epoch, 9);
+        Check(ProfilerSession.Refresh(), "A valid negative Osty credit must not reject the whole native snapshot");
+        var snapshot = ProfilerSession.CurrentCombat;
+        Check(snapshot.Cards.Single(row => row.Id == "BONE_SHARDS").BlockEffective == -5
+            && snapshot.Cards.Single(row => row.Id == "BONE_SHARDS").BlockGained == 9
+            && snapshot.Cards.Single(row => row.Id == "STRIKE").DamageDealt == 9 && snapshot.Coverage.Complete,
+            "Signed sacrifice credit, gross block, and unrelated damage must survive native parsing together");
+        Check(ProfilerNative.CardPlayFinished(play) == 1 && ProfilerNative.CardExecutionEnded(epoch, 1) == 1
+            && ProfilerSession.EndCombat(epoch) == 1 && ProfilerSession.CurrentRun.Combats == 1
+            && ProfilerSession.CurrentRun.Cards.Single(row => row.Id == "BONE_SHARDS").BlockEffective == -5,
+            "The completed run must retain the sacrifice instead of an empty interrupted combat");
+        ProfilerSession.EndRun(0);
+        ProfilerSession.Suspend();
+        ProfilerSession.StartRun(run, true);
+        Check(ProfilerSession.CurrentRun.Cards.Single(row => row.Id == "STRIKE").DamageDealt == 9
+            && ProfilerSession.CurrentRun.Cards.Single(row => row.Id == "BONE_SHARDS").BlockEffective == -5
+            && ProfilerSession.CurrentRun.Coverage.Complete,
+            "Stored signed combat accounting must survive a fresh session's continuation");
+        ProfilerSession.SelectHistory(run.Seed, run.StartedAt, run.Profile);
+        Check(ProfilerSession.SelectedHistory.Cards.Single(row => row.Id == "BONE_SHARDS").BlockEffective == -5
+            && ProfilerSession.SelectedHistory.Coverage.Complete && messages.Count == 0,
+            "History must read signed defense rows without dropping the combat or marking healthy capture partial");
+        ProfilerSession.Suspend();
+    }
+
     private static void OverlappingRunContexts(string directory)
     {
         ProfilerSession.Initialize(directory, "g", "m", _ => { });
@@ -545,6 +629,34 @@ internal static class SessionFixtures
         ProfilerSession.SelectHistory(repeated.Seed, repeated.StartedAt, repeated.Profile);
         Check(ProfilerSession.SelectedHistory == null,
             "Separately recorded fresh attempts with the same game identity remain ambiguous in history");
+    }
+
+    private static void IncompleteCombat(string directory)
+    {
+        var run = Header("INCOMPLETE", 1450);
+        ProfilerSession.Initialize(directory, "g", "m", _ => { });
+        ProfilerSession.StartRun(run, false);
+        ulong epoch = ProfilerSession.StartCombat("MISSING", "Normal");
+        ProfilerSession.ReportFailure("snapshot-read-failed");
+        Check(ProfilerSession.EndCombat(epoch) == 1 && ProfilerSession.CurrentCombat.Cards.Count == 0
+            && ChartProjection.Meta(ProfilerSession.CurrentCombat, UiTab.Combat).Quality == CaptureQuality.Partial,
+            "Zero recorded activity must retain the capture failure for combat presentation");
+        epoch = ProfilerSession.StartCombat("HEALTHY", "Normal");
+        ObserveDamage(epoch, 9);
+        Check(ProfilerSession.EndCombat(epoch) == 1 && ProfilerSession.CurrentCombat.Coverage.Complete
+            && ProfilerSession.CurrentRun.Cards.Single().DamageDealt == 9 && ProfilerSession.CurrentRun.Combats == 2
+            && ChartProjection.Meta(ProfilerSession.CurrentRun, UiTab.Run).Quality == CaptureQuality.Partial,
+            "A healthy later combat cannot erase a run's earlier missing activity");
+        ProfilerSession.EndRun(0);
+        ProfilerSession.Suspend();
+        ProfilerSession.StartRun(run, true);
+        Check(ChartProjection.Meta(ProfilerSession.CurrentRun, UiTab.Run).Quality == CaptureQuality.Partial,
+            "Continuation must restore the incomplete run warning from stored coverage");
+        ProfilerSession.SelectHistory(run.Seed, run.StartedAt, run.Profile);
+        Check(ChartProjection.Meta(ProfilerSession.SelectedHistory, UiTab.Run).Quality == CaptureQuality.Partial
+            && ProfilerSession.SelectedHistory.Coverage.Reasons.Contains("snapshot-read-failed"),
+            "History must warn about the same incomplete combat while retaining available totals");
+        ProfilerSession.Suspend();
     }
 
     private static void FailedWriteResume(string directory)
