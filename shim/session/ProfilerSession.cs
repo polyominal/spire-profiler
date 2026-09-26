@@ -127,17 +127,14 @@ internal static class ProfilerSession
             Combat = finished
         };
         combat = finished;
-        CurrentCombat = finished.View(combatRun?.Players ?? Array.Empty<PlayerSummary>(), combatRun);
+        if (!store.SaveCombat(record))
+            combat = finished with { Coverage = finished.Coverage.WithFailure("statistics-write-failed") };
+        CurrentCombat = combat.View(combatRun?.Players ?? Array.Empty<PlayerSummary>(), combatRun);
         if (run != null && combatRun != null && run.RunId == combatRun.RunId
             && run.Seed == combatRun.Seed && run.Profile == combatRun.Profile && run.StartedAt == combatRun.StartedAt)
         {
             completedRun = completedRun.Add(CurrentCombat);
             CurrentRun = completedRun;
-        }
-        if (!store.SaveCombat(record))
-        {
-            combat = finished with { Coverage = finished.Coverage.WithFailure("statistics-write-failed") };
-            CurrentCombat = combat.View(combatRun?.Players ?? Array.Empty<PlayerSummary>(), combatRun);
         }
         if (recording) store.SaveTrace(record.RunId, record.Ordinal, ProfilerNative.Recording());
         PoisonAudit.Finish(finished.Result, combat.Coverage);

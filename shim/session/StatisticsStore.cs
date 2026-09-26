@@ -12,6 +12,11 @@ namespace SpireProfiler;
 // Each combat carries the run metadata captured at its start. Finalized headers
 // append to statistics-v2/runs.jsonl; the first matching header supplies history.
 // Numeric IDs reserve existing directories and files, including unreadable ones.
+// capture.json atomically records a run and its exact finalized combat IDs before
+// each combat write. It detects missing records without treating global ID gaps
+// or discarded attempts as lost combats. Older stores have no such inventory.
+// Failed inventory updates retry at explicit saves; combat payloads never retry.
+// If neither inventory nor combat can be written, process loss loses the evidence.
 // Unversioned and schema-1 stores are read-only inputs. Preserved run IDs
 // flatten imported directory aliases; new records use numeric identities only.
 internal sealed class StatisticsStore
@@ -25,11 +30,56 @@ internal sealed class StatisticsStore
     private readonly string runsDirectory;
     private readonly Action<string> report;
     private StoreSnapshot history;
+    private readonly Dictionary<string, CaptureInventory> pendingInventories = new(StringComparer.Ordinal);
     private uint lastAllocatedRunId;
     internal string GameVersion { get; }
     internal string ModVersion { get; }
 
-    private sealed record StoreSnapshot(IReadOnlyList<RunRecord> Headers, IReadOnlyList<CombatRecord> Combats, IReadOnlySet<RunIdentity> InvalidImports, uint MaximumRunId);
+    private sealed record StoreSnapshot(IReadOnlyList<RunRecord> Headers, IReadOnlyList<CombatRecord> Combats, IReadOnlySet<RunIdentity> InvalidImports, uint MaximumRunId, ReadState Read);
+
+    private sealed record CaptureInventory
+    {
+        public int SchemaVersion { get; init; } = StatisticsStore.SchemaVersion;
+        public RunRecord Run { get; init; }
+        public IReadOnlyList<uint> CombatIds { get; init; } = Array.Empty<uint>();
+
+        internal static CaptureInventory Parse(string json, string id)
+        {
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("schema_version", out var schema)
+                || !schema.TryGetInt32(out int version) || version != StatisticsStore.SchemaVersion
+                || !root.TryGetProperty("run", out var run) || !root.TryGetProperty("combat_ids", out var ids))
+                throw new InvalidDataException("Missing or unsupported capture inventory");
+            var identity = StatisticsJson.ParseRun(run.GetRawText(), id);
+            var ordinals = JsonSerializer.Deserialize<uint[]>(ids, StatisticsJson.Options);
+            if (identity.Identity == null || ordinals == null || ordinals.Length == 0
+                || ordinals.Any(ordinal => ordinal == 0) || ordinals.Distinct().Count() != ordinals.Length)
+                throw new InvalidDataException("Invalid capture inventory identity or combat IDs");
+            return new() { Run = identity, CombatIds = Array.AsReadOnly(ordinals) };
+        }
+    }
+
+    private sealed record ReadGap(int Version, string RunId, IReadOnlySet<RunIdentity> Owners, string Reason);
+
+    private sealed class ReadState
+    {
+        internal readonly List<CaptureInventory> Inventories = new();
+        internal readonly List<ReadGap> Gaps = new();
+        internal readonly HashSet<RunIdentity> Finalized = new();
+
+        internal SummaryView Apply(SummaryView summary, RunRecord run)
+        {
+            var reasons = Gaps.Where(gap => gap.RunId == null ? gap.Version == SchemaVersion || gap.Owners.Contains(run.Identity)
+                : gap.Owners.Count != 0 ? gap.Owners.Contains(run.Identity)
+                : gap.Version == SchemaVersion ? gap.RunId == run.RunId : run.PreservedRunIds.Contains(gap.RunId, StringComparer.Ordinal))
+                .Select(gap => gap.Reason);
+            if (summary.Combats == 0 && Finalized.Contains(run.Identity)) reasons = reasons.Append("statistics-record-missing");
+            foreach (string reason in reasons.Distinct(StringComparer.Ordinal))
+                summary = summary with { Coverage = summary.Coverage.WithFailure(reason) };
+            return summary;
+        }
+    }
 
     internal StatisticsStore(string dataDirectory, string gameVersion, string modVersion, Action<string> report)
     {
@@ -96,6 +146,12 @@ internal sealed class StatisticsStore
                     bool numeric = uint.TryParse(runId, NumberStyles.None, CultureInfo.InvariantCulture, out uint number);
                     if (!numeric && (root != Path.Combine(preservedDirectory, "runs") || !Guid.TryParseExact(runId, "N", out _))) continue;
                     string source = numeric ? Path.Combine(root, number.ToString(CultureInfo.InvariantCulture)) : directory;
+                    if (root == runsDirectory && numeric)
+                    {
+                        string inventoryPath = Path.Combine(source, "capture.json");
+                        if (File.Exists(inventoryPath) || Directory.Exists(inventoryPath))
+                            maximum = Math.Max(maximum, CaptureInventory.Parse(Read(inventoryPath), number.ToString(CultureInfo.InvariantCulture)).CombatIds.Max());
+                    }
                     foreach (string path in Files(source))
                     {
                         if (!uint.TryParse(Path.GetFileNameWithoutExtension(path), NumberStyles.None, CultureInfo.InvariantCulture, out uint id)) continue;
@@ -107,6 +163,7 @@ internal sealed class StatisticsStore
                         }
                     }
                 }
+            foreach (var inventory in pendingInventories.Values) maximum = Math.Max(maximum, inventory.CombatIds.Max());
             return maximum;
         }
         catch (Exception ex) when (RecordFailure(ex)) { report($"cannot scan combat IDs: {ex.Message}"); return null; }
@@ -117,8 +174,11 @@ internal sealed class StatisticsStore
         if (run.Outcome is not ("victory" or "defeat" or "abandoned")) return false;
         try
         {
+            foreach (string id in pendingInventories.Keys.ToArray()) SaveInventory(id);
+            if (pendingInventories.ContainsKey(run.RunId)) return false;
             foreach (var (root, version) in Stores) ReadHeaders(root, version, strictHeaders: true);
-            if (!ReadCombats(run).Any(combat => Belongs(combat, run))) return false;
+            var records = ReadCombats(run, out var read);
+            if (!records.Any(combat => Belongs(combat, run)) && !read.Inventories.Any(inventory => inventory.Run.Identity == run.Identity && MatchesStorage(inventory.Run.RunId, run))) return false;
             string path = Path.Combine(versionDirectory, "runs.jsonl");
             string prior = File.Exists(path) ? Read(path) : "";
             if (prior.Length != 0 && !prior.EndsWith('\n')) prior += "\n";
@@ -131,9 +191,49 @@ internal sealed class StatisticsStore
 
     internal bool SaveCombat(CombatRecord record)
     {
+        history = null;
+        bool inventoryWritten = true;
+        if (record.Run != null)
+        {
+            if (pendingInventories.TryGetValue(record.RunId, out var prior) && prior.Run.Identity != record.Run.Identity)
+            {
+                report("capture inventory belongs to a different run");
+                return false;
+            }
+            pendingInventories[record.RunId] = new()
+            {
+                Run = record.Run,
+                CombatIds = Array.AsReadOnly((prior?.CombatIds ?? Array.Empty<uint>()).Append(record.Ordinal).Distinct().Order().ToArray())
+            };
+            foreach (string id in pendingInventories.Keys.ToArray()) SaveInventory(id);
+            inventoryWritten = !pendingInventories.ContainsKey(record.RunId);
+        }
+        if (!inventoryWritten) record = record with { Combat = record.Combat with { Coverage = record.Combat.Coverage.WithFailure("statistics-inventory-write-failed") } };
         bool written = WriteText(Path.Combine(RunDirectory(record.RunId), $"{record.Ordinal}.json"), JsonSerializer.Serialize(record, StatisticsJson.Options), overwrite: false);
-        if (written) history = null;
-        return written;
+        return written && inventoryWritten;
+    }
+
+    private bool SaveInventory(string id)
+    {
+        history = null;
+        try
+        {
+            var inventory = pendingInventories[id];
+            string path = Path.Combine(RunDirectory(id), "capture.json");
+            if (File.Exists(path) || Directory.Exists(path))
+            {
+                var previous = CaptureInventory.Parse(Read(path), id);
+                if (previous.Run.Identity != inventory.Run.Identity) throw new InvalidDataException("Capture inventory belongs to a different run");
+                inventory = inventory with { CombatIds = Array.AsReadOnly(previous.CombatIds.Concat(inventory.CombatIds).Distinct().Order().ToArray()) };
+                pendingInventories[id] = inventory;
+            }
+            string json = JsonSerializer.Serialize(inventory, StatisticsJson.Options);
+            _ = CaptureInventory.Parse(json, id);
+            if (!WriteText(path, json, overwrite: true)) return false;
+            pendingInventories.Remove(id);
+            return true;
+        }
+        catch (Exception ex) when (RecordFailure(ex)) { report($"cannot persist capture inventory: {ex.Message}"); return false; }
     }
 
     internal void SaveTrace(string runId, uint ordinal, string recording)
@@ -152,7 +252,7 @@ internal sealed class StatisticsStore
         uint highest = 0;
         try
         {
-            var records = ReadCombats(run);
+            var records = ReadCombats(run, out var read);
             // GUID recordings reused native IDs after restart. Equal-key sorting
             // depends on the full archive, including unrelated records.
             if (records.Select(record => record.Combat.CombatId).Distinct().Count() != records.Count)
@@ -163,8 +263,11 @@ internal sealed class StatisticsStore
                 highest = Math.Max(highest, record.Ordinal);
                 summary = historyView ? summary.AddHistory(record.Combat) : summary.Add(record.Combat.View(run.Players));
             }
+            foreach (var inventory in read.Inventories.Where(inventory => inventory.Run.Identity == run.Identity && MatchesStorage(inventory.Run.RunId, run)))
+                highest = Math.Max(highest, inventory.CombatIds.Max());
+            summary = read.Apply(summary, run);
         }
-        catch (Exception ex) when (RecordFailure(ex)) { report($"cannot load run: {ex.Message}"); }
+        catch (Exception ex) when (RecordFailure(ex)) { report($"cannot load run: {ex.Message}"); summary = summary with { Coverage = summary.Coverage.WithFailure("statistics-read-failed") }; }
         return (summary, highest);
     }
 
@@ -179,7 +282,7 @@ internal sealed class StatisticsStore
             var summary = run.EmptySummary();
             foreach (var combat in history.Combats)
                 if (Belongs(combat, run)) summary = summary.AddHistory(combat.Combat);
-            return summary;
+            return history.Read.Apply(summary, run);
         }
         catch (Exception ex) when (RecordFailure(ex)) { report($"cannot select statistics: {ex.Message}"); return null; }
     }
@@ -215,19 +318,21 @@ internal sealed class StatisticsStore
         var headers = new List<RunRecord>();
         var combats = new List<CombatRecord>();
         var invalidImports = new HashSet<RunIdentity>();
+        var read = new ReadState();
         uint maximum = 0;
         foreach (var (root, version) in Stores)
         {
             var sourceHeaders = ReadHeaders(root, version, strictHeaders);
-            var sourceCombats = ReadCombats(root, version, null, includeCombats, sourceHeaders);
+            var sourceCombats = ReadCombats(root, version, null, read, includeCombats, sourceHeaders);
             foreach (var header in sourceHeaders)
                 if (uint.TryParse(header.RunId, NumberStyles.None, CultureInfo.InvariantCulture, out uint reserved)) maximum = Math.Max(maximum, reserved);
             if (version == 1) NormalizeVersionOneStore(sourceHeaders, sourceCombats, invalidImports);
             headers.AddRange(sourceHeaders);
             combats.AddRange(sourceCombats);
         }
+        headers.AddRange(read.Inventories.Select(inventory => inventory.Run with { Outcome = "", EndedAt = 0, Players = Array.Empty<PlayerSummary>() }));
         combats.Sort((left, right) => left.Combat.CombatId.CompareTo(right.Combat.CombatId));
-        return new(headers, combats, invalidImports, maximum);
+        return new(headers, combats, invalidImports, maximum, read);
     }
 
     private static void NormalizeVersionOneStore(List<RunRecord> headers, List<CombatRecord> combats, HashSet<RunIdentity> invalid)
@@ -300,20 +405,28 @@ internal sealed class StatisticsStore
         return headers;
     }
 
-    private List<CombatRecord> ReadCombats(RunRecord selected)
+    private List<CombatRecord> ReadCombats(RunRecord selected, out ReadState read)
     {
+        read = new();
         var combats = new List<CombatRecord>();
-        foreach (var (root, version) in Stores) combats.AddRange(ReadCombats(root, version, selected));
+        foreach (var (root, version) in Stores) combats.AddRange(ReadCombats(root, version, selected, read, headers: ReadHeaders(root, version)));
         combats.Sort((left, right) => left.Combat.CombatId.CompareTo(right.Combat.CombatId));
         return combats;
     }
 
-    private List<CombatRecord> ReadCombats(string root, int version, RunRecord selected, bool includeCombats = true, List<RunRecord> headers = null)
+    private List<CombatRecord> ReadCombats(string root, int version, RunRecord selected, ReadState read, bool includeCombats = true, List<RunRecord> headers = null)
     {
         var combats = new List<CombatRecord>();
         string[] directories;
         try { directories = Directories(Path.Combine(root, "runs")); }
-        catch (Exception ex) when (RecordFailure(ex)) { report($"cannot list history: {ex.Message}"); directories = Array.Empty<string>(); }
+        catch (Exception ex) when (RecordFailure(ex))
+        {
+            report($"cannot list history: {ex.Message}");
+            read.Gaps.Add(new(version, null, headers.Where(header => header.Identity != null).Select(header => header.Identity).ToHashSet(), "statistics-read-failed"));
+            directories = Array.Empty<string>();
+        }
+        var expectedDirectories = version == SchemaVersion ? pendingInventories.Keys : Enumerable.Empty<string>();
+        directories = directories.Concat(expectedDirectories.Select(id => Path.Combine(root, "runs", id)).Except(directories, StringComparer.Ordinal)).ToArray();
         foreach (string directory in directories)
         {
             string id = Path.GetFileName(directory);
@@ -321,18 +434,47 @@ internal sealed class StatisticsStore
             string sourceDirectory = numeric ? Path.Combine(root, "runs", numericId.ToString(CultureInfo.InvariantCulture)) : directory;
             if (numeric) id = numericId.ToString(CultureInfo.InvariantCulture);
             if (selected != null && !MatchesStorage(id, selected)) continue;
+            var owners = headers.Where(header => header.RunId == id && header.Identity != null).Select(header => header.Identity).ToHashSet();
+            var reasons = new HashSet<string>(StringComparer.Ordinal);
+            CaptureInventory inventory = null;
+            if (version == SchemaVersion)
+            {
+                string path = Path.Combine(sourceDirectory, "capture.json");
+                try
+                {
+                    if (File.Exists(path) || Directory.Exists(path)) inventory = CaptureInventory.Parse(Read(path), id);
+                }
+                catch (Exception ex) when (RecordFailure(ex)) { report($"cannot read capture inventory: {ex.Message}"); reasons.Add("statistics-read-failed"); }
+                if (pendingInventories.TryGetValue(id, out var pending))
+                {
+                    reasons.Add("statistics-inventory-write-failed");
+                    if (inventory == null) inventory = pending;
+                    else if (inventory.Run.Identity == pending.Run.Identity)
+                        inventory = pending with { CombatIds = Array.AsReadOnly(inventory.CombatIds.Concat(pending.CombatIds).Distinct().ToArray()) };
+                    else owners.Add(pending.Run.Identity);
+                }
+                if (inventory != null) { owners.Add(inventory.Run.Identity); read.Inventories.Add(inventory); }
+            }
             RunRecord guidHeader = null;
             if (!numeric)
             {
                 if (version != 1 || !Guid.TryParseExact(id, "N", out _)) continue;
                 try { guidHeader = StatisticsJson.ParseVersionOneRun(Read(Path.Combine(directory, "run.json")), id); }
-                catch (Exception ex) when (RecordFailure(ex)) { report($"cannot read preserved run: {ex.Message}"); continue; }
+                catch (Exception ex) when (RecordFailure(ex))
+                {
+                    report($"cannot read preserved run: {ex.Message}");
+                    read.Gaps.Add(new(version, id, owners, "statistics-read-failed"));
+                    continue;
+                }
+                if (guidHeader.Identity != null) owners.Add(guidHeader.Identity);
                 if (guidHeader.Outcome is "victory" or "defeat" or "abandoned") headers?.Add(guidHeader);
             }
             if (!includeCombats) continue;
             string[] paths;
             try { paths = Files(sourceDirectory); }
-            catch (Exception ex) when (RecordFailure(ex)) { report($"cannot list combats: {ex.Message}"); continue; }
+            catch (Exception ex) when (RecordFailure(ex)) { report($"cannot list combats: {ex.Message}"); reasons.Add("statistics-read-failed"); paths = Array.Empty<string>(); }
+            if (!Directory.Exists(sourceDirectory) && owners.Count != 0) reasons.Add("statistics-read-failed");
+            var accepted = new HashSet<uint>();
             foreach (string path in paths)
             {
                 if (!uint.TryParse(Path.GetFileNameWithoutExtension(path), NumberStyles.None, CultureInfo.InvariantCulture, out uint ordinal)) continue;
@@ -348,12 +490,18 @@ internal sealed class StatisticsStore
                     }
                     else record = LegacyCombatRecord(Read(sourcePath), id, ordinal);
                     if (numeric && (id == "0" ? record.Run != null : record.Run?.RunId != id)) throw new InvalidDataException("Combat run identity differs from directory");
+                    if (inventory != null && record.Run?.Identity != inventory.Run.Identity) throw new InvalidDataException("Combat run identity differs from capture inventory");
                     if (record.Run != null) record = record with { Run = record.Run with { Outcome = "", EndedAt = 0, Players = Array.Empty<PlayerSummary>() } };
+                    if (record.Run?.Identity != null) owners.Add(record.Run.Identity);
+                    if (inventory != null && record.Run?.Identity == inventory.Run.Identity) accepted.Add(ordinal);
                     combats.Add(record);
                 }
-                catch (Exception ex) when (RecordFailure(ex)) { report($"cannot parse combat '{path}': {ex.Message}"); }
+                catch (Exception ex) when (RecordFailure(ex)) { report($"cannot parse combat '{path}': {ex.Message}"); reasons.Add("statistics-read-failed"); }
             }
+            if (inventory != null && inventory.CombatIds.Any(ordinal => !accepted.Contains(ordinal))) reasons.Add("statistics-record-missing");
+            foreach (string reason in reasons) read.Gaps.Add(new(version, id, owners, reason));
         }
+        read.Finalized.UnionWith(headers.Where(header => header.Identity != null).Select(header => header.Identity));
         return combats;
     }
 

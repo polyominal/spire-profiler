@@ -29,6 +29,12 @@ internal static class SessionFixtures
             VersionBoundaries(Path.Combine(scratch, "versions"));
             PreservedCombatIdCollisions(Path.Combine(scratch, "collisions"));
             FailedIdScans(Path.Combine(scratch, "scan"));
+            DamagedCombatReads(Path.Combine(scratch, "damaged"));
+            CaptureInventory(Path.Combine(scratch, "inventory"));
+            InvalidInventories(Path.Combine(scratch, "invalid-inventory"));
+            FailedInventoryRetry(Path.Combine(scratch, "inventory-retry"));
+            FailedReadIsolation(Path.Combine(scratch, "read-isolation"));
+            CachedWriteFailure(Path.Combine(scratch, "cached-failure"));
             ProfilerNative.Load(nativeLibrary);
             NativeLifecycle(Path.Combine(scratch, "native"));
             ProfilerNative.Dispose();
@@ -46,6 +52,12 @@ internal static class SessionFixtures
             ProfilerNative.Dispose();
             ProfilerNative.Load(nativeLibrary);
             FailedWriteResume(Path.Combine(scratch, "failed-write"));
+            ProfilerNative.Dispose();
+            ProfilerNative.Load(nativeLibrary);
+            FailedFirstWrite(Path.Combine(scratch, "failed-first-record"), false);
+            ProfilerNative.Dispose();
+            ProfilerNative.Load(nativeLibrary);
+            FailedFirstWrite(Path.Combine(scratch, "failed-first-inventory"), true);
             ProfilerNative.Dispose();
             ProfilerNative.Load(nativeLibrary);
             RepeatedHeaders(Path.Combine(scratch, "headers"));
@@ -322,6 +334,19 @@ internal static class SessionFixtures
         var selected = store.Select(previous.Identity);
         Check(selected.Combats == 4 && selected.Cards.Single().DamageDealt == 20 && selected.Outcome == "victory",
             "Continued GUID observations retain the first finalized history metadata");
+        Check(selected.Coverage.Quality == CaptureQuality.Unknown,
+            "Preserved aliases in other store versions must not invent missing directories or turn legacy unknown coverage partial");
+        var priorResumeQuality = store.LoadRun(resumed).Summary.Coverage;
+        var unrelated = Header("UNRELATED-CURRENT", 1100) with { RunId = "42" };
+        Check(store.SaveCombat(Record(unrelated, 11, 99)), "A reused alias ID in another store version can belong to an unrelated identity");
+        File.WriteAllText(Path.Combine(directory, "statistics-v2", "runs", unrelated.RunId, "11.json"), "unrelated corrupt record");
+        store = new StatisticsStore(directory, "g", "m", _ => { });
+        var selectedQuality = store.Select(previous.Identity).Coverage;
+        var resumedQuality = store.LoadRun(resumed).Summary.Coverage;
+        Check(selectedQuality.Quality == CaptureQuality.Unknown && resumedQuality.Quality == priorResumeQuality.Quality
+            && resumedQuality.Failures == priorResumeQuality.Failures && resumedQuality.Reasons.SequenceEqual(priorResumeQuality.Reasons),
+            "An unrelated current directory cannot taint a run that preserves that ID from a different store version: "
+            + JsonSerializer.Serialize(new[] { selectedQuality, resumedQuality }, StatisticsJson.Options));
         Check(File.ReadAllText(Path.Combine(root, "run.json")) == header && File.ReadAllText(Path.Combine(root, "00000001.json")) == combat,
             "Preserved GUID files must remain untouched");
         Check(File.ReadAllText(Path.Combine(directory, "statistics-v1", "runs.jsonl")) == numericHeaderText
@@ -466,8 +491,9 @@ internal static class SessionFixtures
         File.WriteAllText(Path.Combine(runs, "9", "90.json"), "unrelated corrupt combat");
         File.WriteAllText(Path.Combine(runs, run.RunId, "2.json"), "selected corrupt combat");
         var loaded = store.LoadRun(run);
-        Check(loaded.Summary.Combats == 2 && loaded.Summary.Cards.Single().DamageDealt == 13 && loaded.LastOrdinal == 3,
-            "Targeted loading skips malformed records and retains selected combat ordering");
+        Check(loaded.Summary.Combats == 2 && loaded.Summary.Cards.Single().DamageDealt == 13 && loaded.LastOrdinal == 3
+            && loaded.Summary.Coverage.Quality == CaptureQuality.Partial,
+            "Targeted loading skips malformed records, retains selected combat ordering, and marks its surviving totals partial");
         Check(messages.Count == 1 && messages[0].Contains("2.json", StringComparison.Ordinal), "Loading one run must not parse other run combat files");
         messages.Clear();
         Check(store.SaveRun(run with { Outcome = "victory", EndedAt = 600 }) && messages.Count == 1,
@@ -496,6 +522,188 @@ internal static class SessionFixtures
         Check(store.MaxCombatId() == uint.MaxValue, "Corrupt combat filenames still reserve the final combat ID");
     }
 
+    private static void CaptureInventory(string directory)
+    {
+        var store = new StatisticsStore(directory, "g", "m", _ => { });
+        var run = store.OpenRun(Header("SPARSE", 2100), false);
+        Check(store.SaveCombat(Record(run, 1, 9)) && store.SaveCombat(Record(run, 4, 5)), "Sparse finalized combat IDs must persist");
+        string path = Path.Combine(directory, "statistics-v2", "runs", run.RunId, "capture.json");
+        Check(File.Exists(path), "Successful combat writes retain the inventory needed to detect later record loss");
+        var inventory = JsonNode.Parse(File.ReadAllText(path));
+        Check(inventory["schema_version"].GetValue<int>() == 2
+            && StatisticsJson.ParseRun(inventory["run"].ToJsonString(), run.RunId).Identity == run.Identity
+            && inventory["combat_ids"].AsArray().Select(id => id.GetValue<uint>()).Order().SequenceEqual(new uint[] { 1, 4 }),
+            "Capture inventory records the original identity and exact finalized IDs");
+        var fresh = new StatisticsStore(directory, "g", "m", _ => { });
+        Check(fresh.LoadRun(run).Summary.Coverage.Complete && fresh.Select(run.Identity).Coverage.Complete,
+            "Global combat ID gaps alone must never imply missing run activity");
+        File.Delete(path);
+        fresh = new StatisticsStore(directory, "g", "m", _ => { });
+        Check(fresh.LoadRun(run).Summary.Coverage.Complete && fresh.Select(run.Identity).Combats == 2,
+            "Older current-schema records without an inventory remain readable at their recorded quality");
+    }
+
+    private static void DamagedCombatReads(string directory)
+    {
+        foreach (string damage in new[] { "deleted", "malformed", "identity" })
+        {
+            string root = Path.Combine(directory, damage);
+            var store = new StatisticsStore(root, "g", "m", _ => { });
+            var run = store.OpenRun(Header("DAMAGED", 2200), false);
+            var other = store.OpenRun(Header("HEALTHY", 2300), false);
+            Check(store.SaveCombat(Record(run, 1, 9)) && store.SaveCombat(Record(run, 4, 5))
+                && store.SaveCombat(Record(other, 2, 7)), "Read failure fixtures must first persist healthy records");
+            var preserved = Header("PRESERVED-HEALTHY", 2400) with { RunId = run.RunId };
+            string oldDirectory = Path.Combine(root, "statistics-v1", "runs", preserved.RunId);
+            Directory.CreateDirectory(oldDirectory);
+            var oldRecord = JsonSerializer.SerializeToNode(Record(preserved, 8, 11), StatisticsJson.Options);
+            oldRecord["schema_version"] = 1;
+            oldRecord["run"]["schema_version"] = 1;
+            File.WriteAllText(Path.Combine(oldDirectory, "8.json"), oldRecord.ToJsonString());
+            string path = Path.Combine(root, "statistics-v2", "runs", run.RunId, "4.json");
+            if (damage == "deleted") File.Delete(path);
+            else if (damage == "malformed") File.WriteAllText(path, "{truncated");
+            else
+            {
+                var record = JsonNode.Parse(File.ReadAllText(path));
+                record["run"]["seed"] = "REPLACED-IDENTITY";
+                File.WriteAllText(path, record.ToJsonString());
+            }
+            var fresh = new StatisticsStore(root, "g", "m", _ => { });
+            var resumed = fresh.OpenRun(Header("DAMAGED", 2200), true);
+            var loaded = fresh.LoadRun(resumed).Summary;
+            Check(resumed.RunId == run.RunId && fresh.MaxCombatId() == 8 && loaded.Combats == 1
+                && loaded.Cards.Single().DamageDealt == 9 && loaded.Coverage.Quality == CaptureQuality.Partial,
+                "Restart must retain valid totals and flag missing, malformed, or identity-mismatched finalized records: " + damage);
+            var selected = fresh.Select(run.Identity);
+            Check(selected?.Combats == 1 && selected.Cards.Single().DamageDealt == 9 && selected.Coverage.Quality == CaptureQuality.Partial,
+                "History must expose the same loss without inventing accounting: " + damage);
+            Check(fresh.Select(other.Identity)?.Coverage.Complete == true && fresh.LoadRun(other).Summary.Coverage.Complete
+                && fresh.Select(preserved.Identity)?.Coverage.Complete == true
+                && fresh.Select(preserved.Identity).Cards.Single().DamageDealt == 11,
+                "Read failures cannot contaminate healthy runs or a preserved store sharing the numeric directory ID");
+            if (damage == "identity")
+                Check(fresh.Select(RunIdentity.Parse(0, "REPLACED-IDENTITY", 2200)) == null,
+                    "A record contradicting its inventory cannot manufacture another selectable run");
+        }
+    }
+
+    private static void InvalidInventories(string directory)
+    {
+        int index = 0;
+        foreach (var invalidate in new Action<JsonNode>[]
+        {
+            node => node.AsObject().Remove("schema_version"),
+            node => node["schema_version"] = 99,
+            node => node["run"] = null,
+            node => node["run"]["run_id"] = "99",
+            node => node["run"]["seed"] = "",
+            node => node["combat_ids"] = JsonNode.Parse("[0]"),
+            node => node["combat_ids"] = JsonNode.Parse("[1,1]"),
+            node => node["combat_ids"] = null,
+        })
+        {
+            string root = Path.Combine(directory, (index++).ToString(CultureInfo.InvariantCulture));
+            var store = new StatisticsStore(root, "g", "m", _ => { });
+            var run = store.OpenRun(Header("INVALID-INVENTORY", 2500), false);
+            Check(store.SaveCombat(Record(run, 1, 9)), "Inventory validation starts from an accepted record");
+            string path = Path.Combine(root, "statistics-v2", "runs", run.RunId, "capture.json");
+            Check(File.Exists(path), "A persisted record must have its finalized capture inventory");
+            var inventory = JsonNode.Parse(File.ReadAllText(path));
+            invalidate(inventory);
+            File.WriteAllText(path, inventory.ToJsonString());
+            var fresh = new StatisticsStore(root, "g", "m", _ => { });
+            var selected = fresh.Select(run.Identity);
+            Check(fresh.MaxCombatId() == null && selected?.Combats == 1 && selected.Cards.Single().DamageDealt == 9
+                && selected.Coverage.Quality == CaptureQuality.Partial && fresh.LoadRun(run).Summary.Coverage.Quality == CaptureQuality.Partial,
+                "An invalid inventory fails ID reservation closed while preserving readable partial totals");
+        }
+    }
+
+    private static void FailedInventoryRetry(string directory)
+    {
+        foreach (string retry in new[] { "next-combat", "finalize", "other-run" })
+        {
+            bool finalize = retry == "finalize", otherRun = retry == "other-run";
+            string root = Path.Combine(directory, retry);
+            var store = new StatisticsStore(root, "g", "m", _ => { });
+            var run = store.OpenRun(Header("INVENTORY-RETRY", 2600), false);
+            var next = otherRun ? store.OpenRun(Header("OTHER-RETRY", 2650), false) : run;
+            string runDirectory = Path.Combine(root, "statistics-v2", "runs", run.RunId);
+            Directory.CreateDirectory(Path.Combine(runDirectory, "capture.json.tmp"));
+            Directory.CreateDirectory(Path.Combine(runDirectory, "1.json.tmp"));
+            Check(!store.SaveCombat(Record(run, 1, 9)), "An obstructed capture inventory and record must report failure");
+            Check(!store.SaveRun(run with { Outcome = "victory", EndedAt = 2700 })
+                && !File.Exists(Path.Combine(root, "statistics-v2", "runs.jsonl")),
+                "Finalization cannot publish an apparently empty healthy run while its only loss evidence remains unwritable");
+            Directory.Delete(Path.Combine(runDirectory, "capture.json.tmp"));
+            Directory.Delete(Path.Combine(runDirectory, "1.json.tmp"));
+            if (finalize) Check(store.SaveRun(run with { Outcome = "victory", EndedAt = 2700 }), "Finalization retries pending capture metadata even without a stored combat");
+            else Check(store.SaveCombat(Record(next, 3, 4)), "A later explicit combat save retries pending capture metadata across run contexts");
+            var fresh = new StatisticsStore(root, "g", "m", _ => { });
+            var selected = fresh.Select(run.Identity);
+            Check(File.Exists(Path.Combine(runDirectory, "capture.json")) && !File.Exists(Path.Combine(runDirectory, "1.json"))
+                && fresh.MaxCombatId() == (finalize ? 1u : 3u) && fresh.OpenRun(run, true).RunId == run.RunId,
+                "Metadata retry reserves every finalized ID without retrying the failed immutable combat");
+            bool hasStoredCombat = !finalize && !otherRun;
+            Check(selected?.Combats == (hasStoredCombat ? 1u : 0u) && selected.Coverage.Quality == CaptureQuality.Partial
+                && (hasStoredCombat ? selected.Cards.Single().DamageDealt == 4 : selected.Cards.Count == 0),
+                "A repaired inventory restores durable loss evidence without adding missing counters");
+            if (otherRun) Check(fresh.Select(next.Identity)?.Coverage.Complete == true,
+                "Retrying another run's missing inventory must not contaminate the successfully saved run");
+        }
+    }
+
+    private static void FailedReadIsolation(string directory)
+    {
+        var store = new StatisticsStore(directory, "g", "m", _ => { });
+        var run = store.OpenRun(Header("UNREADABLE", 2800), false);
+        var healthy = store.OpenRun(Header("READABLE", 2900), false);
+        Check(store.SaveCombat(Record(run, 1, 9)) && store.SaveRun(run with { Outcome = "victory", EndedAt = 2850 })
+            && store.SaveCombat(Record(healthy, 2, 4)), "Folder obstruction fixtures must begin with valid records and a durable identity");
+        string path = Path.Combine(directory, "statistics-v2", "runs", run.RunId);
+        Directory.Move(path, Path.Combine(directory, "held-run"));
+        var missing = new StatisticsStore(directory, "g", "m", _ => { });
+        Check(missing.Select(run.Identity)?.Coverage.Quality == CaptureQuality.Partial
+            && missing.LoadRun(run).Summary.Coverage.Quality == CaptureQuality.Partial
+            && missing.Select(healthy.Identity)?.Coverage.Complete == true,
+            "A finalized header without its vanished records must not produce healthy empty history or taint another run");
+        File.WriteAllText(path, "directory obstruction");
+        var fresh = new StatisticsStore(directory, "g", "m", _ => { });
+        var loaded = fresh.LoadRun(run).Summary;
+        Check(loaded.Combats == 0 && loaded.Cards.Count == 0 && loaded.Coverage.Quality == CaptureQuality.Partial
+            && fresh.Select(run.Identity)?.Coverage.Quality == CaptureQuality.Partial,
+            "An unreadable selected combat folder cannot produce a complete empty run");
+        Check(fresh.Select(healthy.Identity)?.Coverage.Complete == true && fresh.LoadRun(healthy).Summary.Cards.Single().DamageDealt == 4,
+            "A selected folder read failure must leave another readable run complete");
+        string runs = Path.GetDirectoryName(path);
+        Directory.Move(runs, Path.Combine(directory, "held-store"));
+        File.WriteAllText(runs, "store obstruction");
+        var unavailable = new StatisticsStore(directory, "g", "m", _ => { });
+        Check(unavailable.LoadRun(healthy).Summary.Coverage.Quality == CaptureQuality.Partial
+            && unavailable.LoadRun(run).Summary.Coverage.Quality == CaptureQuality.Partial,
+            "A whole current-store read failure affects active runs as well as identities with finalized headers");
+    }
+
+    private static void CachedWriteFailure(string directory)
+    {
+        var store = new StatisticsStore(directory, "g", "m", _ => { });
+        var run = store.OpenRun(Header("CACHED", 3000), false);
+        Check(store.SaveCombat(Record(run, 1, 9)) && store.Select(run.Identity).Coverage.Complete,
+            "A successful selection primes complete cached history");
+        string runDirectory = Path.Combine(directory, "statistics-v2", "runs", run.RunId);
+        Directory.CreateDirectory(Path.Combine(runDirectory, "2.json.tmp"));
+        Check(!store.SaveCombat(Record(run, 2, 5)), "A staged record obstruction must fail after history has been cached");
+        var selected = store.Select(run.Identity);
+        Check(selected.Combats == 1 && selected.Cards.Single().DamageDealt == 9 && selected.Coverage.Quality == CaptureQuality.Partial,
+            "Failed writes invalidate cached complete history and retain the durable missing-record evidence");
+        Directory.Delete(Path.Combine(runDirectory, "2.json.tmp"));
+        File.WriteAllText(Path.Combine(runDirectory, "2.json"), JsonSerializer.Serialize(Record(run, 2, 5), StatisticsJson.Options));
+        var repaired = new StatisticsStore(directory, "g", "m", _ => { }).Select(run.Identity);
+        Check(repaired.Combats == 2 && repaired.Cards.Single().DamageDealt == 14 && repaired.Coverage.Complete,
+            "A fresh scan of repaired healthy records can recover from a transient read-side loss");
+    }
+
     private static void NativeLifecycle(string directory)
     {
         ProfilerSession.Initialize(directory, "g", "m", _ => { });
@@ -512,7 +720,8 @@ internal static class SessionFixtures
         ProfilerSession.Suspend();
         Check(!ProfilerSession.InRun && ProfilerSession.CurrentCombat == null && ProfilerNative.Snapshot() == "null", "Suspend discards its active combat");
         ProfilerSession.StartRun(run, true);
-        Check(ProfilerSession.CurrentRun.Combats == 1 && ProfilerSession.CurrentRun.Cards.Single().DamageDealt == 9, "Resume reconstructs only persisted completed combats");
+        Check(ProfilerSession.CurrentRun.Combats == 1 && ProfilerSession.CurrentRun.Cards.Single().DamageDealt == 9
+            && ProfilerSession.CurrentRun.Coverage.Complete, "Resume reconstructs only persisted completed combats without treating an aborted attempt as lost capture");
         ulong next = ProfilerSession.StartCombat("TWO", "Normal");
         ObserveDamage(next, 4);
         Check(next > discarded && ProfilerSession.EndCombat(discarded) == 0 && ProfilerSession.EndCombat(next) == 1, "Resumed combat ignores stale callbacks");
@@ -673,16 +882,62 @@ internal static class SessionFixtures
         ulong failed = ProfilerSession.StartCombat("FAILED", "Normal");
         ObserveDamage(failed, 5);
         ProfilerSession.EndCombat(failed);
-        Check(ProfilerSession.CurrentRun.Combats == 2 && ProfilerSession.CurrentRun.Cards.Single().DamageDealt == 14, "Live accounting precedes persistence success");
+        Check(ProfilerSession.CurrentRun.Combats == 2 && ProfilerSession.CurrentRun.Cards.Single().DamageDealt == 14
+            && ProfilerSession.CurrentRun.Coverage.Quality == CaptureQuality.Partial
+            && ProfilerSession.CurrentCombat.Coverage.Quality == CaptureQuality.Partial,
+            "A failed finalized write keeps live accounting but marks both combat and run partial");
         ProfilerSession.Suspend();
+        ProfilerSession.Initialize(directory, "g", "m", diagnostics.Add);
         ProfilerSession.StartRun(run, true);
-        Check(ProfilerSession.CurrentRun.Combats == 1 && ProfilerSession.CurrentRun.Cards.Single().DamageDealt == 9, "Resume excludes the failed stored combat");
+        Check(ProfilerSession.CurrentRun.Combats == 1 && ProfilerSession.CurrentRun.Cards.Single().DamageDealt == 9
+            && ProfilerSession.CurrentRun.Coverage.Quality == CaptureQuality.Partial,
+            "Fresh initialization restores partial quality while excluding the failed stored combat");
+        ProfilerSession.SelectHistory(run.Seed, run.StartedAt, run.Profile);
+        Check(ProfilerSession.SelectedHistory?.Combats == 1 && ProfilerSession.SelectedHistory.Coverage.Quality == CaptureQuality.Partial,
+            "Restarted history warns about the missing final combat with the surviving accounting");
         Directory.Delete(Path.Combine(runDirectory, "2.json.tmp"));
         ulong next = ProfilerSession.StartCombat("NEXT", "Normal");
         ObserveDamage(next, 4);
         ProfilerSession.EndCombat(next);
         Check(!File.Exists(Path.Combine(runDirectory, "2.json")) && File.Exists(Path.Combine(runDirectory, "3.json")), "No background retry may publish the previously failed combat");
         Check(diagnostics.Count > 0, "Failed writes are reported");
+        ProfilerSession.Suspend();
+    }
+
+    private static void FailedFirstWrite(string directory, bool inventoryFailure)
+    {
+        string root = directory;
+        var run = Header("FAILED-FIRST", 3100);
+        ProfilerSession.Initialize(root, "g", "m", _ => { });
+        ProfilerSession.StartRun(run, false);
+        string runDirectory = Path.Combine(root, "statistics-v2", "runs", "1");
+        string obstruction = Path.Combine(runDirectory, inventoryFailure ? "capture.json.tmp" : "1.json.tmp");
+        Directory.CreateDirectory(obstruction);
+        ulong epoch = ProfilerSession.StartCombat("ONLY", "Normal");
+        ObserveDamage(epoch, 9);
+        Check(ProfilerSession.EndCombat(epoch) == 1 && ProfilerSession.CurrentCombat.Coverage.Quality == CaptureQuality.Partial
+            && ProfilerSession.CurrentRun.Coverage.Quality == CaptureQuality.Partial
+            && ProfilerSession.CurrentRun.Cards.Single().DamageDealt == 9,
+            "Failure of either the first record or its inventory marks live combat and run partial without losing observed damage");
+        Directory.Delete(obstruction);
+        if (inventoryFailure) ProfilerSession.EndRun(0);
+        Check(File.Exists(Path.Combine(runDirectory, "capture.json")), "Capture identity remains durable even when the only combat write failed");
+        ProfilerSession.Suspend();
+        ProfilerSession.Initialize(root, "g", "m", _ => { });
+        ProfilerSession.StartRun(run, true);
+        Check(ProfilerSession.CurrentRun.Coverage.Quality == CaptureQuality.Partial
+            && ProfilerSession.CurrentRun.Combats == (inventoryFailure ? 1u : 0u)
+            && (inventoryFailure ? ProfilerSession.CurrentRun.Cards.Single().DamageDealt == 9 : ProfilerSession.CurrentRun.Cards.Count == 0),
+            "The first failed save survives process restart without a prior combat or run header supplying its identity");
+        ProfilerSession.SelectHistory(run.Seed, run.StartedAt, run.Profile);
+        Check(ProfilerSession.SelectedHistory?.Coverage.Quality == CaptureQuality.Partial,
+            "An otherwise empty failed first capture remains selectable in history");
+        epoch = ProfilerSession.StartCombat("NEXT", "Normal");
+        ObserveDamage(epoch, 4);
+        ProfilerSession.EndCombat(epoch);
+        Check(File.Exists(Path.Combine(runDirectory, "2.json")) && !Directory.Exists(Path.Combine(root, "statistics-v2", "runs", "2"))
+            && ProfilerSession.CurrentRun.Coverage.Quality == CaptureQuality.Partial,
+            "Restart reserves the failed first combat ID, rejoins the original run, and preserves its earlier partial quality");
         ProfilerSession.Suspend();
     }
 
