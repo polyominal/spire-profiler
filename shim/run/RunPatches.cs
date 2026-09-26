@@ -3,7 +3,9 @@ using System.Linq;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Entities.Multiplayer;
 using MegaCrit.Sts2.Core.Logging;
+using MegaCrit.Sts2.Core.Multiplayer.Game.Lobby;
 using MegaCrit.Sts2.Core.Runs;
+using MegaCrit.Sts2.Core.Saves;
 
 namespace SpireProfiler;
 
@@ -11,9 +13,9 @@ namespace SpireProfiler;
 internal static class PatchRunStartSingleplayer
 {
     [HarmonyPostfix]
-    private static void Postfix(RunState state)
+    private static void Postfix(RunState state, long ____startTime)
     {
-        try { RunStartPatches.NotifyRunStarted(state, isResume: false); }
+        try { RunStartPatches.NotifyRunStarted(state, isResume: false, ____startTime); }
         catch (Exception ex) { Log.Error($"[SpireProfiler] SetUpNewSingleplayer: {ex}"); }
     }
 }
@@ -22,22 +24,22 @@ internal static class PatchRunStartSingleplayer
 internal static class PatchRunStartMultiplayer
 {
     [HarmonyPostfix]
-    private static void Postfix(RunState state)
+    private static void Postfix(RunState state, long ____startTime)
     {
-        try { RunStartPatches.NotifyRunStarted(state, isResume: false); }
+        try { RunStartPatches.NotifyRunStarted(state, isResume: false, ____startTime); }
         catch (Exception ex) { Log.Error($"[SpireProfiler] SetUpNewMultiplayer: {ex}"); }
     }
 }
 
-// Resumed runs (save+quit continue): without these, combats in a continued
-// run would be recorded run-less.
+// Saved setup can suspend before InitializeShared restores _startTime, so the
+// setup arguments supply the original identity even while its Task is pending.
 [HarmonyPatch(typeof(RunManager), nameof(RunManager.SetUpSavedSingleplayer))]
 internal static class PatchRunResumeSingleplayer
 {
     [HarmonyPostfix]
-    private static void Postfix(RunState state)
+    private static void Postfix(RunState state, SerializableRun save)
     {
-        try { RunStartPatches.NotifyRunStarted(state, isResume: true); }
+        try { RunStartPatches.NotifyRunStarted(state, isResume: true, save.StartTime); }
         catch (Exception ex) { Log.Error($"[SpireProfiler] SetUpSavedSingleplayer: {ex}"); }
     }
 }
@@ -46,9 +48,9 @@ internal static class PatchRunResumeSingleplayer
 internal static class PatchRunResumeMultiplayer
 {
     [HarmonyPostfix]
-    private static void Postfix(RunState state)
+    private static void Postfix(RunState state, LoadRunLobby lobby)
     {
-        try { RunStartPatches.NotifyRunStarted(state, isResume: true); }
+        try { RunStartPatches.NotifyRunStarted(state, isResume: true, lobby.Run.StartTime); }
         catch (Exception ex) { Log.Error($"[SpireProfiler] SetUpSavedMultiplayer: {ex}"); }
     }
 }
@@ -56,17 +58,9 @@ internal static class PatchRunResumeMultiplayer
 /// Run identity and roster are captured before combat observations begin.
 internal static class RunStartPatches
 {
-    internal static void NotifyRunStarted(RunState state, bool isResume)
+    internal static void NotifyRunStarted(RunState state, bool isResume, long startTime)
     {
         if (!CaptureRuntime.OnThread) return;
-        // InitializeShared restores the original StartTime on resume; history
-        // identity uses this value, never the time when the mod observes it.
-        long startTime = 0;
-        try
-        {
-            startTime = Traverse.Create(RunManager.Instance)?.Field("_startTime")?.GetValue<long>() ?? 0;
-        }
-        catch (Exception ex) { Log.Error($"[SpireProfiler] NotifyRunStarted.StartTime: {ex}"); }
 
         // The slot registry must exist before the first combat event; run
         // start is the earliest event (and re-fires on resume, refilling
