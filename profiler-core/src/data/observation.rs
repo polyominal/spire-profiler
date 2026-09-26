@@ -207,6 +207,11 @@ pub(crate) enum Observation {
         combat_seq: u64,
         player_slot: i32,
     },
+    BlockPoolLoss {
+        combat_seq: u64,
+        player_slot: i32,
+        amount: i32,
+    },
     PlayerDied {
         combat_seq: u64,
         player_slot: i32,
@@ -616,6 +621,11 @@ impl State {
                     combat_seq,
                     player_slot,
                 } => candidate.block_pool_clear(combat_seq, player_slot) as u64,
+                Observation::BlockPoolLoss {
+                    combat_seq,
+                    player_slot,
+                    amount,
+                } => candidate.block_pool_loss(combat_seq, player_slot, amount) as u64,
                 Observation::PlayerDied {
                     combat_seq,
                     player_slot,

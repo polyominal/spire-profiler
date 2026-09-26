@@ -1340,6 +1340,10 @@ fn randomized_combat_lifecycle_invariants() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the seeded grant, loss, damage, and clear walk shares one independent pool model"
+)]
 fn block_pool_consume_matches_naive_model() {
     let base_seed = sim_seed();
     let repro = format!("SIM_SEED={base_seed} block pool");
@@ -1385,25 +1389,45 @@ fn block_pool_consume_matches_naive_model() {
                 }
             }
             let source = &sources[rng.below(sources.len() as u64) as usize];
-            model.gain(source, rng.range_i32(0, 25) as u64, &pending, 0);
+            let receiver = rng.below(2) as i32;
+            model.gain(source, rng.range_i32(0, 25) as u64, &pending, receiver);
             model.check(&repro, step);
             step += 1;
         }
         for _ in 0..rng.below(3) + 1 {
-            let amount = if rng.below(4) == 0 {
-                rng.range_i32(1, 500)
-            } else {
-                rng.range_i32(1, 30)
-            } as u64;
-            model.receive(&sources[0], amount, amount, 1, 0);
+            let receiver = rng.below(2) as i32;
+            match rng.below(5) {
+                0 => {
+                    assert_eq!(events::block_pool_clear(combat_epoch(), receiver), 1);
+                    model.pools[receiver as usize].chunks.clear();
+                }
+                1 => {
+                    let amount = rng.range_i32(1, 30) as u64;
+                    assert_eq!(
+                        events::block_pool_loss(combat_epoch(), receiver, amount as i32),
+                        1
+                    );
+                    model.pools[receiver as usize].consume(amount, receiver as u8);
+                }
+                _ => {
+                    let amount = if rng.below(4) == 0 {
+                        rng.range_i32(1, 500)
+                    } else {
+                        rng.range_i32(1, 30)
+                    } as u64;
+                    model.receive(&sources[0], amount, amount, 1, receiver);
+                }
+            }
             model.check(&repro, step);
             step += 1;
         }
     }
-    model.receive(&sources[0], 10_000, 10_000, 1, 0);
+    for receiver in 0..2 {
+        model.receive(&sources[0], 10_000, 10_000, 1, receiver);
+    }
     model.check(&repro, step);
     assert!(
-        model.pools[0].chunks.is_empty(),
-        "{repro}: the final hit drains every modeled chunk"
+        model.pools.iter().all(|pool| pool.chunks.is_empty()),
+        "{repro}: the final hits drain every modeled chunk"
     );
 }

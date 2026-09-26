@@ -29,8 +29,8 @@ const GAME_ARGS: [&str; 6] = [
 
 // The managed gate pins this definition inventory to the verified game.
 const CAPTURE_PRODUCERS: u64 = 1726;
-const CAPTURE_TARGETS: u64 = 1782;
-const CAPTURE_PATCHES: u64 = 3558;
+const CAPTURE_TARGETS: u64 = 1783;
+const CAPTURE_PATCHES: u64 = 3560;
 // Run lifecycle and history UI patches are outside the capture installer.
 const FIXED_OWNER_PATCHES: u64 = 10;
 const MIN_PATCHES: u64 = CAPTURE_TARGETS + FIXED_OWNER_PATCHES;

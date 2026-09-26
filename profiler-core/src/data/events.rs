@@ -375,6 +375,13 @@ pub fn block_pool_clear(combat_seq: u64, player_slot: i32) -> i32 {
     STATE.with(|cell| cell.borrow_mut().block_pool_clear(combat_seq, player_slot))
 }
 
+pub fn block_pool_loss(combat_seq: u64, player_slot: i32, amount: i32) -> i32 {
+    STATE.with(|cell| {
+        cell.borrow_mut()
+            .block_pool_loss(combat_seq, player_slot, amount)
+    })
+}
+
 pub fn player_died(combat_seq: u64, player_slot: i32) -> i32 {
     STATE.with(|cell| cell.borrow_mut().player_died(combat_seq, player_slot))
 }

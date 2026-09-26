@@ -150,6 +150,9 @@ internal static class ProfilerNative
     private delegate int NativeBlockPoolClear(ulong engine, ulong combatSeq, int playerSlot);
     private static NativeBlockPoolClear _block_pool_clear;
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate int NativeBlockPoolLoss(ulong engine, ulong combatSeq, int playerSlot, int amount);
+    private static NativeBlockPoolLoss _block_pool_loss;
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int NativePlayerDied(ulong engine, ulong combatSeq, int playerSlot);
     private static NativePlayerDied _player_died;
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -218,6 +221,7 @@ internal static class ProfilerNative
                     _combat_ended,
                     _turn_started,
                     _block_pool_clear,
+                    _block_pool_loss,
                     _player_died,
                     _potion_used,
                     _combat_started,
@@ -266,6 +270,7 @@ internal static class ProfilerNative
                     GetExport<NativeCombatEnded>(lib, "spire_profiler_combat_ended"),
                     GetExport<NativeTurnStarted>(lib, "spire_profiler_turn_started"),
                     GetExport<NativeBlockPoolClear>(lib, "spire_profiler_block_pool_clear"),
+                    GetExport<NativeBlockPoolLoss>(lib, "spire_profiler_block_pool_loss"),
                     GetExport<NativePlayerDied>(lib, "spire_profiler_player_died"),
                     GetExport<NativePotionUsed>(lib, "spire_profiler_potion_used"),
                     GetExport<NativeCombatStarted>(lib, "spire_profiler_combat_started"),
@@ -384,6 +389,7 @@ internal static class ProfilerNative
     internal static int CombatEnded(ulong combatSeq) => _combat_ended(engine, combatSeq);
     internal static int TurnStarted(ulong combatSeq) => _turn_started(engine, combatSeq);
     internal static int BlockPoolClear(ulong combatSeq, int playerSlot) => _block_pool_clear(engine, combatSeq, playerSlot);
+    internal static int BlockPoolLoss(ulong combatSeq, int playerSlot, int amount) => _block_pool_loss(engine, combatSeq, playerSlot, amount);
     internal static int PlayerDied(ulong combatSeq, int playerSlot) => _player_died(engine, combatSeq, playerSlot);
     internal static int PotionUsed(ulong combatSeq) => _potion_used(engine, combatSeq);
     internal static ulong CombatStarted(uint seq, string encounterId, string encounterType, long startedAt, int playerCount) => _combat_started(engine, seq, encounterId, encounterType, startedAt, playerCount);

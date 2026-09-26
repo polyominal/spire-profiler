@@ -1078,6 +1078,29 @@ pub extern "C" fn spire_profiler_block_pool_clear(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn spire_profiler_block_pool_loss(
+    engine: u64,
+    combat_seq: u64,
+    player_slot: i32,
+    amount: i32,
+) -> i32 {
+    contain("block_pool_loss", 0, || {
+        with_engine(engine, 0, true, |state| {
+            let result = state.block_pool_loss(combat_seq, player_slot, amount);
+            state.record(
+                || Observation::BlockPoolLoss {
+                    combat_seq,
+                    player_slot,
+                    amount,
+                },
+                result as u64,
+            );
+            result
+        })
+    })
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn spire_profiler_player_died(
     engine: u64,
     combat_seq: u64,

@@ -57,6 +57,7 @@ internal sealed class NativeAttributionBackend : GameAttributionBackend
     internal override int DoomAbort(ulong batch) => ProfilerNative.DoomBatchAbort(batch);
     internal override int TurnStarted(ulong epoch) => ProfilerNative.TurnStarted(epoch);
     internal override int BlockCleared(ulong epoch, int slot) => ProfilerNative.BlockPoolClear(epoch, slot);
+    internal override int BlockLost(ulong epoch, int slot, int amount) => ProfilerNative.BlockPoolLoss(epoch, slot, amount);
     internal override int PlayerDied(ulong epoch, int slot) => ProfilerNative.PlayerDied(epoch, slot);
     internal override int PotionUsed(ulong epoch) => ProfilerNative.PotionUsed(epoch);
     internal override ulong CombatStarted(string encounter, string type) => ProfilerSession.StartCombat(encounter, type);

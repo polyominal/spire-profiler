@@ -49,7 +49,7 @@ fn fifo_tail_merges_and_capacity_match_a_queue_of_individual_points() {
     let mut seed = 0x57ab_10c0_u64;
     for event in 0..1600 {
         seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
-        let operation = if event < 80 { 0 } else { (seed >> 32) % 9 };
+        let operation = if event < 80 { 0 } else { (seed >> 32) % 11 };
         if operation < 5 {
             let source = if event < 80 {
                 event % 3
@@ -96,6 +96,12 @@ fn fifo_tail_merges_and_capacity_match_a_queue_of_individual_points() {
             }
             receive(&mut state, amount, 0);
             blocked += i64::from(amount);
+        } else if operation < 10 {
+            let amount = (seed % 11 + 1) as i32;
+            for _ in 0..amount {
+                points.pop_front();
+            }
+            assert_eq!(state.block_pool_loss(7, 0, amount), 1);
         } else {
             points.clear();
             assert_eq!(state.block_pool_clear(7, 0), 1);
@@ -127,6 +133,68 @@ fn fifo_tail_merges_and_capacity_match_a_queue_of_individual_points() {
         }
     }
     assert!(!serde_json::from_str::<serde_json::Value>(&state.snapshot()).expect("summary parses")["coverage"]["complete"].as_bool().expect("boolean coverage"));
+}
+
+#[test]
+fn loss_discards_oldest_grants_without_crediting_defense() {
+    let mut state = fixture();
+    let first = state.source_capture(7, 1, 1, "FIRST", 0, 0, 0);
+    let second = state.source_capture(7, 1, 2, "SECOND", 0, 0, 0);
+    gain(&mut state, 12, first, &[], false);
+    gain(&mut state, 8, second, &[], false);
+    assert_eq!(state.block_pool_loss(7, 0, 10), 1);
+    receive(&mut state, 5, 0);
+    let combat = state.current.as_ref().expect("fixture combat exists");
+    assert_eq!(combat.block_total, 20);
+    assert_eq!(defense(&state), 5);
+    assert_eq!(combat.cards[0].block_effective, 2);
+    assert_eq!(combat.cards[1].block_effective, 3);
+    assert_eq!(state.provenance.pools[0].blocks[0].remaining, 5);
+}
+
+#[test]
+fn loss_advances_modifier_prefix_without_ever_crediting_the_discarded_points() {
+    let mut state = fixture();
+    let source = state.source_capture(7, 1, 1, "PRODUCER", 0, 0, 0);
+    let first = state.source_capture(7, 1, 2, "FIRST_MOD", 0, 0, 0);
+    let second = state.source_capture(7, 1, 3, "SECOND_MOD", 0, 0, 0);
+    gain(&mut state, 10, source, &[(first, 2), (second, 3)], false);
+    let mut seats = Seats::new(vec![2, 3, 5]);
+    for _ in 0..4 {
+        seats.next();
+    }
+    assert_eq!(state.block_pool_loss(7, 0, 4), 1);
+    let mut expected = [0_i64; 3];
+    for _ in 0..6 {
+        expected[seats.next()] += 1;
+    }
+    receive(&mut state, 6, 0);
+    let combat = state.current.as_ref().expect("fixture combat exists");
+    assert_eq!(combat.cards[0].block_effective, expected[2]);
+    assert_eq!(combat.cards[1].blk_modifier, expected[0]);
+    assert_eq!(combat.cards[2].blk_modifier, expected[1]);
+    assert_eq!(defense(&state), 6);
+    assert!(state.provenance.pools[0].blocks.is_empty());
+}
+
+#[test]
+fn loss_shortfall_marks_coverage_and_invalid_wire_does_not_mutate_the_pool() {
+    let mut state = fixture();
+    let source = state.source_capture(7, 1, 1, "DEFEND", 0, 0, 0);
+    gain(&mut state, 3, source, &[], false);
+    assert_eq!(state.block_pool_loss(7, 0, -1), 0);
+    assert_eq!(state.block_pool_loss(8, 0, 1), 0);
+    assert_eq!(state.provenance.pools[0].blocks[0].remaining, 3);
+    assert_eq!(state.block_pool_loss(7, i32::MAX, 1), 1);
+    assert_eq!(state.provenance.pools[0].blocks[0].remaining, 3);
+    let before: serde_json::Value =
+        serde_json::from_str(&state.snapshot()).expect("summary parses");
+    assert_eq!(state.block_pool_loss(7, 0, 5), 1);
+    assert!(state.provenance.pools[0].blocks.is_empty());
+    let snapshot: serde_json::Value =
+        serde_json::from_str(&state.snapshot()).expect("summary parses");
+    assert_eq!(snapshot["coverage"]["complete"], false);
+    assert!(snapshot["coverage"]["failures"].as_u64() > before["coverage"]["failures"].as_u64());
 }
 
 #[test]
