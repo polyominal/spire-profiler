@@ -10,10 +10,12 @@
 #![deny(unsafe_code)]
 #![deny(unreachable_pub)]
 #![deny(rustdoc::broken_intra_doc_links)]
-#![allow(rustdoc::private_intra_doc_links)]
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
-#[allow(unsafe_code)]
+#[allow(
+    unsafe_code,
+    reason = "the C ABI must read C strings and caller-owned buffers"
+)]
 pub mod abi;
 pub mod data;
 mod source_kind;

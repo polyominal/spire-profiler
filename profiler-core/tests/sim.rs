@@ -1019,8 +1019,10 @@ impl Walk {
         self.next_generated += 1;
     }
 
-    // A single linear dispatch keeps the seeded event weights visible.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one dispatch keeps the seeded event weights and ledger updates together"
+    )]
     fn event(&mut self, rng: &mut Rng) {
         let source = self.source(rng);
         let epoch = combat_epoch();

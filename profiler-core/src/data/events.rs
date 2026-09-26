@@ -49,7 +49,10 @@ pub fn source_weight(transfer: u64, index: i32) -> u64 {
     STATE.with(|cell| cell.borrow_mut().source_weight(transfer, index))
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "test adapter forwards the power attachment wire fields unchanged"
+)]
 pub fn power_attached(
     combat_seq: u64,
     power_instance: u64,
@@ -74,7 +77,10 @@ pub fn power_attached(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "test adapter forwards the power change wire fields unchanged"
+)]
 pub fn power_amount_changed(
     combat_seq: u64,
     power_instance: u64,
@@ -124,7 +130,10 @@ pub fn card_generated(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "test adapter forwards the card play wire fields unchanged"
+)]
 pub fn card_play_started(
     combat_seq: u64,
     execution_id: u64,

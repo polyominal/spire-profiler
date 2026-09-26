@@ -6,7 +6,6 @@ use allocation::{DamageAllocation, ModifierContribution};
 use super::*;
 
 impl ObservedDamage {
-    #[allow(clippy::too_many_arguments)]
     fn from_wire(
         total: i32,
         unblocked: i32,
@@ -301,7 +300,10 @@ impl State {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the ABI and replay pass one damage result as separate wire fields"
+    )]
     pub(crate) fn damage_result_append(
         &mut self,
         calculation: u64,
@@ -376,7 +378,10 @@ impl State {
         self.source_status(result)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the ABI and replay pass unattributed damage as separate wire fields"
+    )]
     pub(crate) fn damage_unattributed(
         &mut self,
         combat_seq: u64,

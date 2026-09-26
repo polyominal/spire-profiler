@@ -48,7 +48,10 @@ impl SourceFixture {
         Self::capture("", 4, instance, 2, 2, 0, 2, 1)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "fixture constructors share capture fields and retain matching source metadata"
+    )]
     fn capture(
         id: &str,
         slot: i32,

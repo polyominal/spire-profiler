@@ -1559,10 +1559,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the end-to-end fixture keeps source, projection, and replay ordering visible"
-    )]
     fn recorded_observations_replay_source_handles_and_snapshot_exactly() {
         let engine = spire_profiler_engine_create();
         assert_eq!(spire_profiler_recording_begin(engine), 1);
