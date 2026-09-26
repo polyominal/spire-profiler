@@ -84,67 +84,6 @@ fn temporal_pairs_preserve_common_units_order_and_checked_intermediates() {
 }
 
 #[test]
-#[ignore = "parity-test supplies independently executed original C# mixtures"]
-fn temporal_pairs_match_original_csharp() {
-    #[derive(serde::Deserialize)]
-    struct Case {
-        first: Vec<[u64; 2]>,
-        second: Vec<[u64; 2]>,
-        before: u32,
-        added: u32,
-        expected: Option<Vec<[u64; 2]>>,
-    }
-    let path =
-        std::env::var("SOURCE_MIXTURE_ORACLE").expect("parity-test supplies the oracle path");
-    let cases: Vec<Case> = serde_json::from_slice(&std::fs::read(path).expect("oracle exists"))
-        .expect("original C# oracle is valid JSON");
-    assert_eq!(cases.len(), 512);
-    let mut rejected = 0;
-    for (index, case) in cases.into_iter().enumerate() {
-        let snapshot = |shares: Vec<[u64; 2]>| {
-            SourceSnapshot::normalized(
-                epoch(),
-                3,
-                shares
-                    .into_iter()
-                    .map(|[destination, weight]| {
-                        assert_eq!(destination >> 32, 7);
-                        assert_eq!(destination & 7, 0);
-                        (
-                            Destination::Row(destination as u32 >> 3),
-                            u128::from(weight),
-                        )
-                    })
-                    .collect(),
-            )
-            .expect("original valid source")
-        };
-        let actual = SourceSnapshot::combine(
-            epoch(),
-            3,
-            snapshot(case.first),
-            case.before,
-            snapshot(case.second),
-            case.added,
-        )
-        .ok()
-        .map(|value| {
-            value
-                .shares
-                .iter()
-                .map(|share| [share.destination.token(epoch()), share.weight])
-                .collect::<Vec<_>>()
-        });
-        rejected += usize::from(case.expected.is_none());
-        assert_eq!(actual, case.expected, "original C# mixture {index}");
-    }
-    assert!(
-        rejected > 0 && rejected < 512,
-        "oracle covers both successful and overflowing mixtures"
-    );
-}
-
-#[test]
 fn proportional_allocation_matches_naive_unit_threshold_model() {
     for a in 0..=16_u64 {
         for b in 0..=16_u64 {

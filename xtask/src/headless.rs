@@ -99,7 +99,7 @@ impl CaptureReport {
 }
 
 pub fn headless_test(shell: &Shell) -> Result<()> {
-    managed::run(shell, None)?;
+    managed::run(shell)?;
     let game = install::install_mod(shell)?;
 
     let log_dir = game_log_dir(game.platform)?;

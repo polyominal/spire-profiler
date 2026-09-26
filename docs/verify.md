@@ -16,35 +16,9 @@
   an isolated project and source, assembly, and native-library hashes under
   `tmp/managed-tests/`. The fixtures check capture and async scope restoration,
   exact patch bridges, chart projection, parser boundaries, atomic persistence,
-  and native session/replay behavior. They do not launch Godot.
-- `cargo xtask parity-test`: export the pinned pre-refactor commit into an
-  isolated scratch project and regenerate its UI and session reference outputs.
-  Compare attribution ledgers from the same driver against both native
-  implementations, then compare scalar decimal arithmetic, source mixtures,
-  managed drawing commands, and persisted session views. Regenerated JSON must
-  match the checked-in `test-support/parity/fingerprints.json` before the
-  managed comparison runs. Full reference outputs are generated only in ignored
-  scratch; expected hashes are never updated automatically. Evidence remains
-  under `tmp/parity-tests/` and `tmp/managed-tests/`. The explicit approved
-  corrections and independent replacement tests are listed in [the reference
-  contracts](../test-support/parity/CONTRACTS.md); differences outside those
-  corrections fail. This gate does not establish rendered pixels or exhaust
-  every possible game event sequence.
-- `cargo xtask parity-test --render` adds real graphical verification. A
-  temporary fixture assembly renders the actual managed controls and a separate
-  GDScript replay of original Rust commands with the approved defense-scale
-  correction and installed game assets. Ten scenarios compare exact RGBA pixels
-  and retain both images, a difference image, and a JSON report. This requires a
-  graphical session with the game closed; it boots the game with Steam disabled
-  and isolated profiler data. It builds only the host native library and one
-  fixture assembly, then launches a private game copy under the invocation
-  scratch directory. Copy-on-write assets are used when available, with ordinary
-  copies as fallback. A separate `SpireProfilerParity/run-*` user-data directory
-  holds fixture settings and mod consent; the installed game, mods, and normal
-  saves are never changed. Both disposable directories are removed on ordinary
-  return; interruption can leave isolated copies for manual cleanup. Images and
-  reports are retained separately. The fixture bootstrap is generated only for
-  this command and is not shipped.
+  and native session/replay behavior. Expected outcomes come from explicit
+  fixtures and independent models, without building historical revisions. These
+  fixtures do not launch Godot.
 - `cargo xtask headless-test` first runs `managed-test`, then requires
   successful game exit, this mod's `OWN PATCHES` minimum, and the `CAPTURE
   VERIFIED` marker with exact producer and damage/temporal bridge inventories.
@@ -54,7 +28,9 @@
   Unexpected `[SpireProfiler]` ERROR lines fail the gate. Harmony verification
   checks owner `dev.spireprofiler` and exact patch methods; other mods cannot
   satisfy it. Headless drawing proves dispatch and lifecycle, not visual output.
-- Real-play validation is manual: the pipeline cannot play the game.
+- Real-play and visual validation are manual: the pipeline cannot play the game
+  or establish pixel correctness. Headless panel checks cover lifecycle and
+  drawing dispatch; managed fixtures cover selected layout and input rules.
 - A game update adds one machine-local gate: `cargo xtask check-catalog` reads
   the decompiled tree (`tmp/sts2-decompiled`), so it stays out of smoke; what it
   verifies lives in [game.md](game.md).
