@@ -108,10 +108,8 @@ once and imported atomically; their original files are preserved. Unknown
 database versions are rejected without replacement. Close the game before
 copying the database and any adjacent journal for diagnosis.
 
-The managed/native protocol caps each request and response at 64 MiB. This
-includes the entire one-time legacy import and each selected run's records. An
-oversized import leaves that session's persistence unavailable; an oversized
-history query is rejected. Source files remain untouched.
+Import and history transfer records incrementally. Individual record and
+transport limits are documented in the Rust store's persistence contract.
 
 The history lookup uses the game's exact profile, seed, and start time. The
 first matching finalized header supplies the outcome and roster; interrupted

@@ -10,17 +10,24 @@
 //! disk can lose that evidence. SQLite provides atomic commits, not proof that
 //! an unrecorded game event occurred.
 //!
-//! One connection uses rollback journaling and FULL synchronization. No pool or
+//! Connections use rollback journaling and FULL synchronization. No pool or
 //! background queue reorders lifecycle operations. A 50 ms busy limit bounds
-//! lock contention, not filesystem latency. Legacy import is one transaction;
-//! the source files stay read-only and the completed marker prevents reimport.
+//! lock contention, not filesystem latency. Legacy import stages one bounded
+//! command at a time in a separate transaction; the completed marker and ID
+//! reservations commit with its records. Source files stay read-only.
+//!
+//! The managed importer caps each source document at 64 MiB, and each native
+//! command and response has the same cap. A source document whose wrapped
+//! import command exceeds that cap aborts the import for a clean retry. History
+//! pages share a read transaction and stay below the response cap; an oversized
+//! stored row marks coverage incomplete while later rows remain readable.
 
 #![deny(unsafe_code)]
 
 mod record;
 
-use std::collections::{BTreeMap, HashSet};
-use std::path::Path;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use record::{Record, Run};
@@ -33,11 +40,35 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + S
 const APPLICATION_ID: i32 = 0x5354_5052;
 const DATABASE_VERSION: i32 = 1;
 const MAX_DOCUMENT_BYTES: usize = 64 * 1024 * 1024;
+const MAX_TRANSPORT_BYTES: usize = MAX_DOCUMENT_BYTES;
 const RESPONSE_ENVELOPE_BYTES: usize = 4096;
+const PAGE_TARGET_BYTES: usize = 4 * 1024 * 1024;
+const PAGE_ROWS: usize = 128;
 
 pub struct Store {
     connection: Connection,
+    path: PathBuf,
     pending: BTreeMap<u32, Option<Run>>,
+    import: Option<ImportSession>,
+    read: Option<ReadSession>,
+}
+
+struct ImportSession {
+    connection: Connection,
+    max_run: u32,
+    max_combat: u32,
+    sources: HashMap<String, (u32, Run)>,
+}
+
+struct ReadSession {
+    connection: Connection,
+    run: Run,
+    id: u32,
+    history: bool,
+    cursor: Option<(bool, i64, i64)>,
+    last_ordinal: u32,
+    valid_count: usize,
+    reasons: BTreeSet<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -61,20 +92,32 @@ enum Request {
     SaveRun {
         run: Box<Run>,
     },
-    LoadRun {
+    ReadBeginLoad {
         run_id: String,
     },
-    Select {
+    ReadBeginSelect {
         profile: i32,
         seed: String,
         started_at: i64,
     },
+    ReadPage,
+    ReadEnd,
     ImportStatus,
-    Import {
+    ImportBegin {
         max_run_id: u32,
         max_combat_id: u32,
-        runs: Vec<ImportRun>,
-        ambiguous: Vec<Identity>,
+    },
+    ImportRun {
+        entry: Box<ImportRun>,
+    },
+    ImportRecord {
+        source_key: String,
+        record: Box<Record>,
+    },
+    ImportAmbiguous {
+        identity: Identity,
+    },
+    ImportEnd {
         complete: bool,
         #[serde(default)]
         reasons: Vec<String>,
@@ -85,7 +128,6 @@ enum Request {
 struct ImportRun {
     source_key: String,
     run: Run,
-    combats: Vec<Record>,
     reasons: Vec<String>,
     finalized: bool,
 }
@@ -176,15 +218,45 @@ impl Store {
         }
         Ok(Self {
             connection,
+            path: path.to_path_buf(),
             pending: BTreeMap::new(),
+            import: None,
+            read: None,
         })
     }
 
+    #[allow(clippy::too_many_lines)] // Session guards and command dispatch form one boundary.
     pub fn execute(&mut self, request_json: &str) -> Result<Value> {
-        if request_json.len() > MAX_DOCUMENT_BYTES {
+        if request_json.len() > MAX_TRANSPORT_BYTES {
+            self.import = None;
+            self.read = None;
             return Err("statistics request exceeds size limit".into());
         }
-        match serde_json::from_str(request_json)? {
+        let request: Request = match serde_json::from_str(request_json) {
+            Ok(request) => request,
+            Err(error) => {
+                self.import = None;
+                self.read = None;
+                return Err(error.into());
+            }
+        };
+        let import_command = matches!(
+            request,
+            Request::ImportRun { .. }
+                | Request::ImportRecord { .. }
+                | Request::ImportAmbiguous { .. }
+                | Request::ImportEnd { .. }
+        );
+        let read_command = matches!(request, Request::ReadPage | Request::ReadEnd);
+        if self.import.is_some() && !import_command {
+            self.import = None;
+            return Err("statistics import interrupted by another operation".into());
+        }
+        if self.read.is_some() && !read_command {
+            self.read = None;
+            return Err("statistics read interrupted by another operation".into());
+        }
+        let result = match request {
             Request::OpenRun { run, continued } => self.open_run(*run, continued),
             Request::MaxCombatId => {
                 let persisted: u32 = self.connection.query_row(
@@ -198,35 +270,38 @@ impl Store {
             }
             Request::SaveCombat { record } => self.save_combat(*record),
             Request::SaveRun { run } => self.save_run(*run),
-            Request::LoadRun { run_id } => {
+            Request::ReadBeginLoad { run_id } => {
                 let id = Run::numeric_id(&run_id).ok_or("invalid run ID")?;
-                self.load_run(id, false)
+                let connection = self.session_connection("BEGIN")?;
+                self.read_begin_on(connection, id, false)
             }
-            Request::Select {
+            Request::ReadBeginSelect {
                 profile,
                 seed,
                 started_at,
-            } => match self.match_identity(profile, &seed, started_at)? {
-                IdentityMatch::Unique(id) => self.load_run(id, true),
-                IdentityMatch::Missing | IdentityMatch::Ambiguous => Ok(Value::Null),
-            },
+            } => self.read_begin_select(profile, &seed, started_at),
+            Request::ReadPage => self.read_page(),
+            Request::ReadEnd => {
+                self.read = None;
+                Ok(json!(true))
+            }
             Request::ImportStatus => Ok(json!(self.imported()?)),
-            Request::Import {
+            Request::ImportBegin {
                 max_run_id,
                 max_combat_id,
-                runs,
-                ambiguous,
-                complete,
-                reasons,
-            } => self.import(
-                max_run_id,
-                max_combat_id,
-                runs,
-                ambiguous,
-                complete,
-                &reasons,
-            ),
+            } => self.import_begin(max_run_id, max_combat_id),
+            Request::ImportRun { entry } => self.import_run(*entry),
+            Request::ImportRecord { source_key, record } => {
+                self.import_record(&source_key, *record)
+            }
+            Request::ImportAmbiguous { identity } => self.import_ambiguous(identity),
+            Request::ImportEnd { complete, reasons } => self.import_end(complete, &reasons),
+        };
+        if result.is_err() {
+            self.import = None;
+            self.read = None;
         }
+        result
     }
 
     fn imported(&self) -> Result<bool> {
@@ -238,15 +313,25 @@ impl Store {
     }
 
     fn match_identity(&self, profile: i32, seed: &str, started_at: i64) -> Result<IdentityMatch> {
+        self.match_identity_on(&self.connection, profile, seed, started_at)
+    }
+
+    fn match_identity_on(
+        &self,
+        connection: &Connection,
+        profile: i32,
+        seed: &str,
+        started_at: i64,
+    ) -> Result<IdentityMatch> {
         if profile < 0 || seed.is_empty() || started_at <= 0 {
             return Ok(IdentityMatch::Missing);
         }
-        let blocked: bool = self.connection.query_row(
+        let blocked: bool = connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM ambiguous WHERE profile=?1 AND seed=?2 AND started_at=?3)",
             params![profile, seed, started_at],
             |row| row.get(0),
         )?;
-        let mut query = self.connection.prepare(
+        let mut query = connection.prepare(
             "SELECT id FROM runs WHERE profile=?1 AND seed=?2 AND started_at=?3
              AND (final_json IS NOT NULL OR EXISTS(SELECT 1 FROM combats WHERE run_id=runs.id))
              ORDER BY id LIMIT 2",
@@ -318,14 +403,14 @@ impl Store {
         Ok(serde_json::to_value(run)?)
     }
 
-    fn allocate_run(transaction: &Transaction<'_>) -> Result<u32> {
-        let last: u32 = transaction.query_row(
+    fn allocate_run(connection: &Connection) -> Result<u32> {
+        let last: u32 = connection.query_row(
             "SELECT last_run_id FROM metadata WHERE singleton=1",
             [],
             |row| row.get(0),
         )?;
         let next = last.checked_add(1).ok_or("run IDs exhausted")?;
-        transaction.execute(
+        connection.execute(
             "UPDATE metadata SET last_run_id=?1 WHERE singleton=1",
             [next],
         )?;
@@ -521,157 +606,208 @@ impl Store {
         Ok(json!(true))
     }
 
-    #[allow(clippy::too_many_lines)] // Read budget and record-level corruption share one ordered pass.
-    fn load_run(&self, id: u32, history: bool) -> Result<Value> {
-        let Some(run) = Self::read_run(&self.connection, id, history)? else {
+    fn session_connection(&self, begin: &str) -> Result<Connection> {
+        let connection = Connection::open(&self.path)?;
+        connection.busy_timeout(Duration::from_millis(50))?;
+        connection.pragma_update(None, "foreign_keys", true)?;
+        connection.pragma_update(None, "synchronous", "FULL")?;
+        connection.execute_batch(begin)?;
+        Ok(connection)
+    }
+
+    fn read_begin_select(&mut self, profile: i32, seed: &str, started_at: i64) -> Result<Value> {
+        let connection = self.session_connection("BEGIN")?;
+        let id = match self.match_identity_on(&connection, profile, seed, started_at)? {
+            IdentityMatch::Unique(id) => id,
+            IdentityMatch::Missing | IdentityMatch::Ambiguous => return Ok(Value::Null),
+        };
+        self.read_begin_on(connection, id, true)
+    }
+
+    fn read_begin_on(&mut self, connection: Connection, id: u32, history: bool) -> Result<Value> {
+        let Some(run) = Self::read_run(&connection, id, history)? else {
             return Ok(Value::Null);
         };
-        let mut reasons = self
-            .connection
+        let mut reasons = connection
             .prepare("SELECT reason FROM gaps WHERE run_id=?1 ORDER BY reason")?
             .query_map([id], |row| row.get(0))?
-            .collect::<rusqlite::Result<Vec<String>>>()?;
-        let mut response_bytes = serde_json::to_string(&run)?.len()
-            + serde_json::to_string(&reasons)?.len()
-            + RESPONSE_ENVELOPE_BYTES;
-        if response_bytes > MAX_DOCUMENT_BYTES {
-            return Err("statistics history exceeds response size limit".into());
-        }
-        let mut query = self.connection.prepare(
-            "SELECT ordinal,imported,record_json FROM combats WHERE run_id=?1
-             ORDER BY imported DESC, CASE WHEN imported=1 THEN sequence ELSE native_id END",
+            .collect::<rusqlite::Result<BTreeSet<String>>>()?;
+        let mut last_ordinal: u32 = connection.query_row(
+            "SELECT COALESCE(MAX(ordinal),0) FROM combats WHERE run_id=?1",
+            [id],
+            |row| row.get(0),
         )?;
-        let mut rows = query.query([id])?;
-        let mut combats = Vec::new();
-        let mut last_ordinal = 0;
-        while let Some(row) = rows.next()? {
-            let ordinal: u32 = row.get(0)?;
-            last_ordinal = last_ordinal.max(ordinal);
-            let imported: bool = row.get(1)?;
-            let encoded: Option<String> = row.get(2)?;
-            let Some(encoded) = encoded else {
-                reasons.push("statistics-record-missing".into());
-                continue;
-            };
-            response_bytes += encoded.len() + 1;
-            if response_bytes > MAX_DOCUMENT_BYTES {
-                return Err("statistics history exceeds response size limit".into());
+        for (&ordinal, pending) in &self.pending {
+            if pending
+                .as_ref()
+                .is_some_and(|owner| owner.run_id == run.run_id)
+            {
+                last_ordinal = last_ordinal.max(ordinal);
+                reasons.insert("statistics-intent-write-failed".into());
             }
-            let parsed = (|| -> Result<Record> {
+        }
+        let value = serde_json::to_value(&run)?;
+        if serde_json::to_vec(&value)?.len() + RESPONSE_ENVELOPE_BYTES >= MAX_TRANSPORT_BYTES {
+            return Err("stored run exceeds response size limit".into());
+        }
+        self.read = Some(ReadSession {
+            connection,
+            run,
+            id,
+            history,
+            cursor: None,
+            last_ordinal,
+            valid_count: 0,
+            reasons,
+        });
+        Ok(value)
+    }
+
+    #[allow(clippy::too_many_lines)] // One ordered pass advances the cursor across valid and damaged rows.
+    fn read_page(&mut self) -> Result<Value> {
+        let session = self.read.as_mut().ok_or("no statistics read is active")?;
+        let mut query = session.connection.prepare(
+            "SELECT sequence,ordinal,imported,COALESCE(CASE WHEN imported=1 THEN sequence ELSE native_id END,0),record_json
+             FROM combats WHERE run_id=?1 AND (?2 IS NULL OR imported < ?3 OR
+               (imported=?3 AND (COALESCE(CASE WHEN imported=1 THEN sequence ELSE native_id END,0)>?4 OR
+                 (COALESCE(CASE WHEN imported=1 THEN sequence ELSE native_id END,0)=?4 AND sequence>?5))))
+             ORDER BY imported DESC,COALESCE(CASE WHEN imported=1 THEN sequence ELSE native_id END,0),sequence
+             LIMIT ?6",
+        )?;
+        let (prior_imported, prior_key, prior_sequence) = session.cursor.unwrap_or((false, 0, 0));
+        let mut rows = query.query(params![
+            session.id,
+            session.cursor.map(|_| 1),
+            prior_imported,
+            prior_key,
+            prior_sequence,
+            PAGE_ROWS as i64 + 1
+        ])?;
+        let mut combats = Vec::<Value>::new();
+        let mut payload_bytes = 0;
+        let mut scanned = 0;
+        let mut done = true;
+        while let Some(row) = rows.next()? {
+            if scanned == PAGE_ROWS {
+                done = false;
+                break;
+            }
+            let sequence: i64 = row.get(0)?;
+            let ordinal: u32 = row.get(1)?;
+            let imported: bool = row.get(2)?;
+            let key: i64 = row.get(3)?;
+            let encoded: Option<String> = row.get(4)?;
+            let parsed = encoded.as_deref().map(|encoded| -> Result<Record> {
                 if encoded.len() > MAX_DOCUMENT_BYTES {
                     return Err("stored combat exceeds size limit".into());
                 }
-                let record: Record = serde_json::from_str(&encoded)?;
+                let record: Record = serde_json::from_str(encoded)?;
                 record.validate(imported)?;
                 if record.ordinal != ordinal
-                    || record.run_id != run.run_id
+                    || record.run_id != session.run.run_id
                     || record
                         .run
                         .as_ref()
-                        .is_none_or(|owner| !owner.same_identity(&run))
+                        .is_none_or(|owner| !owner.same_identity(&session.run))
                 {
                     return Err("stored combat identity contradicts its database owner".into());
                 }
                 Ok(record)
-            })();
-            match parsed {
-                Ok(record) => combats.push(record),
-                Err(_) => reasons.push("statistics-read-failed".into()),
-            }
-        }
-        for (&ordinal, pending) in &self.pending {
-            if pending
-                .as_ref()
-                .is_some_and(|pending| pending.run_id == run.run_id)
-            {
-                last_ordinal = last_ordinal.max(ordinal);
-                reasons.push("statistics-intent-write-failed".into());
-            }
-        }
-        if history && run.finalized() && combats.is_empty() {
-            reasons.push("statistics-record-missing".into());
-        }
-        reasons.sort();
-        reasons.dedup();
-        Ok(
-            json!({"run": run, "combats": combats, "reasons": reasons, "last_ordinal": last_ordinal}),
-        )
-    }
-
-    fn import(
-        &mut self,
-        max_run: u32,
-        max_combat: u32,
-        runs: Vec<ImportRun>,
-        ambiguous: Vec<Identity>,
-        complete: bool,
-        reasons: &[String],
-    ) -> Result<Value> {
-        if !complete {
-            return Err("legacy import is not complete".into());
-        }
-        if reasons.iter().any(String::is_empty)
-            || ambiguous.iter().any(|identity| {
-                identity.profile < 0 || identity.seed.is_empty() || identity.started_at <= 0
-            })
-        {
-            return Err("invalid legacy import metadata".into());
-        }
-        let mut source_keys = HashSet::new();
-        for entry in &runs {
-            entry.run.validate(false, true)?;
-            if entry.source_key.is_empty()
-                || !source_keys.insert(&entry.source_key)
-                || entry.finalized != entry.run.finalized()
-                || entry.reasons.iter().any(String::is_empty)
-                || Run::numeric_id(&entry.run.run_id).is_some_and(|id| id > max_run)
-            {
-                return Err("invalid legacy run metadata".into());
-            }
-            for record in &entry.combats {
-                record.validate(true)?;
-                let owner = record
-                    .run
-                    .as_ref()
-                    .ok_or("imported combat has no run owner")?;
-                if record.run_id != entry.run.run_id
-                    || !owner.same_identity(&entry.run)
-                    || record.combat.combat_id > max_combat
-                {
-                    return Err("imported combat contradicts its run or reserved IDs".into());
+            });
+            let record = match parsed {
+                None => {
+                    session.reasons.insert("statistics-record-missing".into());
+                    None
+                }
+                Some(Err(_)) => {
+                    session.reasons.insert("statistics-read-failed".into());
+                    None
+                }
+                Some(Ok(record)) => Some(record),
+            };
+            if let Some(record) = record {
+                let value = serde_json::to_value(record)?;
+                let bytes = serde_json::to_vec(&value)?.len() + 1;
+                if !combats.is_empty() && payload_bytes + bytes > PAGE_TARGET_BYTES {
+                    done = false;
+                    break;
+                }
+                if payload_bytes + bytes + RESPONSE_ENVELOPE_BYTES >= MAX_TRANSPORT_BYTES {
+                    session.reasons.insert("statistics-read-failed".into());
+                } else {
+                    payload_bytes += bytes;
+                    combats.push(value);
+                    session.valid_count += 1;
                 }
             }
+            session.cursor = Some((imported, key, sequence));
+            scanned += 1;
         }
+        drop(rows);
+        drop(query);
+        if done && session.history && session.run.finalized() && session.valid_count == 0 {
+            session.reasons.insert("statistics-record-missing".into());
+        }
+        let reasons = if done {
+            session.reasons.iter().collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        let response = json!({"combats": combats, "reasons": reasons,
+            "last_ordinal": session.last_ordinal, "done": done});
+        if serde_json::to_vec(&response)?.len() + RESPONSE_ENVELOPE_BYTES >= MAX_TRANSPORT_BYTES {
+            return Err("statistics page exceeds response size limit".into());
+        }
+        if done {
+            self.read = None;
+        }
+        Ok(response)
+    }
+
+    fn import_begin(&mut self, max_run: u32, max_combat: u32) -> Result<Value> {
         if self.imported()? {
-            return Ok(json!(true));
+            return Err("legacy archive already imported".into());
         }
-        let transaction = self.connection.transaction()?;
-        transaction.execute(
+        let connection = self.session_connection("BEGIN IMMEDIATE")?;
+        let imported: bool = connection.query_row(
+            "SELECT imported FROM metadata WHERE singleton=1",
+            [],
+            |row| row.get(0),
+        )?;
+        if imported {
+            return Err("legacy archive already imported".into());
+        }
+        connection.execute(
             "UPDATE metadata SET last_run_id=MAX(last_run_id,?1),last_combat_id=MAX(last_combat_id,?2) WHERE singleton=1",
             params![max_run, max_combat],
         )?;
-        for entry in runs {
-            Self::import_run(&transaction, entry, reasons)?;
-        }
-        for identity in ambiguous {
-            transaction.execute(
-                "INSERT OR IGNORE INTO ambiguous VALUES (?1,?2,?3)",
-                params![identity.profile, identity.seed, identity.started_at],
-            )?;
-        }
-        transaction.execute("UPDATE metadata SET imported=1 WHERE singleton=1", [])?;
-        transaction.commit()?;
+        self.import = Some(ImportSession {
+            connection,
+            max_run,
+            max_combat,
+            sources: HashMap::new(),
+        });
         Ok(json!(true))
     }
 
-    fn import_run(
-        transaction: &Transaction<'_>,
-        mut entry: ImportRun,
-        global_reasons: &[String],
-    ) -> Result<()> {
+    fn import_run(&mut self, mut entry: ImportRun) -> Result<Value> {
+        let session = self
+            .import
+            .as_mut()
+            .ok_or("no statistics import is active")?;
+        entry.run.validate(false, true)?;
+        if entry.source_key.is_empty()
+            || session.sources.contains_key(&entry.source_key)
+            || entry.finalized != entry.run.finalized()
+            || entry.reasons.iter().any(String::is_empty)
+            || Run::numeric_id(&entry.run.run_id).is_some_and(|id| id > session.max_run)
+        {
+            return Err("invalid legacy run metadata".into());
+        }
+        let original = entry.run.clone();
         let numeric = Run::numeric_id(&entry.run.run_id);
         let available = if let Some(id) = numeric {
-            !transaction.query_row(
+            !session.connection.query_row(
                 "SELECT EXISTS(SELECT 1 FROM runs WHERE id=?1)",
                 [id],
                 |row| row.get::<_, bool>(0),
@@ -682,38 +818,93 @@ impl Store {
         let id = if available {
             numeric.expect("available IDs were parsed")
         } else {
-            Self::allocate_run(transaction)?
+            Self::allocate_run(&session.connection)?
         };
-        transaction.execute(
+        session.connection.execute(
             "UPDATE metadata SET last_run_id=MAX(last_run_id,?1) WHERE singleton=1",
             [id],
         )?;
         entry.run.reidentify(id);
         let encoded = serde_json::to_string(&entry.run)?;
-        transaction.execute(
+        session.connection.execute(
             "INSERT INTO runs(id,profile,seed,started_at,current_json,final_json,source_key) VALUES (?1,?2,?3,?4,?5,?6,?7)",
             params![id, entry.run.profile, entry.run.seed, entry.run.started_at, encoded,
                 entry.finalized.then_some(&encoded), entry.source_key],
         )?;
-        for mut record in entry.combats {
-            let owner = record
-                .run
-                .as_mut()
-                .ok_or("imported combat has no run owner")?;
-            owner.reidentify(id);
-            record.run_id = id.to_string();
-            transaction.execute(
-                "INSERT INTO combats(run_id,ordinal,imported,record_json) VALUES (?1,?2,1,?3)",
-                params![id, record.ordinal, serde_json::to_string(&record)?],
-            )?;
-        }
-        for reason in entry.reasons.iter().chain(global_reasons) {
-            transaction.execute(
+        for reason in entry.reasons {
+            session.connection.execute(
                 "INSERT OR IGNORE INTO gaps VALUES (?1,?2)",
                 params![id, reason],
             )?;
         }
-        Ok(())
+        session.sources.insert(entry.source_key, (id, original));
+        Ok(json!(true))
+    }
+
+    fn import_record(&mut self, source_key: &str, mut record: Record) -> Result<Value> {
+        let session = self
+            .import
+            .as_mut()
+            .ok_or("no statistics import is active")?;
+        let (id, original) = session
+            .sources
+            .get(source_key)
+            .ok_or("unknown legacy run source")?;
+        record.validate(true)?;
+        let owner = record
+            .run
+            .as_mut()
+            .ok_or("imported combat has no run owner")?;
+        if record.run_id != original.run_id
+            || !owner.same_identity(original)
+            || record.combat.combat_id > session.max_combat
+        {
+            return Err("imported combat contradicts its run or reserved IDs".into());
+        }
+        owner.reidentify(*id);
+        record.run_id = id.to_string();
+        session.connection.execute(
+            "INSERT INTO combats(run_id,ordinal,imported,record_json) VALUES (?1,?2,1,?3)",
+            params![id, record.ordinal, serde_json::to_string(&record)?],
+        )?;
+        Ok(json!(true))
+    }
+
+    fn import_ambiguous(&mut self, identity: Identity) -> Result<Value> {
+        let session = self
+            .import
+            .as_mut()
+            .ok_or("no statistics import is active")?;
+        if identity.profile < 0 || identity.seed.is_empty() || identity.started_at <= 0 {
+            return Err("invalid legacy import metadata".into());
+        }
+        session.connection.execute(
+            "INSERT OR IGNORE INTO ambiguous VALUES (?1,?2,?3)",
+            params![identity.profile, identity.seed, identity.started_at],
+        )?;
+        Ok(json!(true))
+    }
+
+    fn import_end(&mut self, complete: bool, reasons: &[String]) -> Result<Value> {
+        let session = self
+            .import
+            .as_mut()
+            .ok_or("no statistics import is active")?;
+        if !complete || reasons.iter().any(String::is_empty) {
+            return Err("legacy import is not complete".into());
+        }
+        for reason in reasons {
+            session.connection.execute(
+                "INSERT OR IGNORE INTO gaps SELECT id,?1 FROM runs WHERE source_key IS NOT NULL",
+                [reason],
+            )?;
+        }
+        session
+            .connection
+            .execute("UPDATE metadata SET imported=1 WHERE singleton=1", [])?;
+        session.connection.execute_batch("COMMIT")?;
+        self.import = None;
+        Ok(json!(true))
     }
 }
 

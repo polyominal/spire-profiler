@@ -19,12 +19,12 @@ internal sealed class StatisticsStore : IDisposable
     internal string GameVersion { get; }
     internal string ModVersion { get; }
 
-    private sealed record StoredRun
+    private sealed record StoredPage
     {
-        public RunRecord Run { get; init; }
         public IReadOnlyList<CombatRecord> Combats { get; init; } = Array.Empty<CombatRecord>();
         public IReadOnlyList<string> Reasons { get; init; } = Array.Empty<string>();
         public uint LastOrdinal { get; init; }
+        public bool Done { get; init; }
     }
 
     internal StatisticsStore(string dataDirectory, string gameVersion, string modVersion, Action<string> report)
@@ -44,7 +44,7 @@ internal sealed class StatisticsStore : IDisposable
                 Dispose();
                 return;
             }
-            if (!imported && !Request(new LegacyStatisticsImport(dataDirectory, report).ReadArchive(), false)) Dispose();
+            if (!imported && !new LegacyStatisticsImport(dataDirectory, report).Import(command => Request(command, false))) Dispose();
         }
         catch (Exception error) when (RecordFailure(error))
         {
@@ -119,25 +119,53 @@ internal sealed class StatisticsStore : IDisposable
 
     internal (SummaryView Summary, uint LastOrdinal) LoadRun(RunRecord run, bool historyView = false)
     {
-        var stored = Request<StoredRun>(new { op = "load_run", run_id = run.RunId }, null);
+        var stored = Request<RunRecord>(new { op = "read_begin_load", run_id = run.RunId }, null);
         var summary = run.EmptySummary();
-        if (stored == null) return (summary with { Coverage = summary.Coverage.WithFailure("statistics-read-failed") }, 0);
-        foreach (var record in stored.Combats)
-            summary = historyView ? summary.AddHistory(record.Combat) : summary.Add(record.Combat.View(run.Players));
-        foreach (string reason in stored.Reasons) summary = summary with { Coverage = summary.Coverage.WithFailure(reason) };
-        return (summary, stored.LastOrdinal);
+        if (stored == null)
+        {
+            Request(new { op = "read_end" }, false);
+            return (summary with { Coverage = summary.Coverage.WithFailure("statistics-read-failed") }, 0);
+        }
+        return ReadPages(summary, run, historyView);
     }
 
     internal SummaryView Select(RunIdentity identity)
     {
         if (identity == null) return null;
-        var stored = Request<StoredRun>(new { op = "select", identity.Profile, identity.Seed, identity.StartedAt }, null);
-        if (stored?.Run == null) return null;
-        var run = stored.Run with { Players = Array.AsReadOnly(stored.Run.Players.ToArray()) };
-        var summary = run.EmptySummary();
-        foreach (var record in stored.Combats) summary = summary.AddHistory(record.Combat);
-        foreach (string reason in stored.Reasons) summary = summary with { Coverage = summary.Coverage.WithFailure(reason) };
-        return summary;
+        var stored = Request<RunRecord>(new { op = "read_begin_select", identity.Profile, identity.Seed, identity.StartedAt }, null);
+        if (stored == null)
+        {
+            Request(new { op = "read_end" }, false);
+            return null;
+        }
+        var run = stored with { Players = Array.AsReadOnly(stored.Players.ToArray()) };
+        return ReadPages(run.EmptySummary(), run, true).Summary;
+    }
+
+    private (SummaryView Summary, uint LastOrdinal) ReadPages(SummaryView summary, RunRecord run, bool historyView)
+    {
+        uint lastOrdinal = 0;
+        try
+        {
+            while (true)
+            {
+                var (success, page) = RequestResult<StoredPage>(new { op = "read_page" }, null);
+                if (!success || page?.Combats == null || page.Reasons == null)
+                    return (summary with { Coverage = summary.Coverage.WithFailure("statistics-read-failed") }, lastOrdinal);
+                lastOrdinal = page.LastOrdinal;
+                foreach (var record in page.Combats)
+                    summary = historyView ? summary.AddHistory(record.Combat) : summary.Add(record.Combat.View(run.Players));
+                if (!page.Done) continue;
+                foreach (string reason in page.Reasons) summary = summary with { Coverage = summary.Coverage.WithFailure(reason) };
+                return (summary, lastOrdinal);
+            }
+        }
+        catch (Exception error) when (RecordFailure(error))
+        {
+            report($"cannot aggregate statistics: {error.Message}");
+            return (summary with { Coverage = summary.Coverage.WithFailure("statistics-read-failed") }, lastOrdinal);
+        }
+        finally { Request(new { op = "read_end" }, false); }
     }
 
     private T Request<T>(object command, T fallback)
