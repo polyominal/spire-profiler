@@ -56,18 +56,29 @@ internal static class TooltipLayout
                 {
                     if (room > 0)
                     {
-                        string piece = ChartProjection.TruncateBytes(rest, room);
+                        string piece = TakeRunes(rest, room);
                         if (piece.Length != 0) { line += " " + piece; rest = rest[piece.Length..]; }
                     }
                     Flush();
                     continue;
                 }
-                string chunk = ChartProjection.TruncateBytes(rest, budget);
+                string chunk = TakeRunes(rest, budget);
                 line += chunk;
                 rest = rest[chunk.Length..];
                 Flush();
             }
         }
         Flush();
+    }
+
+    private static string TakeRunes(string text, int count)
+    {
+        int length = 0;
+        foreach (var rune in text.EnumerateRunes())
+        {
+            if (count-- == 0) break;
+            length += rune.Utf16SequenceLength;
+        }
+        return text[..length];
     }
 }

@@ -14,7 +14,7 @@ internal sealed record ChartRow(StatRow Source, ChartSection Section, int Flags,
     internal bool SelfDamage => (Flags & 2) != 0;
     internal bool SoloSelf => (Flags & 4) != 0;
 }
-internal sealed record ChartMeta(uint Turns = 0, uint Plays = 0, uint Combats = 0, long TotalDamage = 0, long DamageTaken = 0, int DpsX10 = 0, string Encounter = "", CaptureQuality Quality = CaptureQuality.Complete);
+internal sealed record ChartMeta(uint Turns = 0, uint Plays = 0, uint Combats = 0, long TotalDamage = 0, long DamageTaken = 0, Int128 DpsX10 = default, string Encounter = "", CaptureQuality Quality = CaptureQuality.Complete);
 internal sealed record DetailStat(string Label, string Value, UiColor Color);
 internal sealed record RowDetail(string Title, IReadOnlyList<DetailStat> Stats)
 {
@@ -52,8 +52,8 @@ internal static class ChartProjection
                 return (Card: card, Segments: segments, Positive: positive, Value: value, Scale: scale);
             }).ToArray();
             var kept = candidates.Where(row => row.Value > 0 || (section == ChartSection.Defense && row.Card.SelfDamage > 0))
-                .Take(MaxCandidates).OrderBy(row => section == ChartSection.Defense && row.Card.SelfDamage > 0 && row.Positive == 0)
-                .ThenByDescending(row => Int128.Abs(row.Value)).ToArray();
+                .OrderBy(row => section == ChartSection.Defense && row.Card.SelfDamage > 0 && row.Positive == 0)
+                .ThenByDescending(row => Int128.Abs(row.Value)).Take(MaxCandidates).ToArray();
             Int128 maximum = kept.Length == 0 ? 0 : kept.Max(row => row.Scale);
             long total = candidates.Sum(row => row.Positive);
             foreach (var item in kept)
@@ -88,7 +88,7 @@ internal static class ChartProjection
         long damage = cards.Sum(card => card.DamageDealt);
         uint plays = tab == UiTab.Combat ? view.Plays : (uint)cards.Sum(card => (long)card.Plays);
         return new(view.Turns, plays, view.Combats, damage, view.DamageReceived,
-            view.Turns == 0 ? 0 : (int)((Int128)damage * 10 / view.Turns), tab == UiTab.Combat ? TruncateBytes(view.Title, 64) : "",
+            view.Turns == 0 ? 0 : (Int128)damage * 10 / view.Turns, tab == UiTab.Combat ? TruncateBytes(view.Title, 64) : "",
             view.Coverage.Quality);
     }
 
@@ -100,15 +100,14 @@ internal static class ChartProjection
         return view == null ? "" : $"TOTAL {view.Cards.Sum(card => card.DamageDealt)} dmg | {view.DamageReceived} taken | {view.BlockTotal} block | pots {view.PotionsUsed} | forge {view.Cards.Sum(card => card.Forge)}\n";
     }
 
-    internal static RowDetail Detail(IReadOnlyList<ChartRow> rows, int index, IReadOnlyList<StatRow> cards)
+    internal static RowDetail Detail(IReadOnlyList<ChartRow> rows, int index)
     {
         if (index < 0 || index >= rows.Count) return RowDetail.Empty;
         var row = rows[index];
-        string prefix = UiPalette.Prefix(row.Source.Kind).Text;
+        var card = row.Source;
+        string prefix = UiPalette.Prefix(card.Kind).Text;
         if (row.SelfDamage && !row.SoloSelf)
-            return new(prefix + row.Name, new[] { new DetailStat("self dmg", Int128.Abs(row.Value).ToString(CultureInfo.InvariantCulture), UiPalette.Self) });
-        var card = cards.FirstOrDefault(card => card.Player == row.Source.Player && card.Id == row.Name);
-        if (card == null) return RowDetail.Empty;
+            return new(prefix + card.Id, new[] { new DetailStat("self dmg", Int128.Abs(row.Value).ToString(CultureInfo.InvariantCulture), UiPalette.Self) });
         var stats = new List<DetailStat>();
         void Add(string label, long value, UiColor color) => stats.Add(new(label, value.ToString(CultureInfo.InvariantCulture), color));
         if (card.DamageDealt > 0)
