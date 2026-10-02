@@ -35,6 +35,9 @@ fmt-md` for Markdown only.
 - Abstractions serve present callers or enforce an invariant. Keep simple logic
   inline; extract helpers when they make an operation easier to understand.
   Prefer private visibility; `profiler-core` is not a public library.
+- In Rust, prefer top-level imports over repeated fully qualified names. Import
+  modules when their qualification improves clarity; retain qualification to
+  avoid ambiguity.
 - Gameplay state stays with its lifetime owner on the game thread, without locks
   or atomics for coordination. Native observations never call managed code.
 - Validate external inputs at the boundary. Use parsed types internally; avoid
