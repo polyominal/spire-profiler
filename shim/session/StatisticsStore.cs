@@ -32,7 +32,7 @@ internal sealed class StatisticsStore : IDisposable
         GameVersion = gameVersion;
         ModVersion = modVersion;
         this.report = report;
-        traceDirectory = Path.Combine(dataDirectory, "statistics-v3", "traces");
+        traceDirectory = Path.Combine(dataDirectory, "statistics-v3", "traces-v2");
         try
         {
             string directory = Path.Combine(dataDirectory, "statistics-v3");

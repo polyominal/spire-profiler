@@ -48,9 +48,6 @@ internal static class ProfilerNative
     private static NativeSnapshot _recording;
     private static NativeReplay _replay;
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    private delegate long NativeModifierCredit(ulong engine, ulong basisLow, ulong basisHigh, ulong valueLow, ulong valueHigh, ulong limitLow, ulong limitHigh, int kind);
-    private static NativeModifierCredit _modifier_credit;
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int NativeWeakPrevention(ulong engine, int total, int receiverSlot, int receiverPlayer, int weak, int debilitate, uint kraneSlots);
     private static NativeWeakPrevention _weak_prevention;
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -230,7 +227,6 @@ internal static class ProfilerNative
                     _recording_begin,
                     _recording,
                     _replay,
-                    _modifier_credit,
                     _weak_prevention) =
                     (GetExport<NativeEngineCreate>(lib, "spire_profiler_engine_create"),
                     GetExport<NativeEngineDestroy>(lib, "spire_profiler_engine_destroy"),
@@ -279,7 +275,6 @@ internal static class ProfilerNative
                     GetExport<NativeRecordingBegin>(lib, "spire_profiler_recording_begin"),
                     GetExport<NativeSnapshot>(lib, "spire_profiler_recording"),
                     GetExport<NativeReplay>(lib, "spire_profiler_replay"),
-                    GetExport<NativeModifierCredit>(lib, "spire_profiler_modifier_credit"),
                     GetExport<NativeWeakPrevention>(lib, "spire_profiler_weak_prevention"));
                 library = lib;
                 libraryPath = path;
@@ -299,16 +294,6 @@ internal static class ProfilerNative
         int amount = _weak_prevention(engine, total, receiverSlot, receiverPlayer ? 1 : 0, weak ? 1 : 0, debilitate ? 1 : 0, kraneSlots);
         if (amount < 0) throw new InvalidOperationException("Weak observation rejected");
         return amount;
-    }
-
-    internal static int CalculateModifierCredit(decimal basis, decimal value, int kind, decimal limit)
-    {
-        var (basisLow, basisHigh) = DecimalWords.Pack(basis);
-        var (valueLow, valueHigh) = DecimalWords.Pack(value);
-        var (limitLow, limitHigh) = DecimalWords.Pack(limit);
-        long amount = _modifier_credit(engine, basisLow, basisHigh, valueLow, valueHigh, limitLow, limitHigh, kind);
-        if (amount < int.MinValue || amount > int.MaxValue) throw new OverflowException("Modifier credit is not representable");
-        return (int)amount;
     }
 
     internal static void Dispose()

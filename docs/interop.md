@@ -25,7 +25,7 @@ validate Godot object lifetimes.
 
 Set `SPIRE_PROFILER_RECORD=1` in the game process environment before startup to
 record observations under
-`statistics-v3/traces/<run-id>/<combat-id>.trace.json`. Keep the matching
+`statistics-v3/traces-v2/<run-id>/<combat-id>.trace.json`. Keep the matching
 statistics database, game version, and mod build when reporting a failure.
 Observation recordings and audit journals remain optional file artifacts,
 separate from the statistics database.
@@ -33,9 +33,12 @@ separate from the statistics database.
 The [observation module](../profiler-core/src/data/observation.rs) defines trace
 compatibility and size limits. A truncated recording is explicitly rejected for
 replay. `ProfilerNative.Replay` creates an isolated reducer, verifies recorded
-operation results, returns its summary, and destroys that reducer. The
+operation results, returns its summary, and destroys that reducer. Modifier
+credits enter the trace as integers: replay checks their accounting, while
+managed fixtures check their decimal derivation and source selection. The
 production self-test and managed session fixtures compare replayed and original
-summaries without replacing the live engine.
+summaries without replacing the live engine. Version-1 traces under `traces/`
+require their matching older build; replay rejects them without changing state.
 
 Coverage reasons distinguish failed observation or accounting from unknown
 source ownership. Unknown credit alone does not prove an observation was lost.

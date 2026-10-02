@@ -192,8 +192,7 @@ impl Signature {
                 ident(&pointer.elem).as_deref(),
             ) {
                 (false, Some("c_char")) => Some("string"),
-                (true, Some("u8" | "ModifierCredit"))
-                | (false, Some("ModifierObservation" | "BlockModifier")) => Some("IntPtr"),
+                (true, Some("u8")) | (false, Some("BlockModifier")) => Some("IntPtr"),
                 _ => None,
             },
             _ => match ident(ty).as_deref() {

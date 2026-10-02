@@ -1,6 +1,8 @@
 //! Bounded observation traces contain values, never process pointers or engine
 //! IDs. Replaying on a fresh State must reproduce every returned source/group
 //! handle before publishing a snapshot. Truncation is explicit and unreplayable.
+//! Modifier credits enter as host-computed integers; traces reproduce accounting,
+//! not the managed decimal operands or their projection. Trace versions must match.
 //! A handler panic truncates the trace because its observation may be missing.
 //! Gameplay retains 10,000 entries and 8 MiB of serialized entry bytes. Releases
 //! have a separate allowance: each successful release requires an earlier source
@@ -9,7 +11,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::modifiers::{ModifierObservation, WeakObservation};
+use super::modifiers::WeakObservation;
 use super::state::State;
 
 const MAX_OBSERVATIONS: usize = 10_000;
@@ -19,16 +21,13 @@ const MAX_RELEASE_BYTES: usize = br#"{"observation":{"operation":"source_release
 const MAX_TRACE_BYTES: usize =
     MAX_BYTES + MAX_RELEASES * MAX_RELEASE_BYTES + MAX_OBSERVATIONS + MAX_RELEASES + 1024;
 const _: () = assert!(MAX_TRACE_BYTES < i32::MAX as usize);
-const TRACE_VERSION: u32 = 1;
+const TRACE_VERSION: u32 = 2;
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Observation {
     WeakProjection {
         observed: WeakObservation,
-    },
-    ModifierProjection {
-        observed: ModifierObservation,
     },
     CombatDiscard,
     SourceRelease {
@@ -352,13 +351,6 @@ impl State {
                     Err(_) => {
                         candidate.capture_failed("weak-policy");
                         u64::MAX
-                    }
-                },
-                Observation::ModifierProjection { observed } => match observed.credit() {
-                    Ok(amount) => i64::from(amount) as u64,
-                    Err(_) => {
-                        candidate.capture_failed("modifier-policy");
-                        i64::MIN as u64
                     }
                 },
                 Observation::CombatDiscard => {

@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 mod storage;
 
-use crate::data::modifiers::{ModifierObservation, WeakObservation};
+use crate::data::modifiers::WeakObservation;
 use crate::data::observation::Observation;
 use crate::data::state::State;
 
@@ -1308,41 +1308,6 @@ pub extern "C" fn spire_profiler_combat_discard(engine: u64) {
     })
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn spire_profiler_modifier_credit(
-    engine: u64,
-    basis_low: u64,
-    basis_high: u64,
-    value_low: u64,
-    value_high: u64,
-    limit_low: u64,
-    limit_high: u64,
-    kind: i32,
-) -> i64 {
-    contain("modifier_credit", i64::MIN, || {
-        with_engine(engine, i64::MIN, true, |state| {
-            let observed = ModifierObservation {
-                basis_low,
-                basis_high,
-                value_low,
-                value_high,
-                limit_low,
-                limit_high,
-                kind,
-            };
-            let amount = observed.credit().map(i64::from).unwrap_or_else(|_| {
-                state.capture_failed("modifier-policy");
-                i64::MIN
-            });
-            state.record(
-                || Observation::ModifierProjection { observed },
-                amount as u64,
-            );
-            amount
-        })
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use std::ffi::CString;
@@ -1592,9 +1557,10 @@ mod tests {
             let b = spire_profiler_source_capture(engine, 9, 1, 12, c"B".as_ptr(), 0, 1, 0);
             let mixed = spire_profiler_source_accumulate(engine, 9, a, 2, b, 5);
             assert_ne!(mixed, 0);
-            let credit = spire_profiler_modifier_credit(engine, 0, 0, 3, 0, 0, 0, 1);
-            assert_eq!(credit, 3);
-            let modifiers = [BlockModifier { source: a, credit }];
+            let modifiers = [BlockModifier {
+                source: a,
+                credit: 3,
+            }];
             assert_eq!(
                 spire_profiler_block_gained(engine, 9, 13, mixed, 1, modifiers.as_ptr(), 1, 0),
                 1
@@ -1757,6 +1723,48 @@ mod tests {
     }
 
     #[test]
+    fn legacy_traces_with_or_without_scalar_projections_are_rejected_atomically() {
+        let engine = spire_profiler_engine_create();
+        assert_eq!(spire_profiler_recording_begin(engine), 1);
+        started(engine, 9);
+        assert_eq!(spire_profiler_turn_started(engine, 9), 1);
+        let mut trace: serde_json::Value =
+            serde_json::from_str(&json(engine, true)).expect("trace parses");
+        assert_eq!(trace["trace_version"], 2);
+        trace["trace_version"] = 1.into();
+        assert_eq!(spire_profiler_turn_started(engine, 9), 1);
+        let expected = json(engine, false);
+        let recording = json(engine, true);
+        let revision = spire_profiler_revision(engine);
+        for projection in [false, true] {
+            if projection {
+                trace["observations"]
+                    .as_array_mut()
+                    .expect("trace observations are an array")
+                    .push(serde_json::json!({
+                        "observation": {
+                            "operation": "modifier_projection",
+                            "observed": {
+                                "basis_low": 0, "basis_high": 0,
+                                "value_low": 3, "value_high": 0,
+                                "limit_low": 0, "limit_high": 0,
+                                "kind": 1
+                            }
+                        },
+                        "result": 3
+                    }));
+            }
+            let input = CString::new(trace.to_string()).expect("JSON has no literal NUL");
+            // SAFETY: CString owns the terminated trace through replay.
+            assert_eq!(unsafe { spire_profiler_replay(engine, input.as_ptr()) }, 0);
+            assert_eq!(json(engine, false), expected);
+            assert_eq!(json(engine, true), recording);
+            assert_eq!(spire_profiler_revision(engine), revision);
+        }
+        spire_profiler_engine_destroy(engine);
+    }
+
+    #[test]
     fn source_collection_does_not_consume_the_gameplay_recording_budget() {
         let engine = spire_profiler_engine_create();
         assert_eq!(spire_profiler_recording_begin(engine), 1);
@@ -1816,23 +1824,52 @@ mod tests {
         spire_profiler_engine_destroy(engine);
     }
     #[test]
-    fn scalar_modifier_failures_do_not_erase_prior_successful_observations() {
+    fn host_modifier_credits_and_repeated_failures_replay_exactly() {
         let engine = spire_profiler_engine_create();
         assert_eq!(spire_profiler_recording_begin(engine), 1);
         started(engine, 1);
+        // SAFETY: literals own every terminated string through each native call.
+        unsafe {
+            let source = spire_profiler_source_capture(engine, 1, 1, 1, c"A".as_ptr(), 0, 0, 0);
+            let modifier = spire_profiler_source_capture(engine, 1, 1, 2, c"B".as_ptr(), 0, 1, 0);
+            let calculation = spire_profiler_damage_calculation_begin(engine, 1, source, 1, 0, 99);
+            assert_eq!(
+                spire_profiler_damage_modifier_contribution(engine, calculation, modifier, 3),
+                1
+            );
+            assert_eq!(
+                spire_profiler_damage_result_append(engine, calculation, 8, 8, 0, 0, 4, 0),
+                1
+            );
+            assert_eq!(
+                spire_profiler_damage_calculation_commit(engine, calculation),
+                1
+            );
+            for reason in [
+                c"modifier-policy",
+                c"modifier-policy",
+                c"damage-live-modifier",
+            ] {
+                spire_profiler_capture_failed(engine, reason.as_ptr());
+            }
+            assert_eq!(spire_profiler_forge(engine, 1, source, 2), 1);
+        }
+        let expected = json(engine, false);
+        let summary: serde_json::Value = serde_json::from_str(&expected).expect("summary parses");
+        assert_eq!(summary["cards"][0]["dmg_direct"], 5);
+        assert_eq!(summary["cards"][0]["forge"], 2);
+        assert_eq!(summary["cards"][1]["dmg_modifier"], 3);
+        assert_eq!(summary["coverage"]["complete"], false);
+        assert_eq!(summary["coverage"]["failures"], 3);
         assert_eq!(
-            spire_profiler_modifier_credit(engine, 0, 0, 3, 0, 0, 0, 0),
-            3
-        );
-        assert_eq!(
-            spire_profiler_modifier_credit(engine, 0, 0, 3, 0, 0, 0, 99),
-            i64::MIN
+            summary["coverage"]["reasons"],
+            serde_json::json!(["modifier-policy", "damage-live-modifier"])
         );
         let trace = CString::new(json(engine, true)).expect("JSON has no literal NUL");
         let replay = spire_profiler_engine_create();
         // SAFETY: CString owns the terminated trace through replay.
         assert_eq!(unsafe { spire_profiler_replay(replay, trace.as_ptr()) }, 1);
-        assert_eq!(json(engine, false), json(replay, false));
+        assert_eq!(expected, json(replay, false));
         spire_profiler_engine_destroy(engine);
         spire_profiler_engine_destroy(replay);
     }
