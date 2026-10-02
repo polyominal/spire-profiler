@@ -12,16 +12,12 @@ internal sealed class PanelTheme : IDisposable
     private readonly Font _title = Load<Font>("res://themes/kreon_bold_glyph_space_two.tres");
     private readonly Font _body = Load<Font>("res://themes/kreon_regular_glyph_space_one.tres");
     private readonly Texture2D _plateTexture = Load<Texture2D>("res://images/ui/hover_tip.png");
-    private readonly Texture2D _track = Load<Texture2D>("res://images/atlases/ui_atlas.sprites/scrollbar_track_center.tres");
-    private readonly Texture2D _edge = Load<Texture2D>("res://images/atlases/ui_atlas.sprites/scrollbar_track_edge2.tres");
-    private readonly Texture2D _train = Load<Texture2D>("res://images/atlases/ui_atlas.sprites/scrollbar_train_large.tres");
     private readonly Texture2D _tab = Load<Texture2D>("res://images/atlases/ui_atlas.sprites/settings_tab_selected.tres");
     private readonly Texture2D _stroke = Load<Texture2D>("res://images/atlases/ui_atlas.sprites/settings_tab_stroke.tres");
     private readonly Dictionary<string, Texture2D> _portraits = new(StringComparer.Ordinal);
     private readonly StyleBoxTexture _plate;
     private readonly StyleBoxTexture _shadow;
     internal bool HasPlate => _plate != null;
-    internal bool HasScrollbar => _track != null && _edge != null && _train != null;
     internal bool HasTabs => _tab != null && _stroke != null;
     internal int RetainedPortraitCount => _portraits.Count;
 
@@ -154,15 +150,6 @@ internal sealed class PanelTheme : IDisposable
 
     internal TooltipLayout ShapeTooltip(RowDetail detail, float maximumHeight, Font fallback, bool useFallback)
         => new(detail, maximumHeight, useFallback ? fallback : _title ?? fallback, useFallback ? fallback : _body ?? fallback);
-
-    internal void DrawScrollbar(Control canvas, ScrollbarGeometry geometry, float x)
-    {
-        if (!HasScrollbar || geometry == null) return;
-        foreach (var (texture, rectangle) in new[] { (_track, geometry.Body), (_edge, geometry.CapTop), (_edge, geometry.CapBottom) })
-            canvas.DrawTextureRect(texture, new Rect2(rectangle.X + x, rectangle.Y, rectangle.W, rectangle.H), false, new Color(.164706f, .290196f, .321569f));
-        var grabber = geometry.Grabber;
-        canvas.DrawTextureRect(_train, new Rect2(grabber.X + x, grabber.Y, grabber.W, grabber.H), false);
-    }
 
     internal bool NeedsFallback(PanelLayout layout, RowDetail detail)
         => layout.Header.Concat(layout.Body).OfType<TextCommand>().Any(text => !Covers(text.Role == TextRole.Title ? _title : _body, text.Text))

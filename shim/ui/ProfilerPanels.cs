@@ -205,9 +205,14 @@ internal static class ProfilerPanels
     internal static async Task SelfTestAsync()
     {
         ProfilerPanel panel = null;
+        SubViewport viewport = null;
         try
         {
             var tree = Engine.GetMainLoop() as SceneTree ?? throw new InvalidOperationException("Panel fixture needs the game scene tree");
+            viewport = new SubViewport { Size = new Vector2I(1280, 960), Disable3D = true, RenderTargetUpdateMode = SubViewport.UpdateMode.Always };
+            tree.Root.CallDeferred(Node.MethodName.AddChild, viewport);
+            await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
+            viewport.NotifyMouseEntered();
             var portraitTheme = _combatTheme ??= new PanelTheme();
             string firstPath = PanelTheme.PortraitPath("IRONCLAD");
             var retainedTexture = portraitTheme.Portrait(firstPath) ?? throw new InvalidOperationException("Portrait fixture needs the installed Ironclad texture");
@@ -272,8 +277,8 @@ internal static class ProfilerPanels
             for (int cycle = 0; cycle < 2; cycle++)
             {
                 panel = new ProfilerPanel(portraitTheme, cycle == 1);
-                tree.Root.CallDeferred(Node.MethodName.AddChild, panel.Backdrop);
-                tree.Root.CallDeferred(Node.MethodName.AddChild, panel.Root);
+                viewport.CallDeferred(Node.MethodName.AddChild, panel.Backdrop);
+                viewport.CallDeferred(Node.MethodName.AddChild, panel.Root);
                 await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
                 panel.Show();
                 if (panel.Visible) throw new InvalidOperationException("Panel toggle changed visibility before refresh");
@@ -283,8 +288,43 @@ internal static class ProfilerPanels
                 var firstRow = panel.Layout.RowHits.First();
                 panel.Interact(new(panel.ControlRect.X + 30, panel.ControlRect.Y + firstRow.Y0 + 8), false);
                 for (int frame = 0; frame < 2; frame++) await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
+                var scrollbar = panel.Root.GetNode<VScrollBar>("Plate/ChartScrollbar");
+                var body = panel.Root.GetNode<Control>("Plate/ChartBody");
+                var barRect = scrollbar.GetGlobalRect();
+                if (!scrollbar.Visible || scrollbar.Page != body.Size.Y
+                    || scrollbar.MaxValue - scrollbar.Page != panel.Layout.Height - panel.ControlRect.H
+                    || barRect.Size.X > 24
+                    || barRect.Position.X < panel.ControlRect.X + panel.Layout.Content.Right
+                    || barRect.End.X > panel.ControlRect.X + PanelLayout.ContentArea(panel.ControlRect.W, portraitTheme.HasPlate, 0).Right
+                    || barRect.Position.Y < body.GlobalPosition.Y || barRect.End.Y > body.GlobalPosition.Y + body.Size.Y)
+                    throw new InvalidOperationException("Native scrollbar must stay within a 24-pixel width, fit the chart body and represent its visible page and content extent");
+                var bodyPoint = body.GlobalPosition + new Vector2(30, 30);
+                using var wheel = new InputEventMouseButton { Position = bodyPoint, GlobalPosition = bodyPoint, ButtonIndex = MouseButton.WheelDown, Pressed = true };
+                viewport.PushInput(wheel, true);
+                if (panel.ScrollPosition != 60) throw new InvalidOperationException("Wheel input over the chart did not reach the native scroll range");
+                wheel.Pressed = false;
+                viewport.PushInput(wheel, true);
+                using var pan = new InputEventPanGesture { Position = bodyPoint, Delta = new Vector2(0, 30) };
+                viewport.PushInput(pan, true);
+                if (panel.ScrollPosition != 90) throw new InvalidOperationException("Pan input over the chart did not reach the native scroll range");
+                scrollbar.GrabFocus();
+                using var key = new InputEventAction { Action = "ui_down", Pressed = true, Strength = 1 };
+                viewport.PushInput(key, true);
+                if (panel.ScrollPosition != 150) throw new InvalidOperationException($"Focused scrollbar did not respond to UI navigation: focus={scrollbar.HasFocus()}, scroll={panel.ScrollPosition}");
+                key.Pressed = false;
+                viewport.PushInput(key, true);
                 panel.ScrollToEnd();
-                if (panel.ScrollPosition <= 0) throw new InvalidOperationException("Panel fixture failed scrolling");
+                if (panel.ScrollPosition != panel.Layout.Height - panel.ControlRect.H)
+                    throw new InvalidOperationException("Scroll-to-end must expose the last chart content without overscroll");
+                int beforeResize = panel.ScrollPosition;
+                viewport.Size = new Vector2I(1280, 720);
+                panel.Refresh(0, fixture, fixture);
+                if (panel.ScrollPosition != beforeResize) throw new InvalidOperationException("A smaller viewport must preserve the scroll offset");
+                panel.ScrollToEnd();
+                viewport.Size = new Vector2I(1280, 960);
+                panel.Refresh(0, fixture, fixture);
+                if (panel.ScrollPosition != panel.Layout.Height - panel.ControlRect.H)
+                    throw new InvalidOperationException("A larger viewport must clamp the scroll offset to the new content extent");
                 if (cycle == 0)
                 {
                     int scroll = panel.ScrollPosition;
@@ -314,16 +354,25 @@ internal static class ProfilerPanels
                 panel.Interact(avatarPoint, true); panel.Interact(avatarPoint, false);
                 if (panel.Player != null || panel.RowCount != 240) throw new InvalidOperationException("Panel fixture failed clearing the filter");
                 var outside = new UiPoint(panel.ControlRect.X - 10, panel.ControlRect.Y + panel.ControlRect.H - 40);
-                if (portraitTheme.HasScrollbar)
-                {
-                    var track = PanelGeometry.Scrollbar(new(panel.ControlRect.W, panel.ControlRect.H), portraitTheme.HasPlate,
-                        PanelGeometry.BodyBand(panel.ControlRect.H, portraitTheme.HasPlate, panel.Layout.HeaderBottom), panel.Layout.Height, panel.ScrollPosition).Track;
-                    var point = new UiPoint(panel.ControlRect.X + track.X + 10, panel.ControlRect.Y + track.Y + track.H / 2);
-                    panel.Interact(point, true);
-                    panel.Interact(outside, true);
-                    if (!panel.Visible) throw new InvalidOperationException("Scrollbar drag dismissed after leaving the panel");
-                    panel.Interact(outside, false);
-                }
+                scrollbar.Value = 0;
+                barRect = scrollbar.GetGlobalRect();
+                var grabber = new Vector2(barRect.Position.X + barRect.Size.X / 2,
+                    barRect.Position.Y + scrollbar.GetThemeIcon("decrement").GetHeight() + scrollbar.GetThemeStylebox("scroll").GetMargin(Side.Top) + 1);
+                using var enter = new InputEventMouseMotion { Position = grabber, GlobalPosition = grabber };
+                viewport.PushInput(enter, true);
+                using var press = new InputEventMouseButton { Position = grabber, GlobalPosition = grabber, ButtonIndex = MouseButton.Left, ButtonMask = MouseButtonMask.Left, Pressed = true };
+                viewport.PushInput(press, true);
+                var outsidePoint = new Vector2(outside.X, outside.Y);
+                using var motion = new InputEventMouseMotion { Position = outsidePoint, GlobalPosition = outsidePoint, Relative = outsidePoint - grabber, ButtonMask = MouseButtonMask.Left };
+                viewport.PushInput(motion, true);
+                panel.Interact(outside, true);
+                if (!panel.Requested || panel.ScrollPosition <= 0)
+                    throw new InvalidOperationException($"Native scrollbar drag must retain pointer capture outside the panel without dismissing it: requested={panel.Requested}, scroll={panel.ScrollPosition}, rect={barRect}, grabber={grabber}");
+                press.Position = press.GlobalPosition = outsidePoint;
+                press.Pressed = false;
+                press.ButtonMask = 0;
+                viewport.PushInput(press, true);
+                panel.Interact(outside, false);
                 panel.Interact(outside, true);
                 if (panel.Requested || !panel.Visible) throw new InvalidOperationException("Outside dismissal did not stage visibility until refresh");
                 panel.Refresh(3, fixture, fixture);
@@ -355,6 +404,20 @@ internal static class ProfilerPanels
                 }
                 if (panel.DrawCount == 0) throw new InvalidOperationException("Panel fixture never drew");
                 draws += panel.DrawCount;
+                for (int count = 1; count <= fixture.Cards.Count; count++)
+                {
+                    panel.Present(fixture with { Cards = fixture.Cards.Take(count).ToArray() });
+                    if (scrollbar.Visible) break;
+                }
+                barRect = scrollbar.GetGlobalRect();
+                if (!scrollbar.Visible || barRect.Size.X > 24
+                    || barRect.Position.X < panel.ControlRect.X + panel.Layout.Content.Right
+                    || barRect.End.X > panel.ControlRect.X + PanelLayout.ContentArea(panel.ControlRect.W, portraitTheme.HasPlate, 0).Right
+                    || barRect.End.Y > panel.ControlRect.Y + panel.ControlRect.H)
+                    throw new InvalidOperationException("A chart that just starts overflowing must keep its scrollbar compact and inside the panel");
+                panel.Present(fixture with { Cards = fixture.Cards.Take(1).ToArray() });
+                if (scrollbar.Visible || panel.ScrollPosition != 0)
+                    throw new InvalidOperationException("Short content must hide the native scrollbar and reset its offset");
                 var root = panel.Root;
                 var backdrop = panel.Backdrop;
                 panel.Free();
@@ -367,6 +430,6 @@ internal static class ProfilerPanels
             Log.Info($"[SpireProfiler] managed panel lifecycle: PASS (attach, chart, filter, scroll, hide, free, recreate; draws={draws})");
         }
         catch (Exception error) { Log.Error($"[SpireProfiler] managed panel lifecycle: FAIL {error}"); }
-        finally { panel?.Free(); }
+        finally { panel?.Free(); viewport?.QueueFree(); }
     }
 }
