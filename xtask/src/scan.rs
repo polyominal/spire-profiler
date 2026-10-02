@@ -1,8 +1,7 @@
 //! The Rust source line classifier: comment, code, or blank, with
-//! string and char literals hiding comment markers. Shared machinery
-//! for the content gates.
+//! string and char literals hiding comment markers.
 
-pub(crate) enum LineKind {
+enum LineKind {
     Blank,
     Comment,
     Code,
@@ -14,13 +13,13 @@ enum StringState {
 }
 
 #[derive(Default)]
-pub(crate) struct LineScanner {
+struct LineScanner {
     in_block_comment: bool,
     string: Option<StringState>,
 }
 
 impl LineScanner {
-    pub(crate) fn classify(&mut self, line: &str) -> LineKind {
+    fn classify(&mut self, line: &str) -> LineKind {
         let line = line.trim();
         if line.is_empty() {
             return LineKind::Blank;

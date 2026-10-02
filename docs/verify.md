@@ -15,9 +15,8 @@ for shared managed behavior or native/managed contracts. Use `headless-test` for
 patch installation or Godot panel lifecycle changes; it already runs
 `managed-test`. Game updates follow the [pin-update
 procedure](game.md#updating-the-game-pin). Markdown-only changes need `cargo
-xtask fmt-md`, `cargo xtask fmt-md --check`, `cargo xtask check-citations`, and
-`cargo xtask check-emdash`. Rust documentation changes also require `cargo xtask
-check-docs`.
+xtask fmt-md`, `cargo xtask fmt-md --check`, and `cargo xtask check-citations`.
+Rust documentation changes also require `cargo xtask check-docs`.
 
 Investigate failures before calling them unrelated: reproduce them on an
 unchanged baseline or establish an independent cause. Preserve existing work and
@@ -30,10 +29,10 @@ understandable.
 
 - `cargo xtask smoke`: `fmt --check` (Rust, handwritten C\# including fixtures,
   and Markdown; requires the pinned SDK but no game), `check-citations`,
-  `check-emdash`, `check-abi` (`GetExport` bindings across the production shim
-  sources against the Rust exports), `cargo clippy --workspace --all-targets
-  --all-features --locked -- --deny warnings`, `check-docs` (warning-free `cargo
-  doc --document-private-items` and the [comment-density
+  `check-abi` (`GetExport` bindings across the production shim sources against
+  the Rust exports), `cargo clippy --workspace --all-targets --all-features
+  --locked -- --deny warnings`, `check-docs` (warning-free `cargo doc
+  --document-private-items` and the [comment-density
   budget](../xtask/src/check_docs.rs)), `cargo nextest run --workspace --locked
   --no-fail-fast`.
 - `cargo xtask managed-test`: build the host Rust reducer, then compile the

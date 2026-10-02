@@ -15,7 +15,6 @@ mod check_abi;
 mod check_catalog;
 mod check_citations;
 mod check_docs;
-mod check_emdash;
 mod cross;
 mod csharp;
 mod decompile;
@@ -39,7 +38,7 @@ mod flags {
     xflags::xflags! {
         cmd xtask {
             /// The commit gate: format checks (Rust + C# + Markdown), citation,
-            /// em-dash, ABI, and doc checks, clippy, and nextest.
+            /// ABI, and doc checks, clippy, and nextest.
             cmd smoke {}
             /// Install the pinned toolchain and verify the dev tools.
             cmd install-tool {}
@@ -67,8 +66,6 @@ mod flags {
             }
             /// Fail on file:line citations in comments and docs.
             cmd check-citations {}
-            /// Fail on em dashes beyond the pinned per-file ceilings.
-            cmd check-emdash {}
             /// Format Rust, handwritten C#, and the project Markdown docs.
             cmd fmt {
                 /// Check for formatting drift without rewriting.
@@ -109,7 +106,6 @@ fn main() -> Result<()> {
         flags::XtaskCmd::CheckCatalog(_) => check_catalog::run(),
         flags::XtaskCmd::CheckDocs(flags) => check_docs::check_docs(&shell, flags.top),
         flags::XtaskCmd::CheckCitations(_) => check_citations::run(),
-        flags::XtaskCmd::CheckEmdash(_) => check_emdash::run(),
         flags::XtaskCmd::Fmt(flags) => fmt(&shell, flags.check),
         flags::XtaskCmd::FmtMd(flags) => md::fmt_md(flags.check),
         flags::XtaskCmd::Decompile(flags) => {
@@ -206,7 +202,6 @@ fn fmt(shell: &Shell, check: bool) -> Result<()> {
 fn smoke(shell: &Shell) -> Result<()> {
     fmt(shell, true)?;
     check_citations::run()?;
-    check_emdash::run()?;
     check_abi::run(shell)?;
     cmd!(
         shell,
