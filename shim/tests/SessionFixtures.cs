@@ -32,6 +32,7 @@ internal static class SessionFixtures
         {
             ProfilerNative.Load(nativeLibrary);
             ParserAndAggregateContracts();
+            AggregationCapacity();
             SqliteStore(Path.Combine(scratch, "store"));
             PagedHistory(Path.Combine(scratch, "paged"));
             LegacyHistory(Path.Combine(scratch, "legacy"));
@@ -379,6 +380,45 @@ internal static class SessionFixtures
         combatJson["combat"]["coverage"]["quality"] = "partial";
         combatJson["combat"]["coverage"]["reasons"] = JsonNode.Parse("[null]");
         Reject(() => StatisticsJson.ParseCombat(combatJson.ToJsonString(), run.RunId, 1), "Stored failure reasons must be meaningful strings");
+    }
+
+    private static void AggregationCapacity()
+    {
+        var run = Header("CAPACITY", 101);
+        var live = run.EmptySummary();
+        var history = run.EmptySummary();
+        SummaryView priorLive = null, priorHistory = null;
+        for (int batch = 0; batch < 8; batch++)
+        {
+            var combat = new CombatStatistics
+            {
+                PolicyVersion = 1,
+                Cards = Enumerable.Range(batch * 128, 128).Select(index => new StatRow
+                {
+                    Id = "SOURCE-" + index,
+                    Player = 0,
+                    Plays = 1,
+                    DamageDealt = 1,
+                    DmgDirect = 1
+                }).ToArray(),
+                Coverage = CoverageSummary.Healthy
+            };
+            live = live.Add(combat.View(run.Players));
+            history = history.AddHistory(combat);
+            if (batch == 0) { priorLive = live; priorHistory = history; }
+        }
+        foreach (var summary in new[] { live, history })
+            Check(summary.Cards.Count <= StatRow.RunRowLimit && summary.Cards.Sum(row => row.DamageDealt) == 1024
+                && summary.Cards.Any(row => row.Kind == 5 && row.DamageDealt > 0)
+                && summary.Coverage.Quality == CaptureQuality.Partial && summary.Coverage.Reasons.Contains("row-capacity"),
+                "Bounded run aggregation must preserve damage while reporting lost source attribution");
+        Check(history.PlayerCards[0].Sum(row => row.DamageDealt) == 1024
+            && history.PlayerCards[0].Any(row => row.Kind == 5 && row.DamageDealt > 0),
+            "History must preserve the overflowing player's damage independently of its team projection");
+        foreach (var prior in new[] { priorLive, priorHistory })
+            Check(prior.Cards.Count == 128 && prior.Cards.Sum(row => row.DamageDealt) == 128
+                && prior.Coverage.Complete && !prior.Cards.Any(row => row.Kind == 5),
+                "Later source collapse must not change an already published complete summary");
     }
 
     private static void SqliteStore(string directory)
