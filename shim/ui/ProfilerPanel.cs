@@ -219,7 +219,7 @@ internal sealed class ProfilerPanel
         }
         _detail = _hover is { } index ? ChartProjection.Detail(_rows, index) : RowDetail.Empty;
         _tipLines = _detail.IsEmpty ? Array.Empty<TipLine>() : TooltipLayout.Shape(_detail, TooltipLayout.MaximumLines(_control.H));
-        _fallbackFont = PanelTheme.NeedsFallback(_layout, _detail);
+        _fallbackFont = _theme.NeedsFallback(_layout, _detail);
         UpdateFrame();
         _canvas.QueueRedraw(); _body.QueueRedraw(); _overlay.QueueRedraw();
     }
