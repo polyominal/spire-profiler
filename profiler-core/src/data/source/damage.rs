@@ -1,8 +1,7 @@
 //! Complete target-local result groups stage every ledger and defensive-pool
 //! delta before publication. Capture failures invalidate the whole calculation.
 
-use allocation::{DamageAllocation, ModifierContribution};
-
+use super::allocation::{DamageAllocation, ModifierContribution};
 use super::*;
 
 impl ObservedDamage {

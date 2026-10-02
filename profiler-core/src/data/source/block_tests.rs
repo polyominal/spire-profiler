@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, VecDeque};
 
+use serde_json::Value;
+
 use super::*;
 
 fn fixture() -> State {
@@ -115,7 +117,7 @@ fn fifo_tail_merges_and_capacity_match_a_queue_of_individual_points() {
                 .iter()
                 .filter(|row| {
                     if index == 3 {
-                        row.kind == crate::source_kind::SourceKind::Unknown
+                        row.kind == SourceKind::Unknown
                     } else {
                         row.id.as_ref() == format!("S{index}")
                     }
@@ -132,7 +134,7 @@ fn fifo_tail_merges_and_capacity_match_a_queue_of_individual_points() {
             );
         }
     }
-    assert!(!serde_json::from_str::<serde_json::Value>(&state.snapshot()).expect("summary parses")["coverage"]["complete"].as_bool().expect("boolean coverage"));
+    assert!(!serde_json::from_str::<Value>(&state.snapshot()).expect("summary parses")["coverage"]["complete"].as_bool().expect("boolean coverage"));
 }
 
 #[test]
@@ -187,12 +189,10 @@ fn loss_shortfall_marks_coverage_and_invalid_wire_does_not_mutate_the_pool() {
     assert_eq!(state.provenance.pools[0].blocks[0].remaining, 3);
     assert_eq!(state.block_pool_loss(7, i32::MAX, 1), 1);
     assert_eq!(state.provenance.pools[0].blocks[0].remaining, 3);
-    let before: serde_json::Value =
-        serde_json::from_str(&state.snapshot()).expect("summary parses");
+    let before: Value = serde_json::from_str(&state.snapshot()).expect("summary parses");
     assert_eq!(state.block_pool_loss(7, 0, 5), 1);
     assert!(state.provenance.pools[0].blocks.is_empty());
-    let snapshot: serde_json::Value =
-        serde_json::from_str(&state.snapshot()).expect("summary parses");
+    let snapshot: Value = serde_json::from_str(&state.snapshot()).expect("summary parses");
     assert_eq!(snapshot["coverage"]["complete"], false);
     assert!(snapshot["coverage"]["failures"].as_u64() > before["coverage"]["failures"].as_u64());
 }
@@ -253,14 +253,14 @@ fn full_pool_keeps_earlier_slices_before_the_conservative_unknown_tail() {
             .expect("fixture combat exists")
             .cards
             .iter()
-            .all(|row| row.kind != crate::source_kind::SourceKind::Unknown)
+            .all(|row| row.kind != SourceKind::Unknown)
     );
     receive(&mut state, 8, 0);
     let combat = state.current.as_ref().expect("fixture combat exists");
     let unknown = combat
         .cards
         .iter()
-        .find(|row| row.kind == crate::source_kind::SourceKind::Unknown)
+        .find(|row| row.kind == SourceKind::Unknown)
         .expect("overflow absorption has explicit Unknown credit");
     assert_eq!((unknown.block_effective, unknown.block_gained), (8, 0));
     assert_eq!(combat.cards[2].block_gained, 5);
@@ -281,7 +281,7 @@ fn missing_provenance_preserves_receiver_absorption_without_inventing_gains() {
     for row in &combat.cards {
         assert_eq!(row.block_gained, 0);
         assert_eq!(row.block_effective, i64::from(row.player) + 1);
-        assert_eq!(row.kind, crate::source_kind::SourceKind::Unknown);
+        assert_eq!(row.kind, SourceKind::Unknown);
     }
 }
 

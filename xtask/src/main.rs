@@ -256,9 +256,9 @@ fn install_tool(shell: &Shell) -> Result<()> {
         ensure_cargo_tool(shell, probe, tool, expected_version)?;
     }
 
-    crate::dotnet::ensure_bootstrap(shell)?;
-    crate::zig::ensure_bootstrap(shell)?;
-    crate::cross::ensure_targets(shell)?;
+    dotnet::ensure_bootstrap(shell)?;
+    zig::ensure_bootstrap(shell)?;
+    cross::ensure_targets(shell)?;
 
     println!("install-tool: all tools present");
     Ok(())

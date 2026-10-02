@@ -8,6 +8,7 @@
 //! diagnosed instead of guessed.
 
 use std::path::{Path, PathBuf};
+use std::{env, fs};
 
 use anyhow::{Result, bail};
 
@@ -42,7 +43,7 @@ pub enum HostPlatform {
 
 impl HostPlatform {
     pub fn detect() -> Result<Self> {
-        Self::parse(std::env::consts::OS)
+        Self::parse(env::consts::OS)
     }
 
     fn parse(os: &str) -> Result<Self> {
@@ -70,7 +71,7 @@ pub enum Arch {
 
 impl Arch {
     pub fn detect() -> Result<Self> {
-        match std::env::consts::ARCH {
+        match env::consts::ARCH {
             "aarch64" => Ok(Arch::Arm64),
             "x86_64" => Ok(Arch::X86_64),
             _ => bail!("unknown host architecture (supported: aarch64, x86_64)"),
@@ -100,7 +101,7 @@ pub fn locate_game() -> Result<GamePaths> {
 
 fn locate_game_in(host: HostPlatform, arch: Arch) -> Result<GamePaths> {
     // The override is authoritative and checked verbatim.
-    if let Some(dir) = std::env::var_os("STS2_GAME_DIR") {
+    if let Some(dir) = env::var_os("STS2_GAME_DIR") {
         return resolve_from_root_for(&PathBuf::from(dir), host, arch);
     }
     let roots = steam_library_roots(host)?;
@@ -149,7 +150,7 @@ pub(crate) fn vdf_library_roots(host: HostPlatform) -> Result<(Vec<PathBuf>, Vec
 /// The library roots one manifest enumerates; a missing VDF just means
 /// that location has no Steam install.
 fn vdf_library_paths(vdf: &Path) -> Option<Vec<PathBuf>> {
-    let text = std::fs::read_to_string(vdf).ok()?;
+    let text = fs::read_to_string(vdf).ok()?;
     Some(libraryfolders_paths(&text))
 }
 
@@ -158,12 +159,12 @@ fn vdf_library_paths(vdf: &Path) -> Option<Vec<PathBuf>> {
 fn wsl_windows_vdf_candidates() -> Vec<PathBuf> {
     // Only WSL mounts Windows drives; a native Linux host has nothing to
     // probe under /mnt.
-    let is_wsl = std::fs::read_to_string("/proc/sys/kernel/osrelease")
+    let is_wsl = fs::read_to_string("/proc/sys/kernel/osrelease")
         .is_ok_and(|release| release.to_ascii_lowercase().contains("microsoft"));
     if !is_wsl {
         return Vec::new();
     }
-    let Ok(entries) = std::fs::read_dir("/mnt") else {
+    let Ok(entries) = fs::read_dir("/mnt") else {
         return Vec::new();
     };
     entries
@@ -209,7 +210,7 @@ fn steam_vdf_candidates(host: HostPlatform) -> Result<Vec<PathBuf>> {
             ".steam/steam/steamapps/libraryfolders.vdf",
         ],
     };
-    let home = std::env::var_os("HOME").ok_or_else(no_home)?;
+    let home = env::var_os("HOME").ok_or_else(no_home)?;
     Ok(relative
         .iter()
         .map(|rel| PathBuf::from(home.clone()).join(rel))
@@ -217,7 +218,7 @@ fn steam_vdf_candidates(host: HostPlatform) -> Result<Vec<PathBuf>> {
 }
 
 fn default_library_root(host: HostPlatform) -> Result<PathBuf> {
-    let home = std::env::var_os("HOME").ok_or_else(no_home)?;
+    let home = env::var_os("HOME").ok_or_else(no_home)?;
     match host {
         HostPlatform::Macos => Ok(PathBuf::from(home).join("Library/Application Support/Steam")),
         HostPlatform::Linux => Ok(PathBuf::from(home).join(".local/share/Steam")),
@@ -407,15 +408,15 @@ mod tests {
                 .create_temp_dir()
                 .expect("each fake game tree needs an isolated temporary directory");
             let root = temp.path().join(name);
-            std::fs::create_dir(&root).expect("the owned temporary directory is writable");
+            fs::create_dir(&root).expect("the owned temporary directory is writable");
             Self { root, _temp: temp }
         }
 
         fn touch(&self, rel: &str) {
             let path = self.root.join(rel);
-            std::fs::create_dir_all(path.parent().expect("every tree file has a parent"))
+            fs::create_dir_all(path.parent().expect("every tree file has a parent"))
                 .expect("the owned fake game tree is writable");
-            std::fs::write(&path, []).expect("the owned fake game tree is writable");
+            fs::write(&path, []).expect("the owned fake game tree is writable");
         }
 
         fn touch_windows_tree(&self) {

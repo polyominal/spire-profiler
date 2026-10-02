@@ -1,5 +1,6 @@
 //! Syntax queries use the compiler shipped in the pinned SDK, without NuGet.
 
+use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -9,6 +10,8 @@ use anyhow::{Context, Result, bail};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use xshell::{Shell, cmd};
+
+use crate::{dotnet, workspace_root};
 
 #[derive(Serialize)]
 struct Request<'a> {
@@ -28,16 +31,16 @@ pub(crate) fn parse<T: DeserializeOwned>(mode: &str, sources: &[(&str, &str)]) -
         .get_or_init(|| {
             let build = || -> Result<_> {
                 let shell = Shell::new()?;
-                let binary = crate::dotnet::resolve_dotnet(&shell)?;
-                let project = crate::workspace_root().join("xtask/syntax/Syntax.csproj");
-                let artifacts = crate::workspace_root().join("target/syntax");
-                std::fs::create_dir_all(&artifacts)?;
+                let binary = dotnet::resolve_dotnet(&shell)?;
+                let project = workspace_root().join("xtask/syntax/Syntax.csproj");
+                let artifacts = workspace_root().join("target/syntax");
+                fs::create_dir_all(&artifacts)?;
                 // Nextest runs fixtures in separate processes sharing these outputs.
-                let lock = std::fs::File::create(artifacts.join(".build.lock"))?;
+                let lock = fs::File::create(artifacts.join(".build.lock"))?;
                 lock.lock()?;
                 let output = artifacts.join("bin");
                 cmd!(shell, "{binary} build {project} --configuration Release --artifacts-path {artifacts} --output {output} --nologo --verbosity quiet")
-                    .env("DOTNET_ROOT", crate::dotnet::bootstrap_dir())
+                    .env("DOTNET_ROOT", dotnet::bootstrap_dir())
                     .env("DOTNET_CLI_TELEMETRY_OPTOUT", "1")
                     .env("DOTNET_NOLOGO", "1")
                     .run()?;
@@ -50,7 +53,7 @@ pub(crate) fn parse<T: DeserializeOwned>(mode: &str, sources: &[(&str, &str)]) -
     let input = serde_json::to_vec(&Request { mode, sources })?;
     let mut child = Command::new(binary)
         .arg(assembly)
-        .env("DOTNET_ROOT", crate::dotnet::bootstrap_dir())
+        .env("DOTNET_ROOT", dotnet::bootstrap_dir())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

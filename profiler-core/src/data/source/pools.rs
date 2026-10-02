@@ -10,6 +10,7 @@
 //! the same supplier weights through partial consumption and adjacent merges.
 
 use super::*;
+use crate::data::state;
 
 impl SourceBlock {
     fn consume(
@@ -231,13 +232,9 @@ impl LedgerStage<'_> {
             }
         }
         if remaining > 0 {
-            let row = crate::data::ledger::get_or_create_card_kind(
-                self.combat,
-                TEAM_SLOT,
-                "OSTY",
-                crate::source_kind::SourceKind::Osty,
-            )
-            .ok_or(SourceFailure::Capacity)?;
+            let row =
+                ledger::get_or_create_card_kind(self.combat, TEAM_SLOT, "OSTY", SourceKind::Osty)
+                    .ok_or(SourceFailure::Capacity)?;
             self.credit(
                 Destination::Row(row as u32),
                 CreditField::BlockEffective,
@@ -299,10 +296,7 @@ impl State {
             let epoch = self.provenance_epoch(combat_seq)?;
             let source = self.source_snapshot(epoch, transfer).unwrap_or_else(|_| {
                 self.capture_failed("block-producer-incomplete");
-                SourceSnapshot::unknown_for(
-                    epoch,
-                    super::super::state::clamp_source_slot(receiver_slot),
-                )
+                SourceSnapshot::unknown_for(epoch, state::clamp_source_slot(receiver_slot))
             });
             if amount < 0 {
                 return Err(SourceFailure::Packet);
@@ -310,7 +304,7 @@ impl State {
             if amount == 0 {
                 return Ok(());
             }
-            let slot = super::super::state::clamp_source_slot(receiver_slot);
+            let slot = state::clamp_source_slot(receiver_slot);
             let mut stage = LedgerStage::new(self)?;
             stage.combat.block_total = stage
                 .combat
@@ -373,7 +367,7 @@ impl State {
                 return Err(SourceFailure::Packet);
             }
             let source = self.source_snapshot(epoch, transfer)?;
-            let slot = super::super::state::clamp_source_slot(owner_slot);
+            let slot = state::clamp_source_slot(owner_slot);
             let mut stage = LedgerStage::new(self)?;
             let pool = stage.pool(slot)?;
             if pool.osty.len() == caps::OSTY_STACK {
@@ -395,7 +389,7 @@ impl State {
     pub(crate) fn osty_killed(&mut self, combat_seq: u64, owner_slot: i32, play: u64) -> i32 {
         let result = (|| {
             self.provenance_epoch(combat_seq)?;
-            let owner = super::super::state::clamp_source_slot(owner_slot);
+            let owner = state::clamp_source_slot(owner_slot);
             let source = if play == 0 {
                 None
             } else {
@@ -436,7 +430,7 @@ impl State {
     pub(crate) fn block_pool_clear(&mut self, combat_seq: u64, player_slot: i32) -> i32 {
         let result = (|| {
             self.provenance_epoch(combat_seq)?;
-            let slot = super::super::state::clamp_source_slot(player_slot);
+            let slot = state::clamp_source_slot(player_slot);
             if let Some(pool) = self.provenance.pools.get_mut(usize::from(slot)) {
                 pool.blocks.clear();
             }

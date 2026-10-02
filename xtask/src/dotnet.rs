@@ -5,6 +5,7 @@
 //! from nuget.org on first build.
 
 use std::path::{Path, PathBuf};
+use std::{env, fs};
 
 use anyhow::Result;
 use xshell::{Shell, cmd};
@@ -96,7 +97,7 @@ pub fn ensure_bootstrap(shell: &Shell) -> Result<()> {
 }
 
 pub fn ensure_bootstrap_in(shell: &Shell, dir: &Path) -> Result<()> {
-    let pin = pin(std::env::consts::OS, std::env::consts::ARCH)?;
+    let pin = pin(env::consts::OS, env::consts::ARCH)?;
     let tarball = dir.join(format!("dotnet-sdk-{DOTNET_VERSION}.tar.gz"));
     if bootstrap_present(dir) {
         let current = list_sdks_of(shell, dir, &binary_in(dir))
@@ -107,16 +108,16 @@ pub fn ensure_bootstrap_in(shell: &Shell, dir: &Path) -> Result<()> {
         let cached_tarball_matches = sha512_matches(&tarball, pin.sha512)?;
         // The install is host state, but a verified tarball is the reusable
         // download cache; preserve it while removing every extracted file.
-        for entry in std::fs::read_dir(dir)? {
+        for entry in fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
             if path == tarball && cached_tarball_matches {
                 continue;
             }
             if entry.file_type()?.is_dir() {
-                std::fs::remove_dir_all(path)?;
+                fs::remove_dir_all(path)?;
             } else {
-                std::fs::remove_file(path)?;
+                fs::remove_file(path)?;
             }
         }
     }
@@ -127,7 +128,7 @@ pub fn ensure_bootstrap_in(shell: &Shell, dir: &Path) -> Result<()> {
          run only; ~250 MB, cached for subsequent runs)",
         dir.display()
     );
-    std::fs::create_dir_all(dir)?;
+    fs::create_dir_all(dir)?;
     let url = pin.url;
     if !sha512_matches(&tarball, pin.sha512)? {
         cmd!(
@@ -136,7 +137,7 @@ pub fn ensure_bootstrap_in(shell: &Shell, dir: &Path) -> Result<()> {
         )
         .run()?;
         if !sha512_matches(&tarball, pin.sha512)? {
-            let _ = std::fs::remove_file(&tarball);
+            let _ = fs::remove_file(&tarball);
             return Err(anyhow::anyhow!(
                 "dotnet bootstrap: sha512 mismatch for {} (expected {}); the bad download was \
                  removed, re-run `cargo xtask install-tool`",

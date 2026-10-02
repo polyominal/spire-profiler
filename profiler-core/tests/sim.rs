@@ -11,6 +11,7 @@
 //! check another target against fresh modifier budgets from the same play.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::env::{self, VarError};
 use std::rc::Rc;
 
 use profiler_core::data::events;
@@ -51,12 +52,12 @@ impl Rng {
 fn sim_seed() -> u64 {
     // A malformed override must fail loudly: silently falling back to the
     // default would replay a different walk than the one being debugged.
-    match std::env::var("SIM_SEED") {
+    match env::var("SIM_SEED") {
         Ok(value) => value
             .parse()
             .unwrap_or_else(|_| panic!("SIM_SEED must be a u64 seed, got {value:?}")),
-        Err(std::env::VarError::NotPresent) => DEFAULT_SEED,
-        Err(std::env::VarError::NotUnicode(_)) => panic!("SIM_SEED must be valid Unicode"),
+        Err(VarError::NotPresent) => DEFAULT_SEED,
+        Err(VarError::NotUnicode(_)) => panic!("SIM_SEED must be valid Unicode"),
     }
 }
 

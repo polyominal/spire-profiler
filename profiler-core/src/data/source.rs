@@ -10,7 +10,10 @@
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 
-use super::state::{Combat, SourceSlot, State, TEAM_SLOT, caps};
+use super::ledger;
+use super::state::{
+    CardStat, Combat, CombatPhase, CombatResult, SourceKind, SourceSlot, State, TEAM_SLOT, caps,
+};
 
 mod snapshot;
 mod wire;
@@ -566,8 +569,7 @@ impl State {
         };
         let capture = SourceCaptureKind::decode(capture_kind, &mut self.sources.diagnostics);
         let generation = GenerationState::decode(generation_state, &mut self.sources.diagnostics);
-        let kind =
-            crate::source_kind::SourceKind::from_c(self.sources.diagnostics.clamp(source_kind, 5));
+        let kind = SourceKind::from_c(self.sources.diagnostics.clamp(source_kind, 5));
         let slot = self.sources.diagnostics.slot(source_slot);
         let unknown = SourceSnapshot::unknown(epoch);
         let source = match capture {
@@ -605,10 +607,8 @@ impl State {
                 .find(|orb| orb.instance == instance)
                 .map_or(unknown, |orb| orb.source.clone()),
             SourceCaptureKind::DirectModel
-                if matches!(
-                    kind,
-                    crate::source_kind::SourceKind::Relic | crate::source_kind::SourceKind::Potion
-                ) && !source_id.is_empty() =>
+                if matches!(kind, SourceKind::Relic | SourceKind::Potion)
+                    && !source_id.is_empty() =>
             {
                 self.named_source(epoch, slot, source_id, kind)
             }
@@ -622,19 +622,21 @@ impl State {
         epoch: CombatEpoch,
         slot: SourceSlot,
         id: &str,
-        kind: crate::source_kind::SourceKind,
+        kind: SourceKind,
     ) -> SourceSnapshot {
         let Some(combat) = Combat::active_mut(&mut self.current) else {
             return SourceSnapshot::unknown(epoch);
         };
-        let destination = crate::data::ledger::get_or_create_card_kind(combat, slot, id, kind)
-            .map_or(Destination::Unknown(slot), |row| {
-                if combat.cards[row].kind == crate::source_kind::SourceKind::Unknown {
+        let destination = ledger::get_or_create_card_kind(combat, slot, id, kind).map_or(
+            Destination::Unknown(slot),
+            |row| {
+                if combat.cards[row].kind == SourceKind::Unknown {
                     Destination::Unknown(slot)
                 } else {
                     Destination::Row(row as u32)
                 }
-            });
+            },
+        );
         SourceSnapshot::normalized(epoch, combat.cards.len(), vec![(destination, 1)])
             .unwrap_or_else(|_| SourceSnapshot::unknown(epoch))
     }
@@ -666,7 +668,7 @@ struct LedgerStage<'a> {
     pools: &'a mut Vec<SourcePool>,
     diagnostics: &'a mut SourceDiagnostics,
     counters: CombatCounters,
-    original_rows: Vec<(usize, super::state::CardStat)>,
+    original_rows: Vec<(usize, CardStat)>,
     original_pools: Vec<(usize, SourcePool)>,
     row_count: usize,
     pool_count: usize,
@@ -704,15 +706,13 @@ impl<'a> LedgerStage<'a> {
     fn row(&mut self, destination: Destination) -> Result<usize, SourceFailure> {
         let index = match destination {
             Destination::Row(row) if (row as usize) < self.combat.cards.len() => row as usize,
-            Destination::Unknown(slot) if slot <= TEAM_SLOT => {
-                crate::data::ledger::get_or_create_card_kind(
-                    self.combat,
-                    slot,
-                    "UNATTRIBUTED",
-                    crate::source_kind::SourceKind::Unknown,
-                )
-                .ok_or(SourceFailure::Capacity)?
-            }
+            Destination::Unknown(slot) if slot <= TEAM_SLOT => ledger::get_or_create_card_kind(
+                self.combat,
+                slot,
+                "UNATTRIBUTED",
+                SourceKind::Unknown,
+            )
+            .ok_or(SourceFailure::Capacity)?,
             _ => return Err(SourceFailure::Token),
         };
         if index < self.row_count && !self.original_rows.iter().any(|(row, _)| *row == index) {
@@ -831,7 +831,7 @@ impl<'a> LedgerStage<'a> {
     }
 
     fn commit(mut self) -> Result<(), SourceFailure> {
-        if !crate::data::state::CardStat::arithmetic_representable(&self.combat.cards) {
+        if !CardStat::arithmetic_representable(&self.combat.cards) {
             return Err(SourceFailure::Arithmetic);
         }
         if self.capacity_lost {
@@ -924,10 +924,10 @@ impl State {
                     .is_some_and(|tracked| tracked.died)
             })
         };
-        combat.phase = super::state::CombatPhase::Finished(if defeated {
-            super::state::CombatResult::Defeat
+        combat.phase = CombatPhase::Finished(if defeated {
+            CombatResult::Defeat
         } else {
-            super::state::CombatResult::Completed
+            CombatResult::Completed
         });
         self.provenance = Provenance::default();
         self.sources.entries.clear();

@@ -1,6 +1,7 @@
 //! `cargo xtask install-mod`: build the bundle, then replace the game's
 //! copy of the mod with it.
 
+use std::fs;
 use std::path::Path;
 
 use anyhow::Result;
@@ -15,7 +16,7 @@ pub fn install_mod(shell: &Shell) -> Result<discover::GamePaths> {
     let source = workspace_root().join("target/mods").join(bundle::MOD_ID);
     let destination = game.mods_dir.join(bundle::MOD_ID);
 
-    match std::fs::remove_dir_all(&destination) {
+    match fs::remove_dir_all(&destination) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(anyhow::anyhow!("removing {}: {e}", destination.display())),
@@ -28,10 +29,10 @@ pub fn install_mod(shell: &Shell) -> Result<discover::GamePaths> {
 /// A subdirectory would mean the bundle contract changed; error rather
 /// than recurse.
 fn copy_bundle(source: &Path, destination: &Path) -> Result<()> {
-    std::fs::create_dir_all(destination)
+    fs::create_dir_all(destination)
         .map_err(|e| anyhow::anyhow!("creating {}: {e}", destination.display()))?;
-    for entry in std::fs::read_dir(source)
-        .map_err(|e| anyhow::anyhow!("reading {}: {e}", source.display()))?
+    for entry in
+        fs::read_dir(source).map_err(|e| anyhow::anyhow!("reading {}: {e}", source.display()))?
     {
         let entry = entry.map_err(|e| anyhow::anyhow!("reading {}: {e}", source.display()))?;
         let source_path = entry.path();
@@ -47,7 +48,7 @@ fn copy_bundle(source: &Path, destination: &Path) -> Result<()> {
             ));
         }
         let destination_path = destination.join(entry.file_name());
-        std::fs::copy(&source_path, &destination_path).map_err(|e| {
+        fs::copy(&source_path, &destination_path).map_err(|e| {
             anyhow::anyhow!(
                 "copying {} -> {}: {e}",
                 source_path.display(),

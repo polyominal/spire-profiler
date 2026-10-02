@@ -1,5 +1,8 @@
 //! Test fixtures for deterministic accounting walks.
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use crate::data::events;
+
 pub fn combat_epoch() -> u64 {
     crate::data::state::STATE.with(|cell| {
         u64::from(
@@ -25,7 +28,7 @@ pub struct SourceFixture {
 
 impl SourceFixture {
     fn identity() -> u64 {
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        static NEXT: AtomicU64 = AtomicU64::new(1);
         NEXT.try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
             value.checked_add(1)
         })
@@ -62,7 +65,6 @@ impl SourceFixture {
         role: i32,
         segment: i32,
     ) -> Self {
-        use crate::data::events;
         let epoch = combat_epoch();
         let transfer = events::source_capture(epoch, capture, instance, id, kind, slot, generation);
         assert_ne!(transfer, 0);
@@ -84,7 +86,7 @@ impl SourceFixture {
 
     pub fn play(&self) -> u64 {
         self.with_transfer(|source| {
-            crate::data::events::card_play_started(
+            events::card_play_started(
                 self.epoch,
                 Self::identity(),
                 self.instance,
@@ -99,11 +101,10 @@ impl SourceFixture {
     }
 
     pub fn finish(&self, play: u64) {
-        assert_eq!(crate::data::events::card_play_finished(play), 1);
+        assert_eq!(events::card_play_finished(play), 1);
     }
 
     pub fn hit(&self, total: i32, blocked: i32, kind: i32, receiver: i32) {
-        use crate::data::events;
         let calculation = self.with_transfer(|source| {
             events::damage_calculation_begin(self.epoch, source, self.role, self.segment, 999)
         });
@@ -129,23 +130,21 @@ impl SourceFixture {
 
     pub fn block(&self, amount: i32, receiver: i32) {
         assert_eq!(
-            self.with_transfer(|source| crate::data::events::block_gained(
-                self.epoch, amount, source, receiver
-            )),
+            self.with_transfer(|source| events::block_gained(self.epoch, amount, source, receiver)),
             1
         );
     }
 
     pub fn forge(&self, amount: i32) {
         assert_eq!(
-            self.with_transfer(|source| crate::data::events::forge(self.epoch, source, amount)),
+            self.with_transfer(|source| events::forge(self.epoch, source, amount)),
             1
         );
     }
 
     pub fn generate(&self, instance: u64) {
         assert_eq!(
-            self.with_transfer(|source| crate::data::events::card_generated(
+            self.with_transfer(|source| events::card_generated(
                 self.epoch, instance, source, self.role
             )),
             1
@@ -154,7 +153,7 @@ impl SourceFixture {
 
     pub fn contribution(&self, calculation: u64, amount: i32) {
         assert_eq!(
-            self.with_transfer(|source| crate::data::events::damage_modifier_contribution(
+            self.with_transfer(|source| events::damage_modifier_contribution(
                 calculation,
                 source,
                 amount

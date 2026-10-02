@@ -4,6 +4,7 @@
 
 use std::collections::BTreeSet;
 use std::fs;
+use std::io::ErrorKind;
 use std::path::Path;
 
 use anyhow::{Context, Result, ensure};
@@ -45,7 +46,7 @@ fn package(shell: &Shell, bundle_dir: &Path, out_dir: &Path, version: &str) -> R
     );
     let stage = out_dir.join(".stage");
     match fs::remove_dir_all(&stage) {
-        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+        Err(error) if error.kind() != ErrorKind::NotFound => {
             return Err(error).context("removing stale release staging directory");
         }
         _ => {}
@@ -79,7 +80,7 @@ fn package(shell: &Shell, bundle_dir: &Path, out_dir: &Path, version: &str) -> R
     fs::write(stage.join("SHA256SUMS"), sums)?;
     // Partial publication must not leave checksums for the previous set.
     match fs::remove_file(out_dir.join("SHA256SUMS")) {
-        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+        Err(error) if error.kind() != ErrorKind::NotFound => {
             return Err(error).context("invalidating published checksums");
         }
         _ => {}

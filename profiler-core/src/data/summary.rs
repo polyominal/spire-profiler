@@ -142,6 +142,8 @@ impl Coverage {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::Value;
+
     use super::*;
 
     #[test]
@@ -215,7 +217,7 @@ mod tests {
                 if finished {
                     assert_eq!(state.combat_ended(1), 1);
                 }
-                let snapshot: serde_json::Value =
+                let snapshot: Value =
                     serde_json::from_str(&state.snapshot()).expect("snapshot parses");
                 assert_eq!(
                     snapshot["result"],
@@ -246,16 +248,14 @@ mod tests {
         state.capture_failed("capture");
         assert_eq!(state.source_accumulate(10, u64::MAX, 1, 0, 2), 0);
         assert_eq!(state.combat_ended(10), 1);
-        let summary: serde_json::Value =
-            serde_json::from_str(&state.snapshot()).expect("summary parses");
+        let summary: Value = serde_json::from_str(&state.snapshot()).expect("summary parses");
         assert_eq!(summary["coverage"]["complete"], false);
         assert!(summary["coverage"]["failures"].as_u64().expect("count") >= 2);
         state.discard_combat();
         assert_eq!(state.snapshot(), "null");
         assert_eq!(state.combat_started(10, "STALE", "normal", 1, 1), 0);
         assert_eq!(state.combat_started(11, "TWO", "normal", 2, 1), 11);
-        let summary: serde_json::Value =
-            serde_json::from_str(&state.snapshot()).expect("summary parses");
+        let summary: Value = serde_json::from_str(&state.snapshot()).expect("summary parses");
         assert_eq!(summary["coverage"]["complete"], true);
     }
 }
