@@ -1,42 +1,39 @@
-//! ABI conformance between the production C# sources and the Rust core: every
-//! GetExport binding must match its `extern "C" fn` parameters and return,
-//! compared as canonical scalar, UTF-8 string, and caller-owned buffer types.
-//! Returns support only scalars and void. Bound delegates accept whitespace and
-//! line-comment prefixes after a declaration boundary. The exact Cdecl delegate
-//! attribute is supported; other delegate attributes, trailing block comments,
-//! directives, and extra modifiers are rejected.
-//! Parameter attributes remain supported. The
-//! check runs inside build and fails it on mismatch. Only *bound* exports
-//! are checked; test-only exports are ignored. The scanners are deliberately
-//! simple (no regex) because the edge cases — nested parens in
-//! [MarshalAs(...)] attributes, attribute stripping, whitespace — are the
-//! point. A C# `string` parameter must also carry
-//! [MarshalAs(UnmanagedType.LPUTF8Str)]: P/Invoke's default string
-//! marshaling is ANSI, and the core always receives UTF-8.
+//! ABI conformance compares parsed Rust exports with bound C# delegates.
+//! Project policy permits only scalar returns, scalar and caller-owned buffer
+//! parameters, and explicit UTF-8 string marshaling. Unbound exports are ignored.
 
 use std::collections::HashMap;
 
 use anyhow::Result;
+use quote::ToTokens;
+use serde::Deserialize;
 
-use crate::{shim, workspace_root};
+use crate::{csharp, shim, workspace_root};
 
-const WHITESPACE: &[char] = &[' ', '\t', '\n', '\r', '\x0b', '\x0c'];
-
-#[derive(PartialEq)]
+#[derive(Deserialize, PartialEq)]
 struct Signature {
-    parameters: Vec<&'static str>,
-    returns: &'static str,
+    parameters: Vec<String>,
+    returns: String,
 }
 
-struct Declaration<'a> {
+#[derive(Deserialize)]
+struct Declaration {
+    name: String,
     signature: Signature,
-    source: &'a str,
+    source: String,
 }
 
-struct Binding<'a> {
-    delegate: &'a str,
-    export_name: &'a str,
-    source: &'a str,
+#[derive(Deserialize)]
+struct Binding {
+    delegate_name: String,
+    export_name: String,
+    source: String,
+}
+
+#[derive(Deserialize)]
+struct Managed {
+    bindings: Vec<Binding>,
+    delegates: Vec<Declaration>,
 }
 
 pub fn run(shell: &xshell::Shell) -> Result<()> {
@@ -65,916 +62,457 @@ pub fn run(shell: &xshell::Shell) -> Result<()> {
     }
 }
 
-/// One Err entry per mismatch, in binding order.
 fn compare_sources(
     rust_source: &str,
     source_name: &str,
     sources: &[(&str, &str)],
 ) -> Result<usize, Vec<String>> {
-    let mut bindings = Vec::new();
-    for (name, text) in sources {
-        scan_bindings(text, name, &mut bindings).map_err(|e| vec![format!("{name}: {e}")])?;
+    let managed: Managed =
+        csharp::parse("abi", sources).map_err(|error| vec![error.to_string()])?;
+    let exports = rust_exports(rust_source, source_name, &managed.bindings)
+        .map_err(|error| vec![format!("{source_name}: {error}")])?;
+    let mut delegates: HashMap<&str, &Declaration> = HashMap::new();
+    for declaration in &managed.delegates {
+        if let Some(previous) = delegates.insert(&declaration.name, declaration) {
+            return Err(vec![format!(
+                "{}: {}: ambiguous bound delegate, also declared in {}",
+                declaration.source, declaration.name, previous.source
+            )]);
+        }
     }
-    let mut exports = HashMap::new();
-    scan_rust_exports(rust_source, source_name, &bindings, &mut exports)
-        .map_err(|e| vec![format!("{source_name}: {e}")])?;
-    let mut delegates = HashMap::new();
-    for (name, text) in sources {
-        scan_delegates(text, name, &bindings, &mut delegates)
-            .map_err(|e| vec![format!("{name}: {e}")])?;
-    }
-
     let mut errors = Vec::new();
-    if bindings.is_empty() {
+    if managed.bindings.is_empty() {
         errors.push("no GetExport bindings were parsed from the production sources".to_owned());
     }
-    for binding in &bindings {
-        match exports.get(binding.export_name) {
-            Some(export) => match delegates.get(binding.delegate) {
+    for binding in &managed.bindings {
+        match exports.get(binding.export_name.as_str()) {
+            Some(export) => match delegates.get(binding.delegate_name.as_str()) {
                 Some(delegate) if delegate.signature == export.signature => {}
-                Some(delegate) => {
-                    errors.push(format!(
-                        "{}: Rust({}) -> {} [{}] != C# {}({}) -> {} [{}]; binding in {}",
-                        binding.export_name,
-                        export.signature.parameters.join(", "),
-                        export.signature.returns,
-                        export.source,
-                        binding.delegate,
-                        delegate.signature.parameters.join(", "),
-                        delegate.signature.returns,
-                        delegate.source,
-                        binding.source,
-                    ));
-                }
-                None => {
-                    errors.push(format!(
-                        "{}: delegate '{}' (bound to '{}') not found in the production sources",
-                        binding.source, binding.delegate, binding.export_name,
-                    ));
-                }
+                Some(delegate) => errors.push(format!(
+                    "{}: Rust({}) -> {} [{}] != C# {}({}) -> {} [{}]; binding in {}",
+                    binding.export_name,
+                    export.signature.parameters.join(", "),
+                    export.signature.returns,
+                    export.source,
+                    binding.delegate_name,
+                    delegate.signature.parameters.join(", "),
+                    delegate.signature.returns,
+                    delegate.source,
+                    binding.source
+                )),
+                None => errors.push(format!(
+                    "{}: delegate '{}' (bound to '{}') not found in the production sources",
+                    binding.source, binding.delegate_name, binding.export_name
+                )),
             },
-            None => {
-                errors.push(format!(
-                    "{}: '{}' is bound in the shim but has no Rust export",
-                    binding.source, binding.export_name,
-                ));
-            }
+            None => errors.push(format!(
+                "{}: '{}' is bound in the shim but has no Rust export",
+                binding.source, binding.export_name
+            )),
         }
     }
-    if !errors.is_empty() {
-        return Err(errors);
-    }
-    Ok(bindings.len())
-}
-
-fn map_rust_type(abi_type: &str) -> Result<&'static str, String> {
-    match abi_type {
-        "i32" => Ok("int"),
-        "u32" => Ok("uint"),
-        "i64" => Ok("long"),
-        "u64" => Ok("ulong"),
-        "f64" => Ok("double"),
-        "*const c_char" => Ok("string"),
-        "*mut u8"
-        | "*const ModifierObservation"
-        | "*mut ModifierCredit"
-        | "*const BlockModifier" => Ok("IntPtr"),
-        _ => Err(format!("unsupported Rust parameter type '{abi_type}'")),
+    if errors.is_empty() {
+        Ok(managed.bindings.len())
+    } else {
+        Err(errors)
     }
 }
 
-fn map_cs_type(abi_type: &str) -> Option<&'static str> {
-    match abi_type {
-        "void" => Some("void"),
-        "int" => Some("int"),
-        "uint" => Some("uint"),
-        "long" => Some("long"),
-        "ulong" => Some("ulong"),
-        "double" => Some("double"),
-        "string" => Some("string"),
-        "IntPtr" => Some("IntPtr"),
-        _ => None,
-    }
-}
-
-fn is_word_char(character: char) -> bool {
-    character.is_ascii_alphanumeric() || character == '_'
-}
-
-/// `_profiler_` must sit strictly inside the identifier.
-fn is_profiler_name(name: &str) -> bool {
-    const SEP: &str = "_profiler_";
-    match name.find(SEP) {
-        Some(separator_index) => separator_index > 0 && separator_index + SEP.len() < name.len(),
-        None => false,
-    }
-}
-
-/// Balances nested parens (MarshalAs attributes contain parens, so a regex
-/// cannot do this); unbalanced input fails the build.
-fn extract_params(text: &str, open: usize) -> Result<&str, String> {
-    let mut depth = 0usize;
-    for (index, character) in text[open..].char_indices() {
-        match character {
-            '(' => depth += 1,
-            ')' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Ok(&text[open + 1..open + index]);
-                }
-            }
-            _ => {}
-        }
-    }
-    Err("unbalanced parens while extracting parameters".to_owned())
-}
-
-/// The first colon is always the name/type separator.
-fn rust_param_classes(raw: &str) -> Result<Vec<&'static str>, String> {
-    let mut classes = Vec::new();
-    for param in raw.split(',') {
-        let part = param.trim_matches(WHITESPACE);
-        if part.is_empty() {
+fn rust_exports(
+    text: &str,
+    source: &str,
+    bindings: &[Binding],
+) -> Result<HashMap<String, Declaration>, String> {
+    let file = syn::parse_file(text).map_err(|error| format!("invalid Rust syntax: {error}"))?;
+    let mut exports = HashMap::new();
+    for item in file.items {
+        let syn::Item::Fn(function) = item else {
             continue;
-        }
-        let colon = part
-            .find(':')
-            .ok_or_else(|| format!("param '{part}' has no name/type ':' separator"))?;
-        let param_type = part[colon + 1..].trim_matches(WHITESPACE);
-        classes.push(map_rust_type(param_type)?);
-    }
-    Ok(classes)
-}
-
-/// P/Invoke's default string marshaling is ANSI, which silently corrupts
-/// non-ASCII text before the core sees it.
-fn cs_param_classes(raw: &str) -> Result<Vec<&'static str>, String> {
-    let mut classes = Vec::new();
-    for param in raw.split(',') {
-        let original = param.trim_matches(WHITESPACE);
-        if original.is_empty() {
-            continue;
-        }
-        let part = strip_attributes(original)?;
-        let type_end = part
-            .find(|character: char| character.is_ascii_whitespace())
-            .unwrap_or(part.len());
-        if type_end == 0 {
-            return Err(format!("param '{original}' has no type token"));
-        }
-        let cs_type = &part[..type_end];
-        if cs_type == "string" && !original.contains("[MarshalAs(UnmanagedType.LPUTF8Str)]") {
-            return Err(format!(
-                "param '{original}' is a string without \
-                 [MarshalAs(UnmanagedType.LPUTF8Str)] (the ABI requires UTF-8 marshaling)"
-            ));
-        }
-        classes.push(
-            map_cs_type(cs_type)
-                .filter(|class| *class != "void")
-                .ok_or_else(|| format!("unsupported C# parameter type '{cs_type}'"))?,
-        );
-    }
-    Ok(classes)
-}
-
-/// Removes `[...]` attribute groups with bracket balancing.
-fn strip_attributes(text: &str) -> Result<&str, String> {
-    match text.find('[') {
-        Some(start) => {
-            let mut depth = 0usize;
-            let mut close = None;
-            for (index, character) in text[start..].char_indices() {
-                match character {
-                    '[' => depth += 1,
-                    ']' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            close = Some(start + index);
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            let Some(close) = close else {
-                return Err(format!("unbalanced attribute brackets in param '{text}'"));
-            };
-            let mut after = &text[close + 1..];
-            while after
-                .chars()
-                .next()
-                .is_some_and(|character| character.is_ascii_whitespace())
-            {
-                after = &after[1..];
-            }
-            strip_attributes(after)
-        }
-        None => Ok(text),
-    }
-}
-
-/// Later occurrences overwrite earlier ones.
-fn scan_rust_exports<'a>(
-    text: &'a str,
-    source: &'a str,
-    bindings: &[Binding<'_>],
-    exports: &mut HashMap<&'a str, Declaration<'a>>,
-) -> Result<(), String> {
-    const NEEDLE: &str = "extern \"C\" fn ";
-    let mut pos = 0;
-    while let Some(found) = text[pos..].find(NEEDLE).map(|i| pos + i) {
-        let mut i = found + NEEDLE.len();
-        let name_start = i;
-        while text[i..].chars().next().is_some_and(is_word_char) {
-            i += 1;
-        }
-        let name = &text[name_start..i];
-        let mut j = i;
-        while text[j..]
-            .chars()
-            .next()
-            .is_some_and(|character| character.is_ascii_whitespace())
-        {
-            j += 1;
-        }
-        if text[j..].starts_with('(') && bindings.iter().any(|binding| binding.export_name == name)
-        {
-            let raw = extract_params(text, j).map_err(|error| format!("{name}: {error}"))?;
-            let after_params = j + raw.len() + 2;
-            let tail = text[after_params..].trim_start_matches(WHITESPACE);
-            let returns = if tail.starts_with('{') {
-                "void"
-            } else if let Some(after_arrow) = tail.strip_prefix("->") {
-                let body_start = after_arrow
-                    .find('{')
-                    .ok_or_else(|| format!("{name}: Rust return type has no function body"))?;
-                let return_type = after_arrow[..body_start].trim_matches(WHITESPACE);
-                match return_type {
-                    "i32" => "int",
-                    "i64" => "long",
-                    "u64" => "ulong",
-                    "f64" => "double",
-                    unit if unit
-                        .strip_prefix('(')
-                        .and_then(|inner| inner.strip_suffix(')'))
-                        .is_some_and(|inner| inner.trim_matches(WHITESPACE).is_empty()) =>
-                    {
-                        "void"
-                    }
-                    _ => {
-                        return Err(format!(
-                            "{name}: unsupported Rust return type '{return_type}'"
-                        ));
-                    }
-                }
-            } else {
-                return Err(format!(
-                    "{name}: expected '{{' or '->' after Rust parameters"
-                ));
-            };
-            exports.insert(
-                name,
-                Declaration {
-                    signature: Signature {
-                        parameters: rust_param_classes(raw.trim_matches(WHITESPACE))
-                            .map_err(|error| format!("{name}: {error}"))?,
-                        returns,
-                    },
-                    source,
-                },
-            );
-            pos = after_params;
-            continue;
-        }
-        pos = found + 1;
-    }
-    Ok(())
-}
-
-fn scan_delegates<'a>(
-    text: &'a str,
-    source: &'a str,
-    bindings: &[Binding<'_>],
-    delegates: &mut HashMap<&'a str, Declaration<'a>>,
-) -> Result<(), String> {
-    const NEEDLE: &str = "private delegate ";
-    let mut pos = 0;
-    while let Some(found) = text[pos..].find(NEEDLE).map(|i| pos + i) {
-        let header_start = found + NEEDLE.len();
-        let open = text[header_start..]
-            .find('(')
-            .map(|index| header_start + index)
-            .ok_or_else(|| format!("delegate at offset {found} has no parameters"))?;
-        let header = text[header_start..open].trim_matches(WHITESPACE);
-        let name = header
-            .split_ascii_whitespace()
-            .next_back()
-            .unwrap_or_default();
-        if !bindings.iter().any(|binding| binding.delegate == name) {
-            pos = found + NEEDLE.len();
-            continue;
-        }
-        let return_type = header[..header.len() - name.len()].trim_matches(WHITESPACE);
-        let returns = map_cs_type(return_type)
-            .filter(|class| *class != "string")
-            .ok_or_else(|| format!("{name}: unsupported C# return type '{return_type}'"))?;
-        // Only recognized declaration boundaries prove that no attached attribute remains.
-        let mut prefix = text[..found].trim_end_matches(WHITESPACE);
-        let mut has_cdecl = false;
-        loop {
-            let line = prefix.rsplit(['\r', '\n']).next().unwrap_or_default();
-            let is_cdecl = line.trim_matches(WHITESPACE)
-                == "[UnmanagedFunctionPointer(CallingConvention.Cdecl)]";
-            if !has_cdecl && is_cdecl {
-                prefix = prefix[..prefix.len() - line.len()].trim_end_matches(WHITESPACE);
-                has_cdecl = true;
-                continue;
-            }
-            let unclassified = line.trim_start_matches(WHITESPACE).starts_with('#')
-                || prefix.ends_with(']')
-                || prefix.ends_with("*/");
-            if !unclassified && let Some(comment) = line.rfind("//") {
-                prefix = prefix[..prefix.len() - line.len() + comment].trim_end_matches(WHITESPACE);
-                continue;
-            }
-            if unclassified || (!prefix.is_empty() && !prefix.ends_with([';', '{', '}'])) {
-                return Err(format!(
-                    "{name}: unsupported delegate prefix; expected a declaration boundary, \
-                     whitespace, line comments, or the exact Cdecl attribute"
-                ));
-            }
-            break;
-        }
-        let raw = extract_params(text, open).map_err(|error| format!("{name}: {error}"))?;
-        let after_params = open + raw.len() + 2;
-        let tail = text[after_params..].trim_start_matches(WHITESPACE);
-        if !tail.starts_with(';') {
-            return Err(format!("{name}: expected ';' after delegate parameters"));
-        }
-        if let Some(previous) = delegates.get(name) {
-            return Err(format!(
-                "{name}: ambiguous bound delegate, also declared in {}",
-                previous.source
-            ));
-        }
-        let parameters = cs_param_classes(raw.trim_matches(WHITESPACE))
-            .map_err(|error| format!("{name}: {error}"))?;
-        let signature = Signature {
-            parameters,
-            returns,
         };
-        delegates.insert(name, Declaration { signature, source });
-        pos = after_params;
-    }
-    Ok(())
-}
-
-/// All literal, no whitespace.
-fn scan_bindings<'a>(
-    text: &'a str,
-    source: &'a str,
-    bindings: &mut Vec<Binding<'a>>,
-) -> Result<(), String> {
-    const NEEDLE: &str = "GetExport<";
-    const GENERIC_HELPER: &str = "GetExport<T>(IntPtr lib, string name)";
-    let mut pos = 0;
-    while let Some(found) = text[pos..].find(NEEDLE).map(|i| pos + i) {
-        if text[found..].starts_with(GENERIC_HELPER) {
-            pos = found + GENERIC_HELPER.len();
+        let signature = function.sig;
+        let name = signature.ident.to_string();
+        if !bindings.iter().any(|binding| binding.export_name == name)
+            || !signature
+                .abi
+                .as_ref()
+                .and_then(|abi| abi.name.as_ref())
+                .is_some_and(|abi| abi.value() == "C")
+        {
             continue;
         }
-        let mut i = found + NEEDLE.len();
-        let delegate_start = i;
-        while text[i..].chars().next().is_some_and(is_word_char) {
-            i += 1;
+        if !signature.generics.params.is_empty() || signature.variadic.is_some() {
+            return Err(format!(
+                "{name}: generic or variadic exports are unsupported"
+            ));
         }
-        let delegate_name = &text[delegate_start..i];
-        if text[i..].starts_with(">(lib, \"") {
-            let mut j = i + ">(lib, \"".len();
-            let export_start = j;
-            while text[j..].chars().next().is_some_and(is_word_char) {
-                j += 1;
+        let parameters = signature
+            .inputs
+            .iter()
+            .map(|parameter| {
+                let syn::FnArg::Typed(parameter) = parameter else {
+                    return Err(format!("{name}: self parameters are unsupported"));
+                };
+                Signature::rust_type(&parameter.ty, false)
+                    .map_err(|error| format!("{name}: {error}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let returns = match &signature.output {
+            syn::ReturnType::Default => "void".to_owned(),
+            syn::ReturnType::Type(_, ty) => {
+                Signature::rust_type(ty, true).map_err(|error| format!("{name}: {error}"))?
             }
-            let export_name = &text[export_start..j];
-            if is_profiler_name(export_name) && text[j..].starts_with("\")") {
-                bindings.push(Binding {
-                    delegate: delegate_name,
-                    export_name,
-                    source,
-                });
-                pos = j + "\")".len();
-                continue;
-            }
+        };
+        let declaration = Declaration {
+            name: name.clone(),
+            signature: Signature {
+                parameters,
+                returns,
+            },
+            source: source.to_owned(),
+        };
+        if exports.insert(name.clone(), declaration).is_some() {
+            return Err(format!("{name}: ambiguous Rust export"));
         }
-        return Err(format!(
-            "unrecognized GetExport call at offset {found}: expected \
-             GetExport<Delegate>(lib, \"spire_profiler_export\")"
-        ));
     }
-    Ok(())
+    Ok(exports)
+}
+
+impl Signature {
+    fn rust_type(ty: &syn::Type, returns: bool) -> Result<String, String> {
+        let ident = |ty: &syn::Type| match ty {
+            syn::Type::Path(path) if path.qself.is_none() => {
+                path.path.get_ident().map(ToString::to_string)
+            }
+            _ => None,
+        };
+        let kind = match ty {
+            syn::Type::Tuple(tuple) if returns && tuple.elems.is_empty() => Some("void"),
+            syn::Type::Ptr(pointer) if !returns => match (
+                matches!(pointer.mutability, syn::PointerMutability::Mut(_)),
+                ident(&pointer.elem).as_deref(),
+            ) {
+                (false, Some("c_char")) => Some("string"),
+                (true, Some("u8" | "ModifierCredit"))
+                | (false, Some("ModifierObservation" | "BlockModifier")) => Some("IntPtr"),
+                _ => None,
+            },
+            _ => match ident(ty).as_deref() {
+                Some("i32") => Some("int"),
+                Some("u32") if !returns => Some("uint"),
+                Some("i64") => Some("long"),
+                Some("u64") => Some("ulong"),
+                Some("f64") => Some("double"),
+                _ => None,
+            },
+        };
+        kind.map(str::to_owned).ok_or_else(|| {
+            format!(
+                "unsupported Rust {} type '{}'",
+                if returns { "return" } else { "parameter" },
+                ty.to_token_stream()
+            )
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn compare(rust: &str, name: &str, cs: &str) -> Result<usize, Vec<String>> {
-        compare_sources(rust, name, &[("fixture.cs", cs)])
-    }
-
-    /// Safe and unsafe targets plus a test-only export (never GetExport'd —
-    /// must be ignored).
-    const GOOD_RUST: &str = r#"
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn spire_profiler_foo(amount: i32, id: *const c_char, hash: u64) {
-    let _ = (amount, id, hash);
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn spire_profiler_bar(amount: i32, started_at: i64, delta: f64) {
-    let _ = (amount, started_at, delta);
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn spire_profiler_test_reset() {
-}
-"#;
-
-    /// Matching bindings (with a MarshalAs attribute to exercise the
-    /// stripper) plus a private delegate that is never bound.
-    const GOOD_CS: &str = r#"
-internal static class ProfilerNative
-{
-    private delegate void NativeFoo(int amount, [MarshalAs(UnmanagedType.LPUTF8Str)] string id, ulong hash);
-    private delegate void NativeBar(int amount, long started_at, double delta);
-    private delegate void NativeVoid();
-
-    private static NativeFoo _foo;
-    private static NativeBar _bar;
-    private static T GetExport<T>(IntPtr lib, string name) where T : Delegate =>
-        Marshal.GetDelegateForFunctionPointer<T>(NativeLibrary.GetExport(lib, name));
-
-    public static void Load(string libPath)
-    {
-        var lib = NativeLibrary.Load(libPath);
+    const RUST: &str = r#"
+        pub unsafe extern "C" fn spire_profiler_foo(amount: i32, id: *const c_char, hash: u64) {}
+        pub extern "C" fn spire_profiler_bar(amount: i32, started_at: i64, delta: f64) {}
+        pub extern "C" fn spire_profiler_unbound(value: Custom) -> Custom { value }
+    "#;
+    const DECLARATIONS: &str = r#"
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        private delegate void NativeFoo(int amount, [MarshalAs(UnmanagedType.LPUTF8Str)] string id, ulong hash);
+        private delegate void NativeBar(int amount, long started_at, double delta);
+        [return: MarshalAs(UnmanagedType.I4)]
+        private delegate Custom Unbound(Custom value);
+    "#;
+    const BINDINGS: &str = r#"
         _foo = GetExport<NativeFoo>(lib, "spire_profiler_foo");
         _bar = GetExport<NativeBar>(lib, "spire_profiler_bar");
-    }
-}
-"#;
+    "#;
 
-    #[test]
-    fn known_good_binding_passes() {
-        let bindings = compare(GOOD_RUST, "abi.rs", GOOD_CS).expect("good fixture must pass");
-        assert_eq!(bindings, 2);
-    }
-
-    #[test]
-    fn bindings_resolve_declarations_across_source_files_in_either_order() {
-        let declarations = r#"
-private delegate void NativeFoo(int amount, [MarshalAs(UnmanagedType.LPUTF8Str)] string id, ulong hash);
-private delegate void NativeBar(int amount, long started_at, double delta);
-"#;
-        let bindings = r#"
-GetExport<NativeFoo>(lib, "spire_profiler_foo");
-GetExport<NativeBar>(lib, "spire_profiler_bar");
-"#;
-        for sources in [
-            [("Declarations.cs", declarations), ("Bindings.cs", bindings)],
-            [("Bindings.cs", bindings), ("Declarations.cs", declarations)],
-        ] {
-            assert_eq!(compare_sources(GOOD_RUST, "abi.rs", &sources), Ok(2));
-        }
-        for (original, replacement, diagnostic) in [
-            (
-                "void NativeFoo",
-                "long NativeFoo",
-                "-> long [Declarations.cs]; binding in Bindings.cs",
-            ),
-            (
-                "int amount",
-                "double amount",
-                "C# NativeFoo(double, string, ulong)",
-            ),
-            ("LPUTF8Str", "LPStr", "Declarations.cs: NativeFoo:"),
-            (
-                "private delegate void NativeFoo",
-                "[return: MarshalAs(UnmanagedType.I4)]\nprivate delegate void NativeFoo",
-                "Declarations.cs: NativeFoo: unsupported delegate prefix",
-            ),
-        ] {
-            let changed = declarations.replace(original, replacement);
-            let errors = compare_sources(
-                GOOD_RUST,
-                "abi.rs",
-                &[("Bindings.cs", bindings), ("Declarations.cs", &changed)],
-            )
-            .expect_err("split declarations retain signature and marshalling validation");
-            assert!(errors[0].contains(diagnostic), "{errors:?}");
-        }
-    }
-
-    #[test]
-    fn separate_sources_report_missing_and_ambiguous_declarations() {
-        let binding = "GetExport<NativeBar>(lib, \"spire_profiler_bar\");";
-        let declaration =
-            "private delegate void NativeBar(int amount, long started_at, double delta);";
-        assert_eq!(
-            compare_sources(GOOD_RUST, "abi.rs", &[("Bindings.cs", binding)]),
-            Err(vec![
-                "Bindings.cs: delegate 'NativeBar' (bound to 'spire_profiler_bar') not found in the production sources".to_owned()
-            ])
-        );
-        assert_eq!(
-            compare_sources(
-                GOOD_RUST,
-                "abi.rs",
-                &[
-                    ("Bindings.cs", binding),
-                    ("First.cs", declaration),
-                    ("Second.cs", declaration),
-                ],
-            ),
-            Err(vec![
-                "Second.cs: NativeBar: ambiguous bound delegate, also declared in First.cs"
-                    .to_owned()
-            ])
-        );
-    }
-
-    #[test]
-    fn malformed_binding_in_another_source_fails_with_its_filename() {
-        let errors = compare_sources(
-            GOOD_RUST,
-            "abi.rs",
-            &[
-                ("Valid.cs", GOOD_CS),
-                (
-                    "Broken.cs",
-                    "GetExport<NativeBar>(other, \"spire_profiler_bar\");",
-                ),
-            ],
+    fn managed(declarations: &str, bindings: &str) -> String {
+        format!(
+            "namespace Fixture; partial class Native {{ {declarations} void Load(IntPtr lib) {{ {bindings} }} }}"
         )
-        .expect_err("valid bindings cannot mask a malformed call in another input");
-        assert!(errors[0].starts_with("Broken.cs: unrecognized GetExport call at offset 0:"));
     }
 
-    fn compare_returns(rust_return: &str, cs_return: &str) -> Result<usize, Vec<String>> {
+    fn compare(rust: &str, cs: &str) -> Result<usize, Vec<String>> {
+        compare_sources(rust, "abi.rs", &[("fixture.cs", cs)])
+    }
+
+    fn scalar(rust_type: &str, cs_type: &str) -> Result<usize, Vec<String>> {
         let rust = format!(
-            "pub extern \"C\" fn spire_profiler_value(value: i32) {rust_return} {{ todo!() }}"
+            "pub extern \"C\" fn spire_profiler_value(value: i32) {rust_type} {{ todo!() }}"
         );
-        let cs = format!(
-            "private delegate {cs_return} NativeValue(int value);\n\
-             GetExport<NativeValue>(lib, \"spire_profiler_value\");"
-        );
-        compare(&rust, "abi.rs", &cs)
+        compare(
+            &rust,
+            &managed(
+                &format!("private delegate {cs_type} Native(int value);"),
+                "GetExport<Native>(lib, \"spire_profiler_value\");",
+            ),
+        )
     }
 
     #[test]
-    fn scalar_and_unit_returns_match() {
-        for (rust_return, cs_return) in [
+    fn production_shapes_resolve_across_sources_in_either_order() {
+        let declarations = managed(DECLARATIONS, "");
+        let bindings = managed("", BINDINGS);
+        for sources in [
+            [
+                ("Declarations.cs", declarations.as_str()),
+                ("Bindings.cs", bindings.as_str()),
+            ],
+            [
+                ("Bindings.cs", bindings.as_str()),
+                ("Declarations.cs", declarations.as_str()),
+            ],
+        ] {
+            assert_eq!(compare_sources(RUST, "abi.rs", &sources), Ok(2));
+        }
+    }
+
+    #[test]
+    fn scalar_and_unit_returns_preserve_wire_widths() {
+        for (rust, cs) in [
             ("", "void"),
             ("-> ()", "void"),
-            ("-> ( \n )", "void"),
             ("-> i32", "int"),
             ("-> i64", "long"),
             ("-> u64", "ulong"),
-            ("->\n f64", "double"),
+            ("-> f64", "double"),
         ] {
-            assert_eq!(compare_returns(rust_return, cs_return), Ok(1));
+            assert_eq!(scalar(rust, cs), Ok(1));
         }
+        for (rust, cs) in [
+            ("-> u64", "long"),
+            ("-> i32", "double"),
+            ("", "ulong"),
+            ("-> u64", "void"),
+        ] {
+            let errors = scalar(rust, cs).expect_err("different return representations fail");
+            assert!(errors[0].contains(" != C# "), "{errors:?}");
+        }
+    }
+
+    #[test]
+    fn unsupported_and_malformed_types_fail_closed() {
+        for (rust, cs) in [
+            ("-> bool", "bool"),
+            ("-> Custom", "Custom"),
+            ("-> *const c_char", "string"),
+            ("-> u64", "bool"),
+            ("-> u64", "ulong[]"),
+            ("-> u64", "ref ulong"),
+            ("->", "void"),
+            ("u64", "ulong"),
+        ] {
+            assert!(scalar(rust, cs).is_err(), "accepted {rust} / {cs}");
+        }
+        let cs = managed(DECLARATIONS, BINDINGS);
+        for rust in [
+            RUST.replace("amount: i32", "amount: Custom"),
+            RUST.replace("delta: f64", "delta: u32"),
+        ] {
+            assert!(compare(&rust, &cs).is_err());
+        }
+        assert!(compare(RUST, &cs.replace("int amount", "Custom amount")).is_err());
+        assert!(compare("pub extern \"C\" fn spire_profiler_foo() -> u64", &cs).is_err());
+        assert!(compare(RUST, &cs.replace("double delta);", "double delta) extra;")).is_err());
     }
 
     #[test]
     fn caller_owned_buffers_and_unsigned_sequences_preserve_wire_widths() {
-        let rust = "pub unsafe extern \"C\" fn spire_profiler_copy(epoch: u32, buffer: *mut u8, capacity: i32) -> i32 { 0 }";
-        let cs = "private delegate int NativeCopy(uint epoch, IntPtr buffer, int capacity);\nGetExport<NativeCopy>(lib, \"spire_profiler_copy\");";
-        assert_eq!(compare(rust, "abi.rs", cs), Ok(1));
+        let rust = r#"pub unsafe extern "C" fn spire_profiler_copy(epoch: u32, buffer: *mut u8, capacity: i32) -> i32 { 0 }"#;
+        let cs = managed(
+            "private delegate int NativeCopy(uint epoch, IntPtr buffer, int capacity);",
+            r#"GetExport<NativeCopy>(lib, "spire_profiler_copy");"#,
+        );
+        assert_eq!(compare(rust, &cs), Ok(1));
         for wrong in [
             cs.replace("uint epoch", "int epoch"),
             cs.replace("IntPtr buffer", "ulong buffer"),
         ] {
-            assert!(compare(rust, "abi.rs", &wrong).is_err());
+            assert!(compare(rust, &wrong).is_err());
         }
     }
 
     #[test]
-    fn identical_parameters_with_different_returns_fail() {
-        for (rust_return, cs_return, expected_rust) in [
-            ("-> u64", "long", "ulong"),
-            ("-> u64", "void", "ulong"),
-            ("", "ulong", "void"),
-            ("-> i32", "double", "int"),
-        ] {
-            let errors = compare_returns(rust_return, cs_return)
-                .expect_err("a return mismatch must fail despite matching parameters");
-            assert_eq!(
-                errors,
-                [format!(
-                    "spire_profiler_value: Rust(int) -> {expected_rust} [abi.rs] \
-                     != C# NativeValue(int) -> {cs_return} [fixture.cs]; binding in fixture.cs"
-                )]
-            );
-        }
-    }
-
-    #[test]
-    fn unsupported_and_malformed_returns_fail_closed() {
-        for (rust_return, cs_return, diagnostic) in [
-            ("-> bool", "bool", "unsupported Rust return type 'bool'"),
-            (
-                "-> Custom",
-                "Custom",
-                "unsupported Rust return type 'Custom'",
-            ),
-            (
-                "-> *const c_char",
-                "string",
-                "unsupported Rust return type '*const c_char'",
-            ),
-            ("-> u64", "string", "unsupported C# return type 'string'"),
-            ("-> u64", "bool", "unsupported C# return type 'bool'"),
-            ("-> u64", "Custom", "unsupported C# return type 'Custom'"),
-            ("-> u64", "ulong[]", "unsupported C# return type 'ulong[]'"),
-            (
-                "-> u64",
-                "ref ulong",
-                "unsupported C# return type 'ref ulong'",
-            ),
-            ("-> u64", "", "unsupported C# return type ''"),
-            ("->", "void", "unsupported Rust return type ''"),
-            (
-                "-> () -> ()",
-                "void",
-                "unsupported Rust return type '() -> ()'",
-            ),
-            ("u64", "ulong", "expected '{' or '->' after Rust parameters"),
-        ] {
-            let errors = compare_returns(rust_return, cs_return)
-                .expect_err("unrecognized return syntax must never compare equal");
-            assert_eq!(errors.len(), 1);
-            assert!(
-                errors[0].contains(diagnostic),
-                "unexpected error: {errors:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn signatures_without_required_terminators_fail() {
-        let rust = "pub extern \"C\" fn spire_profiler_foo() -> u64";
-        let errors = compare(rust, "abi.rs", GOOD_CS)
-            .expect_err("a return type without a function body must fail");
-        assert_eq!(
-            errors,
-            ["abi.rs: spire_profiler_foo: Rust return type has no function body"]
+    fn missing_and_ambiguous_declarations_fail_with_source_names() {
+        let declarations = managed(DECLARATIONS, "");
+        let bindings = managed("", BINDINGS);
+        let errors = compare_sources(RUST, "abi.rs", &[("Bindings.cs", &bindings)])
+            .expect_err("bindings require declarations");
+        assert!(errors[0].contains("Bindings.cs: delegate 'NativeFoo'"));
+        let errors = compare_sources(
+            RUST,
+            "abi.rs",
+            &[
+                ("Bindings.cs", &bindings),
+                ("First.cs", &declarations),
+                ("Second.cs", &declarations),
+            ],
+        )
+        .expect_err("ambiguous declarations cannot establish ABI conformance");
+        assert!(
+            errors[0].contains(
+                "Second.cs: NativeFoo: ambiguous bound delegate, also declared in First.cs"
+            )
         );
-        let cs = GOOD_CS.replace("double delta);", "double delta) extra;");
-        let errors = compare(GOOD_RUST, "abi.rs", &cs)
-            .expect_err("a malformed delegate terminator must fail");
-        assert_eq!(
-            errors,
-            ["fixture.cs: NativeBar: expected ';' after delegate parameters"]
+        let cs = managed(
+            DECLARATIONS,
+            &BINDINGS.replace("spire_profiler_foo", "spire_profiler_missing"),
+        );
+        assert!(
+            compare(RUST, &cs).expect_err("missing exports fail")[0].contains("has no Rust export")
+        );
+        let duplicate = format!("{RUST} pub extern \"C\" fn spire_profiler_foo() {{}}");
+        assert!(
+            compare(&duplicate, &managed(DECLARATIONS, BINDINGS))
+                .expect_err("duplicate exports fail")[0]
+                .contains("ambiguous Rust export")
         );
     }
 
     #[test]
-    fn delegate_attributes_and_unclassified_prefixes_are_rejected() {
-        let rust = "pub extern \"C\" fn spire_profiler_value(value: i32) -> i64 { 0 }";
-        for prefix in [
+    fn reordered_parameters_report_a_signature_diff() {
+        let cs = managed(
+            &DECLARATIONS.replace("int amount, long started_at", "long started_at, int amount"),
+            BINDINGS,
+        );
+        let errors = compare(RUST, &cs).expect_err("parameter order belongs to the wire contract");
+        assert_eq!(
+            errors,
+            [
+                "spire_profiler_bar: Rust(int, long, double) -> void [abi.rs] != C# NativeBar(long, int, double) -> void [fixture.cs]; binding in fixture.cs"
+            ]
+        );
+    }
+
+    #[test]
+    fn unknown_attributes_and_marshalling_never_compare_equal() {
+        for attribute in [
             "[return: MarshalAs(UnmanagedType.I4)]",
-            "[ return \n : MarshalAs(UnmanagedType.I4)]",
-            "[return: MarshalAs(UnmanagedType.I4)]\n[UnmanagedFunctionPointer(CallingConvention.Cdecl)]",
             "[UnmanagedFunctionPointer(CallingConvention.StdCall)]",
             "[UnmanagedFunctionPointer(CallingConvention.Cdecl, CharSet = CharSet.Ansi)]",
-            "[UnmanagedFunctionPointer(CallingConvention.Cdecl)]\n[UnmanagedFunctionPointer(CallingConvention.Cdecl)]",
-            "[UnmanagedFunctionPointer(CallingConvention.Cdecl)]\n[return: MarshalAs(UnmanagedType.I4)]",
-            "[return /* native result */: MarshalAs(UnmanagedType.I4)]",
-            "[return: MarshalAs(UnmanagedType.I4)] // native result; documented",
-            "[return: MarshalAs(UnmanagedType.I4)] /* native result { documented */",
-            "/* native result { documented */",
-            "[return: MarshalAs(UnmanagedType.I4)] // native result // documented",
-            "[return: MarshalAs(UnmanagedType.I4)]\n// one comment\n// another comment",
+            "[UnmanagedFunctionPointer(CallingConvention.Cdecl)][UnmanagedFunctionPointer(CallingConvention.Cdecl)]",
         ] {
-            let cs = format!(
-                "{prefix}\nprivate delegate long NativeValue(int value);\n\
-                 GetExport<NativeValue>(lib, \"spire_profiler_value\");"
-            );
-            let errors = compare(rust, "abi.rs", &cs)
-                .expect_err("unclassified prefixes can hide native return representation changes");
-            assert_eq!(
-                errors,
-                [
-                    "fixture.cs: NativeValue: unsupported delegate prefix; expected a declaration boundary, \
-                 whitespace, line comments, or the exact Cdecl attribute"
-                ]
-            );
-        }
-    }
-
-    #[test]
-    fn exact_cdecl_annotation_preserves_scalar_and_utf8_checks() {
-        for newline in ["\n", "\r", "\r\n"] {
-            let cs = GOOD_CS.replace(
-                "private delegate",
-                "// native ABI\n[UnmanagedFunctionPointer(CallingConvention.Cdecl)]\n// signature\nprivate delegate",
-            ).replace('\n', newline);
-            assert_eq!(compare(GOOD_RUST, "abi.rs", &cs), Ok(2));
-            let bad_return = cs.replace("delegate void NativeFoo", "delegate long NativeFoo");
-            assert!(compare(GOOD_RUST, "abi.rs", &bad_return).is_err());
-            let bad_string = cs.replace("LPUTF8Str", "LPStr");
-            assert!(compare(GOOD_RUST, "abi.rs", &bad_string).is_err());
-            let hidden_return = cs.replace(
+            let declaration = DECLARATIONS.replace(
                 "[UnmanagedFunctionPointer(CallingConvention.Cdecl)]",
-                "[return: MarshalAs(UnmanagedType.I4)]\n[UnmanagedFunctionPointer(CallingConvention.Cdecl)]",
-            ).replace('\n', newline);
-            assert!(compare(GOOD_RUST, "abi.rs", &hidden_return).is_err());
+                attribute,
+            );
+            let error = compare(RUST, &managed(&declaration, BINDINGS))
+                .expect_err("unknown attributes can change the ABI");
+            assert!(
+                error[0].contains("unsupported delegate attributes"),
+                "{error:?}"
+            );
         }
-    }
-
-    #[test]
-    fn directives_and_modifiers_cannot_hide_return_attributes() {
-        let rust = "pub extern \"C\" fn spire_profiler_value(value: i32) -> i64 { 0 }";
-        for newline in ["\n", "\r", "\r\n"] {
-            for (prefix, suffix) in [
-                ("new ", ""),
-                ("#pragma warning disable\n", ""),
-                ("#region native result ;\n", "\n#endregion"),
-                ("#region native result {\n", "\n#endregion"),
-                ("#region native result } // documented\n", "\n#endregion"),
-            ] {
-                let cs = format!(
-                    "[return: MarshalAs(UnmanagedType.I4)]\n\
-                     {prefix}private delegate long NativeValue(int value);{suffix}\n\
-                     GetExport<NativeValue>(lib, \"spire_profiler_value\");"
-                )
-                .replace('\n', newline);
-                let errors = compare(rust, "abi.rs", &cs)
-                    .expect_err("unclassified prefixes cannot prove absence of return attributes");
-                assert_eq!(
-                    errors,
-                    [
-                        "fixture.cs: NativeValue: unsupported delegate prefix; expected a declaration boundary, \
-                     whitespace, line comments, or the exact Cdecl attribute"
-                    ]
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn line_comments_before_bound_delegates_are_accepted() {
-        for newline in ["\n", "\r", "\r\n"] {
-            let cs = GOOD_CS
-                .replace(
-                    "private delegate void NativeFoo",
-                    "// Native declaration; documented here\n// More documentation\n\
-                 private delegate void NativeFoo",
-                )
-                .replace('\n', newline);
-            assert_eq!(compare(GOOD_RUST, "abi.rs", &cs), Ok(2));
-        }
-    }
-
-    #[test]
-    fn unsupported_unbound_signatures_are_ignored() {
-        let rust = format!(
-            "{GOOD_RUST}\n\
-             pub extern \"C\" fn spire_profiler_unused(value: Custom) -> Custom {{ value }}"
-        );
-        let cs = format!(
-            "[return: MarshalAs(UnmanagedType.I4)] /* unbound attribute */\n\
-             private delegate Custom NativeUnused(Custom value);\n{GOOD_CS}"
-        );
-        assert_eq!(compare(&rust, "abi.rs", &cs), Ok(2));
-    }
-
-    #[test]
-    fn identically_spelled_unsupported_parameters_do_not_match() {
-        let rust = GOOD_RUST.replace("amount: i32", "amount: Custom");
-        let cs = GOOD_CS.replace("int amount", "Custom amount");
-        let errors = compare(&rust, "abi.rs", &cs)
-            .expect_err("unknown parameter classes must not match by spelling");
-        assert!(errors[0].contains("unsupported Rust parameter type 'Custom'"));
-        let errors = compare(GOOD_RUST, "abi.rs", &cs)
-            .expect_err("unknown C# parameter classes must fail explicitly");
-        assert!(errors[0].contains("unsupported C# parameter type 'Custom'"));
-    }
-
-    /// Drifted delegate parameter order must fail with a side-by-side diff.
-    #[test]
-    fn shifted_parameter_list_fails_with_a_diff() {
-        for (original, shifted, expected) in [
-            (
-                "int amount, [MarshalAs(UnmanagedType.LPUTF8Str)] string id, ulong hash",
-                "[MarshalAs(UnmanagedType.LPUTF8Str)] string id, int amount, ulong hash",
-                "spire_profiler_foo: Rust(int, string, ulong) -> void [abi.rs] \
-                 != C# NativeFoo(string, int, ulong) -> void [fixture.cs]; binding in fixture.cs",
-            ),
-            (
-                "int amount, long started_at, double delta",
-                "long started_at, int amount, double delta",
-                "spire_profiler_bar: Rust(int, long, double) -> void [abi.rs] \
-                 != C# NativeBar(long, int, double) -> void [fixture.cs]; binding in fixture.cs",
-            ),
+        for replacement in [
+            "",
+            "[MarshalAs(UnmanagedType.LPStr)]",
+            "[MarshalAs(UnmanagedType.LPUTF8Str, SizeConst = 8)]",
         ] {
-            let cs = GOOD_CS.replace(original, shifted);
-            let errors = compare(GOOD_RUST, "abi.rs", &cs)
-                .expect_err("shifted params must fail for safe and unsafe exports");
-            assert_eq!(errors, [expected]);
+            let declarations =
+                DECLARATIONS.replace("[MarshalAs(UnmanagedType.LPUTF8Str)]", replacement);
+            assert!(compare(RUST, &managed(&declarations, BINDINGS)).is_err());
         }
-    }
-
-    /// A bound name with no Rust export resolves to a null delegate at load.
-    #[test]
-    fn binding_without_an_export_fails() {
-        for name in ["spire_profiler_foo", "spire_profiler_bar"] {
-            let cs = GOOD_CS.replace(name, "spire_profiler_missing");
-            let errors = compare(GOOD_RUST, "abi.rs", &cs).expect_err("missing export must fail");
-            assert_eq!(
-                errors,
-                [
-                    "fixture.cs: 'spire_profiler_missing' is bound in the shim but has no Rust export"
-                ]
+        for parameter in [
+            "ref int amount",
+            "[MarshalAs(UnmanagedType.I8)] int amount",
+            "Custom amount",
+        ] {
+            assert!(
+                compare(
+                    RUST,
+                    &managed(&DECLARATIONS.replace("int amount", parameter), BINDINGS)
+                )
+                .is_err()
             );
         }
     }
 
     #[test]
-    fn empty_cs_fails_rather_than_passing_vacuously() {
-        let errors = compare(GOOD_RUST, "abi.rs", "").expect_err("zero bindings must fail");
+    fn comments_whitespace_and_regions_cannot_hide_return_attributes() {
+        for newline in ["\n", "\r", "\r\n"] {
+            let declarations = DECLARATIONS.replace(
+                "private delegate void NativeFoo",
+                "/* nested-looking { ( ] */\nprivate delegate void NativeFoo",
+            );
+            let bindings = BINDINGS.replace(
+                "GetExport<NativeFoo>(lib,",
+                "GetExport < NativeFoo > ( lib ,",
+            );
+            assert_eq!(
+                compare(
+                    RUST,
+                    &managed(&declarations, &bindings).replace('\n', newline)
+                ),
+                Ok(2)
+            );
+            let declarations = DECLARATIONS.replace("private delegate void NativeFoo", "[return: MarshalAs(UnmanagedType.I4)]\n#region native result } // comment\nprivate delegate void NativeFoo")
+                .replace("ulong hash);", "ulong hash);\n#endregion");
+            assert!(
+                compare(
+                    RUST,
+                    &managed(&declarations, BINDINGS).replace('\n', newline)
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn fake_bindings_and_exports_in_comments_and_strings_are_ignored() {
+        let rust = format!(
+            r###"{RUST}
+            // extern "C" fn spire_profiler_foo(amount: u64) {{}}
+            const TEXT: &str = r##"extern "C" fn spire_profiler_foo(amount: u64) {{}}"##;
+        "###
+        );
+        let cs = managed(
+            DECLARATIONS,
+            &format!(
+                r#"{BINDINGS}
+            // GetExport<Fake>(broken);
+            var example = "GetExport<Fake>(broken)";
+        "#
+            ),
+        );
+        assert_eq!(compare(&rust, &cs), Ok(2));
+    }
+
+    #[test]
+    fn malformed_bindings_and_empty_inputs_fail_alongside_valid_code() {
+        for bad in [
+            r#"GetExport<NativeBar>(other, "spire_profiler_bar");"#,
+            r#"GetExport<NativeBar>(lib, "_profiler_bar");"#,
+            r#"GetExport<NativeBar>(lib, "spire_profiler_");"#,
+            r#"GetExport<NativeBar>(lib, name);"#,
+            r#"GetExport<NativeBar>(IntPtr lib, "spire_profiler_bar");"#,
+            "\n#if UNKNOWN\nGetExport<NativeBar>(lib, \"spire_profiler_bar\");\n#endif\n",
+        ] {
+            let errors = compare_sources(
+                RUST,
+                "abi.rs",
+                &[
+                    ("Valid.cs", &managed(DECLARATIONS, BINDINGS)),
+                    ("Broken.cs", &managed("", bad)),
+                ],
+            )
+            .expect_err("one invalid binding invalidates the check");
+            assert!(errors[0].contains("Broken.cs"), "{errors:?}");
+        }
         assert_eq!(
-            errors,
-            ["no GetExport bindings were parsed from the production sources"]
+            compare(RUST, ""),
+            Err(vec![
+                "no GetExport bindings were parsed from the production sources".to_owned()
+            ])
         );
-    }
-
-    #[test]
-    fn malformed_binding_fails_alongside_a_valid_binding() {
-        let cs = GOOD_CS.replace(
-            "    private static NativeFoo _foo;",
-            "    private static NativeFoo _foo;\n    private static NativeVoid _bad;",
-        ) + "\n_bad = GetExport<NativeVoid>(IntPtr lib, \"spire_profiler_test_reset\");\n";
-        let errors = compare(GOOD_RUST, "abi.rs", &cs).expect_err("malformed call must fail");
-        assert_eq!(errors.len(), 1);
-        assert!(
-            errors[0].contains("unrecognized GetExport call"),
-            "unexpected error: {}",
-            errors[0]
-        );
-    }
-
-    #[test]
-    fn unbalanced_params_are_a_scanner_error() {
-        let cs = r#"
-private delegate void NativeFoo(int amount;
-GetExport<NativeFoo>(lib, "spire_profiler_foo");
-"#;
-        let errors = compare(GOOD_RUST, "abi.rs", cs).expect_err("unbalanced parens must fail");
-        assert_eq!(errors.len(), 1);
-        assert!(errors[0].contains("unbalanced parens"));
-    }
-
-    /// A bare string reverts marshaling to ANSI, corrupting non-ASCII ids.
-    #[test]
-    fn string_param_without_lputf8str_fails() {
-        let cs = GOOD_CS.replace(
-            "[MarshalAs(UnmanagedType.LPUTF8Str)] string id",
-            "string id",
-        );
-        let errors = compare(GOOD_RUST, "abi.rs", &cs).expect_err("bare string must fail");
-        assert_eq!(errors.len(), 1);
-        assert!(
-            errors[0].contains("without [MarshalAs(UnmanagedType.LPUTF8Str)]"),
-            "unexpected error: {}",
-            errors[0]
-        );
-    }
-
-    /// LPStr is exactly the ANSI default the requirement exists to forbid.
-    #[test]
-    fn string_param_with_a_non_utf8_marshalas_kind_fails() {
-        let cs = GOOD_CS.replace(
-            "[MarshalAs(UnmanagedType.LPUTF8Str)] string id",
-            "[MarshalAs(UnmanagedType.LPStr)] string id",
-        );
-        let errors = compare(GOOD_RUST, "abi.rs", &cs).expect_err("LPStr must fail");
-        assert_eq!(errors.len(), 1);
-        assert!(
-            errors[0].contains("without [MarshalAs(UnmanagedType.LPUTF8Str)]"),
-            "unexpected error: {}",
-            errors[0]
-        );
-    }
-
-    /// A bare `_profiler_` in an unrelated identifier must not masquerade
-    /// as an export name.
-    #[test]
-    fn profiler_name_pattern_rejects_boundary_separators() {
-        assert!(is_profiler_name("spire_profiler_init"));
-        assert!(!is_profiler_name("_profiler_foo"), "leading sep fails");
-        assert!(!is_profiler_name("foo_profiler_"), "trailing sep fails");
-        assert!(!is_profiler_name("foo_bar"));
     }
 }
