@@ -8,7 +8,7 @@ using MegaCrit.Sts2.Core.Logging;
 
 namespace SpireProfiler;
 
-[SuppressMessage("Design", "CA1001", Justification = "Godot owns and frees the control subtree through Root.")]
+[SuppressMessage("Design", "CA1001", Justification = "Free releases shaped tooltip text and queues the Godot control subtree for deletion.")]
 internal sealed class ProfilerPanel
 {
     private readonly PanelTheme _theme;
@@ -24,7 +24,7 @@ internal sealed class ProfilerPanel
     private IReadOnlyList<AvatarFact> _avatars = Array.Empty<AvatarFact>();
     private IReadOnlyList<int> _avatarSlots = Array.Empty<int>();
     private IReadOnlyList<float> _scales = Array.Empty<float>();
-    private IReadOnlyList<TipLine> _tipLines = Array.Empty<TipLine>();
+    private TooltipLayout _tooltip;
     private RowDetail _detail = RowDetail.Empty;
     private PanelLayout _layout;
     private UiRect _control, _plate, _frame;
@@ -65,6 +65,7 @@ internal sealed class ProfilerPanel
         Root.AddChild(_canvas);
         _canvas.AddChild(_body);
         _canvas.AddChild(_overlay);
+        Root.TreeExiting += () => { _tooltip?.Dispose(); _tooltip = null; _revision = null; };
         _canvas.GuiInput += input =>
         {
             try
@@ -111,7 +112,7 @@ internal sealed class ProfilerPanel
                 if (_layout == null) return;
                 _theme.DrawScrollbar(_overlay, Scrollbar(), _originX);
                 if (_legend is { } legend) _theme.DrawLegend(_overlay, legend, _fallback, _fallbackFont);
-                if (_tip is { } tip) _theme.DrawTooltip(_overlay, tip, _tipLines, _fallback, _fallbackFont);
+                if (_tip is { } tip) { _theme.DrawPlate(_overlay, tip); _tooltip?.Draw(_overlay, tip); }
             }
             catch (Exception error) { Log.Error($"[SpireProfiler] overlay draw: {error}"); }
         };
@@ -128,7 +129,7 @@ internal sealed class ProfilerPanel
         if (!Root.Visible)
         {
             _queuedScroll = 0; _hover = null; _legend = _tip = null;
-            _tipLines = Array.Empty<TipLine>(); _detail = RowDetail.Empty;
+            _tooltip?.Dispose(); _tooltip = null; _detail = RowDetail.Empty;
             _animation.Clear(); _revision = null;
         }
     }
@@ -218,8 +219,11 @@ internal sealed class ProfilerPanel
             _gutter = gutter;
         }
         _detail = _hover is { } index ? ChartProjection.Detail(_rows, index) : RowDetail.Empty;
-        _tipLines = _detail.IsEmpty ? Array.Empty<TipLine>() : TooltipLayout.Shape(_detail, TooltipLayout.MaximumLines(_control.H));
         _fallbackFont = _theme.NeedsFallback(_layout, _detail);
+        _fallback ??= _canvas.GetThemeDefaultFont();
+        _tooltip?.Dispose();
+        _tooltip = null;
+        if (!_detail.IsEmpty) _tooltip = _theme.ShapeTooltip(_detail, _control.H - 16, _fallback, _fallbackFont);
         UpdateFrame();
         _canvas.QueueRedraw(); _body.QueueRedraw(); _overlay.QueueRedraw();
     }
@@ -257,10 +261,10 @@ internal sealed class ProfilerPanel
     {
         UiRect? legend = _layout.HasChart ? PanelGeometry.PlaceLegend(_viewport, _plate, PanelGeometry.LegendPlate(_theme.HasPlate).Size) : null;
         UiRect? tip = null;
-        if (_hover is { } index && _tipLines.Count != 0)
+        if (_hover is { } index && _tooltip != null)
         {
             var hit = _layout.RowHits.FirstOrDefault(hit => hit.FlatIndex == index);
-            tip = PanelGeometry.PlaceTip(_viewport, _plate, _control.Y + hit.Y0 - _scroll, new(TooltipLayout.Width, TooltipLayout.Height(_tipLines.Count)), legend);
+            tip = PanelGeometry.PlaceTip(_viewport, _plate, _control.Y + hit.Y0 - _scroll, new(TooltipLayout.Width, _tooltip.Height), legend);
         }
         var (frame, originX) = PanelGeometry.Frame(_plate, legend, tip);
         _frame = frame with { Y = frame.Y - _layout.StripH, H = frame.H + _layout.StripH };
@@ -283,6 +287,7 @@ internal sealed class ProfilerPanel
     }
     internal void Free()
     {
+        _tooltip?.Dispose(); _tooltip = null;
         if (IsValid) Root.QueueFree();
         if (GodotObject.IsInstanceValid(Backdrop) && !Backdrop.IsQueuedForDeletion()) Backdrop.QueueFree();
     }
