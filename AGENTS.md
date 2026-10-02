@@ -40,10 +40,16 @@ fmt-md` for Markdown only.
   avoid ambiguity.
 - Gameplay state stays with its lifetime owner on the game thread, without locks
   or atomics for coordination. Native observations never call managed code.
-- Validate external inputs at the boundary. Use parsed types internally; avoid
-  repeated validation and speculative fallbacks that hide broken invariants. Pin
-  wire/schema constants at compile time and assert non-obvious invariants where
-  code relies on them.
+- Follow [parse, don't
+  validate](https://lexi-lambda.github.io/blog/2019/11/05/parse-don-t-validate/):
+  before acting on external input, construct a value that preserves the facts
+  callers need. Prefer private constructors or enum variants to checks whose
+  results are discarded; return degraded outcomes together with their data.
+  Avoid repeated static checks and fallbacks that hide broken invariants. Keep
+  checks for changing facts such as handle liveness and ownership. Introduce
+  stronger types when they simplify present callers, not for every primitive.
+  Pin wire/schema constants at compile time and assert non-obvious invariants
+  where code relies on them.
 - In production `profiler-core`, prefer boxed retained data with fixed length
   and share immutable snapshots instead of deep-copying them. Keep growable
   buffers for mutation or reuse; tests and tooling use ordinary collections.

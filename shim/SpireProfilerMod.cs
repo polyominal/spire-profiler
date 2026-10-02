@@ -39,26 +39,28 @@ public static class SpireProfilerMod
             }
             ProfilerNative.Load(Path.Combine(modDirectory, NativeLibrarySelector.FileName()));
             ProfilerSession.Initialize(dataDirectory, gameVersion, modVersion, text => Log.Error($"[SpireProfiler] {text}"));
-            CaptureRuntime.Initialize(new NativeAttributionBackend());
-
-            var harmony = new Harmony("dev.spireprofiler");
-            foreach (var type in typeof(SpireProfilerMod).Assembly.GetTypes())
-            {
-                if (type.GetCustomAttributes(typeof(HarmonyPatch), false).Length == 0) continue;
-                try { harmony.CreateClassProcessor(type).Patch(); }
-                catch (Exception error) { Log.Error($"[SpireProfiler] Harmony patch failed for {type.Name}: {error.Message}"); }
-            }
-            FlowCapture.Install(harmony, text => Log.Info($"[SpireProfiler] {text}"));
-            var methods = Harmony.GetAllPatchedMethods().Where(method => Harmony.GetPatchInfo(method)?.Owners.Contains(harmony.Id) == true).ToArray();
-            Log.Info($"[SpireProfiler] OWN PATCHES owner={harmony.Id} methods={methods.Length}");
-            foreach (string name in new[] { "SetUpNewSingleplayer", "SetUpNewMultiplayer", "SetUpSavedSingleplayer", "SetUpSavedMultiplayer", "CleanUp" })
-                if (!methods.Any(method => method.DeclaringType == typeof(RunManager) && method.Name == name))
-                    Log.Error($"[SpireProfiler] expected patch missing: RunManager.{name}");
+            CaptureRuntime.Initialize(new NativeAttributionBackend(), InstallPatches);
             bool selfTest = CommandLineHelper.HasArg("spire-profiler-self-test");
             if (selfTest) ProfilerSession.SelfTest(text => Log.Info(text));
             _ = AttachPanels(modDirectory, selfTest);
         }
         catch (Exception error) { Log.Error($"[SpireProfiler] initialization failed: {error}"); }
+    }
+
+    private static void InstallPatches()
+    {
+        var harmony = new Harmony("dev.spireprofiler");
+        foreach (var type in typeof(SpireProfilerMod).Assembly.GetTypes())
+        {
+            if (type.GetCustomAttributes(typeof(HarmonyPatch), false).Length == 0) continue;
+            harmony.CreateClassProcessor(type).Patch();
+        }
+        FlowCapture.Install(harmony, text => Log.Info($"[SpireProfiler] {text}"));
+        var methods = Harmony.GetAllPatchedMethods().Where(method => Harmony.GetPatchInfo(method)?.Owners.Contains(harmony.Id) == true).ToArray();
+        foreach (string name in new[] { "SetUpNewSingleplayer", "SetUpNewMultiplayer", "SetUpSavedSingleplayer", "SetUpSavedMultiplayer", "OnEnded", "CleanUp", "LocalPlayerDisconnected" })
+            if (!methods.Any(method => method.DeclaringType == typeof(RunManager) && method.Name == name))
+                throw new InvalidOperationException($"Required patch missing: RunManager.{name}");
+        Log.Info($"[SpireProfiler] OWN PATCHES owner={harmony.Id} methods={methods.Length}");
     }
 
     private static async Task AttachPanels(string modDirectory, bool selfTest)

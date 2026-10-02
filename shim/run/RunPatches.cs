@@ -60,7 +60,7 @@ internal static class RunStartPatches
 {
     internal static void NotifyRunStarted(RunState state, bool isResume, long startTime)
     {
-        if (!CaptureRuntime.OnThread) return;
+        if (!CaptureRuntime.Ready || !CaptureRuntime.OnThread) return;
 
         // The slot registry must exist before the first combat event; run
         // start is the earliest event (and re-fires on resume, refilling

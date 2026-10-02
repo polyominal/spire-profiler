@@ -49,20 +49,51 @@ const _: () = assert!(
     caps::MAX_PLAYER_SLOTS == TEAM_SLOT as usize + 1,
     "MAX_PLAYER_SLOTS must cover the TEAM slot as its highest value"
 );
-pub type SourceSlot = u8;
-
 /// Ownerless credited sources use TEAM; it never creates a real player.
-pub const TEAM_SLOT: SourceSlot = 4;
+pub const TEAM_SLOT: u8 = 4;
 
-pub fn clamp_source_slot(slot: i32) -> SourceSlot {
-    slot.clamp(0, TEAM_SLOT as i32) as SourceSlot
+/// A parsed creditor or physical-owner slot. TEAM can retain unresolved
+/// observations, but cannot establish that a player exists or died.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct SourceSlot(u8);
+
+impl SourceSlot {
+    pub(crate) const TEAM: Self = Self(TEAM_SLOT);
+
+    pub(crate) fn parse(slot: i32) -> Option<Self> {
+        (0..=i32::from(TEAM_SLOT))
+            .contains(&slot)
+            .then_some(Self(slot as u8))
+    }
+
+    pub(crate) fn player_index(self) -> Option<usize> {
+        (self != Self::TEAM).then_some(usize::from(self.0))
+    }
+}
+
+impl From<SourceSlot> for u8 {
+    fn from(slot: SourceSlot) -> Self {
+        slot.0
+    }
+}
+
+impl From<SourceSlot> for usize {
+    fn from(slot: SourceSlot) -> Self {
+        usize::from(slot.0)
+    }
+}
+
+impl From<SourceSlot> for u32 {
+    fn from(slot: SourceSlot) -> Self {
+        u32::from(slot.0)
+    }
 }
 
 /// Fields and widths define source rows in the engine summary.
 #[derive(Clone, Debug, Default, PartialEq, Hash, Serialize)]
 pub struct CardStat {
     /// First so the serialized identity group mirrors this order.
-    pub player: SourceSlot,
+    pub player: u8,
     pub id: Box<str>,
     pub kind: SourceKind,
     /// Own triggers, so `contribution / plays` is the expected value.
@@ -182,19 +213,14 @@ pub(crate) struct Coverage {
 }
 
 impl State {
-    /// The TEAM slot maps to a fifth entry, so a corrupt wire slot can
-    /// never index out of bounds or fabricate a player.
-    pub fn slot_index(&mut self, slot: i32) -> usize {
-        let index = clamp_source_slot(slot) as usize;
+    pub(crate) fn track_player(&mut self, slot: SourceSlot) {
+        let Some(index) = slot.player_index() else {
+            self.capture_failed("physical-owner-unavailable");
+            return;
+        };
         while self.per_player.len() <= index {
             self.per_player.push(PlayerSlotState::default());
         }
-        index
-    }
-
-    pub fn slot_state_mut(&mut self, slot: i32) -> &mut PlayerSlotState {
-        let index = self.slot_index(slot);
-        &mut self.per_player[index]
     }
 }
 
@@ -226,8 +252,7 @@ pub mod caps {
     pub const ORB_SOURCES: usize = 32;
     /// The game's lobby cap; per-player state never needs a fifth PLAYER.
     pub const MAX_PLAYERS: usize = 4;
-    /// The four player slots plus the TEAM slot, so a corrupt wire slot
-    /// can never index out of bounds.
+    /// The four player slots plus TEAM; parsed SourceSlot values bound pool indices.
     pub const MAX_PLAYER_SLOTS: usize = 5;
     /// Unconsumed FIFO slices per slot; overflow collapses the tail to Unknown.
     pub const BLOCK_POOL: usize = 64;

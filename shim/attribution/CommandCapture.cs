@@ -72,7 +72,7 @@ internal static class CommandCapture
             Current = Current with { Source = source };
             var descriptor = model == null ? default : CaptureRuntime.Backend.Describe(model);
             var role = model == null ? __state.Producer.Role : descriptor.Role;
-            var segment = model == null ? __state.Producer.Segment : role is ProducerRole.Card or ProducerRole.Relic or ProducerRole.Potion ? DamageSegment.Direct : DamageSegment.Attributed;
+            var segment = model == null ? __state.Producer.Segment : descriptor.Segment;
             FlowCapture.Current = new(epoch, model ?? __state.Producer.Model, source, role, segment);
         }
         catch (Exception ex) { CaptureRuntime.Fail("command-entry", ex); }
@@ -201,6 +201,7 @@ internal static class CommandCapture
     {
         try
         {
+            if (!CaptureRuntime.Ready) return;
             CaptureRuntime.InvalidateEpoch();
             IdentityCapture.PrepareCombat();
         }
@@ -210,7 +211,7 @@ internal static class CommandCapture
     {
         try
         {
-            if (!__runOriginal || !CaptureRuntime.OnThread || !ReferenceEquals(CaptureRuntime.Backend.CurrentCombat, state)) return;
+            if (!__runOriginal || !CaptureRuntime.Ready || !CaptureRuntime.OnThread || !ReferenceEquals(CaptureRuntime.Backend.CurrentCombat, state)) return;
             var encounter = state?.Encounter;
             ulong epoch = CaptureRuntime.Backend.CombatStarted(encounter?.Id?.Entry ?? "unknown", (encounter?.RoomType.ToString() ?? "normal").ToLowerInvariant());
             CaptureRuntime.Register(CaptureRuntime.Backend, epoch, state);

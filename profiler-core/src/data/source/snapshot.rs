@@ -3,7 +3,7 @@
 
 use std::rc::Rc;
 
-use super::{CombatEpoch, Destination, PAYLOAD_MAX, SourceFailure, TEAM_SLOT, caps};
+use super::{CombatEpoch, Destination, PAYLOAD_MAX, SourceFailure, SourceSlot, caps};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct WeightedDestination {
@@ -41,9 +41,6 @@ impl SourceSnapshot {
             match destination {
                 Destination::Row(row) if row as usize >= rows || row > PAYLOAD_MAX => {
                     return Err(SourceFailure::Token);
-                }
-                Destination::Unknown(slot) if slot > TEAM_SLOT => {
-                    return Err(SourceFailure::Packet);
                 }
                 _ => {}
             }
@@ -84,14 +81,10 @@ impl SourceSnapshot {
     }
 
     pub(super) fn unknown(epoch: CombatEpoch) -> Self {
-        Self::unknown_for(epoch, TEAM_SLOT)
+        Self::unknown_for(epoch, SourceSlot::TEAM)
     }
 
-    pub(super) fn unknown_for(epoch: CombatEpoch, slot: u8) -> Self {
-        debug_assert!(
-            slot <= TEAM_SLOT,
-            "Unknown destinations require a boundary-clamped slot"
-        );
+    pub(super) fn unknown_for(epoch: CombatEpoch, slot: SourceSlot) -> Self {
         Self {
             epoch,
             shares: Rc::from([WeightedDestination {

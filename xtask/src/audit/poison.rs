@@ -2,6 +2,9 @@
 //! mutations. Native snapshots enter only comparisons, never the reconstructed
 //! queue. Unsupported provenance remains unknown until that attachment drains.
 
+use super::event::{
+    Attempt, CommandEnd, Envenom, EnvenomEnd, Mutation, RawSource, SourceFrame, Tick,
+};
 use super::*;
 
 #[cfg(test)]
@@ -48,11 +51,7 @@ impl Reconstruction {
             frames: BTreeMap::new(),
             credits: BTreeMap::new(),
             complete: true,
-            epoch: trace
-                .events
-                .first()
-                .and_then(|event| event.data["epoch"].as_u64())
-                .unwrap_or(0),
+            epoch: trace.events.first().and_then(Event::epoch).unwrap_or(0),
         };
         let mut sequence = 0_u64;
         let indexed: BTreeMap<_, _> = trace
@@ -60,7 +59,7 @@ impl Reconstruction {
             .iter()
             .take_while(|event| {
                 let continuous = sequence.checked_add(1) == Some(event.seq)
-                    && !matches!(event.name.as_str(), "diagnostic" | "trace_truncated");
+                    && !matches!(event.name(), "diagnostic" | "trace_truncated");
                 sequence = event.seq;
                 continuous
             })
@@ -70,7 +69,7 @@ impl Reconstruction {
         let mut interrupted = result.epoch == 0;
         for event in &trace.events {
             if previous.checked_add(1) != Some(event.seq)
-                || matches!(event.name.as_str(), "diagnostic" | "trace_truncated")
+                || matches!(event.name(), "diagnostic" | "trace_truncated")
             {
                 interrupted = true;
             }
@@ -80,18 +79,16 @@ impl Reconstruction {
                 result.add(event.seq, Check::Unverified("Raw event continuity is unavailable; subsequent independent reconstruction is withheld.".into()));
                 continue;
             }
-            let outcome = match event.name.as_str() {
-                "source_frame" => result.frame(event),
-                "power_change" => result.change(event, &indexed),
-                "power_attempt" => result.command(event, &indexed),
-                "envenom_trigger" => result.envenom(event, &indexed),
-                "poison_tick" => result.tick(event, &indexed),
-                "poison_damage" => {
-                    if event.data["tick_seq"]
-                        .as_u64()
-                        .and_then(|seq| indexed.get(&seq))
-                        .is_some_and(|tick| tick.name == "poison_tick" && tick.seq < event.seq)
-                    {
+            let outcome = match &event.data {
+                Data::Frame(data) => result.frame(event, data),
+                Data::Change(data) => result.change(event, data, &indexed),
+                Data::Attempt(data) => result.command(event, data, &indexed),
+                Data::Envenom(data) => result.envenom(event, data, &indexed),
+                Data::Tick(data) => result.tick(event, data, &indexed),
+                Data::PoisonDamage(data) => {
+                    if indexed.get(&data.tick_seq).is_some_and(|tick| {
+                        matches!(tick.data, Data::Tick(_)) && tick.seq < event.seq
+                    }) {
                         Ok(())
                     } else {
                         Err(anyhow!("Physical Poison result lacks a preceding raw tick"))
@@ -101,15 +98,18 @@ impl Reconstruction {
             };
             if let Err(error) = outcome {
                 result.complete = false;
-                if event.name == "power_change" {
+                if event.name() == "power_change" {
                     for power in result.powers.values_mut() {
                         power.grants = None;
                     }
                 }
                 result.add(event.seq, Check::Unverified(error.to_string()));
             }
-            if !event.data["native"].is_null() {
-                match result.checkpoint(&event.data["native"]) {
+            if event.native.is_some() {
+                match event
+                    .checkpoint()
+                    .and_then(|native| result.checkpoint(native))
+                {
                     Ok(checks) => result.checks.entry(event.seq).or_default().extend(checks),
                     Err(error) => result.add(event.seq, Check::Unverified(error.to_string())),
                 }
@@ -125,13 +125,13 @@ impl Reconstruction {
         self.checks.entry(seq).or_default().push(check);
     }
 
-    fn frame(&mut self, event: &Event) -> Result<()> {
-        let raw = &event.data["source"];
-        let identity = number(raw, "identity")?;
-        let model = string(raw, "model")?.to_owned();
-        let amount = Self::amount(&event.data["amount"])?;
-        let context = string(&event.data, "context")?.to_owned();
-        let source = match string(raw, "role")? {
+    fn frame(&mut self, event: &Event, data: &SourceFrame) -> Result<()> {
+        let raw = &data.source;
+        let identity = raw.identity;
+        let model = raw.model.clone();
+        let amount = data.amount.nonnegative()?;
+        let context = data.context.clone();
+        let source = match raw.role.as_str() {
             "card" => Self::card(raw),
             "power" => (|| {
                 ensure!(
@@ -139,19 +139,18 @@ impl Reconstruction {
                     "Unsupported source power {model}"
                 );
                 ensure!(
-                    number(&event.data, "power_identity")? == identity && identity != 0,
+                    data.power_identity == identity && identity != 0,
                     "Source frame power identity disagrees with raw source"
                 );
                 let power = self.powers.get(&identity).ok_or_else(|| {
                     anyhow!("No independently observed attachment for source power {identity}")
                 })?;
                 ensure!(
-                    power.model == model
-                        && power.owner == number(&event.data["target"], "instance")?,
+                    power.model == model && Some(power.owner) == Creature::instance(&data.target),
                     "Source frame power ownership differs from its observed attachment"
                 );
                 ensure!(
-                    power.amount == Self::amount(&event.data["amount"])?,
+                    power.amount == amount,
                     "Source frame amount differs from independently observed mutations"
                 );
                 power.weights()
@@ -173,7 +172,7 @@ impl Reconstruction {
             Frame {
                 identity,
                 model,
-                owner: event.data["target"]["instance"].as_u64().unwrap_or(0),
+                owner: Creature::instance(&data.target).unwrap_or(0),
                 amount,
                 context,
                 source,
@@ -182,15 +181,15 @@ impl Reconstruction {
         Ok(())
     }
 
-    fn card(raw: &Value) -> Result<Weights> {
+    fn card(raw: &RawSource) -> Result<Weights> {
         ensure!(
-            raw["origin"].as_str() == Some("ordinary"),
+            raw.origin == "ordinary",
             "Generated or unproven card origin is outside independent reconstruction"
         );
-        ensure!(number(raw, "identity")? != 0, "Card identity is missing");
-        let player = number(raw, "player")?;
+        ensure!(raw.identity != 0, "Card identity is missing");
+        let player = raw.player;
         ensure!(player < 4, "Ordinary card owner is not a player");
-        let id = string(raw, "model")?.to_owned();
+        let id = raw.model.clone();
         ensure!(!id.is_empty(), "Ordinary card model is missing");
         Ok(Weights(vec![(
             Source {
@@ -202,42 +201,46 @@ impl Reconstruction {
         )]))
     }
 
-    fn amount(value: &Value) -> Result<u64> {
-        let value = match value.as_u64() {
-            Some(value) => value,
-            None => value
-                .as_str()
-                .ok_or_else(|| anyhow!("Missing nonnegative integral power amount"))?
-                .parse()?,
-        };
-        ensure!(
-            value <= i32::MAX as u64,
-            "Power amount is outside the supported game domain"
-        );
-        Ok(value)
-    }
-
-    fn source(&self, event: &Event, indexed: &BTreeMap<u64, &Event>) -> Result<Weights> {
-        let action = number(&event.data, "action")?;
-        let attempt = indexed
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Command, frame and Envenom identity checks establish one causal source."
+    )]
+    fn source(
+        &self,
+        event: &Event,
+        data: &Mutation,
+        indexed: &BTreeMap<u64, &Event>,
+    ) -> Result<Weights> {
+        let action = data
+            .action
+            .ok_or_else(|| anyhow!("Missing action identity"))?;
+        let (attempt, attempt_data) = indexed
             .get(&action)
-            .filter(|attempt| attempt.name == "power_attempt" && attempt.seq < event.seq)
+            .and_then(|event| {
+                if let Data::Attempt(data) = &event.data {
+                    Some((*event, data))
+                } else {
+                    None
+                }
+            })
+            .filter(|(attempt, _)| attempt.seq < event.seq)
             .ok_or_else(|| anyhow!("Positive mutation has no preceding raw command attempt"))?;
         ensure!(
-            attempt.data["power"] == event.data["power"]
-                && attempt.data["target"]["instance"] == event.data["target"]["instance"],
+            data.power.as_deref() == Some(attempt_data.power.as_str())
+                && Creature::instance(&attempt_data.target).is_some()
+                && Creature::instance(&attempt_data.target) == Creature::instance(&data.target),
             "Mutation and attempt raw power model or target differ"
         );
-        let end = Self::command_end(attempt, indexed)?;
+        let (end, completion) = Self::command_end(attempt, attempt_data, indexed)?;
         ensure!(
-            end.seq > event.seq && end.data["power_identity"] == event.data["power_identity"],
+            end.seq > event.seq && Some(completion.power_identity) == data.power_identity,
             "Command completion does not bind the actual mutated power identity"
         );
-        let frame_id = number(&event.data, "source_frame")?;
+        let frame_id = data
+            .source_frame
+            .ok_or_else(|| anyhow!("Missing source frame identity"))?;
         ensure!(
-            frame_id != 0
-                && frame_id < attempt.seq
-                && attempt.data["source_frame"].as_u64() == Some(frame_id),
+            frame_id != 0 && frame_id < attempt.seq && attempt_data.source_frame == frame_id,
             "Mutation source does not match its command's frozen raw frame"
         );
         let frame = self
@@ -245,8 +248,8 @@ impl Reconstruction {
             .get(&frame_id)
             .ok_or_else(|| anyhow!("Missing frozen source frame #{frame_id}"))?;
         ensure!(
-            attempt.data["source"]["identity"].as_u64() == Some(frame.identity)
-                && attempt.data["source"]["model"].as_str() == Some(frame.model.as_str()),
+            attempt_data.source.identity == frame.identity
+                && attempt_data.source.model == frame.model,
             "Command's raw source differs from the frozen source frame"
         );
         if frame.model == "ENVENOM_POWER" {
@@ -254,36 +257,42 @@ impl Reconstruction {
                 frame.context == "producer",
                 "Envenom supplier frame was not sampled at producer entry"
             );
-            let cause = number(&attempt.data, "cause")?;
-            let trigger = indexed
-                .get(&cause)
-                .filter(|cause| cause.name == "envenom_trigger" && cause.seq < attempt.seq)
+            let (trigger, trigger_data) = indexed
+                .get(&attempt_data.cause)
+                .and_then(|event| {
+                    if let Data::Envenom(data) = &event.data {
+                        Some((*event, data))
+                    } else {
+                        None
+                    }
+                })
+                .filter(|(trigger, _)| trigger.seq < attempt.seq)
                 .ok_or_else(|| anyhow!("Envenom application lacks a preceding trigger"))?;
             ensure!(
-                trigger.data["source_frame"].as_u64() == Some(frame_id)
-                    && trigger.data["power_identity"].as_u64() == Some(frame.identity)
-                    && trigger.data["target"]["instance"] == event.data["target"]["instance"],
+                trigger_data.source_frame == frame_id
+                    && trigger_data.power_identity == frame.identity
+                    && Creature::instance(&trigger_data.target) == Creature::instance(&data.target),
                 "Envenom trigger does not bind this source frame and receiver"
             );
             ensure!(
-                Self::eligible(trigger, indexed)?,
+                Self::eligible(trigger, trigger_data, indexed)?,
                 "Raw Envenom callback is not eligible to apply Poison"
             );
             ensure!(
-                trigger.data["owner"]["instance"].as_u64() == Some(frame.owner),
+                Creature::instance(&trigger_data.owner) == Some(frame.owner),
                 "Envenom callback owner differs from its frozen power owner"
             );
+            let amount = trigger_data.amount.nonnegative()?;
             ensure!(
-                Self::amount(&attempt.data["amount"])? == Self::amount(&trigger.data["amount"])?,
+                attempt_data.amount.nonnegative()? == amount,
                 "Envenom command request differs from its observed trigger amount"
             );
             ensure!(
-                Self::amount(&trigger.data["amount"])? == frame.amount
-                    && event.data["power"].as_str() == Some("POISON_POWER"),
+                amount == frame.amount && data.power.as_deref() == Some("POISON_POWER"),
                 "Envenom child amount or power differs from the independently observed producer"
             );
             ensure!(
-                Self::trigger_end(trigger, indexed)?.seq > event.seq,
+                Self::trigger_end(trigger, indexed)?.0.seq > event.seq,
                 "Envenom child mutation is outside its callback lifetime"
             );
         }
@@ -294,33 +303,42 @@ impl Reconstruction {
         clippy::too_many_lines,
         reason = "Physical attachment transitions and provenance update form one transaction."
     )]
-    fn change(&mut self, event: &Event, indexed: &BTreeMap<u64, &Event>) -> Result<()> {
-        let model = string(&event.data, "power")?.to_owned();
+    fn change(
+        &mut self,
+        event: &Event,
+        data: &Mutation,
+        indexed: &BTreeMap<u64, &Event>,
+    ) -> Result<()> {
+        let model = data
+            .power
+            .clone()
+            .ok_or_else(|| anyhow!("Missing power model"))?;
         ensure!(
             matches!(model.as_str(), "POISON_POWER" | "ENVENOM_POWER"),
             "Unsupported power mutation {model}"
         );
-        let identity = number(&event.data, "power_identity")?;
-        let owner = number(&event.data["target"], "instance")?;
+        let identity = data
+            .power_identity
+            .ok_or_else(|| anyhow!("Raw mutation identity missing"))?;
+        let owner = Creature::instance(&data.target)
+            .ok_or_else(|| anyhow!("Raw mutation owner missing"))?;
         ensure!(identity != 0 && owner != 0, "Raw mutation identity missing");
-        let before_attached = event.data["before_attached"]
-            .as_bool()
+        let before_attached = data
+            .before_attached
             .ok_or_else(|| anyhow!("Missing prior attachment state"))?;
-        let attached = event.data["after_attached"]
-            .as_bool()
-            .ok_or_else(|| anyhow!("Missing resulting attachment state"))?;
+        let attached = data.after_attached;
         let before = if before_attached {
-            Self::amount(&event.data["before"])?
+            data.before.nonnegative()?
         } else {
             0
         };
         let after = if attached {
-            Self::amount(&event.data["after"])?
+            data.after.nonnegative()?
         } else {
             0
         };
         let source = if after > before {
-            Some(self.source(event, indexed))
+            Some(self.source(event, data, indexed))
         } else {
             None
         };
@@ -335,10 +353,8 @@ impl Reconstruction {
         if power.model != model || power.owner != owner || power.amount != before {
             power.grants = None;
         }
-        power.native_id = event.data["power_instance"].as_u64().unwrap_or(0);
-        power.native_owner = event.data["target"]["native_instance"]
-            .as_u64()
-            .unwrap_or(0);
+        power.native_id = data.power_instance.unwrap_or(0);
+        power.native_owner = Creature::native(&data.target).unwrap_or(0);
         let mut unknown = None;
         if let Some(source) = source {
             match (source, power.grants.as_mut()) {
@@ -390,11 +406,21 @@ impl Reconstruction {
         Ok(())
     }
 
-    fn command_end<'a>(attempt: &Event, indexed: &BTreeMap<u64, &'a Event>) -> Result<&'a Event> {
-        let mut ends = indexed.values().filter(|event| {
-            event.name == "command_end" && event.data["action"].as_u64() == Some(attempt.seq)
+    fn command_end<'a>(
+        attempt: &Event,
+        data: &Attempt,
+        indexed: &BTreeMap<u64, &'a Event>,
+    ) -> Result<(&'a Event, &'a CommandEnd)> {
+        let mut ends = indexed.values().filter_map(|event| {
+            if let Data::CommandEnd(end) = &event.data
+                && end.action == attempt.seq
+            {
+                Some((*event, end))
+            } else {
+                None
+            }
         });
-        let end = ends
+        let (end, completion) = ends
             .next()
             .ok_or_else(|| anyhow!("Command #{} has no recorded completion", attempt.seq))?;
         ensure!(
@@ -402,45 +428,49 @@ impl Reconstruction {
             "Command completion is duplicated or out of order"
         );
         ensure!(
-            end.data["command"] == attempt.data["command"]
-                && end.data["target"]["instance"] == attempt.data["target"]["instance"]
-                && end.data["requested_power_identity"].as_u64()
-                    == Some(number(&attempt.data, "power_identity")?),
+            completion.command == data.command
+                && Creature::instance(&data.target).is_some()
+                && Creature::instance(&completion.target) == Creature::instance(&data.target)
+                && completion.requested_power_identity == data.power_identity,
             "Command completion has a different raw command, requested power or target"
         );
         ensure!(
             matches!(
-                end.data["outcome"].as_str(),
-                Some("completed" | "faulted" | "cancelled")
+                completion.outcome.as_str(),
+                "completed" | "faulted" | "cancelled"
             ),
             "Missing command outcome"
         );
-        Ok(end)
+        Ok((end, completion))
     }
 
-    fn command(&mut self, attempt: &Event, indexed: &BTreeMap<u64, &Event>) -> Result<()> {
-        let end = Self::command_end(attempt, indexed)?;
-        let count = indexed
-            .values()
-            .filter(|event| {
-                event.name == "power_change" && event.data["action"].as_u64() == Some(attempt.seq)
-            })
-            .count();
-        self.add(attempt.seq, Check::Match(format!("Raw command ends {} at #{} with {count} observed mutations. Completion alone does not establish acceptance or explain a no-op.", string(&end.data, "outcome")?, end.seq)));
+    fn command(
+        &mut self,
+        attempt: &Event,
+        data: &Attempt,
+        indexed: &BTreeMap<u64, &Event>,
+    ) -> Result<()> {
+        let (end, completion) = Self::command_end(attempt, data, indexed)?;
+        let count = indexed.values().filter(|event| {
+            matches!(&event.data, Data::Change(data) if data.action == Some(attempt.seq))
+        }).count();
+        self.add(attempt.seq, Check::Match(format!("Raw command ends {} at #{} with {count} observed mutations. Completion alone does not establish acceptance or explain a no-op.", completion.outcome, end.seq)));
         Ok(())
     }
 
-    fn eligible(trigger: &Event, indexed: &BTreeMap<u64, &Event>) -> Result<bool> {
-        let result_id = number(&trigger.data, "result_identity")?;
+    fn eligible(trigger: &Event, data: &Envenom, indexed: &BTreeMap<u64, &Event>) -> Result<bool> {
+        let result_id = data.result_identity;
         ensure!(
             result_id != 0,
             "Envenom trigger lacks a raw damage result identity"
         );
-        let mut candidates = indexed.values().filter(|event| {
-            matches!(event.name.as_str(), "damage_result" | "poison_damage")
-                && event.data["result_identity"].as_u64() == Some(result_id)
+        let mut candidates = indexed.values().filter_map(|event| {
+            event
+                .damage_data()
+                .filter(|result| result.result_identity == Some(result_id))
+                .map(|result| (*event, result))
         });
-        let result = candidates
+        let (result, result_data) = candidates
             .next()
             .ok_or_else(|| anyhow!("No raw damage result for Envenom trigger"))?;
         ensure!(
@@ -448,54 +478,62 @@ impl Reconstruction {
             "Envenom raw result identity is duplicated or ordered incorrectly"
         );
         ensure!(
-            result.data["target"]["instance"] == trigger.data["target"]["instance"]
-                && result.data["unblocked"] == trigger.data["unblocked"],
+            Creature::instance(&data.target).is_some()
+                && Creature::instance(&result_data.target) == Creature::instance(&data.target)
+                && result_data.unblocked.nonnegative()? == data.unblocked.nonnegative()?,
             "Envenom receiver or damage differs from its raw result"
         );
         let begin = indexed
-            .get(&number(&result.data, "tick_seq")?)
+            .get(&result_data.tick_seq)
             .ok_or_else(|| anyhow!("No raw damage begin for Envenom result"))?;
         ensure!(
-            begin.seq < result.seq && matches!(begin.name.as_str(), "damage_begin" | "poison_tick"),
+            begin.seq < result.seq,
             "Envenom lacks a completed raw damage observation"
         );
-        let owner = number(&trigger.data["owner"], "instance")?;
+        let (dealer, props) = match &begin.data {
+            Data::DamageBegin(data) => (&data.dealer, Some(data.props)),
+            Data::Tick(data) => (&data.dealer, data.props),
+            _ => return Err(anyhow!("Envenom lacks a completed raw damage observation")),
+        };
+        let owner =
+            Creature::instance(&data.owner).ok_or_else(|| anyhow!("Envenom owner is missing"))?;
         ensure!(
-            owner != 0 && trigger.data["dealer"]["instance"] == begin.data["dealer"]["instance"],
+            Creature::instance(&data.dealer) == Creature::instance(dealer),
             "Envenom owner is missing or damage dealer differs from raw begin"
         );
-        let props = number(&trigger.data, "props")?;
         ensure!(
-            begin.data["props"].as_u64() == Some(props),
+            props == Some(data.props),
             "Envenom damage properties differ from the raw begin"
         );
-        Ok(trigger.data["dealer"]["instance"].as_u64() == Some(owner)
-            && props & 8 != 0
-            && props & 4 == 0
-            && Self::amount(&trigger.data["unblocked"])? > 0)
+        Ok(Creature::instance(&data.dealer) == Some(owner)
+            && data.props & 8 != 0
+            && data.props & 4 == 0
+            && data.unblocked.nonnegative()? > 0)
     }
 
-    fn envenom(&mut self, trigger: &Event, indexed: &BTreeMap<u64, &Event>) -> Result<()> {
-        let eligible = Self::eligible(trigger, indexed)?;
+    fn envenom(
+        &mut self,
+        trigger: &Event,
+        data: &Envenom,
+        indexed: &BTreeMap<u64, &Event>,
+    ) -> Result<()> {
+        let eligible = Self::eligible(trigger, data, indexed)?;
         let frame = self
             .frames
-            .get(&number(&trigger.data, "source_frame")?)
+            .get(&data.source_frame)
             .ok_or_else(|| anyhow!("Envenom trigger lacks its earlier raw source frame"))?;
         ensure!(
             frame.model == "ENVENOM_POWER"
                 && frame.context == "producer"
-                && trigger.data["power_identity"].as_u64() == Some(frame.identity)
-                && trigger.data["owner"]["instance"].as_u64() == Some(frame.owner)
-                && Self::amount(&trigger.data["amount"])? == frame.amount,
+                && data.power_identity == frame.identity
+                && Creature::instance(&data.owner) == Some(frame.owner)
+                && data.amount.nonnegative()? == frame.amount,
             "Envenom callback identity, owner or amount differs from its frozen raw power"
         );
-        let end = Self::trigger_end(trigger, indexed)?;
+        let (end, completion) = Self::trigger_end(trigger, indexed)?;
         let child = indexed.values().any(|event| {
-            event.name == "power_attempt"
-                && event.data["power"].as_str() == Some("POISON_POWER")
-                && event.seq > trigger.seq
-                && event.seq < end.seq
-                && event.data["cause"].as_u64() == Some(trigger.seq)
+            matches!(&event.data, Data::Attempt(data) if data.power == "POISON_POWER" && data.cause == trigger.seq)
+                && event.seq > trigger.seq && event.seq < end.seq
         });
         ensure!(
             !eligible || child,
@@ -506,29 +544,37 @@ impl Reconstruction {
             "Ineligible Envenom callback unexpectedly has an application child"
         );
         ensure!(
-            end.data["outcome"].as_str() == Some("completed"),
+            completion.outcome == "completed",
             "Envenom callback did not complete normally"
         );
         self.add(trigger.seq, Check::Match(format!("Envenom raw damage predicate is {eligible}; canonical application child observed={child}.")));
         Ok(())
     }
 
-    fn trigger_end<'a>(trigger: &Event, indexed: &BTreeMap<u64, &'a Event>) -> Result<&'a Event> {
-        let mut ends = indexed.values().filter(|event| {
-            event.name == "envenom_end" && event.data["trigger"].as_u64() == Some(trigger.seq)
+    fn trigger_end<'a>(
+        trigger: &Event,
+        indexed: &BTreeMap<u64, &'a Event>,
+    ) -> Result<(&'a Event, &'a EnvenomEnd)> {
+        let mut ends = indexed.values().filter_map(|event| {
+            if let Data::EnvenomEnd(data) = &event.data
+                && data.trigger == trigger.seq
+            {
+                Some((*event, data))
+            } else {
+                None
+            }
         });
-        let end = ends
+        let (end, data) = ends
             .next()
             .ok_or_else(|| anyhow!("Envenom callback has no recorded completion"))?;
         ensure!(
             ends.next().is_none() && end.seq > trigger.seq,
             "Envenom completion is duplicated or out of order"
         );
-        Ok(end)
+        Ok((end, data))
     }
 
-    fn checkpoint(&self, value: &Value) -> Result<Vec<Check>> {
-        let native = Native::read(value)?;
+    fn checkpoint(&self, native: &Native) -> Result<Vec<Check>> {
         ensure!(
             native.combat_id == self.epoch,
             "Foreign native combat checkpoint"
@@ -589,13 +635,18 @@ impl Reconstruction {
         clippy::too_many_lines,
         reason = "Frozen source, grouped physical damage and measured counter delta are one check."
     )]
-    fn tick(&mut self, tick: &Event, indexed: &BTreeMap<u64, &Event>) -> Result<()> {
+    fn tick(&mut self, tick: &Event, data: &Tick, indexed: &BTreeMap<u64, &Event>) -> Result<()> {
         let results: Vec<_> = indexed
             .values()
-            .filter(|event| {
-                event.name == "poison_damage" && event.data["tick_seq"].as_u64() == Some(tick.seq)
+            .filter_map(|event| {
+                if let Data::PoisonDamage(data) = &event.data
+                    && data.tick_seq == tick.seq
+                {
+                    Some((*event, data))
+                } else {
+                    None
+                }
             })
-            .copied()
             .collect();
         ensure!(
             !results.is_empty(),
@@ -604,8 +655,10 @@ impl Reconstruction {
         self.checks
             .entry(tick.seq)
             .or_default()
-            .extend(tick.physical(&results));
-        let frame_id = number(&tick.data, "source_frame")?;
+            .extend(tick.physical(data, &results));
+        let frame_id = data
+            .source_frame
+            .ok_or_else(|| anyhow!("Missing source frame identity"))?;
         ensure!(
             frame_id < tick.seq,
             "Poison tick source frame is not earlier than its use"
@@ -617,9 +670,9 @@ impl Reconstruction {
         ensure!(
             frame.model == "POISON_POWER"
                 && frame.context == "damage"
-                && tick.data["power_identity"].as_u64() == Some(frame.identity)
+                && data.power_identity == Some(frame.identity)
                 && frame.owner != 0
-                && tick.data["target"]["instance"].as_u64() == Some(frame.owner),
+                && Creature::instance(&data.target) == Some(frame.owner),
             "Poison tick and frozen source frame power or owner identities disagree"
         );
         let weights = frame
@@ -627,25 +680,25 @@ impl Reconstruction {
             .as_ref()
             .map_err(|reason| anyhow!(reason.clone()))?;
         let mut damage = 0_u64;
-        for (index, result) in results.iter().enumerate() {
+        for (index, (result, data)) in results.iter().enumerate() {
             ensure!(
-                result.data["target"]["instance"].as_u64() == Some(frame.owner),
+                Creature::instance(&data.target) == Some(frame.owner),
                 "Redirected or unidentified Poison result is outside independent reconstruction"
             );
             ensure!(
                 result.seq > tick.seq
-                    && result.data["group_index"].as_u64() == Some(index as u64)
-                    && result.data["group_count"].as_u64() == Some(results.len() as u64),
+                    && data.group_index == Some(index as u64)
+                    && data.group_count == Some(results.len() as u64),
                 "Incomplete or reordered Poison result group"
             );
             ensure!(
-                result.data["receiver_side"].as_str() == Some("enemy")
-                    && result.data["receiver_kind"].as_str() == Some("monster"),
+                data.receiver_side.as_deref() == Some("enemy")
+                    && data.receiver_kind.as_deref() == Some("monster"),
                 "Incoming or pet Poison damage is outside outgoing credit reconstruction"
             );
             damage = damage
-                .checked_add(Self::amount(&result.data["unblocked"])?)
-                .and_then(|sum| sum.checked_add(Self::amount(&result.data["blocked"]).ok()?))
+                .checked_add(data.unblocked.nonnegative()?)
+                .and_then(|sum| sum.checked_add(data.blocked.nonnegative().ok()?))
                 .ok_or_else(|| anyhow!("Physical Poison damage exceeds supported arithmetic"))?;
         }
         let expected = weights.allocate(damage)?;
@@ -657,8 +710,12 @@ impl Reconstruction {
                 .ok_or_else(|| anyhow!("Independent Poison subtotal overflow"))?;
         }
         self.add(tick.seq, Check::Match(format!("Independently reconstructed Poison damage {damage}, frozen weights [{description}]; FIFO suppliers earn credit, including Accelerant-triggered ticks.")));
-        let before = Native::read(&tick.data["native"])?;
-        let after = Native::read(&results.last().expect("nonempty result group").data["native"])?;
+        let before = tick.checkpoint()?;
+        let after = results
+            .last()
+            .expect("nonempty result group")
+            .0
+            .checkpoint()?;
         ensure!(
             before.combat_id == self.epoch && after.combat_id == self.epoch,
             "Foreign native tick checkpoint"

@@ -187,7 +187,7 @@ fn loss_shortfall_marks_coverage_and_invalid_wire_does_not_mutate_the_pool() {
     assert_eq!(state.block_pool_loss(7, 0, -1), 0);
     assert_eq!(state.block_pool_loss(8, 0, 1), 0);
     assert_eq!(state.provenance.pools[0].blocks[0].remaining, 3);
-    assert_eq!(state.block_pool_loss(7, i32::MAX, 1), 1);
+    assert_eq!(state.block_pool_loss(7, i32::MAX, 1), 0);
     assert_eq!(state.provenance.pools[0].blocks[0].remaining, 3);
     let before: Value = serde_json::from_str(&state.snapshot()).expect("summary parses");
     assert_eq!(state.block_pool_loss(7, 0, 5), 1);

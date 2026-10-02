@@ -59,10 +59,10 @@ impl State {
     ) -> i32 {
         let result = (|| {
             let epoch = self.provenance_epoch(combat_seq)?;
+            ProducerRole::decode(producer_role)?;
             self.provenance
                 .generated
                 .retain(|entry| entry.instance != instance);
-            ProducerRole::decode(producer_role, &mut self.sources.diagnostics);
             let source = self.source_snapshot(epoch, transfer)?;
             let mut stage = LedgerStage::new(self)?;
             for share in source.shares() {
@@ -109,9 +109,8 @@ impl State {
             if play_index < 0 || play_count <= 0 || play_index >= play_count {
                 return Err(SourceFailure::Packet);
             }
-            let owner = self.sources.diagnostics.slot(player_slot);
-            let generation =
-                GenerationState::decode(generation_state, &mut self.sources.diagnostics);
+            let owner = SourceSlot::parse(player_slot).ok_or(SourceFailure::Packet)?;
+            let generation = GenerationState::decode(generation_state)?;
             let source = self.source_snapshot(epoch, transfer)?;
             let source = self.card_source(epoch, instance, id, owner, generation, Some(source));
             let mut stage = LedgerStage::new(self)?;
@@ -133,7 +132,7 @@ impl State {
                 stage.row_play(source.shares()[0].destination())?;
             }
             stage.commit()?;
-            self.slot_index(i32::from(owner));
+            self.track_player(owner);
             if execution == 0
                 || instance == 0
                 || self.provenance.play_serial == PAYLOAD_MAX
@@ -228,8 +227,13 @@ impl State {
     ) -> i32 {
         let result = (|| {
             self.provenance_epoch(combat_seq)?;
-            let owner = self.sources.diagnostics.slot(owner_slot);
-            if play != 0 {
+            let owner = SourceSlot::parse(owner_slot).ok_or(SourceFailure::Packet)?;
+            if owner.player_index().is_none() {
+                self.track_player(owner);
+            }
+            // Unknown owners do not prove an orb belongs to the current play.
+            // Its independently captured channel supplier remains usable.
+            if play != 0 && owner.player_index().is_some() {
                 let token = self.provenance_token(play, TokenKind::CardPlay)?;
                 let play = self
                     .provenance
