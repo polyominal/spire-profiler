@@ -1,6 +1,5 @@
 //! The documentation gate: `cargo doc` must be warning-free, and the
-//! in-house Rust comment density must stay at or below the AGENTS.md
-//! budget.
+//! in-house Rust comment density must stay within the budget below.
 //!
 //! The density metric is comment lines / (comment lines + code lines)
 //! over the in-house Rust roots. A line is a comment when its first
@@ -19,7 +18,6 @@ use xshell::{Shell, cmd};
 
 use crate::scan;
 
-/// The AGENTS.md budget: comment+code density, not code-only.
 const DENSITY_LIMIT_PERCENT: f64 = 15.0;
 
 /// Tests included.

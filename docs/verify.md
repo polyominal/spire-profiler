@@ -13,10 +13,11 @@ cargo nextest run --locked --package profiler_store \
 Before handoff, run `cargo xtask smoke` for code changes, plus `managed-test`
 for shared managed behavior or native/managed contracts. Use `headless-test` for
 patch installation or Godot panel lifecycle changes; it already runs
-`managed-test`. Game updates require the catalog review and gate set described
-below. Markdown-only changes need `cargo xtask fmt-md`, `cargo xtask fmt-md
---check`, `cargo xtask check-citations`, and `cargo xtask check-emdash`. Rust
-documentation changes also require `cargo xtask check-docs`.
+`managed-test`. Game updates follow the [pin-update
+procedure](game.md#updating-the-game-pin). Markdown-only changes need `cargo
+xtask fmt-md`, `cargo xtask fmt-md --check`, `cargo xtask check-citations`, and
+`cargo xtask check-emdash`. Rust documentation changes also require `cargo xtask
+check-docs`.
 
 Investigate failures before calling them unrelated: reproduce them on an
 unchanged baseline or establish an independent cause. Preserve existing work and
@@ -32,8 +33,9 @@ understandable.
   `check-emdash`, `check-abi` (`GetExport` bindings across the production shim
   sources against the Rust exports), `cargo clippy --workspace --all-targets
   --all-features --locked -- --deny warnings`, `check-docs` (warning-free `cargo
-  doc --document-private-items` and the comment-density budget), `cargo nextest
-  run --workspace --locked --no-fail-fast`.
+  doc --document-private-items` and the [comment-density
+  budget](../xtask/src/check_docs.rs)), `cargo nextest run --workspace --locked
+  --no-fail-fast`.
 - `cargo xtask managed-test`: build the host Rust reducer, then compile the
   shared production managed sources and deterministic fixtures against the
   installed, version-checked game and Harmony assemblies. Compiler and
@@ -71,6 +73,16 @@ understandable.
 - A game update adds one machine-local gate: `cargo xtask check-catalog` reads
   the decompiled tree (`tmp/sts2-decompiled`), so it stays out of smoke; what it
   verifies lives in [game.md](game.md).
+
+## Memory changes
+
+Compare retained and peak allocation bytes and counts on reproducible fixtures,
+plus construction and consumption time. Report allocation bytes separately from
+process RSS. Prioritize combat attribution and repeated UI work; judge
+infrequent operations by absolute latency. Preserve exact accounting and
+boundary behavior.
+[engine\_allocations.rs](../profiler-core/tests/engine_allocations.rs) provides
+an existing fixture.
 
 ## StS2 headless testing
 
