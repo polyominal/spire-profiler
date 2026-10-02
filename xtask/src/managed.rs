@@ -33,26 +33,16 @@ pub fn run(shell: &Shell) -> Result<()> {
         .with_context(|| format!("reserving a managed test project in {}", projects.display()))?
         .keep();
     println!("managed-test: project retained at {}", project.display());
-    shim::write_sources(&project, shim::ProjectKind::Tests)?;
-    let project_file = project.join("SpireProfiler.ManagedTests.csproj");
-    let project_contents = shim::build_csproj(
-        &game.sts2_dll,
-        &game.harmony_dll,
-        &game.godot_sharp_dll,
-        shim::ProjectKind::Tests,
-    );
-    std::fs::write(&project_file, project_contents)?;
-    // The pinned SDK provides net9.0; no package feed belongs in this harness.
-    std::fs::write(
-        project.join("NuGet.Config"),
-        "<configuration><packageSources><clear /></packageSources></configuration>\n",
-    )?;
+    let snapshot = shim::Project::source(shim::ProjectKind::Tests).snapshot(shell, &project)?;
+    snapshot.build(shell, &game)?;
+    let executable = project.join("bin/SpireProfiler.ManagedTests.dll");
     let mut digests = std::fs::read_to_string(project.join("source-digests.txt"))?;
     for (label, path) in [
         ("sts2.dll", &game.sts2_dll),
         ("0Harmony.dll", &game.harmony_dll),
         ("GodotSharp.dll", &game.godot_sharp_dll),
         ("host-reducer", &native),
+        ("managed-tests", &executable),
     ] {
         digests.push_str(&format!("{}  {label}\n", sha256_file(path)?));
     }
@@ -68,12 +58,6 @@ pub fn run(shell: &Shell) -> Result<()> {
             .parent()
             .expect("the bootstrapped dotnet binary has a parent"),
     );
-    cmd!(
-        shell,
-        "{binary} build {project_file} --configuration Release --nologo --verbosity quiet"
-    )
-    .run()?;
-    let executable = project.join("bin/SpireProfiler.ManagedTests.dll");
     let game_assemblies = game
         .sts2_dll
         .parent()

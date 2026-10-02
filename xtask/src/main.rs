@@ -104,7 +104,7 @@ fn main() -> Result<()> {
         flags::XtaskCmd::HeadlessTest(_) => headless::headless_test(&shell),
         flags::XtaskCmd::ManagedTest(_) => managed::run(&shell),
         flags::XtaskCmd::AuditReport(flags) => audit::run(&flags.input, flags.output.as_deref()),
-        flags::XtaskCmd::CheckAbi(_) => check_abi::run(),
+        flags::XtaskCmd::CheckAbi(_) => check_abi::run(&shell),
         flags::XtaskCmd::CheckCatalog(_) => check_catalog::run(),
         flags::XtaskCmd::CheckDocs(flags) => check_docs::check_docs(&shell, flags.top),
         flags::XtaskCmd::CheckCitations(_) => check_citations::run(),
@@ -204,7 +204,7 @@ fn smoke(shell: &Shell) -> Result<()> {
     fmt(shell, true)?;
     check_citations::run()?;
     check_emdash::run()?;
-    check_abi::run()?;
+    check_abi::run(shell)?;
     cmd!(
         shell,
         "cargo clippy --workspace --all-targets --all-features --locked -- --deny warnings"

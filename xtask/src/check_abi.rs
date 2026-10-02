@@ -39,14 +39,14 @@ struct Binding<'a> {
     source: &'a str,
 }
 
-pub fn run() -> Result<()> {
+pub fn run(shell: &xshell::Shell) -> Result<()> {
     let root = workspace_root();
     let rust_text = std::fs::read_to_string(root.join("profiler-core/src/abi.rs"))
         .map_err(|e| anyhow::anyhow!("reading profiler-core/src/abi.rs: {e}"))?;
-    let sources = shim::ProjectKind::Mod.read_sources()?;
+    let sources = shim::Project::source(shim::ProjectKind::Mod).read_sources(shell)?;
     let sources: Vec<_> = sources
         .iter()
-        .map(|(name, text)| (*name, text.as_str()))
+        .map(|(name, text)| (name.as_str(), text.as_str()))
         .collect();
     match compare_sources(&rust_text, "profiler-core/src/abi.rs", &sources) {
         Ok(bindings) => {
