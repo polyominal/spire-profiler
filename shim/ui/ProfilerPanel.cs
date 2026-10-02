@@ -16,6 +16,7 @@ internal sealed class ProfilerPanel
     private readonly Control _canvas;
     private readonly Control _body;
     private readonly Control _overlay;
+    private readonly VScrollBar _scrollbar;
     private readonly AvatarAnimation _animation = new();
     private Font _fallback;
     private SummaryView _combatView, _runView, _view;
@@ -29,11 +30,12 @@ internal sealed class ProfilerPanel
     private PanelLayout _layout;
     private UiRect _control, _plate, _frame;
     private UiRect? _legend, _tip;
-    private float _originX, _scroll, _queuedScroll, _gutter;
+    private float _originX, _gutter;
+    private float Scroll => (float)_scrollbar.Value;
     private int? _hover, _player;
     private UiTab _tab;
     private ulong? _revision;
-    private bool _manual, _available = true, _mouseDown, _dragging, _fallbackFont;
+    private bool _manual, _available = true, _mouseDown, _fallbackFont;
     private bool _receivedSnapshots;
     private UiPoint _viewport;
 
@@ -45,7 +47,7 @@ internal sealed class ProfilerPanel
     internal int DrawCount { get; private set; }
     internal int RowCount => _rows.Count;
     internal int? Player => _player;
-    internal int ScrollPosition => (int)_scroll;
+    internal int ScrollPosition => (int)Scroll;
     internal PanelLayout Layout => _layout;
     internal IReadOnlyList<ChartRow> Rows => _rows;
     internal UiRect ControlRect => _control;
@@ -62,21 +64,41 @@ internal sealed class ProfilerPanel
         _canvas = new Control { Name = "Plate", ClipContents = true, MouseFilter = Control.MouseFilterEnum.Stop };
         _body = new Control { Name = "ChartBody", ClipContents = true, MouseFilter = Control.MouseFilterEnum.Ignore };
         _overlay = new Control { Name = "ChartOverlay", MouseFilter = Control.MouseFilterEnum.Ignore };
+        _scrollbar = new VScrollBar { Name = "ChartScrollbar", CustomStep = 60, FocusMode = Control.FocusModeEnum.All, MouseFilter = Control.MouseFilterEnum.Pass };
         Root.AddChild(_canvas);
         _canvas.AddChild(_body);
+        _canvas.AddChild(_scrollbar);
         _canvas.AddChild(_overlay);
         Root.TreeExiting += () => { _tooltip?.Dispose(); _tooltip = null; _revision = null; };
+        // A drag can leave the panel before the frame driver observes its press.
+        _scrollbar.GuiInput += input =>
+        {
+            if (input is InputEventMouseButton { ButtonIndex: MouseButton.Left, Pressed: true }) _mouseDown = true;
+        };
+        _scrollbar.ValueChanged += _ =>
+        {
+            try
+            {
+                if (_layout == null) return;
+                UpdateFrame(); _body.QueueRedraw(); _overlay.QueueRedraw();
+            }
+            catch (Exception error) { Log.Error($"[SpireProfiler] panel scroll: {error}"); }
+        };
         _canvas.GuiInput += input =>
         {
             try
             {
+                var position = input switch { InputEventMouse pointer => pointer.Position, InputEventGesture gesture => gesture.Position, _ => new Vector2(-1, -1) };
+                var mouse = _canvas.GetGlobalTransform() * position;
+                if (!Visible || !_control.Contains(mouse.X, mouse.Y)) return;
                 float delta = input switch
                 {
-                    InputEventMouseButton button => PanelGeometry.EventScrollDelta((int)button.ButtonIndex, button.Pressed, 0),
+                    InputEventMouseButton { Pressed: true, ButtonIndex: MouseButton.WheelUp } => -_scrollbar.CustomStep,
+                    InputEventMouseButton { Pressed: true, ButtonIndex: MouseButton.WheelDown } => _scrollbar.CustomStep,
                     InputEventPanGesture pan => pan.Delta.Y,
                     _ => 0
                 };
-                QueueScroll(delta);
+                if (float.IsFinite(delta)) _scrollbar.Value += delta;
             }
             catch (Exception error) { Log.Error($"[SpireProfiler] panel scroll: {error}"); }
         };
@@ -101,7 +123,7 @@ internal sealed class ProfilerPanel
         {
             try
             {
-                if (_layout != null) _theme.Replay(_body, _layout.Body, new(0, -(_layout.HeaderBottom + _scroll)), _fallback, _fallbackFont, _avatars, _player, _scales);
+                if (_layout != null) _theme.Replay(_body, _layout.Body, new(0, -(_layout.HeaderBottom + Scroll)), _fallback, _fallbackFont, _avatars, _player, _scales);
             }
             catch (Exception error) { Log.Error($"[SpireProfiler] chart draw: {error}"); }
         };
@@ -110,7 +132,6 @@ internal sealed class ProfilerPanel
             try
             {
                 if (_layout == null) return;
-                _theme.DrawScrollbar(_overlay, Scrollbar(), _originX);
                 if (_legend is { } legend) _theme.DrawLegend(_overlay, legend, _fallback, _fallbackFont);
                 if (_tip is { } tip) { _theme.DrawPlate(_overlay, tip); _tooltip?.Draw(_overlay, tip); }
             }
@@ -118,8 +139,8 @@ internal sealed class ProfilerPanel
         };
     }
 
-    internal void Show() { _manual = true; _queuedScroll = 0; _revision = null; }
-    internal void Hide() { _manual = false; _queuedScroll = 0; }
+    internal void Show() { _manual = true; _revision = null; }
+    internal void Hide() { _manual = false; }
     internal void SetAvailable(bool available)
     {
         _available = available;
@@ -128,7 +149,7 @@ internal sealed class ProfilerPanel
         Backdrop.Visible = Root.Visible;
         if (!Root.Visible)
         {
-            _queuedScroll = 0; _hover = null; _legend = _tip = null;
+            _hover = null; _legend = _tip = null;
             _tooltip?.Dispose(); _tooltip = null; _detail = RowDetail.Empty;
             _animation.Clear(); _revision = null;
         }
@@ -147,13 +168,6 @@ internal sealed class ProfilerPanel
         _tab = tab;
         Present(tab == UiTab.Combat ? _combatView : _runView);
     }
-    internal void QueueScroll(float delta)
-    {
-        if (!Visible) { _queuedScroll = 0; return; }
-        if (!float.IsFinite(delta)) { Log.Error("[SpireProfiler] non-finite scroll delta ignored"); return; }
-        _queuedScroll = (float)Math.Clamp((double)_queuedScroll + delta, -float.MaxValue, float.MaxValue);
-    }
-
     internal void Refresh(ulong revision, SummaryView combat, SummaryView run)
     {
         _combatView = combat; _runView = run;
@@ -213,8 +227,14 @@ internal sealed class ProfilerPanel
             var position = PanelGeometry.Center(_viewport, new(_layout.Width, height));
             _control = new(position.X, position.Y, _layout.Width, height);
             _plate = new(position.X, position.Y + _layout.StripH, _layout.Width, height - _layout.StripH);
-            _scroll = Math.Min(_scroll, Math.Max(0, _layout.Height - height));
-            float gutter = _layout.Height > height && _theme.HasScrollbar ? 32 : 0;
+            var band = PanelGeometry.BodyBand(height, _theme.HasPlate, _layout.HeaderBottom);
+            float page = band.Bottom - band.Top;
+            float previousScroll = Scroll;
+            _scrollbar.MaxValue = Math.Max(page, _layout.Height - height + page);
+            _scrollbar.Page = page;
+            _scrollbar.SetValueNoSignal(previousScroll);
+            _scrollbar.Visible = _layout.Height > height && page >= _scrollbar.GetCombinedMinimumSize().Y;
+            float gutter = _scrollbar.Visible ? Math.Max(20, _scrollbar.GetCombinedMinimumSize().X) + 12 : 0;
             if (gutter == _gutter) break;
             _gutter = gutter;
         }
@@ -231,13 +251,9 @@ internal sealed class ProfilerPanel
     internal void Interact(UiPoint mouse, bool pressed)
     {
         if (_layout == null || !Visible) return;
-        var scrollbar = Scrollbar();
         var local = new UiPoint(mouse.X - _control.X, mouse.Y - _control.Y);
-        bool onTrack = scrollbar?.Track.Contains(local.X, local.Y) == true;
+        bool onTrack = _scrollbar.Visible && _scrollbar.GetGlobalRect().HasPoint(new Vector2(mouse.X, mouse.Y));
         bool edge = pressed && !_mouseDown;
-        _dragging = PanelGeometry.DragState(_dragging, pressed, _mouseDown, onTrack);
-        float oldScroll = _scroll;
-        if (_dragging && scrollbar != null) _scroll = PanelGeometry.TrackScroll(scrollbar.Track, local.Y, Math.Max(0, _layout.Height - _control.H));
         _mouseDown = pressed;
         if (edge && !_control.Contains(mouse.X, mouse.Y)) Hide();
         if (edge && !onTrack && _control.Contains(mouse.X, mouse.Y))
@@ -247,15 +263,9 @@ internal sealed class ProfilerPanel
             foreach (var hit in _layout.AvatarHits)
                 if (local.X >= hit.X0 && local.X < hit.X1 && local.Y >= hit.Y0 && local.Y < hit.Y1) { SelectPlayer(hit.Slot); break; }
         }
-        if (_control.Contains(mouse.X, mouse.Y)) _scroll = PanelGeometry.ApplyScroll(_scroll, _queuedScroll, _control.H, _layout.Height);
-        _queuedScroll = 0;
-        int? hover = PanelGeometry.Hover(_layout.RowHits, _control, mouse, _scroll, PanelGeometry.BodyBand(_control.H, _theme.HasPlate, _layout.HeaderBottom));
+        int? hover = onTrack ? null : PanelGeometry.Hover(_layout.RowHits, _control, mouse, Scroll, PanelGeometry.BodyBand(_control.H, _theme.HasPlate, _layout.HeaderBottom));
         if (hover != _hover) { _hover = hover; Rebuild(); }
-        else if (_scroll != oldScroll) { UpdateFrame(); _body.QueueRedraw(); _overlay.QueueRedraw(); }
     }
-
-    private ScrollbarGeometry Scrollbar() => !_theme.HasScrollbar || _layout == null ? null
-        : PanelGeometry.Scrollbar(new(_control.W, _control.H), _theme.HasPlate, PanelGeometry.BodyBand(_control.H, _theme.HasPlate, _layout.HeaderBottom), _layout.Height, _scroll);
 
     private void UpdateFrame()
     {
@@ -264,7 +274,7 @@ internal sealed class ProfilerPanel
         if (_hover is { } index && _tooltip != null)
         {
             var hit = _layout.RowHits.FirstOrDefault(hit => hit.FlatIndex == index);
-            tip = PanelGeometry.PlaceTip(_viewport, _plate, _control.Y + hit.Y0 - _scroll, new(TooltipLayout.Width, _tooltip.Height), legend);
+            tip = PanelGeometry.PlaceTip(_viewport, _plate, _control.Y + hit.Y0 - Scroll, new(TooltipLayout.Width, _tooltip.Height), legend);
         }
         var (frame, originX) = PanelGeometry.Frame(_plate, legend, tip);
         _frame = frame with { Y = frame.Y - _layout.StripH, H = frame.H + _layout.StripH };
@@ -274,6 +284,9 @@ internal sealed class ProfilerPanel
         var band = PanelGeometry.BodyBand(_control.H, _theme.HasPlate, _layout.HeaderBottom);
         _body.Position = new(_originX, band.Top);
         _body.Size = new(_control.W, band.Bottom - band.Top);
+        float scrollbarWidth = Math.Max(20, _scrollbar.GetCombinedMinimumSize().X);
+        _scrollbar.Position = new(_originX + _layout.Content.Right + 12, band.Top);
+        _scrollbar.Size = new(scrollbarWidth, band.Bottom - band.Top);
         _overlay.Size = new(_frame.W, _frame.H);
         _legend = legend is { } key ? key with { X = key.X - _frame.X, Y = key.Y - _frame.Y } : null;
         _tip = tip is { } detail ? detail with { X = detail.X - _frame.X, Y = detail.Y - _frame.Y } : null;
@@ -282,8 +295,7 @@ internal sealed class ProfilerPanel
     internal void ScrollToEnd()
     {
         if (_layout == null) return;
-        _scroll = Math.Max(0, _layout.Height - _control.H);
-        UpdateFrame(); _body.QueueRedraw(); _overlay.QueueRedraw();
+        _scrollbar.Value = _scrollbar.MaxValue;
     }
     internal void Free()
     {

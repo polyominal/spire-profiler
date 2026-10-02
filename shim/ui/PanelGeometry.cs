@@ -9,18 +9,9 @@ internal readonly record struct UiRect(float X, float Y, float W, float H)
 {
     internal bool Contains(float x, float y) => x >= X && x < X + W && y >= Y && y < Y + H;
 }
-internal sealed record ScrollbarGeometry(UiRect Track, UiRect Body, UiRect CapTop, UiRect CapBottom, UiRect Grabber);
 
 internal static class PanelGeometry
 {
-    internal static float EventScrollDelta(long button, bool pressed, float panY) => button switch
-    {
-        4 when pressed => -60,
-        5 when pressed => 60,
-        _ => panY
-    };
-    internal static float ApplyScroll(float offset, float delta, float boxHeight, float contentHeight)
-        => Math.Clamp(offset + delta, 0, Math.Max(0, contentHeight - boxHeight));
     internal static (float Top, float Bottom) BodyBand(float boxHeight, bool plate, float headerBottom)
         => (Math.Max(0, headerBottom), Math.Max(Math.Max(0, headerBottom), boxHeight - (plate ? 28 : 12)));
     internal static float HeightCap(float? viewportHeight) => viewportHeight.HasValue ? Math.Max(96, viewportHeight.Value - 96) : 600;
@@ -32,19 +23,6 @@ internal static class PanelGeometry
         foreach (var hit in hits) if (localY + scroll >= hit.Y0 && localY + scroll < hit.Y1) return hit.FlatIndex;
         return null;
     }
-    internal static ScrollbarGeometry Scrollbar(UiPoint box, bool plate, (float Top, float Bottom) band, float contentHeight, float scroll)
-    {
-        float maximum = contentHeight - box.Y, height = band.Bottom - band.Top;
-        if (maximum <= 0 || height <= 0) return null;
-        var track = new UiRect(box.X - (plate ? 13 : 6) - 20, band.Top, 20, height);
-        return new(track, new(track.X, track.Y + 12, 20, Math.Max(0, height - 24)),
-            new(track.X, track.Y, 20, 12), new(track.X, track.Y + height - 12, 20, 12),
-            new(track.X - 5, band.Top + scroll / maximum * Math.Max(0, height - 30), 30, 30));
-    }
-    internal static float TrackScroll(UiRect track, float mouseY, float maximum)
-        => Math.Clamp((mouseY - track.Y) / track.H, 0, 1) * maximum;
-    internal static bool DragState(bool active, bool pressed, bool wasPressed, bool onTrack)
-        => pressed && (active || !wasPressed && onTrack);
     internal static (UiPoint Size, UiPoint Origin) LegendPlate(bool plate)
         => plate ? (new(183, 260), new(22, 16)) : (new(140, 240), new(12, 12));
     private static float SideX(UiPoint viewport, UiRect plate, float width)

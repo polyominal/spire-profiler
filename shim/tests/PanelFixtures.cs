@@ -97,8 +97,6 @@ internal static class PanelFixtures
             || !PanelLayout.History(longView, Array.Empty<ChartRow>(), new(), Array.Empty<AvatarFact>()).Header
                 .OfType<TextCommand>().Any(command => command.Text == "seed " + longIdentity && command.Width > 0))
             throw new InvalidOperationException("Encounter and seed text must retain full Unicode strings until pixel clipping");
-        if (PanelGeometry.DragState(false, true, true, true) || !PanelGeometry.DragState(true, true, true, false))
-            throw new InvalidOperationException("A held cursor must not start a drag, and active drags must survive leaving the track");
         var scrolling = PanelLayout.Chart(UiTab.Combat, ChartProjection.Rows(Enumerable.Range(0, 12)
             .Select(index => new StatRow { Id = "CARD_" + index, DamageDealt = 1, DmgDirect = 1 }).ToArray()), new(), "");
         var panel = new UiRect(100, 50, scrolling.Width, 400);
@@ -110,13 +108,6 @@ internal static class PanelFixtures
             || PanelGeometry.Hover(scrolling.RowHits, panel, new(panel.X + 1, panel.Y + band.Bottom), scroll, band) != null
             || PanelGeometry.Hover(scrolling.RowHits, panel, new(panel.X - 1, panel.Y + band.Top + 1), scroll, band) != null)
             throw new InvalidOperationException("Scrolled row hit-testing must transform screen coordinates and exclude the fixed header, footer, and outside panel");
-        float maximumScroll = scrolling.Height - panel.H;
-        var scrollbar = PanelGeometry.Scrollbar(new(panel.W, panel.H), false, band, scrolling.Height, maximumScroll);
-        if (scrollbar == null || scrollbar.Track.Y != band.Top || scrollbar.Track.Y + scrollbar.Track.H != band.Bottom
-            || scrollbar.Grabber.Y + scrollbar.Grabber.H != band.Bottom
-            || PanelGeometry.ApplyScroll(0, -60, panel.H, scrolling.Height) != 0
-            || PanelGeometry.ApplyScroll(maximumScroll, 60, panel.H, scrolling.Height) != maximumScroll)
-            throw new InvalidOperationException("Scrolling must stay within content bounds and keep the track below the fixed header");
         var portraits = new[] { new AvatarFact(2, false, "missing"), new AvatarFact(0, true, "loaded") };
         string[] portraitPaths = { "missing", "loaded" };
         foreach (var layout in new[]
