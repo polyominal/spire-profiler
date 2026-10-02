@@ -43,7 +43,6 @@ internal static class UiPalette
     internal static readonly UiColor Shadow = new(0, 0, 0, .5f);
     internal static readonly UiColor HeaderShadow = new(0, 0, 0, .12549f);
     internal static readonly UiColor HeaderOutline = new(.33f, .2475f, 0);
-    internal static readonly UiColor TipShadow = new(0, 0, 0, .25098f);
     internal static readonly UiColor Panel = new(.05f, .05f, .1f, .78f);
     internal static readonly UiColor Border = new(.3f, .4f, .7f, .6f);
     internal static (string Text, UiColor Color) Prefix(int kind) => kind switch
@@ -173,7 +172,7 @@ internal sealed class PanelLayout
                         sink.Text(nameX, baseline, 24, prefix.Color, prefix.Text);
                         nameX += 41;
                     }
-                    sink.Text(nameX, baseline, 24, nameColor, ChartProjection.TruncateMarked(row.Name, 16));
+                    sink.Text(nameX, baseline, 24, nameColor, row.Name, align: TextAlign.LeftClipped, width: content.X + 256 - nameX);
                 }
                 if (row.Source.Plays > 0 && !hanging) sink.Text(content.X + 264, baseline, 24, UiPalette.Dim, $"x{row.Source.Plays}");
                 sink.Rect(barX, y + 6, barW, 20, UiPalette.Track);
@@ -238,7 +237,7 @@ internal sealed class PanelLayout
                 drew = true;
             }
             string identity = IdentityLine(view);
-            string seed = "seed " + ChartProjection.TruncateBytes(view.Seed, 72);
+            string seed = "seed " + view.Seed;
             if (drew)
             {
                 float left = x + 8;

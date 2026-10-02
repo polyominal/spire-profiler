@@ -86,19 +86,17 @@ internal static class PanelFixtures
         var longSelfDetail = ChartProjection.Detail(longSelfRows, 1);
         if (longSelfDetail.Title != "[R] " + longSelfSource.Id || longSelfDetail.Stats.Single().Value != "2")
             throw new InvalidOperationException("Hanging self-damage detail must retain the full source ID");
-        string emoji = string.Concat(Enumerable.Repeat("😀", 19));
-        var wrapped = TooltipLayout.Shape(new(emoji, new[]
-        {
-            new DetailStat("é " + new string('界', 25), "1", UiPalette.Damage)
-        }), 20);
-        if (wrapped.Count != 4 || wrapped[0].Text != string.Concat(Enumerable.Repeat("😀", 18))
-            || wrapped[1].Text != "😀" || wrapped[2].Text != "é " + new string('界', 22)
-            || wrapped[3].Text != new string('界', 3) + " 1")
-            throw new InvalidOperationException("Tooltip wrapping must count and split complete Unicode runes in titles and statistics");
-        var asciiWrapped = TooltipLayout.Shape(new("AB " + new string('x', 20), Array.Empty<DetailStat>()), 20);
-        if (asciiWrapped.Count != 2 || asciiWrapped[0].Text != "AB " + new string('x', 15)
-            || asciiWrapped[1].Text != new string('x', 5))
-            throw new InvalidOperationException("Tooltip wrapping must preserve ASCII word splitting");
+        var sourceLayout = PanelLayout.Chart(UiTab.Combat, sourceRows, new(), "");
+        foreach (var source in sourceCases)
+            if (!sourceLayout.Body.OfType<TextCommand>().Any(command => command.Text == source.Id
+                && command.Align == TextAlign.LeftClipped && command.Width > 0))
+                throw new InvalidOperationException("Chart names must reach pixel clipping intact, including IDs with shared prefixes");
+        string longIdentity = string.Concat(Enumerable.Repeat("é界😀e\u0301", 30));
+        var longView = summary with { Title = longIdentity, Seed = longIdentity };
+        if (ChartProjection.Meta(longView, UiTab.Combat).Encounter != longIdentity
+            || !PanelLayout.History(longView, Array.Empty<ChartRow>(), new(), Array.Empty<AvatarFact>()).Header
+                .OfType<TextCommand>().Any(command => command.Text == "seed " + longIdentity && command.Width > 0))
+            throw new InvalidOperationException("Encounter and seed text must retain full Unicode strings until pixel clipping");
         if (PanelGeometry.DragState(false, true, true, true) || !PanelGeometry.DragState(true, true, true, false))
             throw new InvalidOperationException("A held cursor must not start a drag, and active drags must survive leaving the track");
         var scrolling = PanelLayout.Chart(UiTab.Combat, ChartProjection.Rows(Enumerable.Range(0, 12)

@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
-using System.Text;
 
 namespace SpireProfiler;
 
@@ -78,7 +77,7 @@ internal static class ChartProjection
         if (maximum > 0)
             for (int index = 0; index < milli.Length; index++)
                 if (segments[index] > 0) milli[index] = (int)Int128.Min((Int128)segments[index] * 1000 / maximum, 1000);
-        return new(source, section, flags, TruncateBytes(source.Id, 64), value, share, milli);
+        return new(source, section, flags, source.Id, value, share, milli);
     }
 
     internal static ChartMeta Meta(SummaryView view, UiTab tab, int? historyPlayer = null)
@@ -88,7 +87,7 @@ internal static class ChartProjection
         long damage = cards.Sum(card => card.DamageDealt);
         uint plays = tab == UiTab.Combat ? view.Plays : (uint)cards.Sum(card => (long)card.Plays);
         return new(view.Turns, plays, view.Combats, damage, view.DamageReceived,
-            view.Turns == 0 ? 0 : (Int128)damage * 10 / view.Turns, tab == UiTab.Combat ? TruncateBytes(view.Title, 64) : "",
+            view.Turns == 0 ? 0 : (Int128)damage * 10 / view.Turns, tab == UiTab.Combat ? view.Title : "",
             view.Coverage.Quality);
     }
 
@@ -133,21 +132,4 @@ internal static class ChartProjection
         return new($"{UiPalette.Prefix(card.Kind).Text}{card.Id} x{card.Plays}", stats);
     }
 
-    internal static string TruncateBytes(string text, int maximum)
-    {
-        int bytes = 0, length = 0;
-        foreach (var rune in text.EnumerateRunes())
-        {
-            if (bytes + rune.Utf8SequenceLength > maximum) break;
-            bytes += rune.Utf8SequenceLength;
-            length += rune.Utf16SequenceLength;
-        }
-        return text[..length];
-    }
-
-    internal static string TruncateMarked(string text, int maximum)
-    {
-        var runes = text.EnumerateRunes().ToArray();
-        return runes.Length <= maximum ? text : string.Concat(runes.Take(maximum - 1).Select(rune => rune.ToString())) + "…";
-    }
 }

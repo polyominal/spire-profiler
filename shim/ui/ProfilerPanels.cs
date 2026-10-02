@@ -229,6 +229,19 @@ internal static class ProfilerPanels
             }
             if (!GodotObject.IsInstanceValid(retainedTexture) || retainedTexture.GetWidth() <= 0)
                 throw new InvalidOperationException("Portrait eviction disposed a shared game resource");
+            var font = ThemeDB.FallbackFont;
+            using (var narrow = portraitTheme.ShapeTooltip(new(new string('i', 30), Array.Empty<DetailStat>()), 600, font, false))
+            using (var wide = portraitTheme.ShapeTooltip(new(new string('W', 30), Array.Empty<DetailStat>()), 600, font, false))
+            using (var columns = portraitTheme.ShapeTooltip(new("Title", new[] { new DetailStat("damage", "12", UiPalette.Damage) }), 600, font, false))
+            using (var wrapped = portraitTheme.ShapeTooltip(new("Title", new[] { new DetailStat("damage", new string('9', 40), UiPalette.Damage) }), 600, font, false))
+            {
+                if (narrow.Height >= wide.Height || columns.Height >= wrapped.Height)
+                    throw new InvalidOperationException("Tooltip wrapping must use rendered widths for titles and statistic columns");
+            }
+            foreach (string title in new[] { new string('W', 500), string.Concat(Enumerable.Repeat("界😀e\u0301", 100)) })
+                using (var capped = portraitTheme.ShapeTooltip(new(title, Array.Empty<DetailStat>()), 120, font, true))
+                    if (capped.Height <= 44 || capped.Height > 120)
+                        throw new InvalidOperationException("Shaped Unicode tooltip lines must fit the available pixel height");
             var fixture = new SummaryView
             {
                 Title = "CULTIST",
@@ -267,6 +280,9 @@ internal static class ProfilerPanels
                 panel.Refresh(0, fixture, fixture);
                 for (int frame = 0; frame < 3; frame++) await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
                 if (!panel.Root.IsInsideTree() || panel.RowCount != 240) throw new InvalidOperationException("Panel fixture failed attachment or chart projection");
+                var firstRow = panel.Layout.RowHits.First();
+                panel.Interact(new(panel.ControlRect.X + 30, panel.ControlRect.Y + firstRow.Y0 + 8), false);
+                for (int frame = 0; frame < 2; frame++) await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
                 panel.ScrollToEnd();
                 if (panel.ScrollPosition <= 0) throw new InvalidOperationException("Panel fixture failed scrolling");
                 if (cycle == 0)

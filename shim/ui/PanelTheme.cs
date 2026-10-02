@@ -131,14 +131,15 @@ internal sealed class PanelTheme : IDisposable
         if (font == null) return;
         var align = command.Align switch { TextAlign.Center => HorizontalAlignment.Center, TextAlign.Right => HorizontalAlignment.Right, _ => HorizontalAlignment.Left };
         float width = command.Align == TextAlign.Left ? -1 : command.Width;
-        void Pass(float x, float y, UiColor color) => canvas.DrawString(font,
-            new Vector2(command.X + offset.X + x, command.Y + offset.Y + y), command.Text, align, width, command.Size, Color(color));
+        using var line = new TextLine { Alignment = align, Width = width, TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis };
+        line.AddString(command.Text, font, command.Size);
+        var position = new Vector2(command.X + offset.X, command.Y + offset.Y - line.GetLineAscent());
+        void Pass(float x, float y, UiColor color) => line.Draw(canvas.GetCanvasItem(), position + new Vector2(x, y), Color(color));
         if (command.Effect == TextEffect.Shadow) Pass(3, 2, UiPalette.Shadow);
         if (command.Effect == TextEffect.Outline)
         {
             Pass(5, 4, UiPalette.HeaderShadow);
-            Pass(-1, -1, UiPalette.HeaderOutline); Pass(1, -1, UiPalette.HeaderOutline);
-            Pass(-1, 1, UiPalette.HeaderOutline); Pass(1, 1, UiPalette.HeaderOutline);
+            line.DrawOutline(canvas.GetCanvasItem(), position, 1, Color(UiPalette.HeaderOutline));
         }
         Pass(0, 0, command.Color);
     }
@@ -151,28 +152,8 @@ internal sealed class PanelTheme : IDisposable
             Array.Empty<AvatarFact>(), null, Array.Empty<float>());
     }
 
-    internal void DrawTooltip(Control canvas, UiRect rect, IReadOnlyList<TipLine> lines, Font fallback, bool useFallback)
-    {
-        DrawPlate(canvas, rect);
-        float y = rect.Y + 38;
-        foreach (var line in lines)
-        {
-            var font = useFallback ? fallback : (line.Title ? _title : _body) ?? fallback;
-            if (font != null)
-            {
-                var position = new Vector2(rect.X + 22, y);
-                canvas.DrawString(font, position + new Vector2(3, 2), line.Text, fontSize: 22, modulate: Color(UiPalette.TipShadow));
-                canvas.DrawString(font, position, line.Text, fontSize: 22, modulate: Color(line.Color));
-                if (line.Value is { } value)
-                {
-                    position.X += 170;
-                    canvas.DrawString(font, position + new Vector2(3, 2), value.Text, HorizontalAlignment.Right, 123, 22, Color(UiPalette.TipShadow));
-                    canvas.DrawString(font, position, value.Text, HorizontalAlignment.Right, 123, 22, Color(value.Color));
-                }
-            }
-            y += 26;
-        }
-    }
+    internal TooltipLayout ShapeTooltip(RowDetail detail, float maximumHeight, Font fallback, bool useFallback)
+        => new(detail, maximumHeight, useFallback ? fallback : _title ?? fallback, useFallback ? fallback : _body ?? fallback);
 
     internal void DrawScrollbar(Control canvas, ScrollbarGeometry geometry, float x)
     {
