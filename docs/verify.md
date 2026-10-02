@@ -1,5 +1,30 @@
 # Verifying the mod
 
+## Working loop
+
+During iteration, run the affected existing test or fixture. Rust tests can be
+selected by package and exact name, for example:
+
+```sh
+cargo nextest run --locked --package profiler_store \
+  --filterset 'test(=tests::a_failed_payload_commit_leaves_a_durable_missing_intent_after_reopen)'
+```
+
+Before handoff, run `cargo xtask smoke` for code changes, plus `managed-test`
+for shared managed behavior or native/managed contracts. Use `headless-test` for
+patch installation or Godot panel lifecycle changes; it already runs
+`managed-test`. Game updates require the catalog review and gate set described
+below. Markdown-only changes need `cargo xtask fmt-md`, `cargo xtask fmt-md
+--check`, `cargo xtask check-citations`, and `cargo xtask check-emdash`. Rust
+documentation changes also require `cargo xtask check-docs`.
+
+Investigate failures before calling them unrelated: reproduce them on an
+unchanged baseline or establish an independent cause. Preserve existing work and
+record unrelated, non-blocking problems in ignored `tmp/ISSUES.md`. Report
+checks that could not run and what remains unverified. Passing checks supports
+behavioral claims; review must also establish that the design is necessary and
+understandable.
+
 ## The gate set
 
 - `cargo xtask smoke`: `fmt --check` (Rust, handwritten C\# including fixtures,
