@@ -1,6 +1,7 @@
 use std::collections::HashSet;
+use std::num::NonZeroU32;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 
 use crate::Result;
 
@@ -10,29 +11,116 @@ pub(crate) struct Player {
     character: String,
 }
 
+/// JSON begins as `Run<String>`; parsing retains an owned or archived ID.
+/// Only this module can change identities, aliases, or lifecycle metadata.
 #[derive(Clone, Deserialize, Serialize)]
-pub(crate) struct Run {
+pub(crate) struct Run<Id = String> {
     schema_version: u32,
     game_version: String,
     mod_version: String,
-    pub(crate) run_id: String,
-    pub(crate) preserved_run_ids: Vec<String>,
+    run_id: Id,
+    preserved_run_ids: Vec<ArchiveId>,
     pub(crate) profile: i32,
     pub(crate) seed: String,
     pub(crate) started_at: i64,
-    pub(crate) ended_at: i64,
+    ended_at: i64,
     character: String,
     ascension: i32,
     game_mode: String,
-    pub(crate) outcome: String,
-    pub(crate) players: Vec<Player>,
+    outcome: String,
+    players: Vec<Player>,
 }
 
-impl Run {
-    pub(crate) fn validate(&self, requested: bool, imported: bool) -> Result<()> {
-        let id_valid = Self::numeric_id(&self.run_id).is_some()
-            || requested && self.run_id.is_empty()
-            || imported && Self::archive_id(&self.run_id);
+/// Canonical storage IDs stay numeric after their JSON string boundary.
+#[derive(Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(try_from = "String", into = "String")]
+pub(crate) struct RunId(NonZeroU32);
+
+impl RunId {
+    pub(crate) fn new(id: u32) -> Result<Self> {
+        NonZeroU32::new(id)
+            .map(Self)
+            .ok_or_else(|| "invalid run ID".into())
+    }
+
+    pub(crate) fn get(self) -> u32 {
+        self.0.get()
+    }
+}
+
+impl TryFrom<String> for RunId {
+    type Error = &'static str;
+
+    fn try_from(id: String) -> std::result::Result<Self, Self::Error> {
+        id.parse::<NonZeroU32>()
+            .ok()
+            .filter(|number| number.to_string() == id)
+            .map(Self)
+            .ok_or("invalid run ID")
+    }
+}
+
+impl From<RunId> for String {
+    fn from(id: RunId) -> Self {
+        id.0.to_string()
+    }
+}
+
+/// Archive spellings are preserved, but zero never identifies a run owner.
+#[derive(Clone, PartialEq, Eq, Hash, Deserialize)]
+#[serde(try_from = "String")]
+pub(crate) struct ArchiveId(String);
+
+impl ArchiveId {
+    pub(crate) fn numeric(&self) -> Option<RunId> {
+        RunId::try_from(self.0.clone()).ok()
+    }
+}
+
+impl TryFrom<String> for ArchiveId {
+    type Error = &'static str;
+
+    fn try_from(id: String) -> std::result::Result<Self, Self::Error> {
+        if id.parse::<NonZeroU32>().is_ok()
+            || id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            Ok(Self(id))
+        } else {
+            Err("invalid archived run ID")
+        }
+    }
+}
+
+impl Serialize for ArchiveId {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
+
+impl Run<String> {
+    pub(crate) fn parse(self, imported: bool) -> Result<Run<RunId>> {
+        self.check_metadata(imported)?;
+        let id = RunId::try_from(self.run_id.clone())?;
+        Ok(self.with_id(id))
+    }
+
+    pub(crate) fn parse_archive(self) -> Result<Run<ArchiveId>> {
+        self.check_metadata(true)?;
+        let id = ArchiveId::try_from(self.run_id.clone())?;
+        Ok(self.with_id(id))
+    }
+
+    pub(crate) fn parse_request(self) -> Result<Run<Option<ArchiveId>>> {
+        self.check_metadata(true)?;
+        let id = if self.run_id.is_empty() {
+            None
+        } else {
+            Some(ArchiveId::try_from(self.run_id.clone())?)
+        };
+        Ok(self.with_id(id))
+    }
+
+    fn check_metadata(&self, imported: bool) -> Result<()> {
         let outcome_valid = matches!(
             self.outcome.as_str(),
             "active" | "suspended" | "victory" | "defeat" | "abandoned"
@@ -40,14 +128,14 @@ impl Run {
         let mut aliases = HashSet::new();
         let mut slots = HashSet::new();
         if self.schema_version != 2
-            || !id_valid
             || self.profile < -1
             || self.started_at < 0
             || self.ended_at < 0
             || !outcome_valid
-            || self.preserved_run_ids.iter().any(|id| {
-                id == "0" || id == &self.run_id || !Self::archive_id(id) || !aliases.insert(id)
-            })
+            || self
+                .preserved_run_ids
+                .iter()
+                .any(|id| id.0 == self.run_id || !aliases.insert(id))
             || self.players.len() > 4
             || self.players.iter().any(|player| {
                 player.slot > 3 || player.character.is_empty() || !slots.insert(player.slot)
@@ -57,19 +145,33 @@ impl Run {
         }
         Ok(())
     }
+}
 
-    pub(crate) fn numeric_id(id: &str) -> Option<u32> {
-        id.parse::<u32>()
-            .ok()
-            .filter(|&number| number != 0 && number.to_string() == id)
+impl<Id> Run<Id> {
+    pub(crate) fn id(&self) -> &Id {
+        &self.run_id
     }
 
-    fn archive_id(id: &str) -> bool {
-        id.parse::<u32>().is_ok()
-            || id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit())
+    fn with_id<NewId>(self, run_id: NewId) -> Run<NewId> {
+        Run {
+            schema_version: self.schema_version,
+            game_version: self.game_version,
+            mod_version: self.mod_version,
+            run_id,
+            preserved_run_ids: self.preserved_run_ids,
+            profile: self.profile,
+            seed: self.seed,
+            started_at: self.started_at,
+            ended_at: self.ended_at,
+            character: self.character,
+            ascension: self.ascension,
+            game_mode: self.game_mode,
+            outcome: self.outcome,
+            players: self.players,
+        }
     }
 
-    pub(crate) fn same_identity(&self, other: &Self) -> bool {
+    pub(crate) fn same_identity<OtherId>(&self, other: &Run<OtherId>) -> bool {
         self.profile == other.profile
             && self.seed == other.seed
             && self.started_at == other.started_at
@@ -78,37 +180,64 @@ impl Run {
     pub(crate) fn finalized(&self) -> bool {
         matches!(self.outcome.as_str(), "victory" | "defeat" | "abandoned")
     }
+}
 
-    pub(crate) fn reidentify(&mut self, id: u32) {
-        let canonical = id.to_string();
-        if self.run_id != canonical && !self.preserved_run_ids.contains(&self.run_id) {
+impl Run<Option<ArchiveId>> {
+    pub(crate) fn activate(mut self, id: RunId, prior: Option<Run<RunId>>) -> Run<RunId> {
+        self.preserved_run_ids = prior.map_or_else(Vec::new, |run| run.preserved_run_ids);
+        self.outcome = "active".into();
+        self.ended_at = 0;
+        self.with_id(id)
+    }
+}
+
+impl Run<ArchiveId> {
+    pub(crate) fn reidentify(mut self, id: RunId) -> Run<RunId> {
+        let canonical = String::from(id);
+        if self.run_id.0 != canonical && !self.preserved_run_ids.contains(&self.run_id) {
             self.preserved_run_ids.push(self.run_id.clone());
         }
-        self.preserved_run_ids.retain(|alias| alias != &canonical);
-        self.run_id = canonical;
+        self.preserved_run_ids.retain(|alias| alias.0 != canonical);
+        self.with_id(id)
     }
+}
 
-    pub(crate) fn history_fallback(mut self) -> Self {
-        self.outcome.clear();
-        self.ended_at = 0;
-        self.players.clear();
-        self
+impl Run<RunId> {
+    /// Missing final headers project to unknown metadata without changing the owner.
+    pub(crate) fn history_fallback(&self) -> Run<String> {
+        let mut view = self.clone().with_id(String::from(self.run_id));
+        view.outcome.clear();
+        view.ended_at = 0;
+        view.players.clear();
+        view
     }
 }
 
 #[derive(Deserialize, Serialize)]
-pub(crate) struct Record {
+pub(crate) struct Record<Owner = Run> {
     schema_version: u32,
     game_version: String,
     mod_version: String,
-    pub(crate) run_id: String,
+    run_id: String,
     pub(crate) ordinal: u32,
-    pub(crate) run: Option<Run>,
+    pub(crate) run: Option<Owner>,
     pub(crate) combat: Combat,
 }
 
 impl Record {
-    pub(crate) fn validate(&self, imported: bool) -> Result<()> {
+    pub(crate) fn parse(self, imported: bool) -> Result<Record<Run<RunId>>> {
+        self.parse_owner(imported, |run| run.parse(imported))
+    }
+
+    pub(crate) fn parse_archive(self) -> Result<Record<Run<ArchiveId>>> {
+        self.parse_owner(true, Run::parse_archive)
+    }
+
+    fn parse_owner<Owner>(
+        self,
+        imported: bool,
+        parse: impl FnOnce(Run) -> Result<Owner>,
+    ) -> Result<Record<Owner>> {
         let legacy = imported && self.combat.policy_version == 0;
         if self.schema_version != 2
             || self.ordinal == 0
@@ -128,7 +257,6 @@ impl Record {
             return Err("invalid combat record".into());
         }
         if let Some(run) = &self.run {
-            run.validate(false, imported)?;
             if run.run_id != self.run_id {
                 return Err("combat and embedded run identities differ".into());
             }
@@ -145,9 +273,31 @@ impl Record {
             {
                 return Err("invalid legacy source identity".into());
             }
-            Ok(())
         } else {
-            Row::validate(&self.combat.cards)
+            Row::validate(&self.combat.cards)?;
+        }
+        Ok(Record {
+            schema_version: self.schema_version,
+            game_version: self.game_version,
+            mod_version: self.mod_version,
+            run_id: self.run_id,
+            ordinal: self.ordinal,
+            run: self.run.map(parse).transpose()?,
+            combat: self.combat,
+        })
+    }
+}
+
+impl Record<Run<ArchiveId>> {
+    pub(crate) fn reidentify(self, id: RunId) -> Record<Run<RunId>> {
+        Record {
+            schema_version: self.schema_version,
+            game_version: self.game_version,
+            mod_version: self.mod_version,
+            run_id: String::from(id),
+            ordinal: self.ordinal,
+            run: self.run.map(|run| run.reidentify(id)),
+            combat: self.combat,
         }
     }
 }
