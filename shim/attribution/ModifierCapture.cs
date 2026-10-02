@@ -42,7 +42,13 @@ internal sealed class ModifierFrame
             {
                 if (damage || observation.Output > 0)
                 {
-                    int amount = ModifierCapture.Additive(observation.Output, damage);
+                    int amount;
+                    try
+                    {
+                        amount = (int)observation.Output;
+                        if (damage) amount = Math.Abs(amount);
+                    }
+                    catch (OverflowException) { ProfilerNative.CaptureFailed("modifier-policy"); throw; }
                     if (amount > 0) credits.Add(new(observation.Source, amount));
                 }
                 continue;
@@ -59,21 +65,27 @@ internal sealed class ModifierFrame
             if (coherent && multiplier == observation.Output)
             {
                 decimal baseline = parts is { Count: > 0 } ? parts[0].Input : observation.Output;
-                int amount = ModifierCapture.Product(observation.Input, baseline - 1, result);
+                int amount = Product(observation.Input, baseline - 1, result);
                 if (amount > 0) credits.Add(new(observation.Source, amount));
                 foreach (var part in parts ?? Enumerable.Empty<ObservedModifier>())
                 {
-                    amount = ModifierCapture.Product(observation.Input, part.Output - part.Input, result);
+                    amount = Product(observation.Input, part.Output - part.Input, result);
                     if (amount > 0) credits.Add(new(part.Source, amount));
                 }
                 continue;
             }
-            int increase = ModifierCapture.Increase(observation.Input, observation.Output, result);
+            int increase;
+            try { increase = (int)(Math.Min(observation.Input, result) * (observation.Output - 1)); }
+            catch (OverflowException) { ProfilerNative.CaptureFailed("modifier-policy"); throw; }
             if (increase > 0) credits.Add(new(observation.Source, increase));
         }
         return credits.ToArray();
     }
-
+    private static int Product(decimal basis, decimal delta, decimal result)
+    {
+        try { return (int)(Math.Min(basis, result) * delta); }
+        catch (OverflowException) { ProfilerNative.CaptureFailed("modifier-policy"); throw; }
+    }
 }
 internal readonly record struct ModifierScope(ModifierFrame Previous, ModifierFrame Frame, bool Entered = true, ModifierFrame PreviousAdmission = null);
 internal sealed record NestedModifierFrame(ModifierFrame Owner, List<ObservedModifier> Observations);
@@ -278,12 +290,6 @@ internal static class ModifierCapture
         }
         return code;
     }
-    internal static int Additive(decimal value, bool damage)
-        => CaptureRuntime.Backend.CalculateModifierCredit(0, value, damage ? 0 : 1, 0);
-    internal static int Increase(decimal basis, decimal multiplier, decimal result)
-        => CaptureRuntime.Backend.CalculateModifierCredit(basis, multiplier, 2, result);
-    internal static int Product(decimal basis, decimal delta, decimal result)
-        => CaptureRuntime.Backend.CalculateModifierCredit(basis, delta, 3, result);
     internal static void Install(Harmony harmony)
     {
         CapturePatches.Patch(harmony, DamageCapture.HookMethod, prefix: new HarmonyMethod(typeof(ModifierCapture), nameof(HookPrefix)),

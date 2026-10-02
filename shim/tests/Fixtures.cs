@@ -611,11 +611,11 @@ internal sealed class StatefulModifier : AbstractModel
     internal Action DuringDamage, DuringBlock;
     internal Exception Error;
     internal CardPlay DamagePlay, BlockPlay;
-    internal decimal? BlockAddition, BlockMultiplier;
+    internal decimal? DamageAddition, DamageMultiplier, BlockAddition, BlockMultiplier;
     public override decimal ModifyDamageAdditive(Creature target, decimal amount, ValueProp props, Creature dealer, CardModel cardSource, CardPlay cardPlay)
-    { DamageAdditions++; DamagePlay = cardPlay; if (Error != null) throw Error; DuringDamage?.Invoke(); return 3; }
+    { DamageAdditions++; DamagePlay = cardPlay; if (Error != null) throw Error; DuringDamage?.Invoke(); return DamageAddition ?? 3; }
     public override decimal ModifyDamageMultiplicative(Creature target, decimal amount, ValueProp props, Creature dealer, CardModel cardSource, CardPlay cardPlay)
-    { DamageMultiplications++; DamagePlay = cardPlay; return 2; }
+    { DamageMultiplications++; DamagePlay = cardPlay; return DamageMultiplier ?? 2; }
     public override decimal ModifyBlockAdditive(Creature target, decimal block, ValueProp props, CardModel cardSource, CardPlay cardPlay)
     { BlockAdditions++; BlockPlay = cardPlay; if (Error != null) throw Error; DuringBlock?.Invoke(); return BlockAddition ?? 2; }
     public override decimal ModifyBlockMultiplicative(Creature target, decimal block, ValueProp props, CardModel cardSource, CardPlay cardPlay)
@@ -684,7 +684,7 @@ internal static partial class ManagedFixtures
         SynchronizationContext.SetSynchronizationContext(context);
         var nativeDelegates = typeof(ProfilerNative).GetNestedTypes(BindingFlags.Public | BindingFlags.NonPublic)
             .Where(type => typeof(MulticastDelegate).IsAssignableFrom(type)).ToArray();
-        Check(nativeDelegates.Length == 46, "Complete compiled native delegate inventory");
+        Check(nativeDelegates.Length == 45, "Complete compiled native delegate inventory");
         Check(Marshal.SizeOf<BlockModifier>() == 16 && Marshal.OffsetOf<BlockModifier>(nameof(BlockModifier.Source)).ToInt32() == 0
             && Marshal.OffsetOf<BlockModifier>(nameof(BlockModifier.Credit)).ToInt32() == 8, "Atomic block batch matches native source/credit layout");
         int utf8Parameters = 0;
@@ -864,7 +864,8 @@ internal static partial class ManagedFixtures
         Test("earlier prefix canonical calculations preserve their parent's admission", AdmissionNestedCalculation);
         Test("later async previews cannot reuse a finished modifier scope", DelayedModifierPreview);
         Test("async block batches retain command and source ownership", BlockBatchLifetime);
-        Test("native modifier credit follows .NET decimal arithmetic", NativeModifierProjection);
+        Test("observed modifier credits preserve decimal rounding and supplier order", ModifierCredits);
+        Test("modifier arithmetic failure discards partial credits and permits recovery", ModifierOverflowRecovery);
         Test("native Weak policy uses frozen receiver evidence and preserves integer rounding", NativeWeakProjection);
         Test("Doom nested batches, original Task and synthetic fallback remainder", DoomBatches);
         Test("orb channel failure and absent explicit Osty card source", OrbAndOsty);
@@ -2252,13 +2253,13 @@ internal static partial class ManagedFixtures
         var card = GameCard<StrikeIronclad>(world.Owner, A);
         var modifier = Mutable<StatefulModifier>("MODIFIER");
         backend.Descriptors[modifier] = new(CaptureKind.DirectModel, ProducerRole.Relic, "B", 1, 0, Combat: backend.Combat);
-        var error = new InvalidOperationException("original modifier fault");
+        var error = new OverflowException("original modifier fault");
         modifier.Error = error;
         DamageFixture.Modifiers = new AbstractModel[] { modifier };
         DamageCapture.Inspect = (_, _, _) => new(true, false, 0, null, false);
         bool observed = false;
         try { context.Complete(Damage(world.Enemy, world.Owner.Creature, card)); }
-        catch (InvalidOperationException actual) { observed = ReferenceEquals(actual, error); }
+        catch (OverflowException actual) { observed = ReferenceEquals(actual, error); }
         Check(observed && modifier.DamageAdditions == 1 && modifier.DamageMultiplications == 0,
             "Original modifier exception and exactly-once call ordering are preserved");
         Check(backend.OpenCalculations == 0 && ModifierCapture.Current == null && backend.DamageModifiers.Count == 0,
@@ -2469,7 +2470,7 @@ internal static partial class ManagedFixtures
         Check(backend.BlockBatches.Last().Amount == 17 && backend.BlockBatches.Last().Incomplete && backend.BlockBatches.Last().Modifiers.Length == 0
             && modifier.BlockAdditions == additions, "A skipped block hook preserves its physical result without inventing modifier evidence");
         skipBlockHook = false;
-        var callbackError = new InvalidOperationException("block callback failed");
+        var callbackError = new OverflowException("block callback failed");
         modifier.Error = callbackError;
         int events = backend.BlockBatches.Count;
         bool sameError = false;
@@ -2510,27 +2511,119 @@ internal static partial class ManagedFixtures
         blockClearListeners = null;
         FlowCapture.Current = ProducerFrame.Barrier;
     }
-    private static void NativeModifierProjection()
+    private static void ModifierCredits()
     {
-        decimal basis = 0.9999999999999999999999999999m, multiplier = 2.0000000000000000000000000001m;
-        Check(backend.CalculateModifierCredit(basis, multiplier, 2, decimal.MaxValue) == (int)(basis * (multiplier - 1)),
-            "Rust rounds modifier-credit intermediates with .NET decimal precision");
-        Check(backend.CalculateModifierCredit(0, -2.9999999999999999999999999999m, 0, decimal.MaxValue) == 2
-            && backend.CalculateModifierCredit(0, -2.9999999999999999999999999999m, 1, decimal.MaxValue) == -2,
-            "Rust truncates signed additions before applying the damage absolute value");
-        var random = new Random(0x328747);
-        decimal Next() => new(random.Next(int.MinValue, int.MaxValue), random.Next(int.MinValue, int.MaxValue),
-            random.Next(int.MinValue, int.MaxValue), random.Next(2) == 1, (byte)random.Next(29));
-        for (int index = 0; index < 12000; index++)
+        var frame = new ModifierFrame(CaptureRuntime.Epoch, 0);
+        foreach (decimal value in new[] { -2.9999999999999999999999999999m, 2.9m, -0.9m, 0.6m, 0.6m, int.MaxValue + 0.9m })
+            frame.Record(new(A, 10, value, false, false));
+        Check(frame.Contributions(20, true).Select(credit => credit.Amount).SequenceEqual(new[] { 2, 2, int.MaxValue }),
+            "Damage credits truncate each signed addition before taking its absolute value");
+        Check(frame.Contributions(20, false).Select(credit => credit.Amount).SequenceEqual(new[] { 2, int.MaxValue }),
+            "Block credits omit negative and individually sub-unit additions");
+        Check(frame.Contributions(0, true).Length == 0, "No net increase yields no modifier credit");
+        foreach (var (basis, multiplier, result, vulnerable, expected) in new[]
         {
-            basis = Next(); decimal value = Next(), limit = Next(); int kind = index % 4;
-            int? expected = null, actual = null;
-            try { expected = kind switch { 0 => Math.Abs((int)value), 1 => (int)value, 2 => (int)(Math.Min(basis, limit) * (value - 1)), _ => (int)(Math.Min(basis, limit) * value) }; }
-            catch (OverflowException) { }
-            try { actual = backend.CalculateModifierCredit(basis, value, kind, limit); }
-            catch (OverflowException) { }
-            Check(expected == actual, $".NET decimal arithmetic case {index}: {basis}, {value}, kind {kind}; expected {expected}, got {actual}");
+            (100m, 1.5m, 20m, false, 10),
+            (10m, 1.25m, 100m, false, 2),
+            (0.9999999999999999999999999999m, 2.0000000000000000000000000001m, 3m, false, 1),
+            (3m, 1.5m, 20m, true, 1),
+            ((decimal)int.MaxValue, 2m, int.MaxValue + 1m, false, int.MaxValue),
+            (10m, 1m, 20m, false, 0),
+            (10m, 0.75m, 20m, false, 0),
+            (-10m, 2m, 20m, false, 0),
+        })
+        {
+            frame = new(CaptureRuntime.Epoch, 0);
+            frame.Record(new(A, basis, multiplier, true, vulnerable));
+            var contributions = frame.Contributions(result, true);
+            Check(contributions.Select(credit => credit.Amount).SequenceEqual(expected == 0 ? Array.Empty<int>() : new[] { expected }),
+                $"Multiplier credit preserves clamping and intermediate rounding: {basis}, {multiplier}, {result}");
         }
+        foreach (bool coherent in new[] { true, false })
+        {
+            frame = new(CaptureRuntime.Epoch, 0);
+            frame.Record(new(A, 10, 2, true, true, new()
+            {
+                new(B, 1.5m, 1.7m, true, false),
+                new(A, coherent ? 1.7m : 1.8m, 2, true, false),
+            }));
+            var contributions = frame.Contributions(20, true);
+            Check(contributions.Select(credit => credit.Amount).SequenceEqual(coherent ? new[] { 5, 2, 3 } : new[] { 10 }),
+                "Coherent nested suppliers retain ordered deltas; a broken chain retains only the outer supplier");
+            for (int index = 0; index < contributions.Length; index++)
+                Same(contributions[index].Source, index == 1 ? B : A, "Nested supplier identity follows its observed delta");
+        }
+        foreach (var observation in new[]
+        {
+            new ObservedModifier(A, 0, int.MinValue, false, false),
+            new ObservedModifier(A, 0, int.MaxValue + 1m, false, false),
+            new ObservedModifier(A, decimal.MaxValue, 3, true, false),
+            new ObservedModifier(A, int.MaxValue, 3, true, true),
+        })
+        {
+            frame = new(CaptureRuntime.Epoch, 0);
+            frame.Record(new(A, 0, 3, false, false));
+            frame.Record(observation);
+            bool rejected = false;
+            try { frame.Contributions(decimal.MaxValue, true); }
+            catch (OverflowException) { rejected = true; }
+            Check(rejected, "Unrepresentable arithmetic rejects the complete contribution batch");
+        }
+    }
+    private static void ModifierOverflowRecovery()
+    {
+        var world = GameWorld();
+        var models = new[] { Mutable<StatefulModifier>("GOOD"), Mutable<StatefulModifier>("OVERFLOW"), Mutable<StatefulModifier>("CANCEL") };
+        decimal[] additions = { 3, int.MaxValue + 1m, int.MinValue };
+        for (int index = 0; index < models.Length; index++)
+        {
+            var model = models[index];
+            model.DamageAddition = model.BlockAddition = additions[index];
+            model.DamageMultiplier = model.BlockMultiplier = 1;
+            backend.Descriptors[model] = new(CaptureKind.DirectModel, ProducerRole.Relic, "B", 1, 0, Combat: backend.Combat);
+        }
+        DamageCapture.Inspect = (_, _, _) => new(true, false, 0, null, false);
+        for (int iteration = 0; iteration < 3; iteration++)
+        {
+            bool healthy = iteration == 2;
+            DamageFixture.Modifiers = healthy ? models.Take(1).ToArray() : models;
+            DamageCapture.Prefix(new object[] { null, new[] { world.Enemy }, 10m, ValueProp.Move, world.Owner.Creature, null, null }, out var previous);
+            try
+            {
+                decimal result = DamageCapture.ModifyDamage(world.Owner.RunState, (ICombatState)backend.Combat, world.Enemy, world.Owner.Creature, 10,
+                    ValueProp.Move, null, null, ModifyDamageHookType.All, CardPreviewMode.None, out _);
+                Check(result == 13, "Arithmetic observation failure leaves the original damage result unchanged");
+                Check(backend.DamageModifiers.Count == (healthy ? 1 : 0), "No partial modifier escapes a failed projection batch");
+                DamageCapture.ReportResultGroup(new() { new(world.Enemy, ValueProp.Move) { UnblockedDamage = (int)result } });
+            }
+            finally { DamageCapture.Abort(); DamageCapture.Finalizer(previous); }
+        }
+        Check(backend.Fallback.Count == 2 && backend.Fallback.All(packet => packet.Total == 13)
+            && backend.Committed.Single().Total == 13 && backend.DamageModifiers.Single().Amount == 3,
+            "Repeated projection failure falls back without contaminating a later healthy damage calculation");
+        Check(backend.Calls.Count(call => call == "diagnostic:damage-live-modifier") == 1,
+            "Outer modifier diagnostics remain deduplicated within the combat");
+        for (int iteration = 0; iteration < 3; iteration++)
+        {
+            bool healthy = iteration == 2;
+            blockClearListeners = healthy ? models.Take(1).ToArray() : models;
+            CommandCapture.Prefix(AccessTools.DeclaredMethod(typeof(CommandFixture), "GainBlock"),
+                new object[] { world.Owner.Creature, 10m, ValueProp.Move, null, false }, out var command);
+            try
+            {
+                decimal result = ModifierCapture.ModifyBlock((ICombatState)backend.Combat, world.Owner.Creature, 10, ValueProp.Move, null, null, out _);
+                Check(result == 13, "Arithmetic observation failure leaves the original block result unchanged");
+                CommandCapture.BlockGained(backend.Combat, world.Owner.Creature, (int)result);
+                var batch = backend.BlockBatches.Last();
+                Check(batch.Amount == 13 && batch.Incomplete != healthy && batch.Modifiers.Length == (healthy ? 1 : 0),
+                    "Block projection failure discards partial credits while later healthy gains recover");
+            }
+            finally { CommandCapture.Finalizer(command); }
+        }
+        Check(backend.BlockBatches.Last().Modifiers.Single().Amount == 3
+            && backend.Calls.Count(call => call == "diagnostic:block-modifier") == 1,
+            "Healthy block credit recovers after repeated failures without repeating the outer diagnostic");
+        blockClearListeners = null;
     }
     private static void NativeWeakProjection()
     {

@@ -57,6 +57,9 @@ internal static class SessionFixtures
             NativeBlockBatches(Path.Combine(scratch, "block-batches"));
             ProfilerNative.Dispose();
             ProfilerNative.Load(nativeLibrary);
+            NativeModifierCredits(Path.Combine(scratch, "modifier-credits"));
+            ProfilerNative.Dispose();
+            ProfilerNative.Load(nativeLibrary);
             NativeBlockLoss(Path.Combine(scratch, "block-loss"));
             ProfilerNative.Dispose();
             ProfilerNative.Load(nativeLibrary);
@@ -847,6 +850,100 @@ internal static class SessionFixtures
             && !ProfilerSession.CurrentCombat.Coverage.Complete, "Incomplete modifier attribution degrades to Unknown");
         Check(ProfilerNative.Replay(ProfilerNative.Recording()) == ProfilerNative.Snapshot(),
             "Actual marshaled modifier batches replay exactly");
+        ProfilerSession.Suspend();
+    }
+
+    private static void NativeModifierCredits(string directory)
+    {
+        ProfilerSession.Initialize(directory, "g", "m", _ => { });
+        ProfilerSession.StartRun(Header("MODIFIER_CREDITS", 1425), false);
+        Check(ProfilerNative.RecordingBegin(), "Modifier recording begins before combat");
+        ulong epoch = ProfilerSession.StartCombat("MODIFIER_CREDITS", "Normal");
+        var backend = new FakeBackend { Combat = new object() };
+        CaptureRuntime.Register(backend, epoch, backend.Combat);
+        ulong producer = ProfilerNative.SourceCapture(epoch, 1, 1, "PRODUCER", 0, 0, 0);
+        var supplier = SourceSnapshot.Own(epoch, ProfilerNative.SourceCapture(epoch, 4, 2, "SUPPLIER", 1, 0, 0));
+        var frame = new ModifierFrame(CaptureRuntime.Epoch, 10);
+        frame.Record(new(supplier, 10, 1.5m, true, false));
+        var credits = frame.Contributions(15, true);
+        Check(credits.Length == 1 && credits[0].Amount == 5 && ReferenceEquals(credits[0].Source, supplier),
+            "Managed decimal derivation retains its supplier before entering integer accounting");
+        ulong hit = ProfilerNative.DamageCalculationBegin(epoch, producer, 1, 0, 99);
+        Check(ProfilerNative.DamageModifierContribution(hit, credits[0].Source.Handle, credits[0].Amount) == 1
+            && ProfilerNative.DamageResultAppend(hit, 15, 15, 0, 0, 4, 0) == 1
+            && ProfilerNative.DamageCalculationCommit(hit) == 1, "Managed damage credits cross the real integer ABI");
+        frame.Observations.Clear();
+        frame.Record(new(supplier, 10, 2.9m, false, false));
+        credits = frame.Contributions(12.9m, false);
+        Check(credits.Length == 1 && credits[0].Amount == 2
+            && ProfilerNative.BlockGained(epoch, 12, producer, 0, new[] { new BlockModifier(credits[0].Source.Handle, credits[0].Amount) }, false) == 1
+            && ProfilerNative.DamageUnattributed(epoch, 12, 0, 12, 1, 0, 0) == 1 && ProfilerSession.Refresh(),
+            "Fractional managed block credits enter the real native batch and consumption path");
+        var rows = ProfilerSession.CurrentCombat.Cards;
+        Check(rows.Single(row => row.Id == "PRODUCER").DmgDirect == 10
+            && rows.Single(row => row.Id == "PRODUCER").BlockEffective == 10
+            && rows.Single(row => row.Id == "SUPPLIER").DmgModifier == 5
+            && rows.Single(row => row.Id == "SUPPLIER").BlkModifier == 2
+            && ProfilerSession.CurrentCombat.Coverage.Complete, "Integer accounting retains independent damage and block expectations");
+        foreach (var observation in new[]
+        {
+            new ObservedModifier(supplier, 10, int.MinValue, false, false),
+            new ObservedModifier(supplier, 10, int.MinValue, false, false),
+            new ObservedModifier(supplier, 10, (decimal)int.MaxValue + 1, false, false),
+            new ObservedModifier(supplier, 10, decimal.MaxValue, true, false)
+        })
+        {
+            frame.Observations.Clear();
+            frame.Record(observation);
+            bool rejected = false;
+            try { frame.Contributions(20, true); }
+            catch (OverflowException) { rejected = true; }
+            Check(rejected, "Unrepresentable managed credits fail before publication");
+        }
+        Check(ProfilerSession.Refresh() && !ProfilerSession.CurrentCombat.Coverage.Complete
+            && ProfilerSession.CurrentCombat.Coverage.Failures == 4
+            && ProfilerSession.CurrentCombat.Coverage.Reasons.SequenceEqual(new[] { "modifier-policy" }),
+            "Every arithmetic failure marks native coverage even when the reason repeats");
+        frame.Observations.Clear();
+        frame.Record(new(supplier, 10, 2, true, true, new()
+        {
+            new(supplier, 1, decimal.MinValue, true, false),
+            new(supplier, decimal.MinValue, 2, true, false)
+        }));
+        bool subtractionRejected = false;
+        try { frame.Contributions(20, true); }
+        catch (OverflowException) { subtractionRejected = true; }
+        Check(subtractionRejected && StatisticsJson.ParseNative(ProfilerNative.Snapshot()).Coverage.Failures == 4,
+            "Nested managed subtraction retains its separate failure boundary");
+        frame.Observations.Clear();
+        frame.Record(new(supplier, 10, 1.5m, true, false));
+        credits = frame.Contributions(15, true);
+        hit = ProfilerNative.DamageCalculationBegin(epoch, producer, 1, 0, 99);
+        Check(ProfilerNative.DamageModifierContribution(hit, credits[0].Source.Handle, credits[0].Amount) == 1
+            && ProfilerNative.DamageResultAppend(hit, 15, 15, 0, 0, 4, 0) == 1
+            && ProfilerNative.DamageCalculationCommit(hit) == 1, "A healthy calculation remains usable after arithmetic failure");
+        string recording = ProfilerNative.Recording(), snapshot = ProfilerNative.Snapshot();
+        Check(ProfilerNative.Replay(recording) == snapshot, "Managed integer credits and repeated coverage failures replay exactly");
+        var legacy = JsonNode.Parse(recording);
+        Check((int)legacy["trace_version"] == 2
+            && legacy["observations"].AsArray().All(entry => (string)entry["observation"]["operation"] != "modifier_projection"),
+            "Version-2 traces contain accounting observations without scalar modifier projections");
+        legacy["trace_version"] = 1;
+        string legacyDirectory = Path.Combine(directory, "statistics-v3", "traces", "1");
+        Directory.CreateDirectory(legacyDirectory);
+        string legacyPath = Path.Combine(legacyDirectory, "1.trace.json"), legacyText = legacy.ToJsonString();
+        File.WriteAllText(legacyPath, legacyText);
+        using (var store = new StatisticsStore(directory, "g", "m", _ => { })) store.SaveTrace("1", 1, recording);
+        string saved = File.ReadAllText(Path.Combine(directory, "statistics-v3", "traces-v2", "1", "1.trace.json"));
+        Check(saved == recording && File.ReadAllText(legacyPath) == legacyText,
+            "New recordings use a separate trace directory without replacing legacy artifacts");
+        bool incompatible = false;
+        try { ProfilerNative.Replay(legacyText); }
+        catch (InvalidOperationException) { incompatible = true; }
+        Check(incompatible && ProfilerNative.Snapshot() == snapshot,
+            "The managed replay boundary rejects version-1 traces without changing live accounting");
+        GC.KeepAlive(supplier);
+        CaptureRuntime.InvalidateEpoch();
         ProfilerSession.Suspend();
     }
 

@@ -201,17 +201,4 @@ fn reproducible_engine_allocation_profile() {
         );
         spire_profiler_engine_destroy(engine);
     }
-    let engine = spire_profiler_engine_create();
-    let (_, modifier_credits) = Measure::run(|| {
-        for _ in 0..10_000 {
-            for _ in 0..8 {
-                assert_eq!(
-                    spire_profiler_modifier_credit(engine, 10, 0, 15, 1_u64 << 48, 20, 0, 2),
-                    5
-                );
-            }
-        }
-    });
-    eprintln!("80k decimal modifier credits={modifier_credits:?}");
-    spire_profiler_engine_destroy(engine);
 }
