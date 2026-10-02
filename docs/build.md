@@ -44,7 +44,8 @@ Run `cargo xtask --help`.
   project](../shim/SpireProfiler.ManagedTests.csproj) use SDK source globs.
   Production excludes `tests/`; both exclude build outputs. ABI checks and
   source digests query MSBuild's evaluated `Compile` items, so `check-abi` needs
-  the pinned SDK but no installed game.
+  the pinned SDK but no installed game. Snapshot copies and source digests also
+  include evaluated `EmbeddedResource` items.
 - Production compiles the handwritten files in place. Only
   `NativeLibrarySelector.g.cs` is generated from the native target matrix under
   `target/xtask-gen/`; stale copied sources there cannot join compilation.

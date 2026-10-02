@@ -9,7 +9,7 @@ internal static class ManagedTestProgram
 {
     private static int Main(string[] args)
     {
-        if (args.Length != 3) throw new ArgumentException("Expected game assemblies, generated project directory, and native engine library");
+        if (args.Length != 4) throw new ArgumentException("Expected game assemblies, generated project directory, native engine library, and verified game version");
         AppDomain.CurrentDomain.AssemblyResolve += (_, request) =>
         {
             var path = Path.Combine(args[0], new AssemblyName(request.Name).Name + ".dll");
@@ -22,6 +22,7 @@ internal static class ManagedTestProgram
     {
         try
         {
+            ProducerInventoryFixtures.Run(args[1], args[3]);
             ProfilerNative.Load(args[2]);
             AuditFixtures.Run(args[1], args[2]);
             ManagedFixtures.Run(args[1]);

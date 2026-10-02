@@ -723,6 +723,7 @@ internal static partial class ManagedFixtures
             var expectedRoots = new Dictionary<string, int> { ["AbstractModel"] = 934, ["CardModel"] = 564, ["PotionModel"] = 65, ["PowerModel"] = 57, ["RelicModel"] = 106 };
             foreach (var group in targets.GroupBy(m => m.GetBaseDefinition().DeclaringType.Name)) Check(expectedRoots[group.Key] == group.Count(), "Exact producer root count");
             FlowCapture.Install(harmony, line => { inventory.WriteLine(line); if (!line.StartsWith("PRODUCER ", StringComparison.Ordinal)) Console.WriteLine(line); });
+            ProducerInventoryFixtures.VerifyInstalled(harmony, targets);
         }
         foreach (var type in new[] { typeof(PaperPhrog), typeof(CrueltyPower), typeof(DebilitatePower) })
             harmony.Patch(AccessTools.DeclaredMethod(type, "ModifyVulnerableMultiplier"), prefix: new HarmonyMethod(typeof(ManagedFixtures), nameof(ObserveNestedModifier)));

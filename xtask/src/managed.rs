@@ -62,9 +62,10 @@ pub fn run(shell: &Shell) -> Result<()> {
         .sts2_dll
         .parent()
         .expect("discovery returns an assembly file path");
+    let game_version = game_version::PIN;
     cmd!(
         shell,
-        "{binary} {executable} {game_assemblies} {project} {native}"
+        "{binary} {executable} {game_assemblies} {project} {native} {game_version}"
     )
     .run()?;
     println!("managed-test: PASS");
