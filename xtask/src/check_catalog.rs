@@ -13,12 +13,12 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::Path;
-use std::sync::LazyLock;
 
 use anyhow::{Context, Result, bail};
 use regex::Regex;
+use serde::Deserialize;
 
-use crate::{catalog, decompile, game_version, workspace_root};
+use crate::{catalog, csharp, decompile, game_version, workspace_root};
 
 /// Effect statements that require source review, including card generation
 /// because generated instances inherit their suppliers. Block loss is absent
@@ -39,28 +39,25 @@ const TRACKED: &[(&str, &str)] = &[
 /// Files whose public virtual methods form the hook universe.
 const BASE_MODELS: [&str; 3] = ["AbstractModel.cs", "RelicModel.cs", "PowerModel.cs"];
 
-/// Every declaration line: access modifier, optional `override`/`async`,
-/// return type, then the name right before `(`.
-const DECL_RE: &str = r"(?m)^[ \t]*(?:public|protected|private|internal)\s+(?:(override)\s+|async\s+)?[\w<>,.\[\]? ]+?\s+(\w+)\s*\(";
-
-/// Identifiers followed by `(`: the candidate helper calls in a body.
-const CALL_RE: &str = r"\b([A-Za-z_]\w*)\s*\(";
-
-const NAMESPACE_RE: &str = r"(?m)^namespace\s+([A-Za-z_][\w.]*)\s*(?:;|\{)";
-
-const HOOK_DECL_RE: &str =
-    r"(?m)^[ \t]*public virtual\s+(?:async\s+)?[\w<>,.\[\]? ]+?\s+(\w+)\s*\(";
-
 struct ClassFile {
-    /// Every declared method with its brace-matched body: existence checks
-    /// and one level of private-helper following.
     methods: Vec<Method>,
 }
 
+#[derive(Deserialize)]
+struct ParsedClass {
+    source: String,
+    name: String,
+    ns: String,
+    methods: Vec<Method>,
+}
+
+#[derive(Deserialize)]
 struct Method {
     name: String,
-    body: String,
+    body: Option<String>,
     is_override: bool,
+    is_virtual: bool,
+    calls: Vec<String>,
 }
 
 fn tracked_regexes() -> Vec<(&'static str, Regex)> {
@@ -190,7 +187,11 @@ impl Review {
     ) {
         let mut matched = vec![false; tracked.len()];
         for file in files.iter().flat_map(|files| files.values()) {
-            for body in file.methods.iter().map(|method| &method.body) {
+            for body in file
+                .methods
+                .iter()
+                .filter_map(|method| method.body.as_deref())
+            {
                 for (seen, (_, pattern)) in matched.iter_mut().zip(tracked) {
                     *seen |= pattern.is_match(body);
                 }
@@ -340,15 +341,13 @@ impl std::fmt::Display for Candidate<'_> {
 impl Method {
     /// TRACKED order, including one level of helper calls (Poison's Trigger).
     fn effects(&self, methods: &[Method], tracked: &[(&'static str, Regex)]) -> Vec<&'static str> {
-        static CALLS: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(CALL_RE).expect("the call pattern is a static literal"));
-        let mut bodies = vec![self.body.as_str()];
-        for call in CALLS.captures_iter(&self.body) {
+        let mut bodies: Vec<_> = self.body.as_deref().into_iter().collect();
+        for call in &self.calls {
             bodies.extend(
                 methods
                     .iter()
-                    .filter(|method| method.name == call[1])
-                    .map(|method| method.body.as_str()),
+                    .filter(|method| method.name == *call)
+                    .filter_map(|method| method.body.as_deref()),
             );
         }
         tracked
@@ -360,136 +359,98 @@ impl Method {
 }
 
 fn hook_universe(models: &Path) -> Result<HashSet<String>> {
-    let re = Regex::new(HOOK_DECL_RE).expect("the hook-universe pattern is a static literal");
-    let mut universe = HashSet::new();
-    for name in BASE_MODELS {
-        let path = models.join(name);
-        let text =
-            fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-        for capture in re.captures_iter(&text) {
-            universe.insert(capture[1].to_owned());
-        }
-    }
-    Ok(universe)
+    let sources: Vec<_> = BASE_MODELS
+        .iter()
+        .map(|name| {
+            let path = models.join(name);
+            Ok((
+                path.to_string_lossy().into_owned(),
+                fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?,
+            ))
+        })
+        .collect::<Result<_>>()?;
+    let sources: Vec<_> = sources
+        .iter()
+        .map(|(name, text)| (name.as_str(), text.as_str()))
+        .collect();
+    let classes: Vec<ParsedClass> = csharp::parse("catalog", &sources)?;
+    Ok(classes
+        .into_iter()
+        .flat_map(|class| class.methods)
+        .filter(|method| method.is_virtual)
+        .map(|method| method.name)
+        .collect())
 }
 
-/// Production classes can gain subdirectories; every `Mocks` tree is test
-/// support rather than a game hook.
+/// Every Mocks tree is test support rather than a game hook.
 fn class_files(dir: &Path, expected_namespace: &str) -> Result<BTreeMap<String, ClassFile>> {
-    let mut files = BTreeMap::new();
+    let mut sources = Vec::new();
     let mut directories = vec![dir.to_path_buf()];
     while let Some(current) = directories.pop() {
         for entry in
             fs::read_dir(&current).with_context(|| format!("listing {}", current.display()))?
         {
-            let path = entry
-                .with_context(|| format!("reading an entry of {}", current.display()))?
-                .path();
+            let path = entry?.path();
             if path.is_dir() {
-                if path.file_name().is_some_and(|name| name == "Mocks") {
-                    continue;
+                if path.file_name().is_none_or(|name| name != "Mocks") {
+                    directories.push(path);
                 }
-                directories.push(path);
-                continue;
+            } else if path.extension().is_some_and(|ext| ext == "cs") {
+                sources.push((
+                    path.to_string_lossy().into_owned(),
+                    fs::read_to_string(&path)?,
+                ));
             }
-            if path.extension().is_none_or(|ext| ext != "cs") {
-                continue;
-            }
-            let text =
-                fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-            let Some((class, file)) = parse_class_file(&path, &text, expected_namespace)? else {
-                continue;
-            };
-            if files.contains_key(&class) {
-                bail!("duplicate class {class}");
-            }
-            files.insert(class, file);
         }
     }
-    Ok(files)
+    sources.sort_by(|first, second| first.0.cmp(&second.0));
+    let sources: Vec<_> = sources
+        .iter()
+        .map(|(name, text)| (name.as_str(), text.as_str()))
+        .collect();
+    ParsedClass::read(&sources, expected_namespace)
 }
 
-/// One decompiled class file: its name, hook overrides, and every method
-/// with its brace-matched body; a file with no class declaration is not a
-/// class (None). Namespace drift bails: a moved class would parse cleanly
-/// and then fail every catalog lookup.
-fn parse_class_file(
-    path: &Path,
-    text: &str,
-    expected_namespace: &str,
-) -> Result<Option<(String, ClassFile)>> {
-    static CLASS: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?m)^public (?:sealed |abstract )?class\s+(\w+)")
-            .expect("the class pattern is a static literal")
-    });
-    static NAMESPACE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(NAMESPACE_RE).expect("the namespace pattern is a static literal")
-    });
-    static DECLARATION: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(DECL_RE).expect("the declaration pattern is a static literal"));
-    let Some(class) = CLASS.captures(text).map(|capture| capture[1].to_owned()) else {
-        return Ok(None);
-    };
-    let namespace = NAMESPACE
-        .captures(text)
-        .and_then(|capture| capture.get(1))
-        .map(|namespace| namespace.as_str())
-        .unwrap_or_default();
-    if namespace != expected_namespace {
-        bail!(
-            "{} declares namespace {namespace:?}, expected {expected_namespace:?}",
-            path.display()
-        );
-    }
-    let mut methods = Vec::new();
-    for capture in DECLARATION.captures_iter(text) {
-        let name = capture[2].to_owned();
-        let body = brace_body(
-            text,
-            capture
-                .get(0)
-                .expect("every regex capture has the whole match")
-                .end(),
-        )
-        .with_context(|| {
-            format!(
-                "{}: {class}.{name}: no block body — unsupported decompiler output",
-                path.display()
-            )
-        })?
-        .to_owned();
-        methods.push(Method {
-            name,
-            body,
-            is_override: capture.get(1).is_some(),
-        });
-    }
-    Ok(Some((class, ClassFile { methods })))
-}
-
-/// The brace-matched block opening after `from`; decompiled methods always
-/// use block bodies, so the first `{` is the body's and a `;` before it
-/// means a bodyless declaration. The count is not literal-aware: a brace
-/// inside a string or char literal would unbalance it.
-fn brace_body(text: &str, from: usize) -> Option<&str> {
-    let brace = text[from..].find('{')? + from;
-    if text[from..brace].contains(';') {
-        return None;
-    }
-    let mut depth = 0usize;
-    for (index, character) in text[brace..].char_indices() {
-        match character {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(&text[brace..brace + index + 1]);
+impl ParsedClass {
+    fn read(
+        sources: &[(&str, &str)],
+        expected_namespace: &str,
+    ) -> Result<BTreeMap<String, ClassFile>> {
+        let classes: Vec<Self> = csharp::parse("catalog", sources)?;
+        let mut files = BTreeMap::new();
+        for class in classes {
+            if class.ns != expected_namespace {
+                bail!(
+                    "{} declares namespace {:?}, expected {:?}",
+                    class.source,
+                    class.ns,
+                    expected_namespace
+                );
+            }
+            for method in &class.methods {
+                if method.body.is_none() {
+                    bail!(
+                        "{}: {}.{}: no block or expression body",
+                        class.source,
+                        class.name,
+                        method.name
+                    );
                 }
             }
-            _ => {}
+            if files
+                .insert(
+                    class.name.clone(),
+                    ClassFile {
+                        methods: class.methods,
+                    },
+                )
+                .is_some()
+            {
+                bail!("duplicate class {}", class.name);
+            }
         }
+        Ok(files)
     }
-    None
 }
 
 /// The pinned game version the tree was decompiled from; a tree produced
@@ -515,69 +476,66 @@ fn provenance_version(tree: &Path) -> Result<String> {
 mod tests {
     use super::*;
 
+    fn fixture(methods: &str) -> ClassFile {
+        let source = format!(
+            "namespace MegaCrit.Sts2.Core.Models.Powers; public sealed class Power {{ {methods} }}"
+        );
+        ParsedClass::read(&[("Power.cs", &source)], "MegaCrit.Sts2.Core.Models.Powers")
+            .expect("fixture declares a complete class")
+            .remove("Power")
+            .expect("fixture declares Power")
+    }
+
     #[test]
-    fn hook_universe_accepts_non_task_return_types() {
-        let shell = xshell::Shell::new().expect("cargo test runs with a working directory");
-        let temp = shell
-            .create_temp_dir()
-            .expect("the test model tree needs an isolated temporary directory");
-        let models = temp.path().join("models");
-        std::fs::create_dir_all(&models).expect("creating the test model tree");
+    fn hook_universe_accepts_non_task_return_types() -> Result<()> {
+        let shell = xshell::Shell::new()?;
+        let temp = shell.create_temp_dir()?;
         for name in BASE_MODELS {
             std::fs::write(
-                models.join(name),
-                "public virtual ValueTask<int> NewHook();\n",
-            )
-            .expect("writing the test model");
+                temp.path().join(name),
+                "public class Model { public virtual ValueTask<int> NewHook(); private void Helper() {} }",
+            )?;
         }
-
-        let universe = hook_universe(&models).expect("reading the test models");
-        assert!(universe.contains("NewHook"));
-    }
-
-    #[test]
-    fn class_files_reject_namespace_drift() {
-        let shell = xshell::Shell::new().expect("cargo test runs with a working directory");
-        let temp = shell
-            .create_temp_dir()
-            .expect("the test class tree needs an isolated temporary directory");
-        let root = temp.path();
-        std::fs::write(
-            root.join("Moved.cs"),
-            "namespace MegaCrit.Sts2.Core.Moved;\npublic sealed class Moved {}\n",
-        )
-        .expect("writing the test class");
-
-        let error = match class_files(root, "MegaCrit.Sts2.Core.Models.Relics") {
-            Ok(files) => panic!("namespace drift passed with {} classes", files.len()),
-            Err(error) => error,
-        };
-        assert!(
-            error
-                .to_string()
-                .contains("expected \"MegaCrit.Sts2.Core.Models.Relics\"")
+        assert_eq!(
+            hook_universe(temp.path())?,
+            HashSet::from(["NewHook".to_owned()])
         );
+        Ok(())
     }
 
     #[test]
-    fn card_generation_follows_the_game_hooks_not_object_creation() {
-        let file = ClassFile {
-            methods: vec![
-                Method {
-                    name: "AfterPlayerTurnStart".to_owned(),
-                    body: r#"CardCmd.TransformToRandom(card, rng);"#.to_owned(),
-                    is_override: true,
-                },
-                Method {
-                    name: "AfterObtained".to_owned(),
-                    body: r#"RunState.CreateCard<Apotheosis>(owner); CardPileCmd.Add(card, PileType.Deck);"#
-                        .to_owned(),
-                    is_override: false,
-                },
-            ],
-        };
-        let tracked = tracked_regexes();
+    fn class_files_reject_namespace_drift_and_bodyless_methods() -> Result<()> {
+        let shell = xshell::Shell::new()?;
+        let temp = shell.create_temp_dir()?;
+        let path = temp.path().join("Moved.cs");
+        for (source, expected) in [
+            (
+                "namespace MegaCrit.Sts2.Core.Moved; public sealed class Moved {}",
+                "expected",
+            ),
+            (
+                "namespace MegaCrit.Sts2.Core.Models.Relics; public sealed class Empty { public void Hook(); }",
+                "no block or expression body",
+            ),
+            (
+                "namespace MegaCrit.Sts2.Core.Models.Relics; public sealed class Broken { public void Hook( }",
+                "error CS",
+            ),
+        ] {
+            fs::write(&path, source)?;
+            let error = class_files(temp.path(), "MegaCrit.Sts2.Core.Models.Relics")
+                .err()
+                .expect("invalid class fails");
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+        Ok(())
+    }
 
+    #[test]
+    fn card_generation_follows_game_commands_not_object_creation() {
+        let file = fixture("public override void AfterPlayerTurnStart() { CardCmd.TransformToRandom(card, rng); }
+            public void AfterObtained() { RunState.CreateCard<Apotheosis>(owner); CardPileCmd.Add(card, PileType.Deck); }");
+        let tracked = tracked_regexes();
         assert_eq!(
             file.methods[0].effects(&file.methods, &tracked),
             ["cardgen"]
@@ -587,47 +545,40 @@ mod tests {
 
     #[test]
     fn power_application_covers_generic_and_plain_apply() {
-        let file = ClassFile {
-            methods: vec![
-                Method {
-                    name: "Generic".to_owned(),
-                    body: "await PowerCmd.Apply<StrengthPower>(ctx, target, 1);".to_owned(),
-                    is_override: false,
-                },
-                Method {
-                    name: "Plain".to_owned(),
-                    body: "await PowerCmd.Apply(ctx, power, target, 1);".to_owned(),
-                    is_override: false,
-                },
-            ],
-        };
-        let tracked = tracked_regexes();
-
-        assert_eq!(file.methods[0].effects(&file.methods, &tracked), ["power"]);
-        assert_eq!(file.methods[1].effects(&file.methods, &tracked), ["power"]);
+        let file = fixture(
+            "private void Generic() => PowerCmd.Apply<StrengthPower>(ctx, target, 1);
+            private void Plain() { PowerCmd.Apply(ctx, power, target, 1); }",
+        );
+        for method in &file.methods {
+            assert_eq!(method.effects(&file.methods, &tracked_regexes()), ["power"]);
+        }
     }
 
     #[test]
-    fn effect_detection_follows_one_helper_level() {
-        let file = ClassFile {
-            methods: vec![
-                Method {
-                    name: "AfterSideTurnStart".to_owned(),
-                    body: "await Trigger();".to_owned(),
-                    is_override: true,
-                },
-                Method {
-                    name: "Trigger".to_owned(),
-                    body: "await CreatureCmd.Damage(ctx, target, 1);".to_owned(),
-                    is_override: false,
-                },
-            ],
-        };
+    fn effects_follow_one_helper_level_and_union_direct_calls() {
+        let file = fixture("public override void AfterSideTurnStart() { CreatureCmd.Damage(ctx, target, 1); Buff(); }
+            private void Buff() { PowerCmd.Apply<StrengthPower>(ctx, target, 1); TooDeep(); }
+            private void TooDeep() { ForgeCmd.Forge(); }");
+        assert_eq!(
+            file.methods[0].effects(&file.methods, &tracked_regexes()),
+            ["damage", "power"]
+        );
+    }
 
+    #[test]
+    fn syntax_boundaries_ignore_braces_and_fake_helpers_in_literals_and_comments() {
+        let file = fixture(
+            r#"public override async Task Hook() {
+                var text = "} Buff() {"; var brace = '}';
+                /* } Buff(); */ if (live) { await CreatureCmd.Damage(); }
+            }
+            private void Buff() => PowerCmd.Apply<StrengthPower>();"#,
+        );
         assert_eq!(
             file.methods[0].effects(&file.methods, &tracked_regexes()),
             ["damage"]
         );
+        assert_eq!(file.methods.len(), 2);
     }
 
     #[test]
@@ -653,39 +604,28 @@ mod tests {
             method: "AfterSideTurnStart",
             effects: vec!["power"],
         });
-
         review.compare_candidates(&candidates);
-
         assert_eq!(review.failures.len(), 1);
         assert!(review.failures[0].contains("NewPower.AfterSideTurnStart"));
     }
 
     #[test]
-    fn parsed_overloads_keep_their_own_bodies_and_catalog_entries_require_one_method() {
-        let source = "namespace MegaCrit.Sts2.Core.Models.Powers;\n\
-                      public sealed class NewPower\n{\n\
-                          public override void AfterSideTurnStart() {}\n\
-                          public override void AfterSideTurnStart(int amount) { PowerCmd.Apply(amount); }\n\
-                          private void Helper() { CreatureCmd.Damage(); }\n}\n";
-        let (name, file) = parse_class_file(
-            Path::new("NewPower.cs"),
-            source,
-            "MegaCrit.Sts2.Core.Models.Powers",
-        )
-        .expect("fixture is a complete class")
-        .expect("fixture declares NewPower");
-        let files = BTreeMap::from([(name, file)]);
+    fn overloads_keep_their_bodies_and_catalog_entries_require_one_method() {
+        let file = fixture(
+            "public override void AfterSideTurnStart() {}
+            public override void AfterSideTurnStart(int amount) { PowerCmd.Apply(amount); }
+            private void Helper() { CreatureCmd.Damage(); }",
+        );
+        let files = BTreeMap::from([("Power".to_owned(), file)]);
         let universe = HashSet::from(["AfterSideTurnStart".to_owned()]);
         let tracked = tracked_regexes();
         let relics = BTreeMap::new();
         let candidates = candidate_hooks(&relics, &files, &universe, &tracked);
         assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0].method, "AfterSideTurnStart");
         assert_eq!(candidates[0].effects, ["power"]);
-
         let mut review = Review::default();
         review.check_entries(
-            &[("NewPower", "AfterSideTurnStart"), ("NewPower", "Missing")],
+            &[("Power", "AfterSideTurnStart"), ("Power", "Missing")],
             &files,
             "Powers",
             &universe,
@@ -694,69 +634,5 @@ mod tests {
         assert_eq!(review.failures.len(), 2);
         assert!(review.failures[0].contains("AfterSideTurnStart is missing or overloaded"));
         assert!(review.failures[1].contains("Missing is missing or overloaded"));
-    }
-
-    #[test]
-    fn effect_detection_unions_direct_and_helper_effects() {
-        let file = ClassFile {
-            methods: vec![
-                Method {
-                    name: "AfterSideTurnStart".to_owned(),
-                    body: "await CreatureCmd.Damage(ctx, target, 1); await Buff();".to_owned(),
-                    is_override: true,
-                },
-                Method {
-                    name: "Buff".to_owned(),
-                    body: "await PowerCmd.Apply<StrengthPower>(ctx, target, 1);".to_owned(),
-                    is_override: false,
-                },
-            ],
-        };
-
-        assert_eq!(
-            file.methods[0].effects(&file.methods, &tracked_regexes()),
-            ["damage", "power"]
-        );
-    }
-
-    #[test]
-    fn class_files_reject_bodyless_declarations() {
-        let shell = xshell::Shell::new().expect("cargo test runs with a working directory");
-        let temp = shell
-            .create_temp_dir()
-            .expect("the test class tree needs an isolated temporary directory");
-        let root = temp.path();
-        std::fs::write(
-            root.join("Empty.cs"),
-            "namespace MegaCrit.Sts2.Core.Models.Relics;\npublic sealed class Empty\n{\n    public void Hook();\n}\n",
-        )
-        .expect("writing the test class");
-
-        let error = match class_files(root, "MegaCrit.Sts2.Core.Models.Relics") {
-            Ok(files) => panic!("a bodyless declaration passed with {} classes", files.len()),
-            Err(error) => error,
-        };
-        assert!(error.to_string().contains("no block body"));
-    }
-
-    #[test]
-    fn brace_body_rejects_bodyless_declarations() {
-        let source = "void Hook();\nvoid Next() { Damage(); }";
-        let declaration_end =
-            source.find("Hook()").expect("the test declares Hook") + "Hook()".len();
-
-        assert_eq!(brace_body(source, declaration_end), None);
-    }
-
-    #[test]
-    fn brace_body_includes_nested_blocks() {
-        let source = "void Hook() { if (live) { Damage(); } } void Next() {}";
-        let declaration_end =
-            source.find("Hook()").expect("the test declares Hook") + "Hook()".len();
-
-        assert_eq!(
-            brace_body(source, declaration_end),
-            Some("{ if (live) { Damage(); } }")
-        );
     }
 }

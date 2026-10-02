@@ -27,8 +27,7 @@ const EM_DASH: char = '\u{2014}';
 const PINS: &[(&str, usize)] = &[
     ("profiler-core/src/data/state.rs", 1),
     ("xtask/src/bundle.rs", 1),
-    ("xtask/src/check_abi.rs", 3),
-    ("xtask/src/check_catalog.rs", 10),
+    ("xtask/src/check_catalog.rs", 9),
     ("xtask/src/decompile.rs", 2),
     ("xtask/src/discover.rs", 3),
     ("xtask/src/game_version.rs", 1),

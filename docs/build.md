@@ -16,10 +16,11 @@ Run `cargo xtask --help`.
 
 ## Formatting
 
-- `cargo xtask fmt` formats Rust, all handwritten C\# under `shim/` (including
-  fixtures), and the project Markdown docs. `cargo xtask fmt --check` fails on
-  drift without rewriting sources; `cargo xtask fmt-md` formats only docs.
-- C\# layout follows [shim/.editorconfig](../shim/.editorconfig) using the
+- `cargo xtask fmt` formats Rust, handwritten C\# under `shim/` (including
+  fixtures) and `xtask/syntax/`, and the project Markdown docs. `cargo xtask fmt
+  --check` fails on drift without rewriting sources; `cargo xtask fmt-md`
+  formats only docs.
+- Shim C\# layout follows [shim/.editorconfig](../shim/.editorconfig) using the
   pinned SDK's `dotnet format whitespace` in folder mode. Formatting needs no
   game, generated project, or NuGet restore; the SDK bootstraps automatically.
   It does not apply analyzer fixes or format generated build sources.
@@ -54,6 +55,10 @@ Run `cargo xtask --help`.
   machine paths in the project XML.
 - Keep the SDK on 9.x while the shim targets net9.0. SDK 9 bundles that
   targeting pack; SDK 10 would silently fetch it from NuGet.
+- Source checks and their Rust fixtures use the syntax tool in `xtask/syntax/`.
+  It references the pinned SDK's Roslyn assemblies directly and clears NuGet
+  feeds. Standalone `check-abi`, `check-catalog`, and their fixtures therefore
+  need the SDK; the tool builds lazily under `target/syntax/` without a game.
 - Production builds and managed fixtures use the SDK's recommended .NET 9
   quality analyzers, pinned with `AnalysisLevel=9.0-recommended`; compiler and
   analyzer warnings fail both builds. Fixture-only exceptions preserve Harmony

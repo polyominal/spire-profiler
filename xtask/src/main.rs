@@ -17,6 +17,7 @@ mod check_citations;
 mod check_docs;
 mod check_emdash;
 mod cross;
+mod csharp;
 mod decompile;
 mod discover;
 mod dotnet;
@@ -181,7 +182,6 @@ fn fmt(shell: &Shell, check: bool) -> Result<()> {
     let rust_check: &[&str] = if check { &["--", "--check"] } else { &[] };
     cmd!(shell, "cargo fmt --all {rust_check...}").run()?;
     let binary = dotnet::resolve_dotnet(shell)?;
-    let shim = workspace_root().join("shim");
     let _telemetry = shell.push_env("DOTNET_CLI_TELEMETRY_OPTOUT", "1");
     let _logo = shell.push_env("DOTNET_NOLOGO", "1");
     let _first_run = shell.push_env("DOTNET_SKIP_FIRST_TIME_EXPERIENCE", "1");
@@ -192,11 +192,14 @@ fn fmt(shell: &Shell, check: bool) -> Result<()> {
             .expect("the bootstrapped dotnet binary has a parent"),
     );
     let cs_check: &[&str] = if check { &["--verify-no-changes"] } else { &[] };
-    cmd!(
-        shell,
-        "{binary} format whitespace {shim} --folder {cs_check...}"
-    )
-    .run()?;
+    for directory in ["shim", "xtask/syntax"] {
+        let sources = workspace_root().join(directory);
+        cmd!(
+            shell,
+            "{binary} format whitespace {sources} --folder {cs_check...}"
+        )
+        .run()?;
+    }
     md::fmt_md(check)
 }
 
