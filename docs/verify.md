@@ -32,8 +32,7 @@ understandable.
   `check-abi` (`GetExport` bindings across the production shim sources against
   the Rust exports), `cargo clippy --workspace --all-targets --all-features
   --locked -- --deny warnings`, `check-docs` (warning-free `cargo doc
-  --document-private-items` and the [comment-density
-  budget](../xtask/src/check_docs.rs)), `cargo nextest run --workspace --locked
+  --document-private-items`), `cargo nextest run --workspace --locked
   --no-fail-fast`.
 - `cargo xtask managed-test`: build the host Rust reducer, then compile the
   shared production managed sources and deterministic fixtures against the
