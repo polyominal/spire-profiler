@@ -298,22 +298,10 @@ mod tests {
         let root = workspace_root();
         let scratch_root = root.join("tmp/xtask-shim-tests");
         fs::create_dir_all(&scratch_root)?;
-        let mut serial = 0_u32;
-        let scratch = loop {
-            let candidate = scratch_root.join(format!("{}-{serial}", std::process::id()));
-            match fs::create_dir(&candidate) {
-                Ok(()) => break candidate,
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    serial = serial
-                        .checked_add(1)
-                        .context("test directory serial exhausted")?;
-                }
-                Err(error) => return Err(error.into()),
-            }
-        };
+        let scratch = tempfile::tempdir_in(&scratch_root)?;
         let old_timestamp = UNIX_EPOCH + Duration::from_secs(1_000_000);
         for (label, kind) in [("mod", ProjectKind::Mod), ("tests", ProjectKind::Tests)] {
-            let project = scratch.join(label);
+            let project = scratch.path().join(label);
             fs::create_dir(&project)?;
             let obsolete = project.join("shim.cs");
             fs::write(&obsolete, "#error obsolete host\n")?;
@@ -362,7 +350,7 @@ mod tests {
                 "explicit compile inputs must tolerate stale output"
             );
         }
-        fs::remove_dir_all(scratch)?;
+        scratch.close()?;
         Ok(())
     }
 }
