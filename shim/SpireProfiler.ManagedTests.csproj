@@ -2,4 +2,7 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
   </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="tests/producer-inventory.json" LogicalName="SpireProfiler.ProducerInventory" />
+  </ItemGroup>
 </Project>

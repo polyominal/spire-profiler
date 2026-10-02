@@ -62,32 +62,40 @@ impl Project {
             .env("SpireBuildDir", &self.output)
     }
 
-    fn input_paths(&self, shell: &Shell, binary: &Path) -> Result<Vec<PathBuf>> {
+    fn input_paths(&self, shell: &Shell, binary: &Path, resources: bool) -> Result<Vec<PathBuf>> {
         std::fs::create_dir_all(&self.output)?;
         write_if_changed(
             &self.output.join("NativeLibrarySelector.g.cs"),
             &native_library_selector(),
         )?;
+        let item_names: &[&str] = if resources {
+            &["Compile", "EmbeddedResource"]
+        } else {
+            &["Compile"]
+        };
         let json = self
             .command(shell, binary)
-            .args([
-                "msbuild",
-                "-nologo",
-                "-property:Configuration=Release",
-                "-getItem:Compile",
-            ])
+            .args(["msbuild", "-nologo", "-property:Configuration=Release"])
+            .arg(format!("-getItem:{}", item_names.join(",")))
             .arg(self.directory.join(self.kind.file_name()))
             .read()?;
         let result: serde_json::Value = serde_json::from_str(&json)?;
-        result["Items"]["Compile"]
-            .as_array()
-            .context("MSBuild must return its evaluated Compile items")?
+        let items = item_names
             .iter()
+            .map(|name| {
+                result["Items"][name]
+                    .as_array()
+                    .with_context(|| format!("MSBuild must return its evaluated {name} items"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        items
+            .into_iter()
+            .flatten()
             .map(|item| {
                 item["FullPath"]
                     .as_str()
                     .map(PathBuf::from)
-                    .context("MSBuild Compile items must have a FullPath")
+                    .context("MSBuild input items must have a FullPath")
             })
             .collect()
     }
@@ -101,7 +109,7 @@ impl Project {
 
     pub fn read_sources(&self, shell: &Shell) -> Result<Vec<(String, String)>> {
         let binary = dotnet::resolve_dotnet(shell)?;
-        self.input_paths(shell, &binary)?
+        self.input_paths(shell, &binary, false)?
             .into_iter()
             .map(|path| {
                 Ok((
@@ -121,7 +129,7 @@ impl Project {
             output: destination.to_owned(),
         };
         std::fs::create_dir_all(&snapshot.directory)?;
-        for input in self.input_paths(shell, &binary)? {
+        for input in self.input_paths(shell, &binary, true)? {
             let base = if input.starts_with(&self.directory) {
                 &snapshot.directory
             } else {
@@ -140,7 +148,7 @@ impl Project {
     pub fn build(&self, shell: &Shell, game: &discover::GamePaths) -> Result<()> {
         let binary = dotnet::resolve_dotnet(shell)?;
         let mut digests = String::new();
-        for input in self.input_paths(shell, &binary)? {
+        for input in self.input_paths(shell, &binary, true)? {
             digests.push_str(&format!(
                 "{}  {}\n",
                 sha256_file(&input)?,
@@ -261,6 +269,10 @@ mod tests {
             fs::create_dir_all(path.parent().expect("fixture paths have parents"))?;
             fs::write(path, "// fixture source\n")?;
         }
+        fs::write(
+            project.directory.join("tests/producer-inventory.json"),
+            "reviewed fixture resource\n",
+        )?;
         fs::create_dir_all(&project.output)?;
         fs::write(
             project.output.join("shim.cs"),
@@ -282,6 +294,14 @@ mod tests {
             project.directory.join("new/Feature.cs"),
             "#error changed original\n",
         )?;
+        fs::write(
+            project.directory.join("tests/producer-inventory.json"),
+            "changed fixture resource\n",
+        )?;
+        assert_eq!(
+            fs::read_to_string(snapshot.directory.join("tests/producer-inventory.json"))?,
+            "reviewed fixture resource\n"
+        );
         assert_eq!(snapshot.read_sources(&shell)?, expected);
         assert_ne!(project.read_sources(&shell)?, expected);
         scratch.close()?;

@@ -20,6 +20,14 @@
   session/replay behavior. Expected outcomes come from explicit fixtures and
   independent models, without building historical revisions. These fixtures do
   not launch Godot.
+- Managed verification compares full producer signatures and direct helpers with
+  the reviewed [JSON inventory](../shim/tests/producer-inventory.json),
+  including its game version. Every run retains
+  `producer-inventory.candidate.json` before native loading or patch
+  installation. On drift, review its added/removed signatures against the pinned
+  game before editing the checked-in inventory; the runner never accepts
+  candidates automatically. The retained source snapshot and digests include the
+  reviewed resource.
 - Rust storage fixtures use temporary databases to check transactional import,
   identity ownership, immutable records, missing-payload detection, and recovery
   from failed writes. SQLite's lock timeout bounds contention, not disk latency.
