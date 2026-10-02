@@ -8,7 +8,7 @@ use std::{env, fs};
 use anyhow::Result;
 use xshell::{Shell, cmd};
 
-use crate::workspace_root;
+use crate::{ensure_cli, workspace_root};
 
 /// Bump the version, urls, and shasums together from ziglang.org's index.
 pub const ZIG_VERSION: &str = "0.16.0";
@@ -78,8 +78,8 @@ pub fn ensure_bootstrap_in(shell: &Shell, dir: &Path) -> Result<()> {
         }
         fs::remove_dir_all(dir)?;
     }
-    crate::ensure_cli(shell, "curl", "--version", "the zig bootstrap")?;
-    crate::ensure_cli(shell, "tar", "--version", "the zig bootstrap")?;
+    ensure_cli(shell, "curl", "--version", "the zig bootstrap")?;
+    ensure_cli(shell, "tar", "--version", "the zig bootstrap")?;
     let pin = pin(env::consts::OS, env::consts::ARCH)?;
     println!(
         "zig bootstrap: downloading the pinned zig {ZIG_VERSION} into {} (first run only; \

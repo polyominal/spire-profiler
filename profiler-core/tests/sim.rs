@@ -13,6 +13,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::env::{self, VarError};
 use std::rc::Rc;
+use std::{array, iter};
 
 use profiler_core::data::events;
 use profiler_core::data::state::{self, CardStat, CombatResult, STATE, SourceKind};
@@ -283,11 +284,11 @@ impl PowerModel {
             1
         );
         if !self.trusted || self.observed != before {
-            self.units = std::iter::repeat_n(RowKey::unknown(), before.max(0) as usize).collect();
+            self.units = iter::repeat_n(RowKey::unknown(), before.max(0) as usize).collect();
             self.last = vec![(RowKey::unknown(), 1)];
         }
         if after > before {
-            self.units.extend(std::iter::repeat_n(
+            self.units.extend(iter::repeat_n(
                 source.roots[0].0.clone(),
                 (after - before) as usize,
             ));
@@ -630,8 +631,8 @@ impl LedgerModel {
     fn new(sources: &[Rc<SimSource>]) -> Self {
         let mut model = Self {
             rows: BTreeMap::new(),
-            pools: std::array::from_fn(|_| NaivePool::default()),
-            osty: std::array::from_fn(|_| Vec::new()),
+            pools: array::from_fn(|_| NaivePool::default()),
+            osty: array::from_fn(|_| Vec::new()),
             players: Vec::new(),
             plays: 0,
             generated_plays: 0,

@@ -10,24 +10,24 @@ use std::path::Path;
 use anyhow::{Context, Result, ensure};
 use xshell::{Shell, cmd};
 
-use crate::{bundle, cross, sha256_file, workspace_root};
+use crate::{bundle, cross, ensure_cli, git, sha256_file, workspace_root};
 
 const SHARED_FILES: [&str; 2] = ["manifest.json", "spire-profiler.dll"];
 
 pub fn release(shell: &Shell) -> Result<()> {
-    let commit = crate::git::release_commit(shell)?;
+    let commit = git::release_commit(shell)?;
     crate::smoke(shell)?;
     crate::build::build(shell)?;
     ensure!(
-        crate::git::release_commit(shell)? == commit,
+        git::release_commit(shell)? == commit,
         "HEAD changed during the release build"
     );
     let short = cmd!(shell, "git rev-parse --short=8 {commit}").read()?;
     let version = format!("{}-{short}", crate::game_version::PIN);
     let root = workspace_root();
     let out_dir = root.join("dist");
-    crate::ensure_cli(shell, "zip", "--version", "packaging")?;
-    crate::ensure_cli(shell, "unzip", "-v", "archive validation")?;
+    ensure_cli(shell, "zip", "--version", "packaging")?;
+    ensure_cli(shell, "unzip", "-v", "archive validation")?;
     let bundle_dir = root.join("target/mods").join(bundle::MOD_ID);
     package(shell, &bundle_dir, &out_dir, &version)?;
     println!("release: {version} -> {}", out_dir.display());

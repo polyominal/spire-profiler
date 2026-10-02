@@ -10,7 +10,7 @@ use std::{env, fs};
 use anyhow::Result;
 use xshell::{Shell, cmd};
 
-use crate::workspace_root;
+use crate::{ensure_cli, workspace_root};
 
 /// Bump the version, urls, and sha512s together from Microsoft's release
 /// metadata (the hashes it publishes are SHA-512).
@@ -121,8 +121,8 @@ pub fn ensure_bootstrap_in(shell: &Shell, dir: &Path) -> Result<()> {
             }
         }
     }
-    crate::ensure_cli(shell, "curl", "--version", "the .NET SDK bootstrap")?;
-    crate::ensure_cli(shell, "tar", "--version", "the .NET SDK bootstrap")?;
+    ensure_cli(shell, "curl", "--version", "the .NET SDK bootstrap")?;
+    ensure_cli(shell, "tar", "--version", "the .NET SDK bootstrap")?;
     println!(
         "dotnet bootstrap: downloading the pinned .NET SDK {DOTNET_VERSION} into {} (first \
          run only; ~250 MB, cached for subsequent runs)",
