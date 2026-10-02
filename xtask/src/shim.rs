@@ -1,53 +1,14 @@
-//! One production source inventory feeds copying, compilation, digests, and
-//! ABI checks. Managed tests append fixtures; only the native library selector
+//! SDK projects own managed compile inputs. MSBuild evaluates that same list for
+//! ABI checks and retained fixture snapshots. Only the native library selector
 //! is generated from the platform matrix.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use xshell::{Cmd, Shell};
 
 use crate::cross::MATRIX;
-use crate::{sha256_file, workspace_root};
-
-const PRODUCTION_SOURCES: [&str; 37] = [
-    "SpireProfilerMod.cs",
-    "NativeLibrarySelector.g.cs",
-    "native/ProfilerNative.cs",
-    "native/NativeStatisticsStore.cs",
-    "native/NativeAttributionBackend.cs",
-    "run/RunContext.cs",
-    "run/RunPatches.cs",
-    "ui/ProfilerPanels.cs",
-    "ui/RunHistoryPatches.cs",
-    "ui/ProfilerPanel.cs",
-    "ui/PanelTheme.cs",
-    "ui/ChartProjection.cs",
-    "ui/PanelLayout.cs",
-    "ui/PanelGeometry.cs",
-    "ui/TooltipLayout.cs",
-    "session/Statistics.cs",
-    "session/StatisticsJson.cs",
-    "session/StatisticsStore.cs",
-    "session/LegacyStatisticsImport.cs",
-    "session/ProfilerSession.cs",
-    "audit/AuditJournal.cs",
-    "audit/PoisonAudit.cs",
-    "attribution/SourceSnapshot.cs",
-    "attribution/AttributionBackend.cs",
-    "attribution/CaptureRuntime.cs",
-    "attribution/IdentityCapture.cs",
-    "attribution/FlowCapture.cs",
-    "attribution/GameAttributionBackend.cs",
-    "attribution/CapturePatches.cs",
-    "attribution/ProvenanceCapture.cs",
-    "attribution/DamageCapture.cs",
-    "attribution/ModifierCapture.cs",
-    "attribution/DecimalWords.cs",
-    "attribution/TemporalPowerCapture.cs",
-    "attribution/PlayCapture.cs",
-    "attribution/CommandCapture.cs",
-    "attribution/DoomCapture.cs",
-];
+use crate::{discover, dotnet, sha256_file, workspace_root};
 
 #[derive(Clone, Copy)]
 pub enum ProjectKind {
@@ -56,51 +17,162 @@ pub enum ProjectKind {
 }
 
 impl ProjectKind {
-    fn sources(self) -> impl Iterator<Item = &'static str> {
-        let fixtures: &[&str] = match self {
-            Self::Mod => &[],
-            Self::Tests => &[
-                "tests/Program.cs",
-                "tests/Fixtures.cs",
-                "tests/AuditFixtures.cs",
-                "tests/PanelFixtures.cs",
-                "tests/SessionFixtures.cs",
-            ],
-        };
-        PRODUCTION_SOURCES
-            .into_iter()
-            .chain(fixtures.iter().copied())
+    fn file_name(self) -> &'static str {
+        match self {
+            Self::Mod => "SpireProfiler.csproj",
+            Self::Tests => "SpireProfiler.ManagedTests.csproj",
+        }
+    }
+}
+
+pub struct Project {
+    kind: ProjectKind,
+    directory: PathBuf,
+    pub output: PathBuf,
+}
+
+impl Project {
+    pub fn source(kind: ProjectKind) -> Self {
+        Self {
+            kind,
+            directory: workspace_root().join("shim"),
+            output: workspace_root().join("target/xtask-gen"),
+        }
     }
 
-    pub fn read_sources(self) -> Result<Vec<(&'static str, String)>> {
-        self.sources()
-            .map(|source| {
-                let contents = if source == "NativeLibrarySelector.g.cs" {
-                    native_library_selector()
-                } else {
-                    let input = workspace_root().join("shim").join(source);
-                    std::fs::read_to_string(&input)
-                        .with_context(|| format!("reading managed source {}", input.display()))?
-                };
-                Ok((source, contents))
+    fn configuration_files(&self) -> [&str; 4] {
+        [
+            self.kind.file_name(),
+            "Directory.Build.props",
+            "NuGet.Config",
+            ".editorconfig",
+        ]
+    }
+
+    fn command<'a>(&self, shell: &'a Shell, binary: &Path) -> Cmd<'a> {
+        shell
+            .cmd(binary)
+            .env("DOTNET_CLI_TELEMETRY_OPTOUT", "1")
+            .env("DOTNET_NOLOGO", "1")
+            .env("DOTNET_SKIP_FIRST_TIME_EXPERIENCE", "1")
+            .env(
+                "DOTNET_ROOT",
+                binary.parent().expect("the bootstrapped SDK has a parent"),
+            )
+            .env("SpireBuildDir", &self.output)
+    }
+
+    fn input_paths(&self, shell: &Shell, binary: &Path) -> Result<Vec<PathBuf>> {
+        std::fs::create_dir_all(&self.output)?;
+        write_if_changed(
+            &self.output.join("NativeLibrarySelector.g.cs"),
+            &native_library_selector(),
+        )?;
+        let json = self
+            .command(shell, binary)
+            .args([
+                "msbuild",
+                "-nologo",
+                "-property:Configuration=Release",
+                "-getItem:Compile",
+            ])
+            .arg(self.directory.join(self.kind.file_name()))
+            .read()?;
+        let result: serde_json::Value = serde_json::from_str(&json)?;
+        result["Items"]["Compile"]
+            .as_array()
+            .context("MSBuild must return its evaluated Compile items")?
+            .iter()
+            .map(|item| {
+                item["FullPath"]
+                    .as_str()
+                    .map(PathBuf::from)
+                    .context("MSBuild Compile items must have a FullPath")
             })
             .collect()
     }
-}
 
-pub fn write_sources(destination: &Path, kind: ProjectKind) -> Result<()> {
-    std::fs::create_dir_all(destination)?;
-    let mut digests = String::new();
-    for (source, contents) in kind.read_sources()? {
-        let output = destination.join(source);
-        std::fs::create_dir_all(output.parent().expect("managed sources have a parent"))?;
-        write_if_changed(&output, &contents)?;
-        digests.push_str(&format!("{}  {source}\n", sha256_file(&output)?));
+    fn input_name<'a>(&self, input: &'a Path) -> Result<&'a Path> {
+        input
+            .strip_prefix(&self.directory)
+            .or_else(|_| input.strip_prefix(&self.output))
+            .with_context(|| format!("source outside project directories: {}", input.display()))
     }
-    write_if_changed(&destination.join("source-digests.txt"), &digests)
+
+    pub fn read_sources(&self, shell: &Shell) -> Result<Vec<(String, String)>> {
+        let binary = dotnet::resolve_dotnet(shell)?;
+        self.input_paths(shell, &binary)?
+            .into_iter()
+            .map(|path| {
+                Ok((
+                    self.input_name(&path)?.to_string_lossy().into_owned(),
+                    std::fs::read_to_string(&path)
+                        .with_context(|| format!("reading managed source {}", path.display()))?,
+                ))
+            })
+            .collect()
+    }
+
+    pub fn snapshot(&self, shell: &Shell, destination: &Path) -> Result<Self> {
+        let binary = dotnet::resolve_dotnet(shell)?;
+        let snapshot = Self {
+            kind: self.kind,
+            directory: destination.join("src"),
+            output: destination.to_owned(),
+        };
+        std::fs::create_dir_all(&snapshot.directory)?;
+        for input in self.input_paths(shell, &binary)? {
+            let base = if input.starts_with(&self.directory) {
+                &snapshot.directory
+            } else {
+                &snapshot.output
+            };
+            let output = base.join(self.input_name(&input)?);
+            std::fs::create_dir_all(output.parent().expect("snapshot sources have a parent"))?;
+            std::fs::copy(input, output)?;
+        }
+        for name in self.configuration_files() {
+            std::fs::copy(self.directory.join(name), snapshot.directory.join(name))?;
+        }
+        Ok(snapshot)
+    }
+
+    pub fn build(&self, shell: &Shell, game: &discover::GamePaths) -> Result<()> {
+        let binary = dotnet::resolve_dotnet(shell)?;
+        let mut digests = String::new();
+        for input in self.input_paths(shell, &binary)? {
+            digests.push_str(&format!(
+                "{}  {}\n",
+                sha256_file(&input)?,
+                self.input_name(&input)?.display()
+            ));
+        }
+        for name in self.configuration_files() {
+            digests.push_str(&format!(
+                "{}  {name}\n",
+                sha256_file(&self.directory.join(name))?
+            ));
+        }
+        write_if_changed(&self.output.join("source-digests.txt"), &digests)?;
+        self.command(shell, &binary)
+            .arg("build")
+            .arg(self.directory.join(self.kind.file_name()))
+            .args([
+                "--configuration",
+                "Release",
+                "--nologo",
+                "--verbosity",
+                "quiet",
+            ])
+            .env("SpireSts2Dll", &game.sts2_dll)
+            .env("SpireHarmonyDll", &game.harmony_dll)
+            .env("SpireGodotSharpDll", &game.godot_sharp_dll)
+            .run()?;
+        Ok(())
+    }
 }
 
-pub fn write_if_changed(path: &Path, contents: &str) -> Result<()> {
+fn write_if_changed(path: &Path, contents: &str) -> Result<()> {
     match std::fs::read_to_string(path) {
         Ok(existing) if existing == contents => Ok(()),
         _ => Ok(std::fs::write(path, contents)?),
@@ -140,77 +212,9 @@ fn lib_for(os: &str, arch: &str) -> &'static str {
         .bundle_name
 }
 
-pub fn build_csproj(
-    sts2_dll: &Path,
-    harmony_dll: &Path,
-    godot_sharp_dll: &Path,
-    kind: ProjectKind,
-) -> String {
-    let (assembly, test_properties, dependencies) = match kind {
-        ProjectKind::Mod => ("SpireProfiler", "", "false"),
-        ProjectKind::Tests => (
-            "SpireProfiler.ManagedTests",
-            "    <OutputType>Exe</OutputType>\n",
-            "true",
-        ),
-    };
-    let mut sources = String::new();
-    for source in kind.sources() {
-        sources.push_str(&format!("    <Compile Include=\"{source}\" />\n"));
-    }
-    let mut references = String::new();
-    for (name, path) in [
-        ("sts2", sts2_dll),
-        ("0Harmony", harmony_dll),
-        ("GodotSharp", godot_sharp_dll),
-    ] {
-        let path = path
-            .to_string_lossy()
-            .replace('&', "&amp;")
-            .replace('<', "&lt;")
-            .replace('>', "&gt;")
-            .replace('\"', "&quot;")
-            .replace('\'', "&apos;");
-        references.push_str(&format!(
-            "    <Reference Include=\"{name}\"><HintPath>{path}</HintPath><Private>false</Private></Reference>\n"
-        ));
-    }
-    format!(
-        r#"<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
-    <EnableNETAnalyzers>true</EnableNETAnalyzers>
-    <AnalysisLevel>9.0-recommended</AnalysisLevel>
-    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <AssemblyName>{assembly}</AssemblyName>
-    <RootNamespace>SpireProfiler</RootNamespace>
-{test_properties}    <Nullable>disable</Nullable>
-    <ImplicitUsings>disable</ImplicitUsings>
-    <OutputPath>bin/</OutputPath>
-    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
-    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
-    <!-- The game scans every *.json under mods/ as a mod manifest. -->
-    <GenerateDependencyFile>{dependencies}</GenerateDependencyFile>
-    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
-    <EnableDefaultEmbeddedResourceItems>false</EnableDefaultEmbeddedResourceItems>
-    <DebugType>none</DebugType>
-    <DebugSymbols>false</DebugSymbols>
-    <Deterministic>true</Deterministic>
-  </PropertyGroup>
-  <ItemGroup>
-{sources}  </ItemGroup>
-  <ItemGroup>
-{references}  </ItemGroup>
-</Project>
-"#,
-    )
-}
-
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
-    use std::fs::{self, File, FileTimes};
-    use std::time::{Duration, UNIX_EPOCH};
+    use std::fs;
 
     use super::*;
 
@@ -224,132 +228,62 @@ mod tests {
                 row.bundle_name
             );
         }
-        assert!(
-            output.contains("PlatformNotSupportedException"),
-            "the selector must fail loudly on platforms the bundle does not ship"
-        );
-    }
-
-    fn compile_inputs(kind: ProjectKind) -> Vec<String> {
-        let csproj = build_csproj(
-            Path::new("sts2.dll"),
-            Path::new("0Harmony.dll"),
-            Path::new("GodotSharp.dll"),
-            kind,
-        );
-        assert!(csproj.contains("<EnableDefaultCompileItems>false</EnableDefaultCompileItems>"));
-        csproj
-            .lines()
-            .filter_map(|line| {
-                Some(
-                    line.trim()
-                        .strip_prefix("<Compile Include=\"")?
-                        .strip_suffix("\" />")?
-                        .to_owned(),
-                )
-            })
-            .collect()
+        assert!(output.contains("PlatformNotSupportedException"));
     }
 
     #[test]
-    fn projects_include_all_production_sources_and_only_tests_add_fixtures() -> Result<()> {
-        let shim_root = workspace_root().join("shim");
-        let mut directories = vec![shim_root.clone()];
-        let mut handwritten = BTreeSet::new();
-        while let Some(directory) = directories.pop() {
-            for entry in fs::read_dir(directory)? {
-                let path = entry?.path();
-                if path.is_dir() {
-                    directories.push(path);
-                } else if path.extension().is_some_and(|extension| extension == "cs") {
-                    handwritten.insert(
-                        path.strip_prefix(&shim_root)?
-                            .to_string_lossy()
-                            .replace('\\', "/"),
-                    );
-                }
-            }
-        }
-        for kind in [ProjectKind::Mod, ProjectKind::Tests] {
-            let compiled = compile_inputs(kind);
-            let mut expected: BTreeSet<_> = handwritten
-                .iter()
-                .filter(|source| {
-                    matches!(kind, ProjectKind::Tests) || !source.starts_with("tests/")
-                })
-                .map(String::as_str)
-                .collect();
-            expected.insert("NativeLibrarySelector.g.cs");
-            assert_eq!(
-                compiled.iter().map(String::as_str).collect::<BTreeSet<_>>(),
-                expected
-            );
-            assert_eq!(
-                compiled.len(),
-                expected.len(),
-                "compile inputs must be unique"
-            );
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn incremental_writes_copy_and_hash_compile_inputs_ignoring_obsolete_shim() -> Result<()> {
+    fn msbuild_selects_new_sources_and_snapshots_exclude_stale_outputs() -> Result<()> {
+        let shell = Shell::new()?;
         let root = workspace_root();
         let scratch_root = root.join("tmp/xtask-shim-tests");
         fs::create_dir_all(&scratch_root)?;
         let scratch = tempfile::tempdir_in(&scratch_root)?;
-        let old_timestamp = UNIX_EPOCH + Duration::from_secs(1_000_000);
-        for (label, kind) in [("mod", ProjectKind::Mod), ("tests", ProjectKind::Tests)] {
-            let project = scratch.path().join(label);
-            fs::create_dir(&project)?;
-            let obsolete = project.join("shim.cs");
-            fs::write(&obsolete, "#error obsolete host\n")?;
-            write_sources(&project, kind)?;
-            let compiled = compile_inputs(kind);
-            assert!(!compiled.iter().any(|source| source == "shim.cs"));
-            let digests = fs::read_to_string(project.join("source-digests.txt"))?;
-            let hashed = digests.lines().map(|line| {
-                line.split_once("  ")
-                    .expect("digest lines separate hash and filename")
-            });
-            assert!(
-                hashed
-                    .clone()
-                    .map(|(_, name)| name)
-                    .eq(compiled.iter().map(String::as_str)),
-                "digest sources must follow the compiler input order"
-            );
-            for (hash, source) in hashed {
-                let path = project.join(source);
-                assert_eq!(hash, sha256_file(&path)?);
-                if source != "NativeLibrarySelector.g.cs" {
-                    assert_eq!(fs::read(&path)?, fs::read(root.join("shim").join(source))?);
-                }
-            }
-            let outputs = compiled
-                .iter()
-                .map(String::as_str)
-                .chain(["source-digests.txt"]);
-            for source in outputs.clone() {
-                File::options()
-                    .write(true)
-                    .open(project.join(source))?
-                    .set_times(FileTimes::new().set_modified(old_timestamp))?;
-            }
-            write_sources(&project, kind)?;
-            for source in outputs {
-                assert_eq!(
-                    fs::metadata(project.join(source))?.modified()?,
-                    old_timestamp,
-                    "unchanged input {source} must preserve its timestamp"
-                );
-            }
-            assert!(
-                obsolete.is_file(),
-                "explicit compile inputs must tolerate stale output"
-            );
+        let mut project = Project {
+            kind: ProjectKind::Mod,
+            directory: scratch.path().join("source & spaces"),
+            output: scratch.path().join("build & spaces"),
+        };
+        fs::create_dir_all(&project.directory)?;
+        for name in project
+            .configuration_files()
+            .into_iter()
+            .chain([ProjectKind::Tests.file_name()])
+        {
+            fs::copy(root.join("shim").join(name), project.directory.join(name))?;
         }
+        for name in [
+            "new/Feature.cs",
+            "tests/Fixture.cs",
+            "obj/Stale.cs",
+            "bin/Stale.cs",
+        ] {
+            let path = project.directory.join(name);
+            fs::create_dir_all(path.parent().expect("fixture paths have parents"))?;
+            fs::write(path, "// fixture source\n")?;
+        }
+        fs::create_dir_all(&project.output)?;
+        fs::write(
+            project.output.join("shim.cs"),
+            "#error obsolete copied host\n",
+        )?;
+        for (kind, count) in [(ProjectKind::Mod, 2), (ProjectKind::Tests, 3)] {
+            project.kind = kind;
+            let sources = project.read_sources(&shell)?;
+            assert!(sources.iter().any(|(name, _)| name == "new/Feature.cs"));
+            assert_eq!(
+                sources.iter().any(|(name, _)| name == "tests/Fixture.cs"),
+                matches!(kind, ProjectKind::Tests)
+            );
+            assert_eq!(sources.len(), count);
+        }
+        let snapshot = project.snapshot(&shell, &scratch.path().join("retained & spaces"))?;
+        let expected = snapshot.read_sources(&shell)?;
+        fs::write(
+            project.directory.join("new/Feature.cs"),
+            "#error changed original\n",
+        )?;
+        assert_eq!(snapshot.read_sources(&shell)?, expected);
+        assert_ne!(project.read_sources(&shell)?, expected);
         scratch.close()?;
         Ok(())
     }

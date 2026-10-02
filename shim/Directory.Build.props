@@ -1,0 +1,27 @@
+<Project>
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>9.0-recommended</AnalysisLevel>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <RootNamespace>SpireProfiler</RootNamespace>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <SpireBuildDir Condition="'$(SpireBuildDir)' == ''">$(MSBuildThisFileDirectory)../target/xtask-gen</SpireBuildDir>
+    <BaseIntermediateOutputPath>$(SpireBuildDir)/obj/$(MSBuildProjectName)/</BaseIntermediateOutputPath>
+    <OutputPath>$(SpireBuildDir)/bin/</OutputPath>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+    <DefaultItemExcludes>$(DefaultItemExcludes);**/bin/**;**/obj/**</DefaultItemExcludes>
+    <EnableDefaultEmbeddedResourceItems>false</EnableDefaultEmbeddedResourceItems>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="$(SpireBuildDir)/NativeLibrarySelector.g.cs" Link="NativeLibrarySelector.g.cs" />
+    <Reference Include="sts2"><HintPath>$(SpireSts2Dll)</HintPath><Private>false</Private></Reference>
+    <Reference Include="0Harmony"><HintPath>$(SpireHarmonyDll)</HintPath><Private>false</Private></Reference>
+    <Reference Include="GodotSharp"><HintPath>$(SpireGodotSharpDll)</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+</Project>

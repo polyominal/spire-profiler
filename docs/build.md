@@ -39,12 +39,19 @@ Run `cargo xtask --help`.
 
 ## .NET bootstrap
 
-- The handwritten C\# files under `shim/` are compiled from the production
-  source inventory in [shim.rs](../xtask/src/shim.rs). Only
-  `NativeLibrarySelector.g.cs` is generated from the native target matrix.
-- The project uses explicit compile inputs, so stale files in
-  `target/xtask-gen/` cannot join a later build. Managed tests use the same
-  production inventory with fixture sources appended.
+- The checked-in [production project](../shim/SpireProfiler.csproj) and [fixture
+  project](../shim/SpireProfiler.ManagedTests.csproj) use SDK source globs.
+  Production excludes `tests/`; both exclude build outputs. ABI checks and
+  source digests query MSBuild's evaluated `Compile` items, so `check-abi` needs
+  the pinned SDK but no installed game.
+- Production compiles the handwritten files in place. Only
+  `NativeLibrarySelector.g.cs` is generated from the native target matrix under
+  `target/xtask-gen/`; stale copied sources there cannot join compilation.
+  Managed fixtures compile retained source and project snapshots under each
+  run's `src/` directory.
+- [NuGet.Config](../shim/NuGet.Config) clears package feeds. xtask passes
+  discovered game assembly paths as environment properties, without embedding
+  machine paths in the project XML.
 - Keep the SDK on 9.x while the shim targets net9.0. SDK 9 bundles that
   targeting pack; SDK 10 would silently fetch it from NuGet.
 - Production builds and managed fixtures use the SDK's recommended .NET 9

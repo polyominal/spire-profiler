@@ -13,12 +13,13 @@
   shared production managed sources and deterministic fixtures against the
   installed, version-checked game and Harmony assemblies. Compiler and
   recommended .NET 9 analyzer warnings fail the build. Each invocation retains
-  an isolated project and source, assembly, and native-library hashes under
-  `tmp/managed-tests/`. The fixtures check capture and async scope restoration,
-  exact patch bridges, chart projection, parser boundaries, SQLite persistence,
-  and native session/replay behavior. Expected outcomes come from explicit
-  fixtures and independent models, without building historical revisions. These
-  fixtures do not launch Godot.
+  an isolated source/project snapshot in `tmp/managed-tests/<run>/src/`, its
+  compiled assembly, and source, project, game assembly, and native-library
+  hashes. The fixtures check capture and async scope restoration, exact patch
+  bridges, chart projection, parser boundaries, SQLite persistence, and native
+  session/replay behavior. Expected outcomes come from explicit fixtures and
+  independent models, without building historical revisions. These fixtures do
+  not launch Godot.
 - Rust storage fixtures use temporary databases to check transactional import,
   identity ownership, immutable records, missing-payload detection, and recovery
   from failed writes. SQLite's lock timeout bounds contention, not disk latency.
