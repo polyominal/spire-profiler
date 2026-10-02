@@ -174,10 +174,13 @@ manual re-verification:
 1. Re-run `cargo xtask decompile` (replaces `tmp/sts2-decompiled`).
 2. Run `cargo xtask check-catalog`: it fails on entries that no longer resolve
    or show a tracked effect, on new candidate hooks, and on stale reviewed
-   exclusions; decide by reading the decompiled hook bodies, updating the
-   catalog or reviewed-candidate baseline accordingly. The catalog in
-   [catalog.rs](xtask/src/catalog.rs) is curated by hand, never generated; the
-   shim picks changes up at build.
+   syntax or exclusions. Read `tmp/catalog-review/changes.txt` and the changed
+   decompiled bodies, then update the catalog or reviewed-candidate decisions.
+   Re-run the check to produce a fresh `tmp/catalog-review/candidate.json`;
+   explicitly replace `xtask/src/check_catalog/fingerprints.json` only after
+   reviewing it, then re-run the check. The catalog in
+   [catalog.rs](xtask/src/catalog.rs) is curated by hand, never generated; it
+   records review decisions independently of runtime producer discovery.
 3. Re-check the drift findings in [game.md](docs/game.md) against the new
    snapshot and re-date them to the pin; they record traps check-catalog cannot
    see (dead hook bodies, renamed parameter types).

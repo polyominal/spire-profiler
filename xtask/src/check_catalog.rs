@@ -3,9 +3,8 @@
 //! `tmp/sts2-decompiled`, with a provenance recording the pinned game
 //! version.
 //!
-//! Fails on entries that no longer resolve or no longer match their review
-//! decision: the shim would skip the former and the latter needs a fresh
-//! reading of the decompiled body. New uncatalogued hooks also fail until
+//! Fails on entries that no longer resolve or whose reviewed syntax changes.
+//! New uncatalogued hooks also fail until
 //! they are catalogued or recorded as reviewed exclusions. Inclusion stays a
 //! human judgment: this is a report over decompiled syntax, not a semantic
 //! C# analysis or a generator.
@@ -19,6 +18,8 @@ use regex::Regex;
 use serde::Deserialize;
 
 use crate::{catalog, csharp, decompile, game_version, workspace_root};
+
+mod fingerprints;
 
 /// Effect statements that require source review, including card generation
 /// because generated instances inherit their suppliers. Block loss is absent
@@ -55,6 +56,7 @@ struct ParsedClass {
 struct Method {
     name: String,
     body: Option<String>,
+    fingerprint: String,
     is_override: bool,
     is_virtual: bool,
     calls: Vec<String>,
@@ -115,6 +117,10 @@ pub fn run() -> Result<()> {
     review.check_pattern_health([&relic_files, &power_files], &tracked);
     let candidates = candidate_hooks(&relic_files, &power_files, &universe, &tracked);
     review.compare_candidates(&candidates);
+    review.check_fingerprints(
+        [("Relics", &relic_files), ("Powers", &power_files)],
+        &candidates,
+    )?;
     review.report()
 }
 
@@ -125,8 +131,7 @@ struct Review {
 }
 
 impl Review {
-    /// A catalogued entry must resolve to its reviewed method shape in the
-    /// namespace's class file; failures are the shim's runtime skips.
+    /// A reviewed identity must resolve unambiguously to a tracked effect.
     fn check_entries(
         &mut self,
         entries: &[(&'static str, &'static str)],
@@ -262,7 +267,9 @@ impl Review {
         );
     }
 
-    fn report(self) -> Result<()> {
+    fn report(mut self) -> Result<()> {
+        self.failures.sort();
+        self.failures.dedup();
         let total = catalog::RELICS.len() + catalog::POWERS.len();
         println!(
             "catalog: {total} entries, {} reviewed candidates, {} failures",
@@ -339,17 +346,20 @@ impl std::fmt::Display for Candidate<'_> {
 }
 
 impl Method {
+    fn reviewed_methods<'a>(&'a self, methods: &'a [Method]) -> impl Iterator<Item = &'a Method> {
+        std::iter::once(self).chain(
+            methods
+                .iter()
+                .filter(|method| self.calls.contains(&method.name)),
+        )
+    }
+
     /// TRACKED order, including one level of helper calls (Poison's Trigger).
     fn effects(&self, methods: &[Method], tracked: &[(&'static str, Regex)]) -> Vec<&'static str> {
-        let mut bodies: Vec<_> = self.body.as_deref().into_iter().collect();
-        for call in &self.calls {
-            bodies.extend(
-                methods
-                    .iter()
-                    .filter(|method| method.name == *call)
-                    .filter_map(|method| method.body.as_deref()),
-            );
-        }
+        let bodies: Vec<_> = self
+            .reviewed_methods(methods)
+            .filter_map(|method| method.body.as_deref())
+            .collect();
         tracked
             .iter()
             .filter(|(_, re)| bodies.iter().any(|body| re.is_match(body)))

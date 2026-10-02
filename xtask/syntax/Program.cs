@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
@@ -12,8 +13,8 @@ var sources = request.RootElement.GetProperty("sources").EnumerateArray().Select
     var options = new CSharpParseOptions();
     var tree = CSharpSyntaxTree.ParseText(source[1].GetString()!, options, name);
     errors.AddRange(tree.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error).Select(d => d.ToString()));
-    if (mode == "abi" && tree.GetRoot().DescendantTrivia().Any(trivia => trivia.IsKind(SyntaxKind.IfDirectiveTrivia)))
-        errors.Add($"{name}: conditional compilation in ABI inputs requires an explicit symbol configuration");
+    if (tree.GetRoot().DescendantTrivia().Any(trivia => trivia.IsKind(SyntaxKind.IfDirectiveTrivia)))
+        errors.Add($"{name}: conditional compilation in {mode} inputs requires an explicit symbol configuration");
     return (name, root: tree.GetRoot());
 }).ToArray();
 
@@ -31,6 +32,8 @@ object data = mode switch
             {
                 name = method.Identifier.ValueText,
                 body = (method.Body as SyntaxNode ?? method.ExpressionBody?.Expression)?.ToString(),
+                fingerprint = Convert.ToHexStringLower(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(
+                    method.DescendantTokens().Select(token => new { kind = token.RawKind, text = token.Text })))),
                 is_override = method.Modifiers.Any(SyntaxKind.OverrideKeyword),
                 is_virtual = method.Modifiers.Any(SyntaxKind.PublicKeyword) && method.Modifiers.Any(SyntaxKind.VirtualKeyword),
                 calls = method.DescendantNodes().OfType<InvocationExpressionSyntax>().Select(call => call.Expression switch
