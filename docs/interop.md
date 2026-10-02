@@ -7,6 +7,13 @@ signatures against managed delegates. The ownership and failure contracts live
 in the [native boundary](../profiler-core/src/abi.rs) and [crate
 overview](../profiler-core/src/lib.rs).
 
+Capture becomes available only after every required patch installs and passes
+verification. Native boundaries reject malformed enum values, slots, and combat
+metadata before they can change accounting. A valid measurement with missing
+provenance still contributes its totals with unknown credit and incomplete
+coverage. An unresolved physical owner cannot share another player's block,
+summon, or play provenance.
+
 ## Godot resources and panels
 
 Panels use the installed game's GodotSharp assembly and ordinary managed Godot
@@ -45,6 +52,11 @@ source ownership. Unknown credit alone does not prove an observation was lost.
 Attribution policy identity lives in the [summary
 module](../profiler-core/src/data/summary.rs); changing the implementation
 language does not establish metric comparability.
+
+Policy 4 rejects malformed fields that earlier policies clamped into valid
+values. Observation replay requires the matching policy; older recordings need
+their matching build. Stored statistics remain readable, and aggregates that
+combine policies report incomplete coverage.
 
 ## Auditing poison attribution
 

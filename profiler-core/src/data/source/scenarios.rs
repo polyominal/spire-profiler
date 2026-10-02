@@ -187,7 +187,7 @@ impl Scenario {
         assert_eq!(self.state.damage_calculation_commit(calculation), 1);
     }
 
-    fn assert_damage(&self, expected: &[(&str, SourceSlot, [i64; 3], i64)], hp: i64, blocked: i64) {
+    fn assert_damage(&self, expected: &[(&str, u8, [i64; 3], i64)], hp: i64, blocked: i64) {
         let mut actual = Vec::new();
         let mut total_damage = 0;
         let mut total_blocked = 0;
@@ -208,7 +208,7 @@ impl Scenario {
         assert_eq!((total_damage, total_blocked), (hp + blocked, blocked));
     }
 
-    fn row(&self, id: &str, slot: SourceSlot) -> &CardStat {
+    fn row(&self, id: &str, slot: u8) -> &CardStat {
         self.combat()
             .cards
             .iter()
@@ -216,7 +216,7 @@ impl Scenario {
             .expect("scenario effects create the expected credited row")
     }
 
-    fn assert_source(&mut self, transfer: u64, expected: &[(&str, SourceSlot, u64)]) {
+    fn assert_source(&mut self, transfer: u64, expected: &[(&str, u8, u64)]) {
         let epoch = self
             .state
             .provenance_epoch(7)
@@ -234,7 +234,7 @@ impl Scenario {
                         let row = &self.combat().cards[index as usize];
                         (row.id.as_ref(), row.player)
                     }
-                    Destination::Unknown(slot) => ("UNATTRIBUTED", slot),
+                    Destination::Unknown(slot) => ("UNATTRIBUTED", slot.into()),
                 };
                 (name, slot, share.weight())
             })

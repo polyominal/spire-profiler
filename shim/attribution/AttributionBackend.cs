@@ -8,7 +8,28 @@ internal enum CaptureKind { Unknown = 0, CardInstance = 1, PowerInstance = 2, Or
 internal enum GenerationState { Ordinary = 0, GeneratedRecorded = 1, GeneratedUnavailable = 2, Unclassified = 3 }
 internal enum ResultKind { Outgoing = 0, Incoming = 1, SelfDamage = 2, OstyDealt = 3, OstyAbsorbed = 4 }
 
-internal readonly record struct ModelDescriptor(CaptureKind Kind, ProducerRole Role, string Id, int SourceKind, int Slot, object Owner = null, bool Poison = false, object Combat = null);
+internal readonly record struct ModelDescriptor(ProducerRole Role, string Id, int Slot, object Owner = null, bool Poison = false, object Combat = null)
+{
+    internal CaptureKind Kind => Role switch
+    {
+        ProducerRole.Card => CaptureKind.CardInstance,
+        ProducerRole.Power => CaptureKind.PowerInstance,
+        ProducerRole.Orb => CaptureKind.OrbInstance,
+        ProducerRole.Relic or ProducerRole.Potion => CaptureKind.DirectModel,
+        ProducerRole.Unknown => CaptureKind.Unknown,
+        _ => throw new InvalidOperationException("Unsupported producer role")
+    };
+    internal int SourceKind => Role switch
+    {
+        ProducerRole.Card => 0,
+        ProducerRole.Relic => 1,
+        ProducerRole.Power => 2,
+        ProducerRole.Potion => 3,
+        ProducerRole.Orb or ProducerRole.Unknown => 5,
+        _ => throw new InvalidOperationException("Unsupported producer role")
+    };
+    internal DamageSegment Segment => Role is ProducerRole.Card or ProducerRole.Relic or ProducerRole.Potion ? DamageSegment.Direct : DamageSegment.Attributed;
+}
 internal readonly record struct CreatureDescriptor(bool Player, bool Osty, int Slot, object Combat);
 internal readonly record struct PowerObservation(object Power, object Owner, string Id, int OwnerKind, int OwnerSlot, int Amount, bool Attached);
 internal readonly record struct SourceCredit(SourceSnapshot Source, int Amount);

@@ -37,7 +37,7 @@ internal sealed record AuditTrigger(PoisonPower Power, ulong Sequence, ulong Epo
 
 // audit-v2 journals preserve primitive game evidence independently of reducer
 // inputs. Native state uses its own identities and remains explicitly labeled.
-// Poison attribution policy 3 uses FIFO decay and gives Accelerant no credit.
+// Poison attribution policy 4 uses FIFO decay and gives Accelerant no credit.
 internal static class PoisonAudit
 {
     private sealed record Identity(ulong Value);
@@ -102,7 +102,7 @@ internal static class PoisonAudit
             Emit("combat_start", new
             {
                 AuditVersion = 2,
-                PolicyVersion = 3,
+                PolicyVersion = 4,
                 GameVersion = gameVersion,
                 ModVersion = modVersion,
                 RunId = runId,

@@ -8,9 +8,10 @@
 //! floors with producer residue; multiple modifiers share a monotone weighted
 //! prefix (ties favor later modifiers, then the producer). Source prefixes keep
 //! the same supplier weights through partial consumption and adjacent merges.
+//! Unresolved physical owners retain observed gains, but never retain pools:
+//! a later unresolved receiver cannot establish that it owns an earlier grant.
 
 use super::*;
-use crate::data::state;
 
 impl SourceBlock {
     fn consume(
@@ -113,7 +114,7 @@ impl LedgerStage<'_> {
         let budgets =
             RootBudgets::proportional(modifier_budget, entries.iter().map(|(_, amount)| *amount))?;
         let base = amount - modifier_budget;
-        let pool = self.pool(slot)?;
+        let pool = self.pool(slot);
         if modifier_budget == 0
             && let Some(entry) = pool.blocks.last_mut()
             && entry.mods.is_empty()
@@ -176,7 +177,7 @@ impl LedgerStage<'_> {
     ) -> Result<(), SourceFailure> {
         let mut remaining = blocked;
         while remaining > 0 {
-            let pool = self.pool(slot)?;
+            let pool = self.pool(slot);
             let Some(block) = pool.blocks.first_mut() else {
                 break;
             };
@@ -212,7 +213,7 @@ impl LedgerStage<'_> {
     ) -> Result<(), SourceFailure> {
         let mut remaining = amount;
         while remaining > 0 {
-            let pool = self.pool(slot)?;
+            let pool = self.pool(slot);
             let Some(entry) = pool.osty.last_mut() else {
                 break;
             };
@@ -232,9 +233,13 @@ impl LedgerStage<'_> {
             }
         }
         if remaining > 0 {
-            let row =
-                ledger::get_or_create_card_kind(self.combat, TEAM_SLOT, "OSTY", SourceKind::Osty)
-                    .ok_or(SourceFailure::Capacity)?;
+            let row = ledger::get_or_create_card_kind(
+                self.combat,
+                SourceSlot::TEAM,
+                "OSTY",
+                SourceKind::Osty,
+            )
+            .ok_or(SourceFailure::Capacity)?;
             self.credit(
                 Destination::Row(row as u32),
                 CreditField::BlockEffective,
@@ -294,9 +299,10 @@ impl State {
     ) -> i32 {
         let result = (|| {
             let epoch = self.provenance_epoch(combat_seq)?;
+            let slot = SourceSlot::parse(receiver_slot).ok_or(SourceFailure::Packet)?;
             let source = self.source_snapshot(epoch, transfer).unwrap_or_else(|_| {
                 self.capture_failed("block-producer-incomplete");
-                SourceSnapshot::unknown_for(epoch, state::clamp_source_slot(receiver_slot))
+                SourceSnapshot::unknown_for(epoch, slot)
             });
             if amount < 0 {
                 return Err(SourceFailure::Packet);
@@ -304,7 +310,6 @@ impl State {
             if amount == 0 {
                 return Ok(());
             }
-            let slot = state::clamp_source_slot(receiver_slot);
             let mut stage = LedgerStage::new(self)?;
             stage.combat.block_total = stage
                 .combat
@@ -312,9 +317,11 @@ impl State {
                 .checked_add(i64::from(amount))
                 .ok_or(SourceFailure::Arithmetic)?;
             stage.source_credit(&source, CreditField::BlockGained, amount as u64)?;
-            stage.push_block(slot, source, amount as u64, modifiers)?;
+            if slot.player_index().is_some() {
+                stage.push_block(slot, source, amount as u64, modifiers)?;
+            }
             stage.commit()?;
-            self.slot_index(i32::from(slot));
+            self.track_player(slot);
             Ok(())
         })();
         self.source_status(result)
@@ -367,9 +374,13 @@ impl State {
                 return Err(SourceFailure::Packet);
             }
             let source = self.source_snapshot(epoch, transfer)?;
-            let slot = state::clamp_source_slot(owner_slot);
+            let slot = SourceSlot::parse(owner_slot).ok_or(SourceFailure::Packet)?;
+            if slot.player_index().is_none() {
+                self.track_player(slot);
+                return Ok(());
+            }
             let mut stage = LedgerStage::new(self)?;
-            let pool = stage.pool(slot)?;
+            let pool = stage.pool(slot);
             if pool.osty.len() == caps::OSTY_STACK {
                 return Err(SourceFailure::Capacity);
             }
@@ -380,7 +391,7 @@ impl State {
                 });
             }
             stage.commit()?;
-            self.slot_index(i32::from(slot));
+            self.track_player(slot);
             Ok(())
         })();
         self.source_status(result)
@@ -389,7 +400,11 @@ impl State {
     pub(crate) fn osty_killed(&mut self, combat_seq: u64, owner_slot: i32, play: u64) -> i32 {
         let result = (|| {
             self.provenance_epoch(combat_seq)?;
-            let owner = state::clamp_source_slot(owner_slot);
+            let owner = SourceSlot::parse(owner_slot).ok_or(SourceFailure::Packet)?;
+            if owner.player_index().is_none() {
+                self.track_player(owner);
+                return Ok(());
+            }
             let source = if play == 0 {
                 None
             } else {
@@ -406,7 +421,7 @@ impl State {
             };
             let mut stage = LedgerStage::new(self)?;
             let remaining = stage
-                .pool(owner)?
+                .pool(owner)
                 .osty
                 .iter()
                 .try_fold(0_u64, |sum, entry| sum.checked_add(entry.remaining))
@@ -420,7 +435,7 @@ impl State {
                     )?;
                 }
             }
-            stage.pool(owner)?.osty.clear();
+            stage.pool(owner).osty.clear();
             stage.commit()?;
             Ok(())
         })();
@@ -430,7 +445,11 @@ impl State {
     pub(crate) fn block_pool_clear(&mut self, combat_seq: u64, player_slot: i32) -> i32 {
         let result = (|| {
             self.provenance_epoch(combat_seq)?;
-            let slot = state::clamp_source_slot(player_slot);
+            let slot = SourceSlot::parse(player_slot).ok_or(SourceFailure::Packet)?;
+            if slot.player_index().is_none() {
+                self.track_player(slot);
+                return Ok(());
+            }
             if let Some(pool) = self.provenance.pools.get_mut(usize::from(slot)) {
                 pool.blocks.clear();
             }
@@ -450,14 +469,18 @@ impl State {
             if amount < 0 {
                 return Err(SourceFailure::Packet);
             }
-            let slot = self.sources.diagnostics.slot(player_slot);
+            let slot = SourceSlot::parse(player_slot).ok_or(SourceFailure::Packet)?;
+            if slot.player_index().is_none() {
+                self.track_player(slot);
+                return Ok(());
+            }
             if amount == 0 {
                 return Ok(());
             }
             let mut stage = LedgerStage::new(self)?;
             let mut remaining = amount as u64;
             while remaining > 0 {
-                let pool = stage.pool(slot)?;
+                let pool = stage.pool(slot);
                 let Some(block) = pool.blocks.first_mut() else {
                     break;
                 };
@@ -473,7 +496,7 @@ impl State {
                 stage.diagnostics.report(SourceFailure::Token);
             }
             stage.commit()?;
-            self.slot_index(i32::from(slot));
+            self.track_player(slot);
             Ok(())
         })();
         self.source_status(result)

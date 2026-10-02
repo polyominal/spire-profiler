@@ -6,7 +6,7 @@ use serde::Serialize;
 
 use super::state::{CardStat, Combat, CombatPhase, Coverage, PlayerSlotState, State, caps};
 
-pub(super) const POLICY_VERSION: u32 = 3;
+pub(super) const POLICY_VERSION: u32 = 4;
 
 #[derive(Serialize)]
 struct Summary<'a> {
@@ -46,6 +46,18 @@ impl State {
             self.capture_failed("combat-epoch");
             return 0;
         }
+        let Ok(players) = usize::try_from(player_count) else {
+            self.capture_failed("player-count");
+            return 0;
+        };
+        if players > caps::MAX_PLAYERS {
+            self.capture_failed("player-count");
+            return 0;
+        }
+        if started_at < 0 {
+            self.capture_failed("combat-start-time");
+            return 0;
+        }
         self.last_combat_seq = seq;
         self.discard_combat();
         self.poisoned = false;
@@ -53,7 +65,6 @@ impl State {
             complete: true,
             ..Coverage::default()
         };
-        let players = player_count.clamp(0, caps::MAX_PLAYERS as i32) as usize;
         self.per_player = (0..players).map(|_| PlayerSlotState::default()).collect();
         self.current = Some(Combat {
             seq,
@@ -63,9 +74,6 @@ impl State {
             player_count: players,
             ..Combat::default()
         });
-        if player_count != players as i32 {
-            self.capture_failed("player-count");
-        }
         self.revision = self.revision.saturating_add(1);
         u64::from(seq)
     }
@@ -145,6 +153,24 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
+
+    #[test]
+    fn malformed_combat_metadata_cannot_replace_combat_or_spend_its_epoch() {
+        let mut state = State::default();
+        assert_eq!(state.combat_started(1, "CURRENT", "normal", 1, 1), 1);
+        assert_eq!(state.turn_started(1), 1);
+        for (players, started_at) in [(-1, 2), (5, 2), (i32::MAX, 2), (1, -1), (1, i64::MIN)] {
+            assert_eq!(
+                state.combat_started(2, "MALFORMED", "normal", started_at, players),
+                0
+            );
+            let summary: Value = serde_json::from_str(&state.snapshot()).expect("summary parses");
+            assert_eq!(summary["combat_id"], 1);
+            assert_eq!(summary["turns"], 1);
+            assert_eq!(summary["coverage"]["complete"], false);
+        }
+        assert_eq!(state.combat_started(2, "NEXT", "normal", 2, 1), 2);
+    }
 
     #[test]
     fn snapshot_pins_measured_totals_policy_credit_and_coverage() {

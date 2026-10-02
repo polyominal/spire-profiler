@@ -12,7 +12,6 @@ impl ObservedDamage {
         kind: i32,
         receiver: i32,
         weak: i32,
-        diagnostics: &mut SourceDiagnostics,
     ) -> Result<Self, SourceFailure> {
         if total < 0
             || unblocked < 0
@@ -26,8 +25,8 @@ impl ObservedDamage {
             total: total as u64,
             unblocked: unblocked as u64,
             blocked: blocked as u64,
-            kind: ResultKind::decode(kind, diagnostics),
-            receiver: diagnostics.slot(receiver),
+            kind: ResultKind::decode(kind)?,
+            receiver: SourceSlot::parse(receiver).ok_or(SourceFailure::Packet)?,
             weak_prevented: weak as u64,
         })
     }
@@ -136,8 +135,8 @@ impl State {
     ) -> u64 {
         let result = (|| {
             let epoch = self.provenance_epoch(combat_seq)?;
-            let role = ProducerRole::decode(producer_role, &mut self.sources.diagnostics);
-            let mut segment = match DamageSegment::decode(segment, &mut self.sources.diagnostics) {
+            let role = ProducerRole::decode(producer_role)?;
+            let mut segment = match DamageSegment::decode(segment)? {
                 DamageSegment::Direct => ProducerSegment::Direct,
                 DamageSegment::Attributed => ProducerSegment::Attributed,
                 DamageSegment::Modifier => return Err(SourceFailure::Packet),
@@ -313,7 +312,7 @@ impl State {
         receiver: i32,
         weak_prevented: i32,
     ) -> i32 {
-        self.calculation_mutation(calculation, |state, calculation| {
+        self.calculation_mutation(calculation, |_, calculation| {
             let result = ObservedDamage::from_wire(
                 total,
                 unblocked,
@@ -321,7 +320,6 @@ impl State {
                 kind,
                 receiver,
                 weak_prevented,
-                &mut state.sources.diagnostics,
             )?;
             if calculation.results.len() == caps::DAMAGE_RESULTS {
                 return Err(SourceFailure::Capacity);
@@ -354,7 +352,7 @@ impl State {
                     result.kind,
                     ResultKind::Incoming | ResultKind::SelfDamage | ResultKind::OstyAbsorbed
                 ) {
-                    self.slot_index(i32::from(result.receiver));
+                    self.track_player(result.receiver);
                 }
             }
             Ok(())
@@ -400,7 +398,6 @@ impl State {
                 kind,
                 receiver,
                 weak_prevented,
-                &mut self.sources.diagnostics,
             )?;
             let receiver = result.receiver;
             let received = matches!(
@@ -419,7 +416,7 @@ impl State {
             stage.apply_group(&calculation)?;
             stage.commit()?;
             if received {
-                self.slot_index(i32::from(receiver));
+                self.track_player(receiver);
             }
             Ok(())
         })();
