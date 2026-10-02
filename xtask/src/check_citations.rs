@@ -107,20 +107,8 @@ mod tests {
     fn traversal_keeps_first_hit_per_line_and_skips_non_authored_text() -> Result<()> {
         let scratch_root = workspace_root().join("tmp/xtask-citation-tests");
         fs::create_dir_all(&scratch_root)?;
-        let mut serial = 0_u32;
-        let scratch = loop {
-            let candidate = scratch_root.join(format!("{}-{serial}", std::process::id()));
-            match fs::create_dir(&candidate) {
-                Ok(()) => break candidate,
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    serial = serial
-                        .checked_add(1)
-                        .context("test directory serial exhausted")?;
-                }
-                Err(error) => return Err(error.into()),
-            }
-        };
-        let nested = scratch.join("nested");
+        let scratch = tempfile::tempdir_in(&scratch_root)?;
+        let nested = scratch.path().join("nested");
         fs::create_dir(&nested)?;
         let first = "first.cs";
         let second = "second.rs";
@@ -128,7 +116,7 @@ mod tests {
         let content = format!("plain\n// {first}:12 and {second}:99\né // {third}:20-24\r\n");
         let authored = nested.join("notes.bin");
         fs::write(&authored, &content)?;
-        fs::write(scratch.join("clean.md"), "CombatManager.StartTurn\n")?;
+        fs::write(scratch.path().join("clean.md"), "CombatManager.StartTurn\n")?;
         let mut invalid_utf8 = content.as_bytes().to_vec();
         invalid_utf8.push(0xff);
         fs::write(nested.join("invalid.rs"), invalid_utf8)?;
@@ -138,7 +126,7 @@ mod tests {
             fs::write(path.join("upstream.md"), &content)?;
         }
         let mut hits = Vec::new();
-        collect_citations(&scratch, &mut hits)?;
+        collect_citations(scratch.path(), &mut hits)?;
         assert_eq!(
             hits,
             [
@@ -146,7 +134,7 @@ mod tests {
                 format!("{}:3:7: é // {third}:20-24", authored.display()),
             ]
         );
-        fs::remove_dir_all(scratch)?;
+        scratch.close()?;
         Ok(())
     }
 

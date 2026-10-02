@@ -19,3 +19,4 @@ anyhow = "1.0.104"
 xflags = "0.3.2"
 xshell = "0.2.7"
 comrak = { version = "0.51", default-features = false }
+tempfile = "3.27.0"

@@ -2,8 +2,6 @@
 //! against the installed, version-checked game assemblies. Every invocation
 //! reserves and retains its own project under tmp/managed-tests for inspection.
 
-use std::io;
-
 use anyhow::{Context, Result};
 use xshell::{Shell, cmd};
 
@@ -29,21 +27,11 @@ pub fn run(shell: &Shell) -> Result<()> {
         .context("locating the host attribution reducer")?;
     let projects = root.join("tmp/managed-tests");
     std::fs::create_dir_all(&projects)?;
-    let mut serial = 0_u32;
-    let project = loop {
-        let candidate = projects.join(format!("run-{}-{serial}", std::process::id()));
-        match std::fs::create_dir(&candidate) {
-            Ok(()) => break candidate,
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                serial = serial
-                    .checked_add(1)
-                    .context("managed test project serial exhausted")?;
-            }
-            Err(error) => {
-                return Err(error).with_context(|| format!("reserving {}", candidate.display()));
-            }
-        }
-    };
+    let project = tempfile::Builder::new()
+        .prefix("run-")
+        .tempdir_in(&projects)
+        .with_context(|| format!("reserving a managed test project in {}", projects.display()))?
+        .keep();
     println!("managed-test: project retained at {}", project.display());
     shim::write_sources(&project, shim::ProjectKind::Tests)?;
     let project_file = project.join("SpireProfiler.ManagedTests.csproj");
