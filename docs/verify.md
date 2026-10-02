@@ -1,14 +1,39 @@
 # Verifying the mod
 
+## Working loop
+
+During iteration, run the affected existing test or fixture. Rust tests can be
+selected by package and exact name, for example:
+
+```sh
+cargo nextest run --locked --package profiler_store \
+  --filterset 'test(=tests::a_failed_payload_commit_leaves_a_durable_missing_intent_after_reopen)'
+```
+
+Before handoff, run `cargo xtask smoke` for code changes, plus `managed-test`
+for shared managed behavior or native/managed contracts. Use `headless-test` for
+patch installation or Godot panel lifecycle changes; it already runs
+`managed-test`. Game updates follow the [pin-update
+procedure](game.md#updating-the-game-pin). Markdown-only changes need `cargo
+xtask fmt-md`, `cargo xtask fmt-md --check`, and `cargo xtask check-citations`.
+Rust documentation changes also require `cargo xtask check-docs`.
+
+Investigate failures before calling them unrelated: reproduce them on an
+unchanged baseline or establish an independent cause. Preserve existing work and
+record unrelated, non-blocking problems in ignored `tmp/ISSUES.md`. Report
+checks that could not run and what remains unverified. Passing checks supports
+behavioral claims; review must also establish that the design is necessary and
+understandable.
+
 ## The gate set
 
 - `cargo xtask smoke`: `fmt --check` (Rust, handwritten C\# including fixtures,
   and Markdown; requires the pinned SDK but no game), `check-citations`,
-  `check-emdash`, `check-abi` (`GetExport` bindings across the production shim
-  sources against the Rust exports), `cargo clippy --workspace --all-targets
-  --all-features --locked -- --deny warnings`, `check-docs` (warning-free `cargo
-  doc --document-private-items` and the comment-density budget), `cargo nextest
-  run --workspace --locked --no-fail-fast`.
+  `check-abi` (`GetExport` bindings across the production shim sources against
+  the Rust exports), `cargo clippy --workspace --all-targets --all-features
+  --locked -- --deny warnings`, `check-docs` (warning-free `cargo doc
+  --document-private-items`), `cargo nextest run --workspace --locked
+  --no-fail-fast`.
 - `cargo xtask managed-test`: build the host Rust reducer, then compile the
   shared production managed sources and deterministic fixtures against the
   installed, version-checked game and Harmony assemblies. Compiler and
@@ -46,6 +71,16 @@
 - A game update adds one machine-local gate: `cargo xtask check-catalog` reads
   the decompiled tree (`tmp/sts2-decompiled`), so it stays out of smoke; what it
   verifies lives in [game.md](game.md).
+
+## Memory changes
+
+Compare retained and peak allocation bytes and counts on reproducible fixtures,
+plus construction and consumption time. Report allocation bytes separately from
+process RSS. Prioritize combat attribution and repeated UI work; judge
+infrequent operations by absolute latency. Preserve exact accounting and
+boundary behavior.
+[engine\_allocations.rs](../profiler-core/tests/engine_allocations.rs) provides
+an existing fixture.
 
 ## StS2 headless testing
 

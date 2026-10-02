@@ -2,6 +2,7 @@
 //! The game host decides lifecycle boundaries; attribution never accesses this
 //! crate. Payload schema 2 and attribution policy versions are independent of
 //! database schema 1, stored in `user_version` under `statistics-v3`.
+//! Breaking storage formats use a fresh versioned directory.
 //!
 //! Each completed combat first commits an intent, then its payload. An absent
 //! payload therefore remains visible after restart without treating discarded

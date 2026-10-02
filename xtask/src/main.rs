@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use xshell::{Shell, cmd};
 
 mod audit;
@@ -14,8 +14,6 @@ mod catalog;
 mod check_abi;
 mod check_catalog;
 mod check_citations;
-mod check_docs;
-mod check_emdash;
 mod cross;
 mod csharp;
 mod decompile;
@@ -28,7 +26,6 @@ mod install;
 mod managed;
 mod md;
 mod release;
-mod scan;
 mod shim;
 mod zig;
 
@@ -39,7 +36,7 @@ mod flags {
     xflags::xflags! {
         cmd xtask {
             /// The commit gate: format checks (Rust + C# + Markdown), citation,
-            /// em-dash, ABI, and doc checks, clippy, and nextest.
+            /// ABI, and doc checks, clippy, and nextest.
             cmd smoke {}
             /// Install the pinned toolchain and verify the dev tools.
             cmd install-tool {}
@@ -60,15 +57,10 @@ mod flags {
             }
             /// Check shim<->core ABI conformance.
             cmd check-abi {}
-            /// Fail on cargo doc warnings and report the comment-density budget.
-            cmd check-docs {
-                /// How many top comment contributors to list (default: 10).
-                optional --top top: usize
-            }
+            /// Fail on cargo doc warnings.
+            cmd check-docs {}
             /// Fail on file:line citations in comments and docs.
             cmd check-citations {}
-            /// Fail on em dashes beyond the pinned per-file ceilings.
-            cmd check-emdash {}
             /// Format Rust, handwritten C#, and the project Markdown docs.
             cmd fmt {
                 /// Check for formatting drift without rewriting.
@@ -107,9 +99,8 @@ fn main() -> Result<()> {
         flags::XtaskCmd::AuditReport(flags) => audit::run(&flags.input, flags.output.as_deref()),
         flags::XtaskCmd::CheckAbi(_) => check_abi::run(&shell),
         flags::XtaskCmd::CheckCatalog(_) => check_catalog::run(),
-        flags::XtaskCmd::CheckDocs(flags) => check_docs::check_docs(&shell, flags.top),
+        flags::XtaskCmd::CheckDocs(_) => check_docs(&shell),
         flags::XtaskCmd::CheckCitations(_) => check_citations::run(),
-        flags::XtaskCmd::CheckEmdash(_) => check_emdash::run(),
         flags::XtaskCmd::Fmt(flags) => fmt(&shell, flags.check),
         flags::XtaskCmd::FmtMd(flags) => md::fmt_md(flags.check),
         flags::XtaskCmd::Decompile(flags) => {
@@ -203,17 +194,26 @@ fn fmt(shell: &Shell, check: bool) -> Result<()> {
     md::fmt_md(check)
 }
 
+fn check_docs(shell: &Shell) -> Result<()> {
+    cmd!(
+        shell,
+        "cargo doc --workspace --no-deps --document-private-items --locked"
+    )
+    .env("RUSTDOCFLAGS", "--deny warnings")
+    .run()
+    .context("while attempting to run the cargo doc gate")
+}
+
 fn smoke(shell: &Shell) -> Result<()> {
     fmt(shell, true)?;
     check_citations::run()?;
-    check_emdash::run()?;
     check_abi::run(shell)?;
     cmd!(
         shell,
         "cargo clippy --workspace --all-targets --all-features --locked -- --deny warnings"
     )
     .run()?;
-    check_docs::check_docs(shell, None)?;
+    check_docs(shell)?;
     cmd!(
         shell,
         "cargo nextest run --workspace --locked --no-fail-fast"

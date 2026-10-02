@@ -65,7 +65,7 @@ assumption first; `STS2_GAME_DIR` overrides.
 Verify patch targets against the decompiled source at `tmp/sts2-decompiled/`
 (gitignored; regenerate with `cargo xtask decompile`); its `.provenance.json`
 must name the pin in [game\_version.rs](../xtask/src/game_version.rs). The
-update runbook lives in AGENTS.md.
+update procedure follows below.
 
 `cargo xtask check-catalog` compares the hand-curated catalog in
 [catalog.rs](../xtask/src/catalog.rs) and its reviewed exclusions against the
@@ -74,8 +74,7 @@ signatures, bodies, or the scanner's direct same-class helper matches change;
 whitespace and comments are ignored. The proposed fingerprints and review
 failures land in `tmp/catalog-review/`. The [fingerprint
 contract](../xtask/src/check_catalog/fingerprints.rs) defines the boundary;
-passing proves review freshness, not semantic correctness. Read changed hook
-bodies before accepting a proposal using the AGENTS.md runbook.
+passing proves review freshness, not semantic correctness.
 
 `cargo xtask managed-test` additionally checks the installed assembly
 identities, producer definition inventory, and exact patch bridges. The catalog
@@ -114,6 +113,22 @@ renamed parameter types). Verified against the v0.111.0 snapshot.
   declaring type.
 - .NET's async task builders have internal overloads of `SetResult` and
   `SetException`. Bridge lookup requires the exact public instance signature.
+
+## Updating the game pin
+
+Game-touching commands reject versions other than the pin in
+[game\_version.rs](../xtask/src/game_version.rs). Bump it deliberately, then:
+
+1. Run `cargo xtask decompile` to replace `tmp/sts2-decompiled`.
+2. Run `cargo xtask check-catalog`. Read `tmp/catalog-review/changes.txt` and
+   changed hook bodies before updating the hand-curated catalog or reviewed
+   exclusions. Re-run the check, review `tmp/catalog-review/candidate.json`, and
+   explicitly replace `xtask/src/check_catalog/fingerprints.json` with the
+   reviewed candidate. Re-run the check; never accept fingerprints
+   automatically.
+3. Re-check and re-date the drift findings above against the new snapshot.
+4. Run the [verification gates](verify.md#the-gate-set), including
+   `headless-test`: only the game process verifies fixed patch installation.
 
 ## Decompiling the game source
 
