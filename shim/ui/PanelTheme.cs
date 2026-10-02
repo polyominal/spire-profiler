@@ -183,27 +183,18 @@ internal sealed class PanelTheme : IDisposable
         canvas.DrawTextureRect(_train, new Rect2(grabber.X + x, grabber.Y, grabber.W, grabber.H), false);
     }
 
-    internal static bool NeedsFallback(PanelLayout layout, RowDetail detail)
-        => layout.Header.Concat(layout.Body).OfType<TextCommand>().Any(text => !KreonCovers(text.Text))
-            || !KreonCovers(detail.Title) || detail.Stats.Any(stat => !KreonCovers(stat.Label) || !KreonCovers(stat.Value));
+    internal bool NeedsFallback(PanelLayout layout, RowDetail detail)
+        => layout.Header.Concat(layout.Body).OfType<TextCommand>().Any(text => !Covers(text.Role == TextRole.Title ? _title : _body, text.Text))
+            || !Covers(_title, detail.Title) || detail.Stats.Any(stat => !Covers(_body, stat.Label) || !Covers(_body, stat.Value));
 
-    private static readonly (int Low, int High)[] Covered =
+    private static bool Covers(Font font, string text)
     {
-        (0x20,0x7e),(0xa0,0x107),(0x10a,0x113),(0x116,0x11b),(0x11e,0x123),(0x126,0x127),(0x12a,0x12b),
-        (0x12e,0x131),(0x136,0x137),(0x139,0x13e),(0x141,0x148),(0x14a,0x14d),(0x150,0x15b),(0x15e,0x167),
-        (0x16a,0x16b),(0x16e,0x17e),(0x1cd,0x1dc),(0x218,0x21b),(0x2c6,0x2c7),(0x2d8,0x2dd),
-        (0x300,0x304),(0x306,0x308),(0x30a,0x30c),(0x312,0x312),(0x323,0x324),(0x326,0x328),(0x3bc,0x3bc),
-        (0x1e80,0x1e85),(0x1ef2,0x1ef3),(0x2013,0x2014),(0x2018,0x201a),(0x201c,0x201e),(0x2020,0x2022),
-        (0x2026,0x2026),(0x2039,0x203a),(0x2044,0x2044),(0x20ac,0x20ac),(0x2122,0x2122),(0x215b,0x215e),
-        (0x2212,0x2212),(0x2260,0x2260)
-    };
-    internal static bool KreonCovers(string text)
-    {
+        if (font == null) return true;
         foreach (var rune in text.EnumerateRunes())
         {
             int code = rune.Value;
             if (code < 0x20 || code == 0x7f) continue;
-            if (!Covered.Any(range => code >= range.Low && code <= range.High)) return false;
+            if (!font.HasChar(code)) return false;
         }
         return true;
     }
