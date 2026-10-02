@@ -2,6 +2,8 @@
 //! against the installed, version-checked game assemblies. Every invocation
 //! reserves and retains its own project under tmp/managed-tests for inspection.
 
+use std::{env, fs};
+
 use anyhow::{Context, Result};
 use xshell::{Shell, cmd};
 
@@ -19,14 +21,14 @@ pub fn run(shell: &Shell) -> Result<()> {
     cmd!(shell, "cargo build --package profiler_core --locked").run()?;
     let native = root.join("target/debug").join(format!(
         "{}profiler_core{}",
-        std::env::consts::DLL_PREFIX,
-        std::env::consts::DLL_SUFFIX
+        env::consts::DLL_PREFIX,
+        env::consts::DLL_SUFFIX
     ));
     let native = native
         .canonicalize()
         .context("locating the host attribution reducer")?;
     let projects = root.join("tmp/managed-tests");
-    std::fs::create_dir_all(&projects)?;
+    fs::create_dir_all(&projects)?;
     let project = tempfile::Builder::new()
         .prefix("run-")
         .tempdir_in(&projects)
@@ -36,7 +38,7 @@ pub fn run(shell: &Shell) -> Result<()> {
     let snapshot = shim::Project::source(shim::ProjectKind::Tests).snapshot(shell, &project)?;
     snapshot.build(shell, &game)?;
     let executable = project.join("bin/SpireProfiler.ManagedTests.dll");
-    let mut digests = std::fs::read_to_string(project.join("source-digests.txt"))?;
+    let mut digests = fs::read_to_string(project.join("source-digests.txt"))?;
     for (label, path) in [
         ("sts2.dll", &game.sts2_dll),
         ("0Harmony.dll", &game.harmony_dll),
@@ -46,7 +48,7 @@ pub fn run(shell: &Shell) -> Result<()> {
     ] {
         digests.push_str(&format!("{}  {label}\n", sha256_file(path)?));
     }
-    std::fs::write(project.join("source-digests.txt"), digests)?;
+    fs::write(project.join("source-digests.txt"), digests)?;
 
     let _directory = shell.push_dir(&project);
     let _telemetry = shell.push_env("DOTNET_CLI_TELEMETRY_OPTOUT", "1");

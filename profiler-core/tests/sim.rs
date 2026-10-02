@@ -11,7 +11,9 @@
 //! check another target against fresh modifier budgets from the same play.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::env::{self, VarError};
 use std::rc::Rc;
+use std::{array, iter};
 
 use profiler_core::data::events;
 use profiler_core::data::state::{self, CardStat, CombatResult, STATE, SourceKind};
@@ -51,12 +53,12 @@ impl Rng {
 fn sim_seed() -> u64 {
     // A malformed override must fail loudly: silently falling back to the
     // default would replay a different walk than the one being debugged.
-    match std::env::var("SIM_SEED") {
+    match env::var("SIM_SEED") {
         Ok(value) => value
             .parse()
             .unwrap_or_else(|_| panic!("SIM_SEED must be a u64 seed, got {value:?}")),
-        Err(std::env::VarError::NotPresent) => DEFAULT_SEED,
-        Err(std::env::VarError::NotUnicode(_)) => panic!("SIM_SEED must be valid Unicode"),
+        Err(VarError::NotPresent) => DEFAULT_SEED,
+        Err(VarError::NotUnicode(_)) => panic!("SIM_SEED must be valid Unicode"),
     }
 }
 
@@ -282,11 +284,11 @@ impl PowerModel {
             1
         );
         if !self.trusted || self.observed != before {
-            self.units = std::iter::repeat_n(RowKey::unknown(), before.max(0) as usize).collect();
+            self.units = iter::repeat_n(RowKey::unknown(), before.max(0) as usize).collect();
             self.last = vec![(RowKey::unknown(), 1)];
         }
         if after > before {
-            self.units.extend(std::iter::repeat_n(
+            self.units.extend(iter::repeat_n(
                 source.roots[0].0.clone(),
                 (after - before) as usize,
             ));
@@ -629,8 +631,8 @@ impl LedgerModel {
     fn new(sources: &[Rc<SimSource>]) -> Self {
         let mut model = Self {
             rows: BTreeMap::new(),
-            pools: std::array::from_fn(|_| NaivePool::default()),
-            osty: std::array::from_fn(|_| Vec::new()),
+            pools: array::from_fn(|_| NaivePool::default()),
+            osty: array::from_fn(|_| Vec::new()),
             players: Vec::new(),
             plays: 0,
             generated_plays: 0,

@@ -1,6 +1,7 @@
 //! Assembly of the installable bundle: manifest, managed host, and the native
 //! attribution reducer libraries selected by the platform matrix.
 
+use std::fs;
 use std::path::Path;
 
 use anyhow::Result;
@@ -19,13 +20,13 @@ pub(crate) fn assemble_bundle(
     commit: &str,
 ) -> Result<()> {
     // Wipe first so a removed library cannot linger.
-    match std::fs::remove_dir_all(mod_dir) {
+    match fs::remove_dir_all(mod_dir) {
         Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
             return Err(anyhow::anyhow!("removing {}: {error}", mod_dir.display()));
         }
         _ => {}
     }
-    std::fs::create_dir_all(mod_dir)?;
+    fs::create_dir_all(mod_dir)?;
     write_manifest(root, mod_dir, commit)?;
     copy_file(
         &gen_dir.join("bin/SpireProfiler.dll"),
@@ -40,10 +41,10 @@ pub(crate) fn assemble_bundle(
 }
 
 fn write_manifest(root: &Path, mod_dir: &Path, commit: &str) -> Result<()> {
-    let template = std::fs::read_to_string(root.join("manifest.template.json"))
+    let template = fs::read_to_string(root.join("manifest.template.json"))
         .map_err(|e| anyhow::anyhow!("reading manifest.template.json: {e}"))?;
     let rendered = template.replace("@VERSION@", &manifest_version(commit));
-    std::fs::write(mod_dir.join("manifest.json"), rendered)?;
+    fs::write(mod_dir.join("manifest.json"), rendered)?;
     Ok(())
 }
 
@@ -54,7 +55,7 @@ fn manifest_version(commit: &str) -> String {
 }
 
 fn copy_file(source: &Path, destination: &Path) -> Result<()> {
-    std::fs::copy(source, destination).map(|_| ()).map_err(|e| {
+    fs::copy(source, destination).map(|_| ()).map_err(|e| {
         anyhow::anyhow!(
             "copying {} -> {}: {e}",
             source.display(),

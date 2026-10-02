@@ -3,12 +3,12 @@
 //! inventory, managed panel lifecycle, and persisted session fixtures. Process
 //! output and the fresh game log both contribute to the verdict.
 
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::mpsc;
-use std::thread;
 use std::time::{Duration, Instant, SystemTime};
+use std::{env, fs, thread};
 
 use anyhow::{Result, bail};
 use xshell::Shell;
@@ -107,7 +107,7 @@ pub fn headless_test(shell: &Shell) -> Result<()> {
 
     // A scratch dir keeps the self-test from polluting the real play data.
     let scratch_data_dir = root.join("tmp").join("headless-data");
-    let _ = std::fs::remove_dir_all(&scratch_data_dir);
+    let _ = fs::remove_dir_all(&scratch_data_dir);
 
     // Bounds which godot log belongs to this run: a stale log must never
     // satisfy the verdict.
@@ -232,7 +232,7 @@ fn check_unexpected_errors(output: &str, failures: &mut Vec<String>) {
 /// Honors STS2_USER_DATA_DIR, then falls back to the game platform's
 /// user-data dir.
 fn game_log_dir(platform: discover::Platform) -> Result<PathBuf> {
-    if let Some(dir) = std::env::var_os("STS2_USER_DATA_DIR") {
+    if let Some(dir) = env::var_os("STS2_USER_DATA_DIR") {
         return Ok(PathBuf::from(dir).join("logs"));
     }
     Ok(user_data_dir(platform)?.join("logs"))
@@ -242,7 +242,7 @@ fn game_log_dir(platform: discover::Platform) -> Result<PathBuf> {
 fn user_data_dir(platform: discover::Platform) -> Result<PathBuf> {
     match platform {
         discover::Platform::Macos => {
-            let home = std::env::var_os("HOME").ok_or_else(no_user_data_home)?;
+            let home = env::var_os("HOME").ok_or_else(no_user_data_home)?;
             Ok(PathBuf::from(home).join("Library/Application Support/SlayTheSpire2"))
         }
         // The game is the WSL2-mounted Windows install: ask Windows for
@@ -250,8 +250,8 @@ fn user_data_dir(platform: discover::Platform) -> Result<PathBuf> {
         // spawn the exe).
         discover::Platform::Windows => windows_user_data_dir(),
         discover::Platform::Linux => {
-            let home = std::env::var_os("HOME").ok_or_else(no_user_data_home)?;
-            match std::env::var_os("XDG_DATA_HOME") {
+            let home = env::var_os("HOME").ok_or_else(no_user_data_home)?;
+            match env::var_os("XDG_DATA_HOME") {
                 Some(xdg) => Ok(PathBuf::from(xdg).join("SlayTheSpire2")),
                 None => Ok(PathBuf::from(home).join(".local/share/SlayTheSpire2")),
             }
@@ -305,7 +305,7 @@ fn run_trimmed(program: &str, args: &[&str], context: &str) -> Result<String> {
 /// WSL interop inherits only the env vars WSLENV names; the /p flag
 /// hands the Windows side the \\wsl$ translation of the Linux path.
 fn share_path_with_windows(command: &mut Command, var: &str) {
-    let existing = std::env::var("WSLENV").unwrap_or_default();
+    let existing = env::var("WSLENV").unwrap_or_default();
     command.env("WSLENV", merged_wslenv(&existing, var));
 }
 
@@ -364,7 +364,7 @@ fn run_game_captured(
         .spawn()
         .map_err(|e| anyhow::anyhow!("spawning {}: {e}", game.game_exe.display()))?;
 
-    let streams: [Box<dyn std::io::Read + Send>; 2] = [
+    let streams: [Box<dyn Read + Send>; 2] = [
         Box::new(child.stdout.take().expect("stdout was piped")),
         Box::new(child.stderr.take().expect("stderr was piped")),
     ];
@@ -413,7 +413,7 @@ fn run_game_captured(
 
 /// One pump thread per stream; lines (not bytes) keep interleaving sane.
 fn spawn_pumps(
-    streams: [Box<dyn std::io::Read + Send>; 2],
+    streams: [Box<dyn Read + Send>; 2],
 ) -> (mpsc::Receiver<String>, [thread::JoinHandle<()>; 2]) {
     let (sender, receiver) = mpsc::channel::<String>();
     let pumps = streams.map(|stream| {
@@ -451,7 +451,7 @@ const LOG_CLOCK_SLACK: Duration = Duration::from_secs(60);
 /// The game rotates its previous log at boot, so the newest in-window
 /// file is this run's.
 fn newest_boot_log(log_dir: &Path, boot_started: SystemTime) -> Option<(PathBuf, String)> {
-    let entries = std::fs::read_dir(log_dir).ok()?;
+    let entries = fs::read_dir(log_dir).ok()?;
     let (_, path) = entries
         .filter_map(|entry| entry.ok())
         .filter(|entry| {
@@ -467,7 +467,7 @@ fn newest_boot_log(log_dir: &Path, boot_started: SystemTime) -> Option<(PathBuf,
         })
         .filter(|(modified, _)| *modified + LOG_CLOCK_SLACK >= boot_started)
         .max_by_key(|(modified, _)| *modified)?;
-    let text = std::fs::read_to_string(&path).ok()?;
+    let text = fs::read_to_string(&path).ok()?;
     Some((path, text))
 }
 

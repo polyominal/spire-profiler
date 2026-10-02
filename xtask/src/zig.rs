@@ -3,11 +3,12 @@
 //! provisions it eagerly; the build bootstraps it lazily when missing.
 
 use std::path::{Path, PathBuf};
+use std::{env, fs};
 
 use anyhow::Result;
 use xshell::{Shell, cmd};
 
-use crate::workspace_root;
+use crate::{ensure_cli, workspace_root};
 
 /// Bump the version, urls, and shasums together from ziglang.org's index.
 pub const ZIG_VERSION: &str = "0.16.0";
@@ -75,17 +76,17 @@ pub fn ensure_bootstrap_in(shell: &Shell, dir: &Path) -> Result<()> {
         if version == ZIG_VERSION {
             return Ok(());
         }
-        std::fs::remove_dir_all(dir)?;
+        fs::remove_dir_all(dir)?;
     }
-    crate::ensure_cli(shell, "curl", "--version", "the zig bootstrap")?;
-    crate::ensure_cli(shell, "tar", "--version", "the zig bootstrap")?;
-    let pin = pin(std::env::consts::OS, std::env::consts::ARCH)?;
+    ensure_cli(shell, "curl", "--version", "the zig bootstrap")?;
+    ensure_cli(shell, "tar", "--version", "the zig bootstrap")?;
+    let pin = pin(env::consts::OS, env::consts::ARCH)?;
     println!(
         "zig bootstrap: downloading the pinned zig {ZIG_VERSION} into {} (first run only; \
          ~50 MB, cached for subsequent runs)",
         dir.display()
     );
-    std::fs::create_dir_all(dir)?;
+    fs::create_dir_all(dir)?;
     let tarball = dir.join(format!("zig-{ZIG_VERSION}.tar.xz"));
     let url = pin.url;
     if !sha256_matches(&tarball, pin.sha256)? {
@@ -95,7 +96,7 @@ pub fn ensure_bootstrap_in(shell: &Shell, dir: &Path) -> Result<()> {
         )
         .run()?;
         if !sha256_matches(&tarball, pin.sha256)? {
-            let _ = std::fs::remove_file(&tarball);
+            let _ = fs::remove_file(&tarball);
             return Err(anyhow::anyhow!(
                 "zig bootstrap: sha256 mismatch for {} (expected {}); the bad download was \
                  removed, re-run `cargo xtask install-tool`",

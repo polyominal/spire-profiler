@@ -31,6 +31,8 @@ pub fn resolve_commit(shell: &Shell) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
 
     #[test]
@@ -47,7 +49,7 @@ mod tests {
         assert!(abbreviation.len() >= 8);
         assert!(commit.starts_with(&abbreviation));
         cmd!(shell, "git config status.showUntrackedFiles no").run()?;
-        std::fs::write(repo.join("README.md"), "changed tracked input")?;
+        fs::write(repo.join("README.md"), "changed tracked input")?;
         assert!(release_commit(&shell).is_err());
         assert_eq!(resolve_commit(&shell), abbreviation);
         cmd!(shell, "git add README.md").run()?;
@@ -57,11 +59,11 @@ mod tests {
             "git restore --source=HEAD --staged --worktree README.md"
         )
         .run()?;
-        std::fs::write(repo.join("untracked-input"), "new input")?;
+        fs::write(repo.join("untracked-input"), "new input")?;
         assert!(release_commit(&shell).is_err());
-        std::fs::remove_file(repo.join("untracked-input"))?;
+        fs::remove_file(repo.join("untracked-input"))?;
         assert_eq!(release_commit(&shell)?, commit);
-        std::fs::write(repo.join(".git/index"), "invalid index")?;
+        fs::write(repo.join(".git/index"), "invalid index")?;
         assert!(release_commit(&shell).is_err());
 
         // A ceiling must be an ancestor, not the directory Git starts in.

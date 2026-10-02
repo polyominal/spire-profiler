@@ -132,9 +132,12 @@ pub(super) fn response(id: u64, copy: impl FnOnce(&str) -> i32) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    use std::{fs, process};
+
     use serde_json::Value;
 
     use super::*;
+    use crate::abi;
 
     #[test]
     fn response_copy_respects_caller_capacity_and_terminates_json() {
@@ -142,21 +145,20 @@ mod tests {
         execute(handle, "malformed");
         // SAFETY: null buffers request sizing only, regardless of capacity.
         let required =
-            unsafe { crate::abi::spire_profiler_store_response(handle, std::ptr::null_mut(), 0) };
+            unsafe { abi::spire_profiler_store_response(handle, std::ptr::null_mut(), 0) };
         assert!(required > 1);
         let mut buffer = vec![0xa5; required as usize + 1];
         for capacity in [-1, 0, required - 1] {
             // SAFETY: the allocation covers every nonnegative advertised capacity.
             let size = unsafe {
-                crate::abi::spire_profiler_store_response(handle, buffer.as_mut_ptr(), capacity)
+                abi::spire_profiler_store_response(handle, buffer.as_mut_ptr(), capacity)
             };
             assert_eq!(size, required);
             assert!(buffer.iter().all(|&byte| byte == 0xa5));
         }
         // SAFETY: the owned allocation covers the requested capacity.
-        let copied = unsafe {
-            crate::abi::spire_profiler_store_response(handle, buffer.as_mut_ptr(), required)
-        };
+        let copied =
+            unsafe { abi::spire_profiler_store_response(handle, buffer.as_mut_ptr(), required) };
         assert_eq!(copied, required);
         assert_eq!(buffer[required as usize - 1], 0);
         assert_eq!(
@@ -174,7 +176,7 @@ mod tests {
         let handle = create();
         let directory = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../tmp")
-            .join(format!("store-abi-{}-{handle}", std::process::id()));
+            .join(format!("store-abi-{}-{handle}", process::id()));
         assert!(
             !directory.exists(),
             "the fixture owns a fresh scratch directory"
@@ -183,14 +185,14 @@ mod tests {
         let request = json!({"op": "open", "path": path})
             .to_string()
             .replace('測', "\\u6e2c");
-        let engine = crate::abi::spire_profiler_engine_create();
+        let engine = abi::spire_profiler_engine_create();
         assert_eq!(execute(handle, &request), 1);
         response(handle, |json| {
             let reply: Value = serde_json::from_str(json).expect("the store returns JSON");
             assert_eq!(reply["ok"], true, "{json}");
             1
         });
-        crate::abi::spire_profiler_engine_destroy(engine);
+        abi::spire_profiler_engine_destroy(engine);
         assert_eq!(execute(handle, r#"{"op":"import_status"}"#), 1);
         response(handle, |json| {
             let reply: Value = serde_json::from_str(json).expect("the store returns JSON");
@@ -202,7 +204,7 @@ mod tests {
         });
         destroy(handle);
         assert!(path.is_file());
-        std::fs::remove_dir_all(directory).expect("the closed fixture owns its database");
+        fs::remove_dir_all(directory).expect("the closed fixture owns its database");
     }
 
     #[test]
@@ -260,7 +262,7 @@ mod tests {
         let handle = create();
         let directory = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../tmp")
-            .join(format!("store-oversized-{}-{handle}", std::process::id()));
+            .join(format!("store-oversized-{}-{handle}", process::id()));
         assert!(
             !directory.exists(),
             "fixture owns a fresh scratch directory"
@@ -296,7 +298,7 @@ mod tests {
         assert_eq!(execute(handle, r#"{"op":"max_combat_id"}"#), 1);
         assert_eq!(reply(handle)["value"], 0);
         destroy(handle);
-        std::fs::remove_dir_all(directory).expect("closed fixture owns its database");
+        fs::remove_dir_all(directory).expect("closed fixture owns its database");
     }
 
     #[test]
@@ -305,7 +307,7 @@ mod tests {
         let writer = create();
         let directory = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../tmp")
-            .join(format!("store-panic-{}-{reader}", std::process::id()));
+            .join(format!("store-panic-{}-{reader}", process::id()));
         assert!(
             !directory.exists(),
             "fixture owns a fresh scratch directory"
@@ -339,7 +341,7 @@ mod tests {
         let injected = std::ffi::CString::new(r#"{"op":"panic_for_test"}"#)
             .expect("fixture command contains no NUL");
         // SAFETY: CString owns a terminated request for the duration of the ABI call.
-        let result = unsafe { crate::abi::spire_profiler_store_execute(reader, injected.as_ptr()) };
+        let result = unsafe { abi::spire_profiler_store_execute(reader, injected.as_ptr()) };
         assert_eq!(result, 0);
         assert_eq!(
             execute(
@@ -358,6 +360,6 @@ mod tests {
         });
         destroy(reader);
         destroy(writer);
-        std::fs::remove_dir_all(directory).expect("closed fixtures own their database");
+        fs::remove_dir_all(directory).expect("closed fixtures own their database");
     }
 }

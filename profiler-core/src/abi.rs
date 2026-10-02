@@ -2,16 +2,19 @@
 //! stale or foreign IDs return failure without dereferencing host pointers.
 //! Every export contains panics. No caller receives a Rust allocation or borrow.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_char};
 use std::io::Write;
+use std::mem::{self, ManuallyDrop};
+use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::{ptr, thread};
 
 mod storage;
 
 use crate::data::modifiers::WeakObservation;
 use crate::data::observation::Observation;
-use crate::data::state::State;
+use crate::data::state::{State, caps};
 
 #[repr(C)]
 pub struct BlockModifier {
@@ -19,9 +22,9 @@ pub struct BlockModifier {
     pub credit: i64,
 }
 
-const _: () = assert!(std::mem::size_of::<BlockModifier>() == 16);
-const _: () = assert!(std::mem::offset_of!(BlockModifier, source) == 0);
-const _: () = assert!(std::mem::offset_of!(BlockModifier, credit) == 8);
+const _: () = assert!(size_of::<BlockModifier>() == 16);
+const _: () = assert!(mem::offset_of!(BlockModifier, source) == 0);
+const _: () = assert!(mem::offset_of!(BlockModifier, credit) == 8);
 
 #[derive(Default)]
 struct Engines {
@@ -30,17 +33,17 @@ struct Engines {
 static NEXT_ENGINE: AtomicU64 = AtomicU64::new(1);
 thread_local! {
     static ENGINES: RefCell<Engines> = RefCell::new(Engines::default());
-    static PANIC_REPORTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static PANIC_REPORTED: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Returns `on_panic` after an unwinding Rust panic. Payload destructors
 /// are suppressed because they can panic; aborting panics remain unrecoverable.
 pub(crate) fn contain<T: Copy>(name: &str, on_panic: T, f: impl FnOnce() -> T) -> T {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+    match panic::catch_unwind(AssertUnwindSafe(f)) {
         Ok(value) => value,
         Err(payload) => {
-            let payload = std::mem::ManuallyDrop::new(payload);
-            let logged = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let payload = ManuallyDrop::new(payload);
+            let logged = panic::catch_unwind(AssertUnwindSafe(|| {
                 let detail = if let Some(msg) = payload.downcast_ref::<&str>() {
                     *msg
                 } else if let Some(msg) = payload.downcast_ref::<String>() {
@@ -58,7 +61,7 @@ pub(crate) fn contain<T: Copy>(name: &str, on_panic: T, f: impl FnOnce() -> T) -
                 });
             }));
             if let Err(payload) = logged {
-                std::mem::forget(payload);
+                mem::forget(payload);
             }
             on_panic
         }
@@ -84,7 +87,7 @@ fn with_engine<T: Copy>(
         struct PanicGuard<'a>(&'a mut State);
         impl Drop for PanicGuard<'_> {
             fn drop(&mut self) {
-                if std::thread::panicking() {
+                if thread::panicking() {
                     self.0.poisoned = true;
                     if let Some(recording) = &mut self.0.recording {
                         recording.truncated = true;
@@ -180,7 +183,7 @@ pub unsafe extern "C" fn spire_profiler_store_response(
             if !buffer.is_null() && capacity >= size {
                 // SAFETY: capacity covers the cached response and buffers cannot alias.
                 unsafe {
-                    std::ptr::copy_nonoverlapping(json.as_ptr(), buffer, json.len());
+                    ptr::copy_nonoverlapping(json.as_ptr(), buffer, json.len());
                     buffer.add(json.len()).write(0);
                 }
             }
@@ -215,7 +218,7 @@ pub unsafe extern "C" fn spire_profiler_snapshot(
             if !buffer.is_null() && capacity >= size {
                 // SAFETY: capacity covers this byte count and the buffers cannot alias.
                 unsafe {
-                    std::ptr::copy_nonoverlapping(json.as_ptr(), buffer, json.len());
+                    ptr::copy_nonoverlapping(json.as_ptr(), buffer, json.len());
                     buffer.add(json.len()).write(0);
                 }
             }
@@ -260,7 +263,7 @@ pub unsafe extern "C" fn spire_profiler_audit_snapshot(
             if !buffer.is_null() && capacity >= size {
                 // SAFETY: capacity covers this byte count and the buffers cannot alias.
                 unsafe {
-                    std::ptr::copy_nonoverlapping(json.as_ptr(), buffer, json.len());
+                    ptr::copy_nonoverlapping(json.as_ptr(), buffer, json.len());
                     buffer.add(json.len()).write(0);
                 }
             }
@@ -868,8 +871,7 @@ pub unsafe extern "C" fn spire_profiler_block_gained(
 ) -> i32 {
     contain("block_gained", 0, || {
         with_engine(engine, 0, true, |state| {
-            let valid_count =
-                (0..=crate::data::state::caps::BLOCK_MODIFIERS as i32).contains(&count);
+            let valid_count = (0..=caps::BLOCK_MODIFIERS as i32).contains(&count);
             let valid_buffer = count == 0 || (!modifiers.is_null() && modifiers.is_aligned());
             let entries: Vec<_> = if valid_count && valid_buffer && count > 0 {
                 // SAFETY: the caller owns count initialized, aligned readable entries.
@@ -1277,7 +1279,7 @@ pub unsafe extern "C" fn spire_profiler_recording(
             if !buffer.is_null() && capacity >= size {
                 // SAFETY: capacity covers this byte count and the buffers cannot alias.
                 unsafe {
-                    std::ptr::copy_nonoverlapping(json.as_ptr(), buffer, json.len());
+                    ptr::copy_nonoverlapping(json.as_ptr(), buffer, json.len());
                     buffer.add(json.len()).write(0);
                 }
             }
@@ -1312,6 +1314,8 @@ pub extern "C" fn spire_profiler_combat_discard(engine: u64) {
 mod tests {
     use std::ffi::CString;
 
+    use serde_json::Value;
+
     use super::*;
 
     fn json(engine: u64, recording: bool) -> String {
@@ -1322,7 +1326,7 @@ mod tests {
         };
         // SAFETY: null asks for length, then the vector owns the complete output range.
         unsafe {
-            let length = read(engine, std::ptr::null_mut(), 0);
+            let length = read(engine, ptr::null_mut(), 0);
             assert!(length > 0);
             let mut bytes = vec![0; length as usize];
             assert_eq!(read(engine, bytes.as_mut_ptr(), length), length);
@@ -1355,11 +1359,11 @@ mod tests {
         assert_eq!(spire_profiler_turn_started(first, 7), 1);
         assert_eq!(spire_profiler_turn_started(first, 7), 1);
         assert_eq!(spire_profiler_turn_started(second, 7), 1);
-        let a: serde_json::Value = serde_json::from_str(&json(first, false)).expect("JSON parses");
-        let b: serde_json::Value = serde_json::from_str(&json(second, false)).expect("JSON parses");
+        let a: Value = serde_json::from_str(&json(first, false)).expect("JSON parses");
+        let b: Value = serde_json::from_str(&json(second, false)).expect("JSON parses");
         assert_eq!(a["turns"], 2);
         assert_eq!(b["turns"], 1);
-        std::thread::spawn(move || {
+        thread::spawn(move || {
             let local = spire_profiler_engine_create();
             assert_ne!(first, local);
             assert_eq!(spire_profiler_turn_started(first, 7), 0);
@@ -1379,7 +1383,7 @@ mod tests {
         // SAFETY: null input is permitted, malformed input remains readable and terminated.
         unsafe {
             assert_eq!(
-                spire_profiler_combat_started(engine, 1, std::ptr::null(), c"\xff".as_ptr(), 7, 1),
+                spire_profiler_combat_started(engine, 1, ptr::null(), c"\xff".as_ptr(), 7, 1),
                 1
             );
         }
@@ -1388,8 +1392,7 @@ mod tests {
         let required = unsafe { spire_profiler_snapshot(engine, buffer.as_mut_ptr(), 4) };
         assert!(required > 4);
         assert_eq!(buffer, [0x55; 4]);
-        let summary: serde_json::Value =
-            serde_json::from_str(&json(engine, false)).expect("JSON parses");
+        let summary: Value = serde_json::from_str(&json(engine, false)).expect("JSON parses");
         assert_eq!(summary["encounter_id"], "");
         assert_eq!(summary["encounter_type"], "");
         spire_profiler_engine_destroy(engine);
@@ -1424,7 +1427,7 @@ mod tests {
             json(engine, true),
         );
         // SAFETY: null requests sizing without writing any bytes.
-        let required = unsafe { spire_profiler_audit_snapshot(engine, std::ptr::null_mut(), 0) };
+        let required = unsafe { spire_profiler_audit_snapshot(engine, ptr::null_mut(), 0) };
         assert!(required > 5);
         let mut bytes = vec![0x55; required as usize + 1];
         for capacity in [-1, 0, required - 1] {
@@ -1442,7 +1445,7 @@ mod tests {
         );
         assert_eq!(bytes[required as usize - 1], 0);
         assert_eq!(bytes[required as usize], 0x55);
-        let audit: serde_json::Value =
+        let audit: Value =
             serde_json::from_slice(&bytes[..required as usize - 1]).expect("audit parses");
         assert_eq!(audit["audit_version"], 1);
         assert_eq!(audit["policy_version"], 3);
@@ -1474,13 +1477,13 @@ mod tests {
         let engine = spire_profiler_engine_create();
         assert_eq!(
             // SAFETY: null requests sizing without writing any bytes.
-            unsafe { spire_profiler_audit_snapshot(engine, std::ptr::null_mut(), 0) },
+            unsafe { spire_profiler_audit_snapshot(engine, ptr::null_mut(), 0) },
             5
         );
-        std::thread::spawn(move || {
+        thread::spawn(move || {
             assert_eq!(
                 // SAFETY: null requests sizing without writing any bytes.
-                unsafe { spire_profiler_audit_snapshot(engine, std::ptr::null_mut(), 0) },
+                unsafe { spire_profiler_audit_snapshot(engine, ptr::null_mut(), 0) },
                 0
             );
         })
@@ -1489,7 +1492,7 @@ mod tests {
         spire_profiler_engine_destroy(engine);
         assert_eq!(
             // SAFETY: null requests sizing without writing any bytes.
-            unsafe { spire_profiler_audit_snapshot(engine, std::ptr::null_mut(), 0) },
+            unsafe { spire_profiler_audit_snapshot(engine, ptr::null_mut(), 0) },
             0
         );
     }
@@ -1511,13 +1514,11 @@ mod tests {
         );
         assert_eq!(spire_profiler_turn_started(engine, 1), 0);
         let trace = CString::new(json(engine, true)).expect("JSON has no literal NUL");
-        let recording: serde_json::Value =
-            serde_json::from_slice(trace.as_bytes()).expect("trace parses");
+        let recording: Value = serde_json::from_slice(trace.as_bytes()).expect("trace parses");
         assert_eq!(recording["truncated"], true);
         // SAFETY: CString owns the terminated recording through replay.
         assert_eq!(unsafe { spire_profiler_replay(replay, trace.as_ptr()) }, 0);
-        let summary: serde_json::Value =
-            serde_json::from_str(&json(engine, false)).expect("JSON parses");
+        let summary: Value = serde_json::from_str(&json(engine, false)).expect("JSON parses");
         assert_eq!(summary["coverage"]["complete"], false);
         assert!(
             summary["coverage"]["reasons"]
@@ -1540,10 +1541,7 @@ mod tests {
                 panic!("payload destructor");
             }
         }
-        assert_eq!(
-            contain("payload", 19, || std::panic::panic_any(Payload)),
-            19
-        );
+        assert_eq!(contain("payload", 19, || panic::panic_any(Payload)), 19);
     }
 
     #[test]
@@ -1593,8 +1591,7 @@ mod tests {
         // SAFETY: CString owns the terminated recording through replay.
         assert_eq!(unsafe { spire_profiler_replay(replay, trace.as_ptr()) }, 1);
         assert_eq!(json(replay, false), expected);
-        let mut corrupt: serde_json::Value =
-            serde_json::from_slice(trace.as_bytes()).expect("trace parses");
+        let mut corrupt: Value = serde_json::from_slice(trace.as_bytes()).expect("trace parses");
         corrupt["observations"][1]["result"] = 0.into();
         let corrupt = CString::new(corrupt.to_string()).expect("JSON has no literal NUL");
         assert_eq!(
@@ -1607,8 +1604,7 @@ mod tests {
             expected,
             "failed replay leaves the old state untouched"
         );
-        let mut corrupt: serde_json::Value =
-            serde_json::from_slice(trace.as_bytes()).expect("trace parses");
+        let mut corrupt: Value = serde_json::from_slice(trace.as_bytes()).expect("trace parses");
         corrupt["observations"][4]["result"] = 99.into();
         let corrupt = CString::new(corrupt.to_string()).expect("JSON has no literal NUL");
         assert_eq!(
@@ -1652,9 +1648,9 @@ mod tests {
             }];
             let misaligned = valid.as_ptr().cast::<u8>().wrapping_add(1).cast();
             for (buffer, count, incomplete) in [
-                (std::ptr::null(), 1, 0),
+                (ptr::null(), 1, 0),
                 (valid.as_ptr(), -1, 0),
-                (std::ptr::dangling(), 17, 0),
+                (ptr::dangling(), 17, 0),
                 (misaligned, 1, 0),
                 (negative.as_ptr(), 1, 0),
                 (excessive.as_ptr(), 1, 0),
@@ -1676,7 +1672,7 @@ mod tests {
                 1
             );
             assert_eq!(
-                spire_profiler_block_gained(engine, 9, 2, base, 0, std::ptr::null(), 0, 0),
+                spire_profiler_block_gained(engine, 9, 2, base, 0, ptr::null(), 0, 0),
                 1
             );
             assert_eq!(
@@ -1685,7 +1681,7 @@ mod tests {
             );
         }
         let expected = json(engine, false);
-        let summary: serde_json::Value = serde_json::from_str(&expected).expect("summary parses");
+        let summary: Value = serde_json::from_str(&expected).expect("summary parses");
         assert_eq!(summary["block_total"], 29);
         assert_eq!(summary["cards"][0]["block_gained"], 29);
         assert_eq!(summary["cards"][0]["block_effective"], 2);
@@ -1709,8 +1705,7 @@ mod tests {
         started(engine, 9);
         assert_eq!(spire_profiler_turn_started(engine, 9), 1);
         let expected = json(engine, false);
-        let mut trace: serde_json::Value =
-            serde_json::from_str(&json(engine, true)).expect("trace parses");
+        let mut trace: Value = serde_json::from_str(&json(engine, true)).expect("trace parses");
         assert_eq!(trace["policy_version"], 3);
         for policy in [1, 2] {
             trace["policy_version"] = policy.into();
@@ -1728,8 +1723,7 @@ mod tests {
         assert_eq!(spire_profiler_recording_begin(engine), 1);
         started(engine, 9);
         assert_eq!(spire_profiler_turn_started(engine, 9), 1);
-        let mut trace: serde_json::Value =
-            serde_json::from_str(&json(engine, true)).expect("trace parses");
+        let mut trace: Value = serde_json::from_str(&json(engine, true)).expect("trace parses");
         assert_eq!(trace["trace_version"], 2);
         trace["trace_version"] = 1.into();
         assert_eq!(spire_profiler_turn_started(engine, 9), 1);
@@ -1778,7 +1772,7 @@ mod tests {
         }
         assert_eq!(spire_profiler_combat_ended(engine, 1), 1);
         let trace = json(engine, true);
-        let doc: serde_json::Value = serde_json::from_str(&trace).expect("trace parses");
+        let doc: Value = serde_json::from_str(&trace).expect("trace parses");
         assert_eq!(doc["truncated"], false);
         assert_eq!(
             doc["observations"].as_array().expect("entry array").len(),
@@ -1809,7 +1803,7 @@ mod tests {
             spire_profiler_turn_started(engine, 1);
         }
         let trace = json(engine, true);
-        let doc: serde_json::Value = serde_json::from_str(&trace).expect("trace parses");
+        let doc: Value = serde_json::from_str(&trace).expect("trace parses");
         assert_eq!(doc["truncated"], true);
         assert_eq!(
             doc["observations"]
@@ -1855,7 +1849,7 @@ mod tests {
             assert_eq!(spire_profiler_forge(engine, 1, source, 2), 1);
         }
         let expected = json(engine, false);
-        let summary: serde_json::Value = serde_json::from_str(&expected).expect("summary parses");
+        let summary: Value = serde_json::from_str(&expected).expect("summary parses");
         assert_eq!(summary["cards"][0]["dmg_direct"], 5);
         assert_eq!(summary["cards"][0]["forge"], 2);
         assert_eq!(summary["cards"][1]["dmg_modifier"], 3);

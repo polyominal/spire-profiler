@@ -2,6 +2,7 @@
 //! ABI checks and retained fixture snapshots. Only the native library selector
 //! is generated from the platform matrix.
 
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -63,7 +64,7 @@ impl Project {
     }
 
     fn input_paths(&self, shell: &Shell, binary: &Path, resources: bool) -> Result<Vec<PathBuf>> {
-        std::fs::create_dir_all(&self.output)?;
+        fs::create_dir_all(&self.output)?;
         write_if_changed(
             &self.output.join("NativeLibrarySelector.g.cs"),
             &native_library_selector(),
@@ -114,7 +115,7 @@ impl Project {
             .map(|path| {
                 Ok((
                     self.input_name(&path)?.to_string_lossy().into_owned(),
-                    std::fs::read_to_string(&path)
+                    fs::read_to_string(&path)
                         .with_context(|| format!("reading managed source {}", path.display()))?,
                 ))
             })
@@ -128,7 +129,7 @@ impl Project {
             directory: destination.join("src"),
             output: destination.to_owned(),
         };
-        std::fs::create_dir_all(&snapshot.directory)?;
+        fs::create_dir_all(&snapshot.directory)?;
         for input in self.input_paths(shell, &binary, true)? {
             let base = if input.starts_with(&self.directory) {
                 &snapshot.directory
@@ -136,11 +137,11 @@ impl Project {
                 &snapshot.output
             };
             let output = base.join(self.input_name(&input)?);
-            std::fs::create_dir_all(output.parent().expect("snapshot sources have a parent"))?;
-            std::fs::copy(input, output)?;
+            fs::create_dir_all(output.parent().expect("snapshot sources have a parent"))?;
+            fs::copy(input, output)?;
         }
         for name in self.configuration_files() {
-            std::fs::copy(self.directory.join(name), snapshot.directory.join(name))?;
+            fs::copy(self.directory.join(name), snapshot.directory.join(name))?;
         }
         Ok(snapshot)
     }
@@ -181,9 +182,9 @@ impl Project {
 }
 
 fn write_if_changed(path: &Path, contents: &str) -> Result<()> {
-    match std::fs::read_to_string(path) {
+    match fs::read_to_string(path) {
         Ok(existing) if existing == contents => Ok(()),
-        _ => Ok(std::fs::write(path, contents)?),
+        _ => Ok(fs::write(path, contents)?),
     }
 }
 
@@ -222,8 +223,6 @@ fn lib_for(os: &str, arch: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-
     use super::*;
 
     #[test]

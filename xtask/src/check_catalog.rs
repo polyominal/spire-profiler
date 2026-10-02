@@ -484,6 +484,8 @@ fn provenance_version(tree: &Path) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    use xshell::Shell;
+
     use super::*;
 
     fn fixture(methods: &str) -> ClassFile {
@@ -498,10 +500,10 @@ mod tests {
 
     #[test]
     fn hook_universe_accepts_non_task_return_types() -> Result<()> {
-        let shell = xshell::Shell::new()?;
+        let shell = Shell::new()?;
         let temp = shell.create_temp_dir()?;
         for name in BASE_MODELS {
-            std::fs::write(
+            fs::write(
                 temp.path().join(name),
                 "public class Model { public virtual ValueTask<int> NewHook(); private void Helper() {} }",
             )?;
@@ -515,7 +517,7 @@ mod tests {
 
     #[test]
     fn class_files_reject_namespace_drift_and_bodyless_methods() -> Result<()> {
-        let shell = xshell::Shell::new()?;
+        let shell = Shell::new()?;
         let temp = shell.create_temp_dir()?;
         let path = temp.path().join("Moved.cs");
         for (source, expected) in [

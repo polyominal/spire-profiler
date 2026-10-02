@@ -4,29 +4,30 @@
 
 use std::collections::BTreeSet;
 use std::fs;
+use std::io::ErrorKind;
 use std::path::Path;
 
 use anyhow::{Context, Result, ensure};
 use xshell::{Shell, cmd};
 
-use crate::{bundle, cross, sha256_file, workspace_root};
+use crate::{bundle, cross, ensure_cli, git, sha256_file, workspace_root};
 
 const SHARED_FILES: [&str; 2] = ["manifest.json", "spire-profiler.dll"];
 
 pub fn release(shell: &Shell) -> Result<()> {
-    let commit = crate::git::release_commit(shell)?;
+    let commit = git::release_commit(shell)?;
     crate::smoke(shell)?;
     crate::build::build(shell)?;
     ensure!(
-        crate::git::release_commit(shell)? == commit,
+        git::release_commit(shell)? == commit,
         "HEAD changed during the release build"
     );
     let short = cmd!(shell, "git rev-parse --short=8 {commit}").read()?;
     let version = format!("{}-{short}", crate::game_version::PIN);
     let root = workspace_root();
     let out_dir = root.join("dist");
-    crate::ensure_cli(shell, "zip", "--version", "packaging")?;
-    crate::ensure_cli(shell, "unzip", "-v", "archive validation")?;
+    ensure_cli(shell, "zip", "--version", "packaging")?;
+    ensure_cli(shell, "unzip", "-v", "archive validation")?;
     let bundle_dir = root.join("target/mods").join(bundle::MOD_ID);
     package(shell, &bundle_dir, &out_dir, &version)?;
     println!("release: {version} -> {}", out_dir.display());
@@ -45,7 +46,7 @@ fn package(shell: &Shell, bundle_dir: &Path, out_dir: &Path, version: &str) -> R
     );
     let stage = out_dir.join(".stage");
     match fs::remove_dir_all(&stage) {
-        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+        Err(error) if error.kind() != ErrorKind::NotFound => {
             return Err(error).context("removing stale release staging directory");
         }
         _ => {}
@@ -79,7 +80,7 @@ fn package(shell: &Shell, bundle_dir: &Path, out_dir: &Path, version: &str) -> R
     fs::write(stage.join("SHA256SUMS"), sums)?;
     // Partial publication must not leave checksums for the previous set.
     match fs::remove_file(out_dir.join("SHA256SUMS")) {
-        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+        Err(error) if error.kind() != ErrorKind::NotFound => {
             return Err(error).context("invalidating published checksums");
         }
         _ => {}

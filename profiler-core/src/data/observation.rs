@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use super::modifiers::WeakObservation;
 use super::state::State;
+use super::summary;
 
 const MAX_OBSERVATIONS: usize = 10_000;
 const MAX_BYTES: usize = 8 * 1024 * 1024;
@@ -290,7 +291,7 @@ impl State {
         }
         self.recording = Some(Recording {
             trace_version: TRACE_VERSION,
-            policy_version: super::summary::POLICY_VERSION,
+            policy_version: summary::POLICY_VERSION,
             truncated: false,
             observations: Vec::new(),
             budget: RecordingBudget::default(),
@@ -333,7 +334,7 @@ impl State {
             return 0;
         };
         if recording.trace_version != TRACE_VERSION
-            || recording.policy_version != super::summary::POLICY_VERSION
+            || recording.policy_version != summary::POLICY_VERSION
             || recording.truncated
             || recording.observations.len() > MAX_OBSERVATIONS + MAX_RELEASES
         {
