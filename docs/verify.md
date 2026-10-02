@@ -103,10 +103,10 @@ an existing fixture.
   once and re-run. The enable does not cover normal Steam play (the steam/
   account-scoped settings file is a separate consent).
 
-- `headless-test` combines the fresh `godot*.log` with captured process output.
-  Managed self-test and panel markers use the game's logger; contained native
-  panic diagnostics use stderr. Both streams matter when investigating a failed
-  gate.
+- `headless-test` reserves `tmp/headless-logs/run-*/godot.log` for each boot and
+  combines that log with captured process output. Managed self-test and panel
+  markers use the game's logger; contained native panic diagnostics use stderr.
+  Both streams matter when investigating a failed gate.
 
 - lldb cannot attach to the hardened game runtime. Inspect `<user data
   dir>/logs/`, captured process output, and the record's coverage reasons. For

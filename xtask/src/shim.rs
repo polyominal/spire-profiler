@@ -189,10 +189,24 @@ fn write_if_changed(path: &Path, contents: &str) -> Result<()> {
 }
 
 fn native_library_selector() -> String {
-    let windows = lib_for("windows", "x86_64");
-    let linux = lib_for("linux", "x86_64");
-    let mac_x64 = lib_for("macos", "x86_64");
-    let mac_arm64 = lib_for("macos", "arm64");
+    let mut branches = String::new();
+    for row in MATRIX {
+        let os = match row.os {
+            "windows" => "Windows",
+            "linux" => "Linux",
+            "macos" => "MacOS",
+            _ => panic!("native matrix contains an unsupported OS"),
+        };
+        let arch = match row.arch {
+            "x86_64" => "X64",
+            "arm64" => "Arm64",
+            _ => panic!("native matrix contains an unsupported architecture"),
+        };
+        branches.push_str(&format!(
+            "        OperatingSystem.Is{os}() && RuntimeInformation.ProcessArchitecture == Architecture.{arch} ? \"{}\" :\n",
+            row.bundle_name
+        ));
+    }
     format!(
         "// Generated from the xtask platform matrix.\n\
          using System;\n\
@@ -200,25 +214,10 @@ fn native_library_selector() -> String {
          namespace SpireProfiler;\n\n\
          internal static class NativeLibrarySelector\n\
          {{\n    \
-             internal static string FileName() => \
-         OperatingSystem.IsWindows() ? \"{windows}\" : \
-         OperatingSystem.IsLinux() ? \"{linux}\" : \
-         RuntimeInformation.ProcessArchitecture == Architecture.X64 \
-         ? \"{mac_x64}\" : \
-         OperatingSystem.IsMacOS() ? \"{mac_arm64}\" : \
-         throw new PlatformNotSupportedException(\"spire-profiler ships no native library for \
-         this platform\");\n\
+             internal static string FileName() =>\n\
+         {branches}        throw new PlatformNotSupportedException(\"spire-profiler ships no native library for this platform\");\n\
          }}\n"
     )
-}
-
-/// The selector hardcodes the row shape, so a dropped row must fail loudly.
-fn lib_for(os: &str, arch: &str) -> &'static str {
-    MATRIX
-        .iter()
-        .find(|row| row.os == os && row.arch == arch)
-        .unwrap_or_else(|| panic!("the native matrix must contain a {os}.{arch} row"))
-        .bundle_name
 }
 
 #[cfg(test)]
@@ -226,16 +225,70 @@ mod tests {
     use super::*;
 
     #[test]
-    fn selector_covers_the_shipped_libraries() {
-        let output = native_library_selector();
-        for row in MATRIX {
-            assert!(
-                output.contains(row.bundle_name),
-                "missing shipped library {}",
-                row.bundle_name
-            );
+    fn selector_rejects_unsupported_os_and_process_architecture_pairs() -> Result<()> {
+        let shell = Shell::new()?;
+        let binary = dotnet::resolve_dotnet(&shell)?;
+        let scratch_root = workspace_root().join("tmp/xtask-selector-tests");
+        fs::create_dir_all(&scratch_root)?;
+        let scratch = tempfile::tempdir_in(&scratch_root)?;
+        let project = scratch.path().join("Selector.csproj");
+        fs::write(
+            &project,
+            r#"<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net9.0</TargetFramework><OutputType>Exe</OutputType></PropertyGroup></Project>"#,
+        )?;
+        fs::copy(
+            workspace_root().join("xtask/syntax/NuGet.Config"),
+            scratch.path().join("NuGet.Config"),
+        )?;
+        fs::write(
+            scratch.path().join("NativeLibrarySelector.cs"),
+            native_library_selector(),
+        )?;
+        fs::write(
+            scratch.path().join("Program.cs"),
+            r#"
+using System;
+using System.Runtime.InteropServices;
+namespace SpireProfiler;
+static class OperatingSystem {
+    internal static string Name;
+    internal static bool IsWindows() => Name == "windows";
+    internal static bool IsLinux() => Name == "linux";
+    internal static bool IsMacOS() => Name == "macos";
+}
+static class RuntimeInformation { internal static Architecture ProcessArchitecture; }
+static class Program {
+    static void Main() {
+        foreach (var (os, arch, expected) in new[] {
+            ("windows", Architecture.X64, "libprofiler_core.windows.x86_64.dll"),
+            ("linux", Architecture.X64, "libprofiler_core.linux.x86_64.so"),
+            ("macos", Architecture.X64, "libprofiler_core.macos.x86_64.dylib"),
+            ("macos", Architecture.Arm64, "libprofiler_core.macos.arm64.dylib"),
+            ("windows", Architecture.Arm64, (string)null),
+            ("linux", Architecture.Arm64, (string)null),
+            ("freebsd", Architecture.X64, (string)null),
+            ("macos", Architecture.X86, (string)null)
+        }) {
+            OperatingSystem.Name = os;
+            RuntimeInformation.ProcessArchitecture = arch;
+            string actual = null;
+            try { actual = NativeLibrarySelector.FileName(); }
+            catch (PlatformNotSupportedException) { }
+            if (actual != expected) throw new Exception($"{os}/{arch}: {actual ?? "unsupported"}, expected {expected ?? "unsupported"}");
         }
-        assert!(output.contains("PlatformNotSupportedException"));
+    }
+}
+"#,
+        )?;
+        shell
+            .cmd(&binary)
+            .args(["run", "--project"])
+            .arg(&project)
+            .env("DOTNET_ROOT", dotnet::bootstrap_dir())
+            .env("DOTNET_CLI_TELEMETRY_OPTOUT", "1")
+            .env("DOTNET_NOLOGO", "1")
+            .run()?;
+        Ok(())
     }
 
     #[test]

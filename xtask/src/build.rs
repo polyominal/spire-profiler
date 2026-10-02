@@ -12,13 +12,12 @@ pub fn build(shell: &Shell) -> Result<discover::GamePaths> {
     // Cheap host rejection before the expensive cross matrix runs.
     discover::HostPlatform::detect()?;
 
-    check_abi::run(shell)?;
-
-    let libs = cross::build_matrix(shell, root)?;
-
     let game = discover::locate_game()?;
     // Fail fast on a game version the mod was not verified against.
     game_version::check_pin(&game)?;
+
+    check_abi::run(shell)?;
+    let libs = cross::build_matrix(shell, root)?;
 
     let build_commit = git::resolve_commit(shell);
     println!("build commit: {build_commit}");

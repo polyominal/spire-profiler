@@ -11,7 +11,6 @@
   `~/.local/share/Steam` (modern) and `~/.steam/steam` (legacy), then falls back
   to the default root. Flatpak Steam keeps its data elsewhere, so it needs
   `STS2_GAME_DIR`.
-- `STS2_USER_DATA_DIR` forces the log dir.
 - Every derived path is existence-checked, so a bad override or a renamed layout
   is an explicit error naming the expected path, never silent misbehavior.
 

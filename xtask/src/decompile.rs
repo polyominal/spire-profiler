@@ -46,12 +46,12 @@ pub fn decompile(shell: &Shell, output_dir: Option<PathBuf>, yes: bool) -> Resul
         .map_err(|e| anyhow::anyhow!("resolving {}: {e}", pck.display()))?;
     println!("game PCK: {}", abs_pck.display());
     // A game the mod was not verified against is a footgun: refuse early.
-    game_version::check_pin_at(&release_info_for_pck(&abs_pck))?;
+    let game_version = game_version::check_pin_at(&release_info_for_pck(&abs_pck))?;
 
     // Provision BEFORE the overwrite prompt: the download can fail, and the
     // wipe must never destroy a previous decompilation over a failed rerun.
     let gdre = ensure_gdre_tools(shell, host, root)?;
-    println!("GDRE Tools: {}", gdre.display());
+    println!("GDRE Tools: {}", gdre.binary.display());
 
     // Overwrite semantics mirror the verified tool.
     if output_dir.exists() {
@@ -72,7 +72,7 @@ pub fn decompile(shell: &Shell, output_dir: Option<PathBuf>, yes: bool) -> Resul
     let abs_output = output_dir
         .canonicalize()
         .map_err(|e| anyhow::anyhow!("resolving {}: {e}", output_dir.display()))?;
-    run_gdre(root, &gdre, &abs_pck, &abs_output)?;
+    run_gdre(root, &gdre.binary, &abs_pck, &abs_output)?;
 
     println!("verifying output...");
     let project_godot = abs_output.join("project.godot");
@@ -83,7 +83,7 @@ pub fn decompile(shell: &Shell, output_dir: Option<PathBuf>, yes: bool) -> Resul
         );
     }
 
-    write_provenance(&abs_output, &abs_pck, host)?;
+    write_provenance(&abs_output, &abs_pck, &gdre, game_version)?;
 
     println!("decompilation complete: {}", abs_output.display());
     println!(
@@ -168,39 +168,97 @@ fn chmod_executable(_exe: &Path) -> Result<()> {
     unreachable!("HostPlatform::detect rejects non-Unix hosts before any tool runs")
 }
 
-/// Idempotent: a rerun with the binary present skips the download.
-fn ensure_gdre_tools(shell: &Shell, host: discover::HostPlatform, root: &Path) -> Result<PathBuf> {
-    let (os_name, exe_rel, checksum) = gdre_host(host);
-    let tools_dir = gdre_tools_dir(root);
-    let exe = tools_dir.join(exe_rel);
-    if exe.is_file() {
-        println!("GDRE Tools: present at {}", tools_dir.display());
-    } else {
-        crate::ensure_cli(shell, "curl", "--version", "the GDRE Tools download")?;
-        crate::ensure_cli(shell, "unzip", "-v", "extraction")?;
-        let asset = format!("GDRE_tools-{GDRE_VERSION}-{os_name}.zip");
-        let url = format!(
-            "https://github.com/GDRETools/gdsdecomp/releases/download/{GDRE_VERSION}/{asset}"
-        );
-        let cache = tools_dir.join("cache");
-        fs::create_dir_all(&cache)?;
-        let zip = cache.join("gdre_tools.zip");
-        // Best-effort; a leftover zip re-downloads only when the exe is gone.
-        let result = download_and_verify(shell, &zip, &url, checksum)
-            .and_then(|()| extract_zip(shell, &zip, &tools_dir));
-        let _ = fs::remove_dir_all(&cache);
-        result?;
+struct Gdre {
+    binary: PathBuf,
+    version: &'static str,
+    host: &'static str,
+}
+
+struct GdrePin {
+    version: &'static str,
+    host: &'static str,
+    executable: &'static str,
+    checksum: &'static str,
+}
+
+impl GdrePin {
+    fn directory(&self, root: &Path) -> PathBuf {
+        gdre_tools_dir(root).join(format!("{}-{}", self.version, self.host))
     }
 
-    if !exe.is_file() {
-        bail!("GDRE Tools executable not found at {}", exe.display());
+    fn cached(&self, root: &Path) -> Result<Option<Gdre>> {
+        let directory = self.directory(root);
+        let stamp = match fs::read_to_string(directory.join(".verified-sha256")) {
+            Ok(stamp) => stamp,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error).context("reading the GDRE extraction stamp"),
+        };
+        let binary = directory.join(self.executable);
+        Ok(
+            (stamp == self.checksum && binary.is_file()).then_some(Gdre {
+                binary,
+                version: self.version,
+                host: self.host,
+            }),
+        )
     }
-    // The zip may not carry the exec bit; 0o755 must be set before the run.
-    chmod_executable(&exe)?;
-    // The quarantine xattr blocks execution until stripped (best-effort).
+}
+
+/// The cache key identifies the pin; the stamp attests to a complete extraction
+/// of its verified archive. An interrupted extraction cannot satisfy resolution.
+fn ensure_gdre_tools(shell: &Shell, host: discover::HostPlatform, root: &Path) -> Result<Gdre> {
+    let (host, executable, checksum) = gdre_host(host);
+    let pin = GdrePin {
+        version: GDRE_VERSION,
+        host,
+        executable,
+        checksum,
+    };
+    if let Some(tool) = pin.cached(root)? {
+        prepare_executable(shell, &tool.binary)?;
+        return Ok(tool);
+    }
+    crate::ensure_cli(shell, "curl", "--version", "the GDRE Tools download")?;
+    crate::ensure_cli(shell, "unzip", "-v", "extraction")?;
+    let tools_dir = pin.directory(root);
+    let asset = format!("GDRE_tools-{}-{}.zip", pin.version, pin.host);
+    let url = format!(
+        "https://github.com/GDRETools/gdsdecomp/releases/download/{}/{asset}",
+        pin.version
+    );
+    let cache = gdre_tools_dir(root).join("cache");
+    fs::create_dir_all(&cache)?;
+    let zip = cache.join(asset);
+    if !zip.is_file() || crate::sha256_file(&zip)? != pin.checksum {
+        download_and_verify(shell, &zip, &url, pin.checksum)?;
+    }
+    match fs::remove_dir_all(&tools_dir) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+            return Err(error).context("removing incomplete GDRE extraction");
+        }
+        _ => {}
+    }
+    extract_zip(shell, &zip, &tools_dir)?;
+    let binary = tools_dir.join(pin.executable);
+    if !binary.is_file() {
+        bail!("GDRE Tools executable not found at {}", binary.display());
+    }
+    prepare_executable(shell, &binary)?;
+    fs::write(tools_dir.join(".verified-sha256"), pin.checksum)?;
+    Ok(Gdre {
+        binary,
+        version: pin.version,
+        host: pin.host,
+    })
+}
+
+fn prepare_executable(shell: &Shell, binary: &Path) -> Result<()> {
+    chmod_executable(binary)?;
     #[cfg(target_os = "macos")]
-    remove_quarantine(shell, &exe);
-    Ok(exe)
+    remove_quarantine(shell, binary);
+    #[cfg(not(target_os = "macos"))]
+    let _ = shell;
+    Ok(())
 }
 
 /// Verifies the pinned SHA-256 BEFORE extraction, so a truncated or
@@ -310,21 +368,18 @@ fn reset_child_signal_dispositions(command: &mut Command) {
 #[cfg(not(unix))]
 fn reset_child_signal_dispositions(_command: &mut Command) {}
 
-fn write_provenance(output: &Path, pck: &Path, host: discover::HostPlatform) -> Result<()> {
+fn write_provenance(output: &Path, pck: &Path, gdre: &Gdre, game_version: &str) -> Result<()> {
     let utc = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| anyhow::anyhow!("system clock before the epoch: {e}"))?
         .as_secs();
-    // The pin check already ran, so this is the verified version; recorded
-    // so check-catalog can reject a tree decompiled from an older game.
-    let version = game_version::installed_version_from(&release_info_for_pck(pck))?;
     let json = serde_json::json!({
         // Unix epoch seconds.
         "utc_timestamp": utc,
-        "host_platform": gdre_host(host).0,
+        "host_platform": gdre.host,
         "pck_path": pck,
-        "gdre_version": GDRE_VERSION,
-        "game_version": version,
+        "gdre_version": gdre.version,
+        "game_version": game_version,
         "gdre_export_log_present": output.join("gdre_export.log").is_file(),
     });
     let text = serde_json::to_string_pretty(&json)
@@ -350,4 +405,61 @@ fn prompt_yes_no(prompt: &str) -> Result<bool> {
         return Ok(false);
     }
     Ok(matches!(answer.trim(), "y" | "Y" | "yes" | "YES"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cached_tool_requires_its_own_pin_and_completed_extraction() -> Result<()> {
+        let scratch_root = workspace_root().join("tmp/xtask-gdre-tests");
+        fs::create_dir_all(&scratch_root)?;
+        let scratch = tempfile::tempdir_in(scratch_root)?;
+        let root = scratch.path();
+        let old = GdrePin {
+            version: "old",
+            host: "linux",
+            executable: "gdre",
+            checksum: "old-hash",
+        };
+        let pin = GdrePin {
+            version: "new",
+            host: "linux",
+            executable: "gdre",
+            checksum: "new-hash",
+        };
+        let other_host = GdrePin {
+            host: "macos",
+            ..pin
+        };
+        for candidate in [&old, &pin] {
+            fs::create_dir_all(candidate.directory(root))?;
+            fs::write(
+                candidate.directory(root).join(candidate.executable),
+                "fixture executable",
+            )?;
+        }
+        fs::write(old.directory(root).join(".verified-sha256"), old.checksum)?;
+        assert!(old.cached(root)?.is_some());
+        assert!(
+            pin.cached(root)?.is_none(),
+            "a binary alone does not complete extraction"
+        );
+        fs::write(pin.directory(root).join(".verified-sha256"), old.checksum)?;
+        assert!(
+            pin.cached(root)?.is_none(),
+            "the extraction must match the archive pin"
+        );
+        fs::write(pin.directory(root).join(".verified-sha256"), pin.checksum)?;
+        let tool = pin.cached(root)?.expect("complete pinned extraction");
+        assert!(other_host.cached(root)?.is_none());
+        write_provenance(root, &root.join("fixture.pck"), &tool, "verified-game")?;
+        let provenance: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(root.join(".provenance.json"))?)?;
+        assert_eq!(provenance["gdre_version"], "new");
+        assert_eq!(provenance["host_platform"], "linux");
+        assert_eq!(provenance["game_version"], "verified-game");
+        Ok(())
+    }
 }
