@@ -69,8 +69,13 @@ update runbook lives in AGENTS.md.
 
 `cargo xtask check-catalog` compares the hand-curated catalog in
 [catalog.rs](../xtask/src/catalog.rs) and its reviewed exclusions against the
-decompiled relic and power classes. The check is syntax-based: read the hook
-bodies before changing the catalog.
+decompiled relic and power classes. Fingerprints expire reviews when method
+signatures, bodies, or the scanner's direct same-class helper matches change;
+whitespace and comments are ignored. The proposed fingerprints and review
+failures land in `tmp/catalog-review/`. The [fingerprint
+contract](../xtask/src/check_catalog/fingerprints.rs) defines the boundary;
+passing proves review freshness, not semantic correctness. Read changed hook
+bodies before accepting a proposal using the AGENTS.md runbook.
 
 `cargo xtask managed-test` additionally checks the installed assembly
 identities, producer definition inventory, and exact patch bridges. The catalog
