@@ -656,7 +656,7 @@ impl LedgerModel {
         self.rows.entry(key.clone()).or_insert_with(|| CardStat {
             player: key.slot,
             id: key.id.clone(),
-            kind: SourceKind::from_c(i32::from(key.kind)),
+            kind: SourceKind::from_c(i32::from(key.kind)).expect("model source kind is valid"),
             ..CardStat::default()
         })
     }

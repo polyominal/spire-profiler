@@ -123,8 +123,8 @@ impl State {
         if instance == 0 || owner == 0 || id.is_empty() {
             return Err(SourceFailure::Packet);
         }
-        let kind = CreatureKind::decode(owner_kind, &mut self.sources.diagnostics);
-        let slot = self.sources.diagnostics.slot(owner_slot);
+        let kind = CreatureKind::decode(owner_kind)?;
+        let slot = SourceSlot::parse(owner_slot).ok_or(SourceFailure::Packet)?;
         let incoming = self.source_snapshot(epoch, transfer)?;
         let index = self
             .provenance
@@ -378,7 +378,7 @@ impl State {
             }
             let debit = (hp as u64 - remaining) as u32;
             if remaining > 0 {
-                allocations.push((Destination::Unknown(TEAM_SLOT), remaining));
+                allocations.push((Destination::Unknown(SourceSlot::TEAM), remaining));
             }
             targets.push(DoomCapture {
                 creature,

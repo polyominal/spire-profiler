@@ -34,6 +34,7 @@ internal sealed record CoverageSummary
 }
 
 internal sealed record PlayerSummary(int Slot, string Character);
+internal readonly record struct RowMerge(IReadOnlyList<StatRow> Rows, bool AttributionLost);
 
 internal sealed record StatRow
 {
@@ -81,10 +82,11 @@ internal sealed record StatRow
         }
     }
 
-    internal static IReadOnlyList<StatRow> MergeRows(IReadOnlyList<StatRow> existing, IEnumerable<StatRow> incoming, bool team = false)
+    internal static RowMerge? MergeRows(IReadOnlyList<StatRow> existing, IEnumerable<StatRow> incoming, bool team = false)
     {
         var rows = existing.ToList();
         int ordinary = rows.Count(row => row.Kind != 5);
+        bool attributionLost = false;
         foreach (var row in incoming)
         {
             int index = rows.FindIndex(value => value.Id == row.Id && value.Kind == row.Kind
@@ -100,7 +102,8 @@ internal sealed record StatRow
                 if (row.Kind != 5) ordinary++;
                 continue;
             }
-            int slot = Math.Clamp(row.Player, 0, 4);
+            attributionLost = true;
+            int slot = row.Player;
             index = rows.FindIndex(value => value.Kind == 5 && value.Player == slot);
             if (index >= 0)
             {
@@ -113,7 +116,7 @@ internal sealed record StatRow
         }
         try { CheckRepresentable(rows); }
         catch (OverflowException) { return null; }
-        return Array.AsReadOnly(rows.ToArray());
+        return new(Array.AsReadOnly(rows.ToArray()), attributionLost);
     }
 
     internal static void CheckRepresentable(IReadOnlyList<StatRow> rows)
@@ -183,8 +186,8 @@ internal sealed record SummaryView
 
     internal SummaryView Add(SummaryView combat)
     {
-        var rows = StatRow.MergeRows(Cards, combat.Cards);
-        if (rows == null) return RejectCombat(combat.Coverage);
+        if (StatRow.MergeRows(Cards, combat.Cards) is not { } merge) return RejectCombat(combat.Coverage);
+        var rows = merge.Rows;
         try
         {
             // Run chart plays come from rows, independently of observed combat plays.
@@ -205,6 +208,8 @@ internal sealed record SummaryView
                 };
                 if (PolicyVersion.HasValue && combat.PolicyVersion.HasValue && PolicyVersion != combat.PolicyVersion)
                     merged = merged with { Coverage = merged.Coverage.WithFailure("mixed-attribution-policies") };
+                if (merge.AttributionLost)
+                    merged = merged with { Coverage = merged.Coverage.WithFailure("row-capacity") };
                 return merged;
             }
         }
@@ -214,15 +219,18 @@ internal sealed record SummaryView
     internal SummaryView AddHistory(CombatStatistics combat)
     {
         int? policy = combat.PolicyVersion > 0 ? combat.PolicyVersion : null;
-        var team = StatRow.MergeRows(Cards, combat.Cards.Select(row => row with { Player = 4 }), team: true);
-        if (team == null) return RejectCombat(combat.Coverage);
+        if (StatRow.MergeRows(Cards, combat.Cards.Select(row => row with { Player = 4 }), team: true) is not { } teamMerge)
+            return RejectCombat(combat.Coverage);
+        var team = teamMerge.Rows;
+        bool attributionLost = teamMerge.AttributionLost;
         var players = new Dictionary<int, IReadOnlyList<StatRow>>();
         foreach (var player in Players)
         {
             var prior = PlayerCards.TryGetValue(player.Slot, out var rows) ? rows : Array.Empty<StatRow>();
-            var merged = StatRow.MergeRows(prior, combat.Cards.Where(row => row.Player == player.Slot), team: true);
-            if (merged == null) return RejectCombat(combat.Coverage);
-            players[player.Slot] = merged;
+            if (StatRow.MergeRows(prior, combat.Cards.Where(row => row.Player == player.Slot), team: true) is not { } merged)
+                return RejectCombat(combat.Coverage);
+            players[player.Slot] = merged.Rows;
+            attributionLost |= merged.AttributionLost;
         }
         try
         {
@@ -243,6 +251,8 @@ internal sealed record SummaryView
                 };
                 if (PolicyVersion.HasValue && policy.HasValue && PolicyVersion != policy)
                     merged = merged with { Coverage = merged.Coverage.WithFailure("mixed-attribution-policies") };
+                if (attributionLost)
+                    merged = merged with { Coverage = merged.Coverage.WithFailure("row-capacity") };
                 return merged;
             }
         }

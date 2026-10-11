@@ -68,8 +68,7 @@ internal static class FlowCapture
             else if (__originalMethod.Name == "BeforeHandDraw" && __instance is HelloWorldPower)
                 source = TemporalPowerCapture.TurnSource(__instance, epoch);
             else source = Source(__instance, epoch);
-            var segment = descriptor.Role is ProducerRole.Card or ProducerRole.Relic or ProducerRole.Potion ? DamageSegment.Direct : DamageSegment.Attributed;
-            Current = new(epoch, __instance, source, descriptor.Role, segment, descriptor.Poison, audit, raw);
+            Current = new(epoch, __instance, source, descriptor.Role, descriptor.Segment, descriptor.Poison, audit, raw);
         }
         catch (Exception ex) { CaptureRuntime.Fail("producer-prefix", ex); }
     }

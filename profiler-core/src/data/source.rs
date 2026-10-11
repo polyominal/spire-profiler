@@ -428,19 +428,6 @@ const _: () = assert!(caps::BLOCK_MODIFIERS == 16);
 const _: () = assert!(caps::BLOCK_POOL > 0);
 const _: () = assert!(caps::MAX_PLAYER_SLOTS == 5);
 
-impl SourceDiagnostics {
-    fn slot(&mut self, slot: i32) -> SourceSlot {
-        self.clamp(slot, i32::from(TEAM_SLOT)) as SourceSlot
-    }
-    fn clamp(&mut self, value: i32, maximum: i32) -> i32 {
-        let clamped = value.clamp(0, maximum);
-        if clamped != value {
-            self.report(SourceFailure::Packet);
-        }
-        clamped
-    }
-}
-
 impl State {
     fn provenance_epoch(&mut self, wire: u64) -> Result<CombatEpoch, SourceFailure> {
         let epoch = self.source_epoch(wire)?;
@@ -530,9 +517,15 @@ impl State {
             let before = before.max(0) as u32;
             let added = u32::try_from(added).map_err(|_| SourceFailure::Packet)?;
             if before == 0 {
+                if second != 0 {
+                    self.source_handle_read(second)?;
+                }
                 return Ok(second);
             }
             if added == 0 {
+                if first != 0 {
+                    self.source_handle_read(first)?;
+                }
                 return Ok(first);
             }
             let first = self.source_snapshot(epoch, first)?;
@@ -567,10 +560,21 @@ impl State {
         let Ok(epoch) = self.provenance_epoch(combat_seq) else {
             return 0;
         };
-        let capture = SourceCaptureKind::decode(capture_kind, &mut self.sources.diagnostics);
-        let generation = GenerationState::decode(generation_state, &mut self.sources.diagnostics);
-        let kind = SourceKind::from_c(self.sources.diagnostics.clamp(source_kind, 5));
-        let slot = self.sources.diagnostics.slot(source_slot);
+        let parsed = (|| {
+            Ok::<_, SourceFailure>((
+                SourceCaptureKind::decode(capture_kind)?,
+                GenerationState::decode(generation_state)?,
+                SourceKind::from_c(source_kind).ok_or(SourceFailure::Packet)?,
+                SourceSlot::parse(source_slot).ok_or(SourceFailure::Packet)?,
+            ))
+        })();
+        let (capture, generation, kind, slot) = match parsed {
+            Ok(parsed) => parsed,
+            Err(failure) => {
+                self.sources.diagnostics.report(failure);
+                return 0;
+            }
+        };
         let unknown = SourceSnapshot::unknown(epoch);
         let source = match capture {
             SourceCaptureKind::CardInstance => {
@@ -706,7 +710,7 @@ impl<'a> LedgerStage<'a> {
     fn row(&mut self, destination: Destination) -> Result<usize, SourceFailure> {
         let index = match destination {
             Destination::Row(row) if (row as usize) < self.combat.cards.len() => row as usize,
-            Destination::Unknown(slot) if slot <= TEAM_SLOT => ledger::get_or_create_card_kind(
+            Destination::Unknown(slot) => ledger::get_or_create_card_kind(
                 self.combat,
                 slot,
                 "UNATTRIBUTED",
@@ -816,10 +820,7 @@ impl<'a> LedgerStage<'a> {
         Ok(())
     }
 
-    fn pool(&mut self, slot: SourceSlot) -> Result<&mut SourcePool, SourceFailure> {
-        if slot > TEAM_SLOT {
-            return Err(SourceFailure::Packet);
-        }
+    fn pool(&mut self, slot: SourceSlot) -> &mut SourcePool {
         let slot = usize::from(slot);
         if slot < self.pool_count && !self.original_pools.iter().any(|(index, _)| *index == slot) {
             self.original_pools.push((slot, self.pools[slot].clone()));
@@ -827,7 +828,7 @@ impl<'a> LedgerStage<'a> {
         while self.pools.len() <= slot {
             self.pools.push(SourcePool::default());
         }
-        Ok(&mut self.pools[slot])
+        &mut self.pools[slot]
     }
 
     fn commit(mut self) -> Result<(), SourceFailure> {
@@ -896,8 +897,10 @@ impl State {
     pub(crate) fn player_died(&mut self, combat_seq: u64, player_slot: i32) -> i32 {
         let result = (|| {
             self.provenance_epoch(combat_seq)?;
-            let slot = self.sources.diagnostics.slot(player_slot);
-            self.slot_state_mut(i32::from(slot)).died = true;
+            let slot = SourceSlot::parse(player_slot).ok_or(SourceFailure::Packet)?;
+            let index = slot.player_index().ok_or(SourceFailure::Packet)?;
+            self.track_player(slot);
+            self.per_player[index].died = true;
             Ok(())
         })();
         self.source_status(result)

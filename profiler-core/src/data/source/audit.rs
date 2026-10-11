@@ -62,7 +62,9 @@ impl SourceSnapshot {
                         let row = &cards[index as usize];
                         (row.id.as_ref(), row.kind, row.player)
                     }
-                    Destination::Unknown(slot) => ("UNATTRIBUTED", SourceKind::Unknown, slot),
+                    Destination::Unknown(slot) => {
+                        ("UNATTRIBUTED", SourceKind::Unknown, slot.into())
+                    }
                 };
                 Source {
                     id,
@@ -93,7 +95,7 @@ impl State {
                     instance: power.instance,
                     owner: power.owner,
                     owner_kind: power.owner_kind as i32,
-                    owner_slot: power.owner_slot,
+                    owner_slot: power.owner_slot.into(),
                     amount: power.observed,
                     trusted: power.trusted,
                     grants: power

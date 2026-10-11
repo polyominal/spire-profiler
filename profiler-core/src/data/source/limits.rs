@@ -167,7 +167,7 @@ fn generated_instance_capacity_preserves_known_ancestry_and_falls_back_for_new_c
     let missing = state.source_capture(7, 1, beyond, "COPY", 0, 1, 1);
     assert_eq!(
         destination(&mut state, missing),
-        Destination::Unknown(TEAM_SLOT)
+        Destination::Unknown(SourceSlot::TEAM)
     );
     for instance in [first, beyond - 1] {
         let known = state.source_capture(7, 1, instance, "COPY", 0, 1, 1);
@@ -234,7 +234,7 @@ fn orb_source_capacity_preserves_known_suppliers_and_falls_back_for_new_orb() {
     let missing = state.source_capture(7, 3, beyond, "", 4, 0, 0);
     assert_eq!(
         destination(&mut state, missing),
-        Destination::Unknown(TEAM_SLOT)
+        Destination::Unknown(SourceSlot::TEAM)
     );
     for instance in [first, beyond - 1] {
         let known = state.source_capture(7, 3, instance, "", 4, 0, 0);
@@ -415,39 +415,47 @@ fn empty_live_poison_does_not_reuse_its_retained_attachment_source() {
 }
 
 #[test]
-fn malformed_scalars_clamp_without_turning_reserved_tokens_into_objects() {
+fn malformed_source_fields_do_not_create_rows_or_handles() {
     let mut state = fixture();
-    for value in [i32::MIN, -1, 0, 1, 4, 5, i32::MAX] {
-        let source = state.source_capture(7, value, 0, "", value, value, value);
-        assert_eq!(state.source_count(source), 1);
-        assert_ne!(source, 0);
+    for (capture, kind, slot, generation) in [
+        (-1, 0, 0, 0),
+        (6, 0, 0, 0),
+        (1, -1, 0, 0),
+        (1, 6, 0, 0),
+        (1, 0, -1, 0),
+        (1, 0, 5, 0),
+        (1, 0, 0, -1),
+        (1, 0, 0, 4),
+    ] {
+        assert_eq!(
+            state.source_capture(7, capture, 1, "INVALID", kind, slot, generation),
+            0
+        );
     }
-    let source = card(&mut state, "A", i32::MAX);
-    let combat = state.current.as_ref().expect("fixture combat exists");
-    assert!(
-        combat
-            .cards
-            .iter()
-            .all(|row: &CardStat| row.player <= TEAM_SLOT)
-    );
+    let summary: serde_json::Value =
+        serde_json::from_str(&state.snapshot()).expect("summary parses");
+    assert_eq!(summary["cards"], serde_json::json!([]));
+    assert_eq!(summary["coverage"]["complete"], false);
+    let source = card(&mut state, "A", 0);
+    assert_ne!(source, 0);
     assert_eq!(state.source_count(source | 7), -1);
 }
 
 #[test]
 fn producer_segments_preserve_wire_policy_and_credited_rows() {
     for (role, direct, attributed) in [
-        (-1, Some(1), Some(1)),
+        (-1, None, None),
         (0, Some(1), Some(1)),
         (1, Some(0), None),
         (2, None, Some(1)),
         (3, Some(0), None),
         (4, Some(0), None),
         (5, Some(0), Some(1)),
-        (i32::MAX, Some(0), Some(1)),
+        (i32::MAX, None, None),
     ] {
         for (segment, expected) in [
-            (i32::MIN, direct),
-            (-1, direct),
+            (i32::MIN, None),
+            (-1, None),
             (0, direct),
             (1, attributed),
             (2, None),
@@ -537,8 +545,8 @@ fn interned_sources_preserve_lifetime_mixtures_and_expire_with_the_combat() {
     );
     assert_eq!(state.combat_started(8, "NEXT", "normal", 1000, 1), 8);
     assert_eq!(state.source_count(mixed), -1);
-    assert_eq!(state.source_accumulate(8, 0, 0, mixed, 3), mixed);
-    assert_eq!(state.source_accumulate(8, mixed, 3, 0, 3), mixed);
+    assert_eq!(state.source_accumulate(8, 0, 0, mixed, 3), 0);
+    assert_eq!(state.source_accumulate(8, mixed, 3, 0, 3), 0);
     assert_eq!(state.source_accumulate(8, mixed, 3, 0, 4), 0);
     assert_eq!(state.source_accumulate(8, 0, 0, 0, 0), 0);
     assert_eq!(state.combat_started(7, "OLD", "normal", 1000, 1), 0);
@@ -553,12 +561,21 @@ fn journal_unwind_restores_touched_rows_pools_counters_and_appended_entries() {
     let rows = state.current.as_ref().expect("fixture exists").cards.len();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut stage = LedgerStage::new(&mut state).expect("fixture is active");
-        stage.consume_block(0, 4).expect("pool covers four block");
         stage
-            .credit(Destination::Unknown(TEAM_SLOT), CreditField::Forge, 9)
+            .consume_block(SourceSlot::parse(0).expect("fixture slot"), 4)
+            .expect("pool covers four block");
+        stage
+            .credit(
+                Destination::Unknown(SourceSlot::TEAM),
+                CreditField::Forge,
+                9,
+            )
             .expect("reserved Unknown row exists");
         stage.combat.damage_received = 123;
-        stage.pool(3).expect("player slot is valid").osty.clear();
+        stage
+            .pool(SourceSlot::parse(3).expect("fixture slot"))
+            .osty
+            .clear();
         panic!("fault after multiple provisional writes");
     }));
     assert!(result.is_err());
@@ -585,6 +602,8 @@ fn released_handles_expire_without_releasing_native_consumers() {
     let calculation = state.damage_calculation_begin(7, mixed, 1, 0, 999);
     for handle in [a, b, mixed] {
         assert_eq!(state.source_release(handle), 1);
+        assert_eq!(state.source_accumulate(7, 0, 0, handle, 3), 0);
+        assert_eq!(state.source_accumulate(7, handle, 3, 0, 3), 0);
     }
     assert!(state.sources.entries.is_empty() && state.sources.index.is_empty());
     assert_eq!(state.damage_result_append(calculation, 5, 5, 0, 0, 4, 0), 1);

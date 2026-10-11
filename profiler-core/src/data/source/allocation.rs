@@ -437,7 +437,7 @@ mod tests {
             );
             assert_eq!(
                 actual[1][0].destination,
-                Destination::Unknown(super::super::TEAM_SLOT)
+                Destination::Unknown(super::super::SourceSlot::TEAM)
             );
             assert_eq!(actual[1][0].segment, segment.into());
             assert_eq!((actual[1][0].damage, actual[1][0].blocked), (3, 3));

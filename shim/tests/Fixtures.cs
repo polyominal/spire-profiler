@@ -434,10 +434,9 @@ internal sealed class FakeBackend : AttributionBackend
         if (model is ProbeModel probe)
         {
             if (probe.FailCapture) throw new InvalidOperationException("fixture descriptor failure");
-            CaptureKind kind = probe.Role switch { ProducerRole.Card => CaptureKind.CardInstance, ProducerRole.Power => CaptureKind.PowerInstance, ProducerRole.Orb => CaptureKind.OrbInstance, ProducerRole.Relic or ProducerRole.Potion => CaptureKind.DirectModel, _ => CaptureKind.Unknown };
-            return new(kind, probe.Role, probe.Name, probe.Role == ProducerRole.Card ? 0 : probe.Role == ProducerRole.Relic ? 1 : probe.Role == ProducerRole.Potion ? 3 : 2, probe.Slot);
+            return new(probe.Role, probe.Name, probe.Slot);
         }
-        return Descriptors.TryGetValue(model, out var descriptor) ? descriptor : new(CaptureKind.Unknown, ProducerRole.Unknown, "", 5, 4);
+        return Descriptors.TryGetValue(model, out var descriptor) ? descriptor : new(ProducerRole.Unknown, "", 4);
     }
     internal override CreatureDescriptor DescribeCreature(object creature) => Creatures[creature];
     internal override bool TemporaryPower(object power) => power is ProbeModel probe && probe.Temporary;
@@ -802,6 +801,7 @@ internal static partial class ManagedFixtures
             AccessTools.Method(typeof(DamageFixture), "Damage")
         })
             harmony.Patch(target, prefix: new HarmonyMethod(typeof(ManagedFixtures), nameof(EarlierPrefix)) { priority = Priority.First });
+        Test("failed patch installation cannot activate retained lifecycle callbacks", InstallationFailure);
         Test("Prefix/Finalizer synchronous restoration, barrier and original Task identity", ScopeBasics);
         Test("suspended, nested and overlapping flows on registered thread", AsyncScopes);
         Test("earlier Harmony skip preserves producer, pending, wrapper/orb and damage callers", SkippedPrefixes);
@@ -854,6 +854,7 @@ internal static partial class ManagedFixtures
         Test("completed groups precede later fault/combat replacement and exclude overkill", DamageGroupTiming);
         Test("exact independent result classification precedence", Classifications);
         Test("actual model ownership and accepted signed amount adapters", ActualModelAdapters);
+        Test("unresolved physical owners preserve measurements without consuming another player's pools", UnresolvedPhysicalOwners);
         Test("modifier/enemy/Weak rejection invalidates whole groups with evidence intact", CaptureStatusFailures);
         Test("block/Forge/summon immutable scopes, original kickoff timing and inheritance", CommandSources);
         Test("actual block-clear decisions preserve Barricade/Blur and later cross-player block", RetainedBlock);
@@ -883,6 +884,34 @@ internal static partial class ManagedFixtures
         Check(actual.Epoch == expected.Epoch && backend.Entries(actual).SequenceEqual(backend.Entries(expected)), reason);
     }
     private static TaskCompletionSource<int> Pause() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private static void InstallationFailure()
+    {
+        var combat = (CombatState)backend.Combat;
+        var saved = CaptureRuntime.Epoch;
+        var failure = new InvalidOperationException("late bridge rejected");
+        try
+        {
+            CaptureRuntime.Initialize(backend, () =>
+            {
+                CommandCapture.SetupPostfix(combat, true);
+                Check(!CaptureRuntime.Valid(saved) && !backend.Calls.Contains("CombatStarted"),
+                    "Callbacks cannot start capture while installation is still pending");
+                throw failure;
+            });
+            throw new InvalidOperationException("Failed installation was accepted");
+        }
+        catch (InvalidOperationException actual) { Check(ReferenceEquals(actual, failure), "Installation rejection reaches the startup boundary"); }
+        CommandCapture.SetupPrefix();
+        CommandCapture.SetupPostfix(combat, true);
+        RunStartPatches.NotifyRunStarted(null, false, 0);
+        CaptureRuntime.Register(backend, saved.Sequence, combat);
+        Check(!CaptureRuntime.Ready && !CaptureRuntime.Valid(saved) && !backend.Calls.Contains("CombatStarted"),
+            "Retained run/combat callbacks and epoch registration stay disabled after a late installation failure");
+        CaptureRuntime.Initialize(backend);
+        CommandCapture.SetupPostfix(combat, true);
+        Check(backend.Calls.Count(call => call == "CombatStarted") == 1 && CaptureRuntime.Valid(CaptureRuntime.Epoch),
+            "Successful installation activates the same lifecycle callback exactly once");
+    }
     private static void Test(string name, Action body)
     {
         backend = new FakeBackend { Combat = RuntimeHelpers.GetUninitializedObject(typeof(CombatState)) };
@@ -1364,7 +1393,7 @@ internal static partial class ManagedFixtures
     private static CardModel Card()
     {
         var card = (CardModel)RuntimeHelpers.GetUninitializedObject(typeof(MegaCrit.Sts2.Core.Models.Cards.StrikeIronclad));
-        backend.Descriptors[card] = new(CaptureKind.CardInstance, ProducerRole.Card, "A", 0, 0);
+        backend.Descriptors[card] = new(ProducerRole.Card, "A", 0);
         return card;
     }
     private static void Temporal()
@@ -2072,13 +2101,58 @@ internal static partial class ManagedFixtures
         creature.RemovePowerInternal(strength);
         Same(FlowCapture.Source(strength, CaptureRuntime.Epoch), B, "Actual removal retains last immutable source");
     }
+    private static void UnresolvedPhysicalOwners()
+    {
+        var world = GameWorld();
+        var adapter = new NativeAttributionBackend();
+        var stranger = (Player)RuntimeHelpers.GetUninitializedObject(typeof(Player));
+        var receiver = Creature(true);
+        AccessTools.Field(typeof(Creature), "<Player>k__BackingField").SetValue(receiver, stranger);
+        AccessTools.Field(typeof(Creature), "_powers").SetValue(receiver, new List<PowerModel>());
+        receiver.CombatState = (ICombatState)backend.Combat;
+        var power = Mutable<StrengthPower>("STRENGTH_POWER");
+        AccessTools.Field(typeof(PowerModel), "_owner").SetValue(power, receiver);
+        var orb = Mutable<FrostOrb>("FROST_ORB");
+        orb.Owner = stranger;
+        int receiverSlot = adapter.DescribeCreature(receiver).Slot;
+        Check(receiverSlot == 4 && adapter.ObservePower(power).OwnerSlot == 4 && adapter.Describe(orb).Slot == 4
+            && RunContext.PlayerSlot(null) == 4 && backend.Calls.Contains("diagnostic:player-slot-unavailable"),
+            "Unknown physical creature, power and orb ownership remains unresolved and reports incomplete capture");
+        Check(adapter.DescribeCreature(world.Owner.Creature).Slot == 0 && adapter.DescribeCreature(world.Other.Creature).Slot == 1,
+            "Known physical owners retain their exact roster slots");
+
+        ulong nativeEpoch = ProfilerNative.CombatStarted(1, "UNKNOWN_OWNER", "normal", 0, 2);
+        try
+        {
+            ulong supplier = ProfilerNative.SourceCapture(nativeEpoch, (int)CaptureKind.CardInstance, 1, "HOST_BLOCK", 0, 0, (int)GenerationState.Ordinary);
+            Check(nativeEpoch != 0 && supplier != 0
+                && ProfilerNative.BlockGained(nativeEpoch, 10, supplier, 0, Array.Empty<BlockModifier>(), false) == 1
+                && ProfilerNative.DamageUnattributed(nativeEpoch, 5, 0, 5, (int)ResultKind.Incoming, receiverSlot, 0) == 1,
+                "Unresolved physical ownership does not discard valid block and damage amounts");
+            var afterUnknown = StatisticsJson.ParseNative(ProfilerNative.Snapshot());
+            Check(afterUnknown.DamageReceived == 5 && afterUnknown.BlockTotal == 10
+                && afterUnknown.Cards.Single(row => row.Id == "HOST_BLOCK").BlockEffective == 0,
+                "An unknown receiver's blocked hit cannot consume the registered host's block pool");
+            Check(ProfilerNative.DamageUnattributed(nativeEpoch, 5, 0, 5, (int)ResultKind.Incoming, 0, 0) == 1,
+                "A later known host hit can consume its own pool");
+            var afterHost = StatisticsJson.ParseNative(ProfilerNative.Snapshot());
+            Check(afterHost.DamageReceived == 10 && afterHost.Cards.Single(row => row.Id == "HOST_BLOCK").BlockEffective == 5,
+                "Only the actual host hit credits its block supplier");
+        }
+        finally { ProfilerNative.CombatDiscard(); }
+
+        var players = Enumerable.Range(0, 5).Select(_ => (Player)RuntimeHelpers.GetUninitializedObject(typeof(Player))).ToArray();
+        Roster(players);
+        Check(RunContext.PlayerSlot(players[3]) == 3 && RunContext.PlayerSlot(players[4]) == 4,
+            "Unsupported fifth-player ownership cannot alias the fourth player's pools");
+    }
     private static void CaptureStatusFailures()
     {
         var target = Creature(); var dealer = Creature(true, false, 0);
         var strength = Mutable<StrengthPower>("A");
         AccessTools.Field(typeof(PowerModel), "_owner").SetValue(strength, dealer);
         AccessTools.Field(typeof(PowerModel), "_amount").SetValue(strength, 3);
-        backend.Descriptors[strength] = new(CaptureKind.PowerInstance, ProducerRole.Power, "A", 2, 0);
+        backend.Descriptors[strength] = new(ProducerRole.Power, "A", 0);
         DamageFixture.Modifiers = new[] { strength }; DamageFixture.Bonus = 3;
         DamageCapture.Inspect = (_, _, _) => new(true, false, 3, null, false);
         backend.Failure = "DamageModifier"; backend.FailureCount = 1;
@@ -2125,7 +2199,7 @@ internal static partial class ManagedFixtures
         var play = (CardPlay)RuntimeHelpers.GetUninitializedObject(typeof(CardPlay));
         AccessTools.Field(typeof(CardPlay), "<Card>k__BackingField").SetValue(play, card);
         var modifier = Mutable<StatefulModifier>("MODIFIER");
-        backend.Descriptors[modifier] = new(CaptureKind.DirectModel, ProducerRole.Relic, "B", 1, 0, Combat: backend.Combat);
+        backend.Descriptors[modifier] = new(ProducerRole.Relic, "B", 0, Combat: backend.Combat);
         blockClearListeners = new AbstractModel[] { modifier };
         DamageFixture.AllowOriginalHook = true;
         DamageCapture.OriginalModifyDamage = Hook.ModifyDamage;
@@ -2253,7 +2327,7 @@ internal static partial class ManagedFixtures
         var world = GameWorld();
         var card = GameCard<StrikeIronclad>(world.Owner, A);
         var modifier = Mutable<StatefulModifier>("MODIFIER");
-        backend.Descriptors[modifier] = new(CaptureKind.DirectModel, ProducerRole.Relic, "B", 1, 0, Combat: backend.Combat);
+        backend.Descriptors[modifier] = new(ProducerRole.Relic, "B", 0, Combat: backend.Combat);
         var error = new OverflowException("original modifier fault");
         modifier.Error = error;
         DamageFixture.Modifiers = new AbstractModel[] { modifier };
@@ -2295,7 +2369,7 @@ internal static partial class ManagedFixtures
         var world = GameWorld();
         var card = GameCard<StrikeIronclad>(world.Owner, A);
         var modifier = Mutable<StatefulModifier>("MODIFIER");
-        backend.Descriptors[modifier] = new(CaptureKind.DirectModel, ProducerRole.Relic, "B", 1, 0, Combat: backend.Combat);
+        backend.Descriptors[modifier] = new(ProducerRole.Relic, "B", 0, Combat: backend.Combat);
         blockClearListeners = new AbstractModel[] { modifier };
         DamageCapture.OriginalModifyDamage = Hook.ModifyDamage;
         DamageFixture.AllowOriginalHook = true;
@@ -2340,7 +2414,7 @@ internal static partial class ManagedFixtures
     {
         var world = GameWorld();
         var modifier = Mutable<StatefulModifier>("MODIFIER");
-        backend.Descriptors[modifier] = new(CaptureKind.DirectModel, ProducerRole.Relic, "B", 1, 0, Combat: backend.Combat);
+        backend.Descriptors[modifier] = new(ProducerRole.Relic, "B", 0, Combat: backend.Combat);
         blockClearListeners = new AbstractModel[] { modifier };
         DamageFixture.AllowOriginalHook = true;
         DamageCapture.OriginalModifyDamage = Hook.ModifyDamage;
@@ -2376,7 +2450,7 @@ internal static partial class ManagedFixtures
     {
         var world = GameWorld();
         var modifier = Mutable<StatefulModifier>("MODIFIER");
-        backend.Descriptors[modifier] = new(CaptureKind.DirectModel, ProducerRole.Relic, "B", 1, 0, Combat: backend.Combat);
+        backend.Descriptors[modifier] = new(ProducerRole.Relic, "B", 0, Combat: backend.Combat);
         blockClearListeners = new AbstractModel[] { modifier };
         DamageCapture.OriginalModifyDamage = Hook.ModifyDamage;
         DamageFixture.AllowOriginalHook = true;
@@ -2410,7 +2484,7 @@ internal static partial class ManagedFixtures
         var world = GameWorld();
         var modifier = Mutable<StatefulModifier>("MODIFIER");
         modifier.BlockMultiplier = 1;
-        backend.Descriptors[modifier] = new(CaptureKind.DirectModel, ProducerRole.Relic, "B", 1, 0, Combat: backend.Combat);
+        backend.Descriptors[modifier] = new(ProducerRole.Relic, "B", 0, Combat: backend.Combat);
         blockClearListeners = new AbstractModel[] { modifier };
         CommandFixture.Modify = true;
         FlowCapture.Current = new(CaptureRuntime.Epoch, null, A, ProducerRole.Card, DamageSegment.Direct);
@@ -2581,7 +2655,7 @@ internal static partial class ManagedFixtures
             var model = models[index];
             model.DamageAddition = model.BlockAddition = additions[index];
             model.DamageMultiplier = model.BlockMultiplier = 1;
-            backend.Descriptors[model] = new(CaptureKind.DirectModel, ProducerRole.Relic, "B", 1, 0, Combat: backend.Combat);
+            backend.Descriptors[model] = new(ProducerRole.Relic, "B", 0, Combat: backend.Combat);
         }
         DamageCapture.Inspect = (_, _, _) => new(true, false, 0, null, false);
         for (int iteration = 0; iteration < 3; iteration++)
@@ -2782,7 +2856,7 @@ internal static partial class ManagedFixtures
         var dexterity = Mutable<DexterityPower>("B");
         AccessTools.Field(typeof(PowerModel), "_owner").SetValue(dexterity, receiver);
         AccessTools.Field(typeof(PowerModel), "_amount").SetValue(dexterity, 2);
-        backend.Descriptors[dexterity] = new(CaptureKind.PowerInstance, ProducerRole.Power, "B", 2, 1);
+        backend.Descriptors[dexterity] = new(ProducerRole.Power, "B", 1);
         blockClearListeners = new AbstractModel[] { dexterity };
         CommandCapture.Prefix(AccessTools.DeclaredMethod(typeof(CommandFixture), "GainBlock"), new object[] { receiver, 10m, ValueProp.Move, null, false }, out var blockCommand);
         try
@@ -2893,7 +2967,7 @@ internal static partial class ManagedFixtures
     {
         var owner = Creature(); var other = Creature();
         var poison = new ProbePower("A") { Amount = 3 };
-        backend.Descriptors[poison] = new(CaptureKind.PowerInstance, ProducerRole.Power, "A", 2, 4, owner, true);
+        backend.Descriptors[poison] = new(ProducerRole.Power, "A", 4, owner, true);
         var identity = IdentityCapture.Get(poison, CaptureRuntime.Epoch);
         backend.Sources[identity.Identity] = A;
         FlowCapture.Current = new(CaptureRuntime.Epoch, poison, A, ProducerRole.Power, DamageSegment.Attributed, true);

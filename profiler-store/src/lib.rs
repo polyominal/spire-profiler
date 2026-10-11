@@ -31,7 +31,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use record::{Record, Run};
+use record::{ArchiveId, Record, Run, RunId};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -49,7 +49,7 @@ const PAGE_ROWS: usize = 128;
 pub struct Store {
     connection: Connection,
     path: PathBuf,
-    pending: BTreeMap<u32, Option<Run>>,
+    pending: BTreeMap<u32, Option<Run<RunId>>>,
     import: Option<ImportSession>,
     read: Option<ReadSession>,
 }
@@ -58,14 +58,13 @@ struct ImportSession {
     connection: Connection,
     max_run: u32,
     max_combat: u32,
-    sources: HashMap<String, (u32, Run)>,
+    sources: HashMap<String, (RunId, Run<ArchiveId>)>,
 }
 
 struct ReadSession {
     connection: Connection,
-    run: Run,
-    id: u32,
-    history: bool,
+    run: Run<RunId>,
+    finalized: bool,
     cursor: Option<(bool, i64, i64)>,
     last_ordinal: u32,
     valid_count: usize,
@@ -75,7 +74,7 @@ struct ReadSession {
 #[derive(Clone, Copy)]
 enum IdentityMatch {
     Missing,
-    Unique(u32),
+    Unique(RunId),
     Ambiguous,
 }
 
@@ -94,7 +93,7 @@ enum Request {
         run: Box<Run>,
     },
     ReadBeginLoad {
-        run_id: String,
+        run_id: RunId,
     },
     ReadBeginSelect {
         profile: i32,
@@ -278,9 +277,8 @@ impl Store {
             Request::SaveCombat { record } => self.save_combat(*record),
             Request::SaveRun { run } => self.save_run(*run),
             Request::ReadBeginLoad { run_id } => {
-                let id = Run::numeric_id(&run_id).ok_or("invalid run ID")?;
                 let connection = self.session_connection("BEGIN")?;
-                self.read_begin_on(connection, id, false)
+                self.read_begin_on(connection, run_id, false)
             }
             Request::ReadBeginSelect {
                 profile,
@@ -353,21 +351,22 @@ impl Store {
                 .filter(|run| {
                     run.profile == profile && run.seed == seed && run.started_at == started_at
                 })
-                .filter_map(|run| Run::numeric_id(&run.run_id)),
+                .map(|run| run.id().get()),
         );
         ids.sort_unstable();
         ids.dedup();
         if blocked || ids.len() > 1 {
             return Ok(IdentityMatch::Ambiguous);
         }
-        Ok(ids
-            .first()
+        ids.first()
             .copied()
-            .map_or(IdentityMatch::Missing, IdentityMatch::Unique))
+            .map_or(Ok(IdentityMatch::Missing), |id| {
+                Ok(IdentityMatch::Unique(RunId::new(id)?))
+            })
     }
 
-    fn open_run(&mut self, mut run: Run, continued: bool) -> Result<Value> {
-        run.validate(true, true)?;
+    fn open_run(&mut self, run: Run, continued: bool) -> Result<Value> {
+        let run = run.parse_request()?;
         let prior = if continued {
             self.match_identity(run.profile, &run.seed, run.started_at)?
         } else {
@@ -377,57 +376,54 @@ impl Store {
             return Ok(Value::Null);
         }
         let transaction = self.connection.transaction()?;
-        let id = match prior {
+        let (id, previous) = match prior {
             IdentityMatch::Unique(id) => {
-                let prior =
+                let (prior, _) =
                     Self::read_run(&transaction, id, false)?.ok_or("run identity disappeared")?;
-                run.preserved_run_ids = prior.preserved_run_ids;
-                id
+                (id, Some(prior))
             }
-            IdentityMatch::Missing => {
-                run.preserved_run_ids.clear();
-                Self::allocate_run(&transaction)?
-            }
+            IdentityMatch::Missing => (Self::allocate_run(&transaction)?, None),
             IdentityMatch::Ambiguous => return Ok(Value::Null),
         };
-        run.run_id = id.to_string();
-        run.outcome = "active".into();
-        run.ended_at = 0;
-        run.validate(false, false)?;
+        let run = run.activate(id, previous);
         let json = serde_json::to_string(&run)?;
         if matches!(prior, IdentityMatch::Unique(_)) {
             transaction.execute(
                 "UPDATE runs SET current_json=?1 WHERE id=?2",
-                params![json, id],
+                params![json, id.get()],
             )?;
         } else {
             transaction.execute(
                 "INSERT INTO runs(id,profile,seed,started_at,current_json) VALUES (?1,?2,?3,?4,?5)",
-                params![id, run.profile, run.seed, run.started_at, json],
+                params![id.get(), run.profile, run.seed, run.started_at, json],
             )?;
         }
         transaction.commit()?;
         Ok(serde_json::to_value(run)?)
     }
 
-    fn allocate_run(connection: &Connection) -> Result<u32> {
+    fn allocate_run(connection: &Connection) -> Result<RunId> {
         let last: u32 = connection.query_row(
             "SELECT last_run_id FROM metadata WHERE singleton=1",
             [],
             |row| row.get(0),
         )?;
-        let next = last.checked_add(1).ok_or("run IDs exhausted")?;
+        let next = RunId::new(last.checked_add(1).ok_or("run IDs exhausted")?)?;
         connection.execute(
             "UPDATE metadata SET last_run_id=?1 WHERE singleton=1",
-            [next],
+            [next.get()],
         )?;
         Ok(next)
     }
 
-    fn read_run(connection: &Connection, id: u32, history: bool) -> Result<Option<Run>> {
+    fn read_run(
+        connection: &Connection,
+        id: RunId,
+        history: bool,
+    ) -> Result<Option<(Run<RunId>, bool)>> {
         let row = connection.query_row(
             "SELECT profile,seed,started_at,current_json,final_json,source_key IS NOT NULL FROM runs WHERE id=?1",
-            [id], |row| Ok((row.get::<_, i32>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?,
+            [id.get()], |row| Ok((row.get::<_, i32>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?,
                 row.get::<_, String>(3)?, row.get::<_, Option<String>>(4)?, row.get::<_, bool>(5)?)),
         ).optional()?;
         let Some((profile, seed, started_at, current, finalized, imported)) = row else {
@@ -442,30 +438,22 @@ impl Store {
             return Err("stored run exceeds size limit".into());
         }
         let run: Run = serde_json::from_str(selected)?;
-        run.validate(false, imported)?;
-        if run.run_id != id.to_string()
+        let run = run.parse(imported)?;
+        if *run.id() != id
             || run.profile != profile
             || run.seed != seed
             || run.started_at != started_at
         {
             return Err("stored run identity contradicts its database owner".into());
         }
-        Ok(Some(if history && finalized.is_none() {
-            run.history_fallback()
-        } else {
-            run
-        }))
+        Ok(Some((run, finalized.is_some())))
     }
 
     fn save_combat(&mut self, record: Record) -> Result<Value> {
-        record.validate(false)?;
-        let run_id = record
-            .run
-            .as_ref()
-            .map(|run| Run::numeric_id(&run.run_id).ok_or("invalid run ID"))
-            .transpose()?;
+        let record = record.parse(false)?;
+        let run_id = record.run.as_ref().map(|run| run.id().get());
         if let Some(run) = &record.run {
-            let owner = Self::read_run(&self.connection, run_id.ok_or("invalid run ID")?, false)?
+            let (owner, _) = Self::read_run(&self.connection, *run.id(), false)?
                 .ok_or("combat run does not exist")?;
             if !owner.same_identity(run) {
                 return Err("combat belongs to a different run".into());
@@ -485,7 +473,7 @@ impl Store {
         }
         if let Some(prior) = self.pending.get(&id) {
             let same = match (prior, &record.run) {
-                (Some(prior), Some(run)) => prior.run_id == run.run_id && prior.same_identity(run),
+                (Some(prior), Some(run)) => prior.id() == run.id() && prior.same_identity(run),
                 (None, None) => true,
                 _ => false,
             };
@@ -529,11 +517,9 @@ impl Store {
     fn persist_intent(
         transaction: &Transaction<'_>,
         combat_id: u32,
-        run: Option<&Run>,
+        run: Option<&Run<RunId>>,
     ) -> Result<()> {
-        let run_id = run
-            .map(|run| Run::numeric_id(&run.run_id).ok_or("invalid run ID"))
-            .transpose()?;
+        let run_id = run.map(|run| run.id().get());
         let prior = transaction
             .query_row(
                 "SELECT run_id FROM combats WHERE native_id=?1",
@@ -552,12 +538,8 @@ impl Store {
             )?;
         }
         if let Some(run) = run {
-            let owner = Self::read_run(
-                transaction,
-                run_id.expect("a retained run has a parsed ID"),
-                false,
-            )?
-            .ok_or("combat run does not exist")?;
+            let (owner, _) = Self::read_run(transaction, *run.id(), false)?
+                .ok_or("combat run does not exist")?;
             if !owner.same_identity(run) {
                 return Err("combat belongs to a different run".into());
             }
@@ -574,12 +556,13 @@ impl Store {
     }
 
     fn save_run(&mut self, run: Run) -> Result<Value> {
-        run.validate(false, false)?;
+        let run = run.parse(false)?;
         if !run.finalized() {
             return Err("run is not finalized".into());
         }
-        let id = Run::numeric_id(&run.run_id).ok_or("invalid run ID")?;
-        let owner = Self::read_run(&self.connection, id, false)?.ok_or("run does not exist")?;
+        let id = *run.id();
+        let (owner, _) =
+            Self::read_run(&self.connection, id, false)?.ok_or("run does not exist")?;
         if !owner.same_identity(&run) {
             return Err("finalized run identity contradicts its owner".into());
         }
@@ -588,18 +571,18 @@ impl Store {
             .pending
             .values()
             .flatten()
-            .any(|pending| pending.run_id == run.run_id)
+            .any(|pending| pending.id() == run.id())
         {
             return Err("run still has unrecorded combat intents".into());
         }
         let transaction = self.connection.transaction()?;
-        let owner = Self::read_run(&transaction, id, false)?.ok_or("run does not exist")?;
+        let (owner, _) = Self::read_run(&transaction, id, false)?.ok_or("run does not exist")?;
         if !owner.same_identity(&run) {
             return Err("finalized run identity contradicts its owner".into());
         }
         let has_combats: bool = transaction.query_row(
             "SELECT EXISTS(SELECT 1 FROM combats WHERE run_id=?1)",
-            [id],
+            [id.get()],
             |row| row.get(0),
         )?;
         if !has_combats {
@@ -607,7 +590,7 @@ impl Store {
         }
         transaction.execute(
             "UPDATE runs SET final_json=COALESCE(final_json,?1) WHERE id=?2",
-            params![serde_json::to_string(&run)?, id],
+            params![serde_json::to_string(&run)?, id.get()],
         )?;
         transaction.commit()?;
         Ok(json!(true))
@@ -631,37 +614,37 @@ impl Store {
         self.read_begin_on(connection, id, true)
     }
 
-    fn read_begin_on(&mut self, connection: Connection, id: u32, history: bool) -> Result<Value> {
-        let Some(run) = Self::read_run(&connection, id, history)? else {
+    fn read_begin_on(&mut self, connection: Connection, id: RunId, history: bool) -> Result<Value> {
+        let Some((run, finalized)) = Self::read_run(&connection, id, history)? else {
             return Ok(Value::Null);
         };
         let mut reasons = connection
             .prepare("SELECT reason FROM gaps WHERE run_id=?1 ORDER BY reason")?
-            .query_map([id], |row| row.get(0))?
+            .query_map([id.get()], |row| row.get(0))?
             .collect::<rusqlite::Result<BTreeSet<String>>>()?;
         let mut last_ordinal: u32 = connection.query_row(
             "SELECT COALESCE(MAX(ordinal),0) FROM combats WHERE run_id=?1",
-            [id],
+            [id.get()],
             |row| row.get(0),
         )?;
         for (&ordinal, pending) in &self.pending {
-            if pending
-                .as_ref()
-                .is_some_and(|owner| owner.run_id == run.run_id)
-            {
+            if pending.as_ref().is_some_and(|owner| owner.id() == run.id()) {
                 last_ordinal = last_ordinal.max(ordinal);
                 reasons.insert("statistics-intent-write-failed".into());
             }
         }
-        let value = serde_json::to_value(&run)?;
+        let value = if history && !finalized {
+            serde_json::to_value(run.history_fallback())?
+        } else {
+            serde_json::to_value(&run)?
+        };
         if serde_json::to_vec(&value)?.len() + RESPONSE_ENVELOPE_BYTES >= MAX_TRANSPORT_BYTES {
             return Err("stored run exceeds response size limit".into());
         }
         self.read = Some(ReadSession {
             connection,
+            finalized: history && finalized && run.finalized(),
             run,
-            id,
-            history,
             cursor: None,
             last_ordinal,
             valid_count: 0,
@@ -686,7 +669,7 @@ impl Store {
         )?;
         let (prior_imported, prior_key, prior_sequence) = session.cursor.unwrap_or((false, 0, 0));
         let mut rows = query.query(params![
-            session.id,
+            session.run.id().get(),
             session.cursor.map(|_| 1),
             prior_imported,
             prior_key,
@@ -707,23 +690,23 @@ impl Store {
             let imported: bool = row.get(2)?;
             let key: i64 = row.get(3)?;
             let encoded: Option<String> = row.get(4)?;
-            let parsed = encoded.as_deref().map(|encoded| -> Result<Record> {
-                if encoded.len() > MAX_DOCUMENT_BYTES {
-                    return Err("stored combat exceeds size limit".into());
-                }
-                let record: Record = serde_json::from_str(encoded)?;
-                record.validate(imported)?;
-                if record.ordinal != ordinal
-                    || record.run_id != session.run.run_id
-                    || record
-                        .run
-                        .as_ref()
-                        .is_none_or(|owner| !owner.same_identity(&session.run))
-                {
-                    return Err("stored combat identity contradicts its database owner".into());
-                }
-                Ok(record)
-            });
+            let parsed = encoded
+                .as_deref()
+                .map(|encoded| -> Result<Record<Run<RunId>>> {
+                    if encoded.len() > MAX_DOCUMENT_BYTES {
+                        return Err("stored combat exceeds size limit".into());
+                    }
+                    let record: Record = serde_json::from_str(encoded)?;
+                    let record = record.parse(imported)?;
+                    if record.ordinal != ordinal
+                        || record.run.as_ref().is_none_or(|owner| {
+                            owner.id() != session.run.id() || !owner.same_identity(&session.run)
+                        })
+                    {
+                        return Err("stored combat identity contradicts its database owner".into());
+                    }
+                    Ok(record)
+                });
             let record = match parsed {
                 None => {
                     session.reasons.insert("statistics-record-missing".into());
@@ -755,7 +738,7 @@ impl Store {
         }
         drop(rows);
         drop(query);
-        if done && session.history && session.run.finalized() && session.valid_count == 0 {
+        if done && session.finalized && session.valid_count == 0 {
             session.reasons.insert("statistics-record-missing".into());
         }
         let reasons = if done {
@@ -800,58 +783,59 @@ impl Store {
         Ok(json!(true))
     }
 
-    fn import_run(&mut self, mut entry: ImportRun) -> Result<Value> {
+    fn import_run(&mut self, entry: ImportRun) -> Result<Value> {
         let session = self
             .import
             .as_mut()
             .ok_or("no statistics import is active")?;
-        entry.run.validate(false, true)?;
+        let run = entry.run.parse_archive()?;
+        let numeric = run.id().numeric();
         if entry.source_key.is_empty()
             || session.sources.contains_key(&entry.source_key)
-            || entry.finalized != entry.run.finalized()
+            || entry.finalized != run.finalized()
             || entry.reasons.iter().any(String::is_empty)
-            || Run::numeric_id(&entry.run.run_id).is_some_and(|id| id > session.max_run)
+            || numeric.is_some_and(|id| id.get() > session.max_run)
         {
             return Err("invalid legacy run metadata".into());
         }
-        let original = entry.run.clone();
-        let numeric = Run::numeric_id(&entry.run.run_id);
+        let original = run.clone();
         let available = if let Some(id) = numeric {
-            !session.connection.query_row(
+            let occupied = session.connection.query_row(
                 "SELECT EXISTS(SELECT 1 FROM runs WHERE id=?1)",
-                [id],
+                [id.get()],
                 |row| row.get::<_, bool>(0),
-            )?
+            )?;
+            (!occupied).then_some(id)
         } else {
-            false
+            None
         };
-        let id = if available {
-            numeric.expect("available IDs were parsed")
+        let id = if let Some(id) = available {
+            id
         } else {
             Self::allocate_run(&session.connection)?
         };
         session.connection.execute(
             "UPDATE metadata SET last_run_id=MAX(last_run_id,?1) WHERE singleton=1",
-            [id],
+            [id.get()],
         )?;
-        entry.run.reidentify(id);
-        let encoded = serde_json::to_string(&entry.run)?;
+        let run = run.reidentify(id);
+        let encoded = serde_json::to_string(&run)?;
         session.connection.execute(
             "INSERT INTO runs(id,profile,seed,started_at,current_json,final_json,source_key) VALUES (?1,?2,?3,?4,?5,?6,?7)",
-            params![id, entry.run.profile, entry.run.seed, entry.run.started_at, encoded,
+            params![id.get(), run.profile, run.seed, run.started_at, encoded,
                 entry.finalized.then_some(&encoded), entry.source_key],
         )?;
         for reason in entry.reasons {
             session.connection.execute(
                 "INSERT OR IGNORE INTO gaps VALUES (?1,?2)",
-                params![id, reason],
+                params![id.get(), reason],
             )?;
         }
         session.sources.insert(entry.source_key, (id, original));
         Ok(json!(true))
     }
 
-    fn import_record(&mut self, source_key: &str, mut record: Record) -> Result<Value> {
+    fn import_record(&mut self, source_key: &str, record: Record) -> Result<Value> {
         let session = self
             .import
             .as_mut()
@@ -860,22 +844,21 @@ impl Store {
             .sources
             .get(source_key)
             .ok_or("unknown legacy run source")?;
-        record.validate(true)?;
+        let record = record.parse_archive()?;
         let owner = record
             .run
-            .as_mut()
+            .as_ref()
             .ok_or("imported combat has no run owner")?;
-        if record.run_id != original.run_id
+        if owner.id() != original.id()
             || !owner.same_identity(original)
             || record.combat.combat_id > session.max_combat
         {
             return Err("imported combat contradicts its run or reserved IDs".into());
         }
-        owner.reidentify(*id);
-        record.run_id = id.to_string();
+        let record = record.reidentify(*id);
         session.connection.execute(
             "INSERT INTO combats(run_id,ordinal,imported,record_json) VALUES (?1,?2,1,?3)",
-            params![id, record.ordinal, serde_json::to_string(&record)?],
+            params![id.get(), record.ordinal, serde_json::to_string(&record)?],
         )?;
         Ok(json!(true))
     }

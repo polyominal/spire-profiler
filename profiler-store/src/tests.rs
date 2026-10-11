@@ -424,6 +424,32 @@ fn archive_import_rolls_back_all_runs_and_reserved_ids_on_failure() {
 }
 
 #[test]
+fn zero_archive_owners_abort_import_and_allow_a_clean_retry() {
+    for zero in ["0", "00", "+0"] {
+        let (_directory, _path, mut store) = database();
+        let mut invalid = archive_request();
+        invalid["runs"][0]["run"]["run_id"] = json!(zero);
+        assert!(import_archive(&mut store, &invalid).is_err());
+        assert_eq!(
+            execute(&mut store, json!({"op":"import_status"})),
+            json!(false)
+        );
+        assert_eq!(execute(&mut store, json!({"op":"max_combat_id"})), json!(0));
+        assert!(select(&mut store, "ARCHIVE", 500).is_null());
+
+        assert_eq!(
+            import_archive(&mut store, &archive_request()).expect("valid retry imports"),
+            json!(true)
+        );
+        assert_eq!(select(&mut store, "ARCHIVE", 500)["run"]["run_id"], "40");
+        assert_eq!(
+            execute(&mut store, json!({"op":"import_status"})),
+            json!(true)
+        );
+    }
+}
+
+#[test]
 fn archive_import_preserves_order_duplicates_and_rejects_reimport() {
     let (_directory, _path, mut store) = database();
     let request = archive_request();

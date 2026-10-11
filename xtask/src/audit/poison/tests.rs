@@ -493,3 +493,29 @@ fn lookahead_cannot_cross_capture_failure() {
         assert!(result.checks.values().flatten().all(|check| !matches!(check,Check::Match(text) if text.starts_with("Independently reconstructed Poison damage"))));
     }
 }
+
+#[test]
+fn missing_native_checkpoints_do_not_erase_reconstructed_physical_damage() {
+    let mut fixture = Fixture::new(false);
+    fixture.grant("SNAKEBITE", 7);
+    fixture.tick(&[("SNAKEBITE", 7)], None);
+    for event in &mut fixture.events {
+        if matches!(
+            event["event"].as_str(),
+            Some("poison_tick" | "poison_damage")
+        ) {
+            event["data"]["native"] = Value::Null;
+        }
+    }
+    let result = fixture.finish();
+    assert_eq!(
+        result.credits[&Source {
+            id: "SNAKEBITE".into(),
+            kind: 0,
+            player: 0
+        }],
+        7
+    );
+    assert!(result.checks.values().flatten().any(|check|
+        matches!(check, Check::Unverified(text) if text.contains("Native checkpoint unavailable"))));
+}

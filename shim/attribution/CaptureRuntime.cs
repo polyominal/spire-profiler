@@ -11,6 +11,7 @@ internal readonly record struct CaptureEpoch(ulong Sequence, object Combat)
 internal static class CaptureRuntime
 {
     internal static AttributionBackend Backend { get; private set; }
+    internal static bool Ready => Backend != null;
     internal static CaptureEpoch Epoch { get; private set; }
     private static int thread;
     private static readonly HashSet<string> diagnostics = new();
@@ -29,17 +30,20 @@ internal static class CaptureRuntime
             return false;
         }
     }
-    internal static void Initialize(AttributionBackend backend)
+    internal static void Initialize(AttributionBackend backend, Action install = null)
     {
         if (thread != 0 && !OnThread) return;
         thread = Environment.CurrentManagedThreadId;
-        Backend = backend;
+        Backend = null;
         InvalidateEpoch();
+        // Installed callbacks can outlive a failed installation. Publish the
+        // backend only when all required patches have been installed and verified.
+        install?.Invoke();
+        Backend = backend;
     }
     internal static void Register(AttributionBackend backend, ulong sequence, object combat)
     {
-        if (thread == 0) Initialize(backend);
-        if (!OnThread) return;
+        if (!Ready || !OnThread) return;
         Backend = backend;
         Epoch = new CaptureEpoch(sequence, combat);
         diagnostics.Clear();
@@ -76,7 +80,7 @@ internal static class CaptureRuntime
     }
     internal static bool Valid(CaptureEpoch epoch)
     {
-        if (!OnThread) return false;
+        if (!Ready || !OnThread) return false;
         return epoch.IsAvailable && epoch.Sequence == Epoch.Sequence && ReferenceEquals(epoch.Combat, Epoch.Combat)
             && ReferenceEquals(epoch.Combat, Backend.CurrentCombat);
     }

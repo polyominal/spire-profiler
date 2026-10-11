@@ -7,10 +7,10 @@ use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::mpsc;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 use std::{env, fs, thread};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use xshell::Shell;
 
 use crate::{discover, install, managed, workspace_root};
@@ -102,31 +102,25 @@ pub fn headless_test(shell: &Shell) -> Result<()> {
     managed::run(shell)?;
     let game = install::install_mod(shell)?;
 
-    let log_dir = game_log_dir(game.platform)?;
     let root = workspace_root();
 
     // A scratch dir keeps the self-test from polluting the real play data.
     let scratch_data_dir = root.join("tmp").join("headless-data");
     let _ = fs::remove_dir_all(&scratch_data_dir);
 
-    // Bounds which godot log belongs to this run: a stale log must never
-    // satisfy the verdict.
-    let boot_started = SystemTime::now();
-    let (game_out, boot_duration, exit_status) = run_game_captured(&game, &scratch_data_dir, root)?;
-    let newest_log = newest_boot_log(&log_dir, boot_started);
-    if newest_log.is_none() {
-        eprintln!("headless-test: warning: no godot*.log written during this boot");
-    }
+    let log = BootLog::reserve(&root.join("tmp/headless-logs"))?;
+    let (game_out, boot_duration, exit_status) = run_game_captured(
+        &game,
+        &scratch_data_dir,
+        root,
+        &log.argument(game.platform)?,
+    )?;
 
     println!("--- headless-test verdict ---");
     println!("boot duration: {:.1} s", boot_duration.as_secs_f64());
     println!("game exit status: {exit_status}");
-    if let Some((path, _)) = &newest_log {
-        println!("game log: {}", path.display());
-    }
-
-    let log_text = newest_log.map(|(_, text)| text).unwrap_or_default();
-    let combined = format!("{log_text}\n{game_out}");
+    println!("game log: {}", log.path.display());
+    let combined = log.combine(&game_out)?;
 
     assemble_verdict(&combined, exit_status).report()
 }
@@ -229,53 +223,6 @@ fn check_unexpected_errors(output: &str, failures: &mut Vec<String>) {
     }
 }
 
-/// Honors STS2_USER_DATA_DIR, then falls back to the game platform's
-/// user-data dir.
-fn game_log_dir(platform: discover::Platform) -> Result<PathBuf> {
-    if let Some(dir) = env::var_os("STS2_USER_DATA_DIR") {
-        return Ok(PathBuf::from(dir).join("logs"));
-    }
-    Ok(user_data_dir(platform)?.join("logs"))
-}
-
-/// project.godot sets a custom user dir named SlayTheSpire2.
-fn user_data_dir(platform: discover::Platform) -> Result<PathBuf> {
-    match platform {
-        discover::Platform::Macos => {
-            let home = env::var_os("HOME").ok_or_else(no_user_data_home)?;
-            Ok(PathBuf::from(home).join("Library/Application Support/SlayTheSpire2"))
-        }
-        // The game is the WSL2-mounted Windows install: ask Windows for
-        // %APPDATA% through interop (which headless-test needs anyway to
-        // spawn the exe).
-        discover::Platform::Windows => windows_user_data_dir(),
-        discover::Platform::Linux => {
-            let home = env::var_os("HOME").ok_or_else(no_user_data_home)?;
-            match env::var_os("XDG_DATA_HOME") {
-                Some(xdg) => Ok(PathBuf::from(xdg).join("SlayTheSpire2")),
-                None => Ok(PathBuf::from(home).join(".local/share/SlayTheSpire2")),
-            }
-        }
-    }
-}
-
-fn windows_user_data_dir() -> Result<PathBuf> {
-    // chcp 65001 puts cmd's stdout in UTF-8, so a non-ASCII profile name
-    // survives the codepage crossing into from_utf8_lossy.
-    let win_appdata = run_trimmed(
-        "cmd.exe",
-        &["/c", "chcp 65001 >nul & echo %APPDATA%"],
-        "querying %APPDATA% via WSL interop (enable [interop] in /etc/wsl.conf, or set \
-         STS2_USER_DATA_DIR to skip the query)",
-    )?;
-    let wsl_appdata = run_trimmed(
-        "wslpath",
-        &["-u", &win_appdata],
-        &format!("translating {win_appdata} with wslpath"),
-    )?;
-    Ok(PathBuf::from(wsl_appdata).join("SlayTheSpire2"))
-}
-
 /// Trimmed stdout of a command; a spawn failure, a non-zero exit, and
 /// empty output are each an error carrying the caller's context.
 fn run_trimmed(program: &str, args: &[&str], context: &str) -> Result<String> {
@@ -325,21 +272,19 @@ fn merged_wslenv(existing: &str, var: &str) -> String {
     wslenv
 }
 
-fn no_user_data_home() -> anyhow::Error {
-    anyhow::anyhow!("the home directory is not available and STS2_USER_DATA_DIR is unset")
-}
-
 /// Tees combined output to stderr while capturing it for the verdict.
 fn run_game_captured(
     game: &discover::GamePaths,
     scratch_data_dir: &Path,
     root: &Path,
+    log_path: &Path,
 ) -> Result<(String, Duration, ExitStatus)> {
     println!("booting the game headless (first boot may take 30-60s) ...");
     eprintln!(
-        "headless-test: $ {} {}",
+        "headless-test: $ {} {} --log-file {}",
         game.game_exe.display(),
-        GAME_ARGS.join(" ")
+        GAME_ARGS.join(" "),
+        log_path.display()
     );
 
     // std::process::Command (not xshell): piped stdout/stderr plus try_wait
@@ -347,6 +292,8 @@ fn run_game_captured(
     let mut command = Command::new(&game.game_exe);
     command
         .args(GAME_ARGS)
+        .arg("--log-file")
+        .arg(log_path)
         .env("SPIRE_PROFILER_DATA_DIR", scratch_data_dir)
         .current_dir(root)
         .stdin(Stdio::null())
@@ -441,34 +388,55 @@ fn spawn_pumps(
     (receiver, pumps)
 }
 
-/// The log's mtime comes from the game's clock, `boot_started` from the
-/// host's; under WSL2 the Windows game and the WSL clock skew after a
-/// Windows sleep, and a strictly in-window filter would drop this run's
-/// fresh log. The verdict still gates on the process output, so the
-/// slack cannot let a stale log pass on its own.
-const LOG_CLOCK_SLACK: Duration = Duration::from_secs(60);
+/// Reserving a new directory gives the log its invocation identity without
+/// depending on host/game clock agreement or the game's log rotation.
+struct BootLog {
+    path: PathBuf,
+}
 
-/// The game rotates its previous log at boot, so the newest in-window
-/// file is this run's.
-fn newest_boot_log(log_dir: &Path, boot_started: SystemTime) -> Option<(PathBuf, String)> {
-    let entries = fs::read_dir(log_dir).ok()?;
-    let (_, path) = entries
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            entry.file_type().is_ok_and(|t| t.is_file())
-                && name.starts_with("godot")
-                && name.ends_with(".log")
+impl BootLog {
+    fn reserve(directory: &Path) -> Result<Self> {
+        fs::create_dir_all(directory)?;
+        let run = tempfile::Builder::new()
+            .prefix("run-")
+            .tempdir_in(directory)?
+            .keep();
+        Ok(Self {
+            path: run.join("godot.log"),
         })
-        .filter_map(|entry| {
-            let modified = entry.metadata().ok()?.modified().ok()?;
-            Some((modified, entry.path()))
-        })
-        .filter(|(modified, _)| *modified + LOG_CLOCK_SLACK >= boot_started)
-        .max_by_key(|(modified, _)| *modified)?;
-    let text = fs::read_to_string(&path).ok()?;
-    Some((path, text))
+    }
+
+    fn argument(&self, platform: discover::Platform) -> Result<PathBuf> {
+        if platform == discover::Platform::Windows {
+            Ok(PathBuf::from(run_trimmed(
+                "wslpath",
+                &[
+                    "-w",
+                    self.path
+                        .to_str()
+                        .context("headless log path is not UTF-8")?,
+                ],
+                "translating the headless log path for Windows",
+            )?))
+        } else {
+            Ok(self.path.clone())
+        }
+    }
+
+    fn combine(&self, process_output: &str) -> Result<String> {
+        let text = match fs::read_to_string(&self.path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                eprintln!(
+                    "headless-test: warning: no log written at {}",
+                    self.path.display()
+                );
+                String::new()
+            }
+            Err(error) => return Err(error).context("reading this boot's game log"),
+        };
+        Ok(format!("{text}\n{process_output}"))
+    }
 }
 
 /// Tagged \[SpireProfiler\] and reads as an error.
@@ -488,6 +456,39 @@ mod tests {
             "{PATCH_COUNT_MARKER}{MIN_PATCHES}\n{CAPTURE_MARKER}targets={CAPTURE_TARGETS} patches={CAPTURE_PATCHES} producers={CAPTURE_PRODUCERS} damage_bridges=4 temporal_bridges=16 audit_completion_bridges=6\n{}",
             GATE_MARKERS.join("\n")
         )
+    }
+
+    #[test]
+    fn a_previous_boot_cannot_supply_this_boots_markers() -> Result<()> {
+        let root = workspace_root().join("tmp/xtask-headless-tests");
+        fs::create_dir_all(&root)?;
+        let scratch = tempfile::tempdir_in(root)?;
+        let previous = BootLog::reserve(scratch.path())?;
+        fs::write(&previous.path, complete_boot_output())?;
+        let current = BootLog::reserve(scratch.path())?;
+        let success = ExitStatus::from_raw(0);
+        assert!(
+            assemble_verdict(&current.combine("")?, success)
+                .report()
+                .is_err()
+        );
+
+        let output = complete_boot_output();
+        let (log_part, process_part) = output
+            .split_once(GATE_MARKERS[0])
+            .expect("complete fixture");
+        fs::write(&current.path, log_part)?;
+        fs::File::options()
+            .write(true)
+            .open(&current.path)?
+            .set_times(fs::FileTimes::new().set_modified(std::time::SystemTime::UNIX_EPOCH))?;
+        let process_output = format!("{}{process_part}", GATE_MARKERS[0]);
+        assert!(
+            assemble_verdict(&current.combine(&process_output)?, success)
+                .report()
+                .is_ok()
+        );
+        Ok(())
     }
 
     #[test]

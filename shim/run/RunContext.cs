@@ -16,7 +16,7 @@ internal static class RunContext
     /// The run's players in lobby order (host first) — the game's own slot
     /// numbering (RunState.GetPlayerSlotIndex is Players.IndexOf, identical
     /// on every peer). Captured at run start and immutable for the session;
-    /// single player is a one-element list, so every slot resolves to 0.
+    /// single player is a one-element list whose registered player has slot 0.
     /// </summary>
     private static readonly List<Player> _runPlayers = new();
     private static RunState _runState;
@@ -24,9 +24,10 @@ internal static class RunContext
 
     internal static int PlayerSlot(Player player)
     {
-        if (player == null || _runPlayers.Count == 0) return 0;
-        int index = _runPlayers.IndexOf(player);
-        return index < 0 ? 0 : Math.Min(index, 3);
+        int slot = CreditorSlot(player);
+        // Unknown physical owners must not consume a registered player's pools.
+        if (slot == ProfilerNative.TeamSlot) CaptureRuntime.Fail("player-slot-unavailable");
+        return slot;
     }
 
     internal static uint PaperKraneSlots()

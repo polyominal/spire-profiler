@@ -5,25 +5,21 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader, BufWriter, Read, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, ensure};
 use serde_json::Value;
 
+mod event;
 mod poison;
+
+use event::{Creature, Damage, Data, Event, Mutation, Tick};
 
 const MAX_LINE: u64 = 1024 * 1024;
 const MAX_FILE: u64 = 64 * 1024 * 1024;
 const MAX_EVENTS: usize = 100_000;
 const MAX_FILES: usize = 1000;
-
-struct Event {
-    seq: u64,
-    turn: u64,
-    name: String,
-    data: Value,
-}
 
 struct Trace {
     events: Vec<Event>,
@@ -91,26 +87,54 @@ pub(crate) fn run(input: &Path, output: Option<&Path>) -> Result<()> {
             "output must not overwrite an input trace"
         );
     }
-    // Validate every envelope before opening the output, so unsupported versions
-    // do not leave a plausible-looking partial report behind.
-    for path in &files {
-        Trace::read(BufReader::new(File::open(path)?))
-            .with_context(|| format!("reading {}", path.display()))?;
-    }
-    let mut output: Box<dyn Write> = match output {
-        Some(path) => Box::new(BufWriter::new(File::create(path)?)),
-        None => Box::new(BufWriter::new(std::io::stdout().lock())),
+    let directory = match output {
+        Some(path) => path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(Path::new("."))
+            .to_owned(),
+        None => {
+            let directory = crate::workspace_root().join("tmp/audit-reports");
+            fs::create_dir_all(&directory)?;
+            directory
+        }
     };
+    let mut staged = tempfile::NamedTempFile::new_in(directory)?;
+    {
+        let mut writer = BufWriter::new(staged.as_file_mut());
+        write_report(&files, &mut writer)?;
+        writer.flush()?;
+    }
+    match output {
+        Some(path) => {
+            staged
+                .persist(path)
+                .map_err(|error| error.error)
+                .context("publishing the complete audit report")?;
+        }
+        None => {
+            staged.as_file_mut().seek(SeekFrom::Start(0))?;
+            let mut stdout = std::io::stdout().lock();
+            std::io::copy(staged.as_file_mut(), &mut stdout)?;
+            stdout.flush()?;
+        }
+    }
+    Ok(())
+}
+
+/// One input trace and its rendered section are retained at a time. Publication
+/// begins only after every input has been parsed and rendered successfully.
+fn write_report(files: &[PathBuf], output: &mut dyn Write) -> Result<()> {
     writeln!(output, "# Poison audit\n")?;
     writeln!(
         output,
         "Recorded events combine game values with capture metadata: sequence, execution, native identities and status are recorder claims. Native checkpoints are attribution claims. Version 2 reconstructs supported Poison suppliers from raw game evidence; version 1 checks native consistency. Neither proves capture completeness or whether FIFO is the desired policy. Checkpoint discrepancies may include interleaved effects and require review.\n"
     )?;
     for path in files {
-        let trace = Trace::read(BufReader::new(File::open(&path)?))?;
-        output.write_all(trace.report(&path)?.as_bytes())?;
+        let trace = Trace::read(BufReader::new(File::open(path)?))
+            .with_context(|| format!("reading {}", path.display()))?;
+        output.write_all(trace.report(path)?.as_bytes())?;
     }
-    output.flush()?;
     Ok(())
 }
 
@@ -196,8 +220,7 @@ impl Trace {
             let value: Value = serde_json::from_slice(&line)
                 .with_context(|| format!("invalid JSON at line {}", trace.events.len() + 1))?;
             let seq = number(&value, "seq")?;
-            let turn = number(&value, "turn")?;
-            ensure!(turn <= u64::from(u32::MAX), "turn does not fit u32");
+            let turn = u32::try_from(number(&value, "turn")?).context("turn does not fit u32")?;
             let name = string(&value, "event")?.to_owned();
             let data = value
                 .get("data")
@@ -210,32 +233,21 @@ impl Trace {
                 ));
             }
             previous = seq;
-            if name == "combat_start" {
-                Self::versions(&data, true)?;
+            let event = Event::read(seq, turn, &name, data)
+                .with_context(|| format!("parsing event #{seq} {name}"))?;
+            if event.native.is_some()
+                && let Some(epoch) = trace.events.first().and_then(Event::epoch)
+                && event.checkpoint().ok().map(|native| native.combat_id) != Some(epoch)
+            {
+                trace.incomplete.push(format!("Native checkpoint #{seq} has unavailable or foreign combat identity; expected epoch {epoch}."));
             }
-            if let Some(native) = data.get("native").filter(|native| !native.is_null()) {
-                Self::versions(native, false)?;
-                if let Some(epoch) = trace
-                    .events
-                    .first()
-                    .and_then(|event| event.data["epoch"].as_u64())
-                    && native["combat_id"].as_u64() != Some(epoch)
-                {
-                    trace.incomplete.push(format!("Native checkpoint #{seq} has a missing or foreign combat identity; expected epoch {epoch}."));
-                }
-            }
-            trace.events.push(Event {
-                seq,
-                turn,
-                name,
-                data,
-            });
+            trace.events.push(event);
         }
         for (event, name) in [
             (trace.events.first(), "combat_start"),
             (trace.events.last(), "combat_end"),
         ] {
-            if event.is_none_or(|event| event.name != name) {
+            if event.is_none_or(|event| event.name() != name) {
                 trace.incomplete.push(format!(
                     "Missing {name} boundary; capture may be interrupted."
                 ));
@@ -243,7 +255,7 @@ impl Trace {
             if trace
                 .events
                 .iter()
-                .filter(|event| event.name == name)
+                .filter(|event| event.name() == name)
                 .count()
                 > 1
             {
@@ -253,8 +265,8 @@ impl Trace {
             }
             if name == "combat_end"
                 && event.is_some_and(|event| {
-                    event.data["complete"].as_bool() != Some(true)
-                        || event.data["native"]["coverage"]["complete"].as_bool() != Some(true)
+                    matches!(&event.data, Data::End(footer) if footer.complete != Some(true))
+                        || event.checkpoint().is_err()
                 })
             {
                 trace
@@ -265,16 +277,15 @@ impl Trace {
         Ok(trace)
     }
 
-    fn versions(value: &Value, journal: bool) -> Result<()> {
+    fn checkpoint_version(value: &Value) -> Result<()> {
         ensure!(
-            matches!(
-                (number(value, "audit_version")?, journal),
-                (1, _) | (2, true)
-            ),
+            number(value, "audit_version")? == 1,
             "unsupported audit version"
         );
+        // Policy 4 rejects malformed observations earlier; valid recorded
+        // Poison measurements retain policy 3's supported Poison accounting.
         ensure!(
-            number(value, "policy_version")? == 3,
+            matches!(number(value, "policy_version")?, 3 | 4),
             "unsupported attribution policy version"
         );
         Ok(())
@@ -287,11 +298,7 @@ impl Trace {
     fn checks(&self) -> BTreeMap<u64, Vec<Check>> {
         let mut checks: BTreeMap<u64, Vec<Check>> = BTreeMap::new();
         let header = self.events.first();
-        let Some(epoch) = header
-            .filter(|event| event.name == "combat_start")
-            .and_then(|event| event.data["epoch"].as_u64())
-            .filter(|epoch| *epoch != 0)
-        else {
+        let Some(epoch) = header.and_then(Event::epoch).filter(|epoch| *epoch != 0) else {
             checks
                 .entry(header.map_or(0, |event| event.seq))
                 .or_default()
@@ -300,46 +307,49 @@ impl Trace {
                 ));
             return checks;
         };
-        let mut previous = BTreeMap::new();
-        let mut mutations: BTreeMap<u64, Vec<&Event>> = BTreeMap::new();
+        let empty = BTreeMap::new();
+        let mut previous = &empty;
+        let mut mutations: BTreeMap<u64, Vec<(&Event, &Mutation)>> = BTreeMap::new();
         let ticks: BTreeMap<_, _> = self
             .events
             .iter()
-            .filter(|event| event.name == "poison_tick")
-            .map(|event| (event.seq, event))
+            .filter_map(|event| {
+                if let Data::Tick(data) = &event.data {
+                    Some((event.seq, (event, data)))
+                } else {
+                    None
+                }
+            })
             .collect();
-        let mut damages: BTreeMap<u64, Vec<&Event>> = BTreeMap::new();
+        let mut damages: BTreeMap<u64, Vec<(&Event, &Damage)>> = BTreeMap::new();
         for event in &self.events {
             let output = checks.entry(event.seq).or_default();
-            if matches!(event.name.as_str(), "damage_begin" | "damage_result") {
-                output.push(Check::Unverified("Non-Poison damage is game evidence for trigger review; this reporter does not check its attribution.".into()));
-            }
-            if event.name == "poison_change" {
-                if let Some(action) = event.data["action"].as_u64().filter(|action| *action != 0) {
-                    mutations.entry(action).or_default().push(event);
+            match &event.data {
+                Data::DamageBegin(_) | Data::Damage(_) => output.push(Check::Unverified("Non-Poison damage is game evidence for trigger review; this reporter does not check its attribution.".into())),
+                Data::PoisonChange(data) => {
+                    if let Some(action) = data.action.filter(|action| *action != 0) {
+                        mutations.entry(action).or_default().push((event, data));
+                    }
+                    match event.change(data, previous, epoch) {
+                        Ok(found) => output.extend(found),
+                        Err(error) => output.push(Check::Unverified(error.to_string())),
+                    }
                 }
-                match event.change(&previous, epoch) {
-                    Ok(found) => output.extend(found),
-                    Err(error) => output.push(Check::Unverified(error.to_string())),
-                }
+                Data::PoisonDamage(data) => damages.entry(data.tick_seq).or_default().push((event, data)),
+                _ => {}
             }
-            if event.name == "poison_damage" {
-                match number(&event.data, "tick_seq") {
-                    Ok(tick) => damages.entry(tick).or_default().push(event),
-                    Err(error) => output.push(Check::Unverified(error.to_string())),
-                }
-            }
-            if !event.data["native"].is_null() {
-                previous = Native::read(&event.data["native"])
+            if event.native.is_some() {
+                previous = event
+                    .checkpoint()
                     .ok()
                     .filter(|native| native.combat_id == epoch)
-                    .map_or_else(BTreeMap::new, |native| native.poison);
+                    .map_or(&empty, |native| &native.poison);
             }
         }
-        for (seq, tick) in ticks {
+        for (seq, (tick, data)) in ticks {
             let output = checks.entry(seq).or_default();
             match damages.remove(&seq) {
-                Some(damage) => match tick.damage(&damage, epoch) {
+                Some(damage) => match tick.check_damage(data, &damage, epoch) {
                     Ok(found) => output.extend(found),
                     Err(error) => output.push(Check::Unverified(error.to_string())),
                 },
@@ -349,26 +359,29 @@ impl Trace {
             }
         }
         for (tick, events) in damages {
-            for event in events {
+            for (event, _) in events {
                 checks
                     .entry(event.seq)
                     .or_default()
                     .push(Check::Unverified(format!("No poison_tick #{tick}.")));
             }
         }
-        for attempt in self
-            .events
-            .iter()
-            .filter(|event| event.name == "poison_attempt")
-        {
+        for (attempt, data) in self.events.iter().filter_map(|event| {
+            if let Data::PoisonAttempt(data) = &event.data {
+                Some((event, data))
+            } else {
+                None
+            }
+        }) {
             let check = match mutations.remove(&attempt.seq) {
                 Some(changes) => {
-                    let power = attempt.data["power_identity"].as_u64().filter(|id| *id != 0);
-                    let target = attempt.data["target"]["instance"].as_u64().filter(|id| *id != 0);
-                    let linked = power.is_some() && target.is_some() && changes.iter().all(|change|
-                        change.seq > attempt.seq && change.data["power_identity"].as_u64() == power
-                        && change.data["target"]["instance"].as_u64() == target);
-                    let sequences: Vec<_> = changes.iter().map(|change| change.seq).collect();
+                    let power = data.power_identity.filter(|id| *id != 0);
+                    let target = Creature::instance(&data.target);
+                    let linked = power.is_some() && target.is_some() && changes.iter().all(|(change, data)| {
+                        change.seq > attempt.seq && data.power_identity == power
+                            && Creature::instance(&data.target) == target
+                    });
+                    let sequences: Vec<_> = changes.iter().map(|(change, _)| change.seq).collect();
                     if linked { Check::Match(format!("Attempt #{} links to observed Poison mutations {sequences:?} by raw power and target identities; linkage does not establish final command success.", attempt.seq)) }
                     else { Check::Unverified(format!("Recorder links attempt #{} to mutations {sequences:?}, but raw identities or ordering do not independently confirm the link; applying to an existing power may change the instance.", attempt.seq)) }
                 },
@@ -377,7 +390,7 @@ impl Trace {
             checks.entry(attempt.seq).or_default().push(check);
         }
         for (action, changes) in mutations {
-            for change in changes {
+            for (change, _) in changes {
                 checks
                     .entry(change.seq)
                     .or_default()
@@ -397,7 +410,7 @@ impl Trace {
         let independent = self
             .events
             .first()
-            .filter(|event| event.data["audit_version"] == 2)
+            .filter(|event| matches!(&event.data, Data::Start(header) if header.audit_version == 2))
             .map(|_| poison::Reconstruction::run(self));
         let checks = independent
             .as_ref()
@@ -408,8 +421,13 @@ impl Trace {
         );
         let mut incomplete = self.incomplete.clone();
         for event in &self.events {
-            if matches!(event.name.as_str(), "trace_truncated" | "diagnostic") {
-                incomplete.push(format!("#{} {}: {}", event.seq, event.name, event.facts()));
+            if matches!(event.name(), "trace_truncated" | "diagnostic") {
+                incomplete.push(format!(
+                    "#{} {}: {}",
+                    event.seq,
+                    event.name(),
+                    event.facts()
+                ));
             }
         }
         let (matched, discrepancies, unverifiable) = checks.values().flatten().fold(
@@ -448,7 +466,7 @@ impl Trace {
                 text,
                 "**#{} {}**\n\nRecorded event: {}\n",
                 event.seq,
-                markdown(&event.name),
+                markdown(event.name()),
                 event.facts()
             )?;
             if let Some(found) = checks.get(&event.seq) {
@@ -460,13 +478,8 @@ impl Trace {
                     text.push('\n');
                 }
             }
-            if event.name == "combat_end" {
-                event.totals(
-                    &mut text,
-                    self.events
-                        .first()
-                        .and_then(|event| event.data["epoch"].as_u64()),
-                )?;
+            if event.name() == "combat_end" {
+                event.totals(&mut text, self.events.first().and_then(Event::epoch))?;
             }
         }
         Ok(text)
@@ -474,19 +487,8 @@ impl Trace {
 }
 
 impl Event {
-    fn facts(&self) -> String {
-        self.data
-            .as_object()
-            .into_iter()
-            .flatten()
-            .filter(|(key, _)| key.as_str() != "native")
-            .map(|(key, value)| format!("{}={}", markdown(key), markdown(&value.to_string())))
-            .collect::<Vec<_>>()
-            .join("; ")
-    }
-
     fn totals(&self, text: &mut String, epoch: Option<u64>) -> Result<()> {
-        match Native::read(&self.data["native"]).and_then(|native| {
+        match self.checkpoint().and_then(|native| {
             ensure!(
                 Some(native.combat_id) == epoch,
                 "Final native totals belong to another combat"
@@ -520,26 +522,28 @@ impl Event {
         clippy::too_many_lines,
         reason = "Owner, quantity and FIFO checks share the same mutation evidence."
     )]
-    fn change(&self, previous: &BTreeMap<u64, Poison>, epoch: u64) -> Result<Vec<Check>> {
-        let before = number(&self.data, "before")?;
-        let observed_after = number(&self.data, "after")?;
-        let attached = self.data["after_attached"]
-            .as_bool()
-            .ok_or_else(|| anyhow!("Missing attachment state after Poison mutation"))?;
+    fn change(
+        &self,
+        data: &Mutation,
+        previous: &BTreeMap<u64, Poison>,
+        epoch: u64,
+    ) -> Result<Vec<Check>> {
+        let before = data.before.nonnegative()?;
+        let observed_after = data.after.nonnegative()?;
+        let attached = data.after_attached;
         let after = if attached { observed_after } else { 0 };
-        let instance = number(&self.data, "power_instance")?;
-        let native = Native::read(&self.data["native"])?;
+        let instance = data
+            .power_instance
+            .ok_or_else(|| anyhow!("Missing native power identity"))?;
+        let native = self.checkpoint()?;
         ensure!(
             native.combat_id == epoch,
             "Mutation checkpoint belongs to another combat"
         );
         let mut checks = Vec::new();
         let current = native.poison.get(&instance);
-        let target = number(&self.data["target"], "native_instance")?;
-        ensure!(
-            target != 0,
-            "Mutation target has no assigned native identity"
-        );
+        let target = Creature::native(&data.target)
+            .ok_or_else(|| anyhow!("Mutation target has no assigned native identity"))?;
         if current
             .into_iter()
             .chain(previous.get(&instance))
@@ -600,27 +604,32 @@ impl Event {
         clippy::too_many_lines,
         reason = "Group identity and physical results bound one allocation comparison."
     )]
-    fn damage(&self, results: &[&Event], epoch: u64) -> Result<Vec<Check>> {
-        for (index, result) in results.iter().enumerate() {
+    fn check_damage(
+        &self,
+        data: &Tick,
+        results: &[(&Event, &Damage)],
+        epoch: u64,
+    ) -> Result<Vec<Check>> {
+        for (index, (_, result)) in results.iter().enumerate() {
             ensure!(
-                result.data["receiver_side"].as_str() == Some("enemy")
-                    && result.data["receiver_kind"].as_str() == Some("monster"),
+                result.receiver_side.as_deref() == Some("enemy")
+                    && result.receiver_kind.as_deref() == Some("monster"),
                 "Incoming, pet, or unclassified Poison damage requires a different ledger check"
             );
             ensure!(
-                number(&result.data, "group_count")? == results.len() as u64
-                    && number(&result.data, "group_index")? == index as u64,
+                result.group_count == Some(results.len() as u64)
+                    && result.group_index == Some(index as u64),
                 "Incomplete or reordered Poison damage result group"
             );
         }
-        let before = Native::read(&self.data["native"])?;
+        let before = self.checkpoint()?;
         let last = results.last().expect("grouping produces nonempty results");
-        let after = Native::read(&last.data["native"])?;
+        let after = last.0.checkpoint()?;
         ensure!(
             before.combat_id == epoch && after.combat_id == epoch,
             "Tick checkpoint belongs to another combat"
         );
-        let instance = number(&self.data, "power_instance")?;
+        let instance = data.power_instance;
         let power = before
             .poison
             .get(&instance)
@@ -630,14 +639,17 @@ impl Event {
             "No live Poison grants; retained historical source cannot establish tick provenance"
         );
         let mut checks = power.checks()?;
-        let target = number(&self.data["target"], "native_instance")?;
-        ensure!(target != 0, "Game target has no assigned native identity");
+        let target = Creature::native(&data.target)
+            .ok_or_else(|| anyhow!("Game target has no assigned native identity"))?;
         let owner = power.owner;
         checks.push(compare(
             owner == target,
             format!("Poison native owner {owner} matches game target native identity {target}."),
         ));
-        let observed_amount = number(&self.data, "poison_before")?;
+        let observed_amount = data
+            .poison_before
+            .ok_or_else(|| anyhow!("Missing Poison amount"))?
+            .nonnegative()?;
         let native_amount = power.amount;
         checks.push(compare(
             native_amount == observed_amount,
@@ -646,10 +658,10 @@ impl Event {
             ),
         ));
         let mut damage = 0_u64;
-        for event in results {
+        for (_, result) in results {
             damage = damage
-                .checked_add(number(&event.data, "unblocked")?)
-                .and_then(|total| total.checked_add(event.data.get("blocked")?.as_u64()?))
+                .checked_add(result.unblocked.nonnegative()?)
+                .and_then(|total| total.checked_add(result.blocked.nonnegative().ok()?))
                 .ok_or_else(|| anyhow!("Missing, negative, or overflowing physical damage"))?;
         }
         let expected = power.source.allocate(damage)?;
@@ -668,28 +680,25 @@ impl Event {
                 checks.push(compare(delta == i128::from(expected), format!("Tick #{}: {} (kind {}, player {}) expected indirect +{expected}, native delta {delta:+} from {damage} observed damage.", self.seq, source.id, source.kind, source.player)));
             }
         }
-        checks.extend(self.physical(results));
+        checks.extend(self.physical(data, results));
         Ok(checks)
     }
 
-    fn physical(&self, results: &[&Event]) -> Vec<Check> {
+    fn physical(&self, data: &Tick, results: &[(&Event, &Damage)]) -> Vec<Check> {
         let mut checks = Vec::new();
-        let Some(last) = results.last() else {
+        let Some((_, last)) = results.last() else {
             return checks;
         };
-        match (self.data["requested"].as_str(), self.data["poison_before"].as_u64()) {
-            (Some(requested), Some(amount)) => checks.push(compare(requested.parse::<u64>().ok() == Some(amount),
+        match (data.requested.and_then(|amount| amount.nonnegative().ok()), data.poison_before.and_then(|amount| amount.nonnegative().ok())) {
+            (Some(requested), Some(amount)) => checks.push(compare(requested == amount,
                 format!("Requested Poison damage {requested}; observed stacks at modifier entry {amount}. Equality assumes no intervening power mutation."))),
             _ => checks.push(Check::Unverified("Requested Poison damage or modifier-entry stack count unavailable.".into())),
         }
         if results.len() == 1
-            && self.data["target"]["instance"]
-                .as_u64()
-                .is_some_and(|target| {
-                    target != 0 && Some(target) == last.data["target"]["instance"].as_u64()
-                })
+            && Creature::instance(&data.target).is_some()
+            && Creature::instance(&data.target) == Creature::instance(&last.target)
         {
-            match (self.data["hp_before"].as_u64(), last.data["hp_after"].as_u64(), last.data["unblocked"].as_u64()) {
+            match (data.hp_before, last.hp_after, last.unblocked.nonnegative().ok()) {
                 (Some(before), Some(after), Some(unblocked)) => checks.push(compare(before.checked_sub(after) == Some(unblocked), format!("HP before modifiers {before} -> after results {after}; raw unblocked damage {unblocked}. Equality assumes no intervening HP changes; overkill is excluded."))),
                 _ => checks.push(Check::Unverified("HP checkpoint conservation unavailable.".into())),
             }
@@ -1121,59 +1130,117 @@ mod tests {
         fixture.events[0]["data"]["audit_version"] = json!(3);
         assert!(Trace::read(fixture.bytes().as_slice()).is_err());
         fixture.events[0]["data"]["audit_version"] = json!(1);
-        fixture.events[0]["data"]["policy_version"] = json!(4);
+        fixture.events[0]["data"]["policy_version"] = json!(5);
         assert!(Trace::read(fixture.bytes().as_slice()).is_err());
         let line = vec![b' '; MAX_LINE as usize + 1];
         assert!(Trace::read(line.as_slice()).is_err());
     }
 
     #[test]
+    fn typed_events_reject_malformed_nested_fields_before_publication() -> Result<()> {
+        let scratch_root = crate::workspace_root().join("tmp/xtask-audit-tests");
+        fs::create_dir_all(&scratch_root)?;
+        let scratch = tempfile::tempdir_in(scratch_root)?;
+        let first = scratch.path().join("a.audit.jsonl");
+        let second = scratch.path().join("b.audit.jsonl");
+        let report = scratch.path().join("report.md");
+        let valid = Fixture::nine_turns().bytes();
+        fs::write(&first, &valid)?;
+        fs::write(&report, "previous complete report")?;
+        for (field, malformed) in [
+            ("group_count", json!("1")),
+            ("unblocked", json!("not a number")),
+            ("target", json!({"instance": "40", "native_instance": 30})),
+        ] {
+            let mut fixture = Fixture::nine_turns();
+            fixture
+                .events
+                .iter_mut()
+                .find(|event| event["event"] == "poison_damage")
+                .expect("damage fixture")["data"][field] = malformed;
+            fs::write(&second, fixture.bytes())?;
+            assert!(
+                run(scratch.path(), Some(&report)).is_err(),
+                "accepted malformed {field}"
+            );
+            assert_eq!(fs::read_to_string(&report)?, "previous complete report");
+        }
+        fs::write(&second, &valid)?;
+        run(scratch.path(), Some(&report))?;
+        assert_eq!(
+            fs::read_to_string(&report)?
+                .matches("## Combat file")
+                .count(),
+            2
+        );
+        assert!(run(&first, Some(&first)).is_err());
+        assert_eq!(fs::read(&first)?, valid);
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_and_current_policy_share_valid_evidence_semantics() -> Result<()> {
+        for policy in [3, 4] {
+            let mut fixture = Fixture::nine_turns();
+            fixture.events[0]["data"]["policy_version"] = json!(policy);
+            for event in &mut fixture.events {
+                if event["data"].get("native").is_some() {
+                    event["data"]["native"]["policy_version"] = json!(policy);
+                }
+            }
+            let report = fixture.report()?;
+            assert!(report.contains("0 discrepancies, 0 unverifiable"));
+            assert!(report.contains("| SNAKEBITE (kind 0) | 0 | 150 |"));
+        }
+        Ok(())
+    }
+
+    #[test]
     fn fifo_checks_reject_removing_the_newer_supplier() -> Result<()> {
         let fixture = Fixture::default();
         let before = Native::read(&fixture.native([7, 7]))?;
-        let mut event = Event {
-            seq: 2,
-            turn: 1,
-            name: "poison_change".into(),
-            data: json!({"power_instance":20,
-            "before":14,"after":13,"after_attached":true,"status":1,"target":{"native_instance":30},"native":fixture.native([6,7])}),
+        let mut data = json!({"power_instance":20,
+            "before":14,"after":13,"after_attached":true,"status":1,"target":{"native_instance":30},"native":fixture.native([6,7])});
+        let check = |data: &Value, previous: &BTreeMap<u64, Poison>| {
+            let event = Event::read(2, 1, "poison_change", data.clone())?;
+            let Data::PoisonChange(mutation) = &event.data else {
+                panic!("mutation fixture")
+            };
+            event.change(mutation, previous, 7)
         };
         assert!(
-            event
-                .change(&before.poison, 7)?
+            check(&data, &before.poison)?
                 .iter()
                 .all(|check| matches!(check, Check::Match(_)))
         );
-        event.data["native"] = fixture.native([7, 6]);
+        data["native"] = fixture.native([7, 6]);
         assert!(
-            event.change(&before.poison, 7)?.iter().any(
+            check(&data, &before.poison)?.iter().any(
                 |check| matches!(check, Check::Discrepancy(message) if message.contains("FIFO"))
             )
         );
-        event.data["after"] = json!(14);
-        event.data["after_attached"] = json!(false);
-        event.data["native"]["poison"] = json!([]);
+        data["after"] = json!(14);
+        data["after_attached"] = json!(false);
+        data["native"]["poison"] = json!([]);
         assert!(
-            event
-                .change(&before.poison, 7)?
+            check(&data, &before.poison)?
                 .iter()
                 .all(|check| matches!(check, Check::Match(_)))
         );
-        event.data["target"]["native_instance"] = json!(31);
+        data["target"]["native_instance"] = json!(31);
         assert!(
-            event
-                .change(&before.poison, 7)?
+            check(&data, &before.poison)?
                 .iter()
                 .all(|check| matches!(check, Check::Discrepancy(_)))
         );
-        event.data["target"]["native_instance"] = json!(30);
+        data["target"]["native_instance"] = json!(30);
         let mut malformed = before.poison.clone();
         malformed
             .get_mut(&20)
             .expect("fixture has Poison")
             .grants
             .clear();
-        let checks = event.change(&malformed, 7)?;
+        let checks = check(&data, &malformed)?;
         assert!(checks.iter().any(|check| matches!(check, Check::Unverified(message) if message.contains("Prior Poison grants"))));
         assert!(
             !checks

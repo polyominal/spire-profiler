@@ -1448,7 +1448,7 @@ mod tests {
         let audit: Value =
             serde_json::from_slice(&bytes[..required as usize - 1]).expect("audit parses");
         assert_eq!(audit["audit_version"], 1);
-        assert_eq!(audit["policy_version"], 3);
+        assert_eq!(audit["policy_version"], 4);
         assert_eq!(audit["combat_id"], 7);
         assert_eq!(audit["poison"][0]["amount"], 3);
         assert_eq!(audit["cards"][0]["id"], "毒");
@@ -1699,6 +1699,216 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one malformed-field sequence checks retained accounting and exact replay together"
+    )]
+    fn malformed_slots_and_damage_kinds_preserve_accounting_and_replay() {
+        let engine = spire_profiler_engine_create();
+        assert_eq!(spire_profiler_recording_begin(engine), 1);
+        assert_eq!(started(engine, 7), 7);
+        // SAFETY: literals own terminated strings; empty modifier buffers have count zero.
+        let source = unsafe {
+            let source =
+                spire_profiler_source_capture(engine, 7, 1, 1, c"DEFEND".as_ptr(), 0, 0, 0);
+            assert_eq!(
+                spire_profiler_block_gained(engine, 7, 10, source, 0, ptr::null(), 0, 0),
+                1
+            );
+            for slot in [i32::MIN, -1, 5, i32::MAX] {
+                assert_eq!(
+                    spire_profiler_block_gained(engine, 7, 6, source, slot, ptr::null(), 0, 0),
+                    0
+                );
+                assert_eq!(spire_profiler_block_pool_clear(engine, 7, slot), 0);
+                assert_eq!(spire_profiler_block_pool_loss(engine, 7, slot, 3), 0);
+                assert_eq!(spire_profiler_osty_summoned(engine, 7, source, 3, slot), 0);
+                assert_eq!(spire_profiler_osty_killed(engine, 7, slot, 0), 0);
+                assert_eq!(spire_profiler_player_died(engine, 7, slot), 0);
+                assert_eq!(
+                    spire_profiler_damage_unattributed(engine, 7, 3, 3, 0, 1, slot, 0),
+                    0
+                );
+            }
+            source
+        };
+        for kind in [i32::MIN, -1, 5, i32::MAX] {
+            assert_eq!(
+                spire_profiler_damage_unattributed(engine, 7, 3, 3, 0, kind, 4, 0),
+                0
+            );
+            let calculation = spire_profiler_damage_calculation_begin(engine, 7, source, 1, 0, 9);
+            assert_ne!(calculation, 0);
+            assert_eq!(
+                spire_profiler_damage_result_append(engine, calculation, 3, 3, 0, 0, 4, 0),
+                1
+            );
+            assert_eq!(
+                spire_profiler_damage_result_append(engine, calculation, 3, 3, 0, kind, 4, 0),
+                0
+            );
+            assert_eq!(
+                spire_profiler_damage_calculation_commit(engine, calculation),
+                0
+            );
+        }
+        assert_eq!(
+            spire_profiler_source_accumulate(engine, 7, 0, 0, 12345, 1),
+            0
+        );
+        assert_eq!(
+            spire_profiler_source_accumulate(engine, 7, 12345, 1, 0, 1),
+            0
+        );
+        assert_eq!(
+            spire_profiler_damage_unattributed(engine, 7, 10, 0, 10, 1, 0, 0),
+            1
+        );
+        assert_eq!(spire_profiler_player_died(engine, 7, 4), 0);
+        assert_eq!(spire_profiler_player_died(engine, 7, 1), 1);
+        assert_eq!(spire_profiler_combat_ended(engine, 7), 1);
+        let expected = json(engine, false);
+        let summary: Value = serde_json::from_str(&expected).expect("summary parses");
+        assert_eq!(summary["result"], "completed");
+        assert_eq!(summary["block_total"], 10);
+        assert_eq!(summary["damage_received"], 10);
+        assert_eq!(summary["cards"][0]["block_effective"], 10);
+        assert_eq!(summary["cards"][0]["damage_dealt"], 0);
+        assert_eq!(summary["coverage"]["complete"], false);
+        let trace = CString::new(json(engine, true)).expect("JSON has no NUL");
+        let replay = spire_profiler_engine_create();
+        // SAFETY: CString owns the terminated trace through replay.
+        assert_eq!(unsafe { spire_profiler_replay(replay, trace.as_ptr()) }, 1);
+        assert_eq!(json(replay, false), expected);
+        spire_profiler_engine_destroy(engine);
+        spire_profiler_engine_destroy(replay);
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one mixed-owner combat distinguishes physical ownership from creditor identity and checks replay"
+    )]
+    fn unresolved_owners_preserve_measurements_without_correlating_pools_or_plays() {
+        let engine = spire_profiler_engine_create();
+        assert_eq!(spire_profiler_recording_begin(engine), 1);
+        assert_eq!(started(engine, 7), 7);
+        // SAFETY: literals own terminated strings and the modifier array remains live through its
+        // call.
+        let (host, unresolved) = unsafe {
+            let host =
+                spire_profiler_source_capture(engine, 7, 1, 1, c"HOST_BLOCK".as_ptr(), 0, 0, 0);
+            let unresolved = spire_profiler_source_capture(
+                engine,
+                7,
+                1,
+                2,
+                c"UNRESOLVED_BLOCK".as_ptr(),
+                0,
+                1,
+                0,
+            );
+            let team =
+                spire_profiler_source_capture(engine, 7, 1, 3, c"TEAM_SOURCE".as_ptr(), 0, 4, 0);
+            let modifiers = [BlockModifier {
+                source: host,
+                credit: 3,
+            }];
+            assert_eq!(
+                spire_profiler_block_gained(engine, 7, 10, host, 0, ptr::null(), 0, 0),
+                1
+            );
+            assert_eq!(
+                spire_profiler_block_gained(engine, 7, 7, unresolved, 4, modifiers.as_ptr(), 1, 0),
+                1
+            );
+            assert_eq!(
+                spire_profiler_block_gained(engine, 7, 3, team, 1, ptr::null(), 0, 0),
+                1
+            );
+            (host, unresolved)
+        };
+        assert_eq!(
+            spire_profiler_damage_unattributed(engine, 7, 7, 0, 7, 1, 4, 0),
+            1
+        );
+        assert_eq!(spire_profiler_block_pool_clear(engine, 7, 4), 1);
+        assert_eq!(spire_profiler_block_pool_loss(engine, 7, 4, 5), 1);
+        assert_eq!(
+            spire_profiler_damage_unattributed(engine, 7, 10, 0, 10, 1, 0, 0),
+            1
+        );
+        assert_eq!(
+            spire_profiler_damage_unattributed(engine, 7, 3, 0, 3, 1, 1, 0),
+            1
+        );
+        assert_eq!(spire_profiler_osty_summoned(engine, 7, unresolved, 9, 4), 1);
+        assert_eq!(
+            spire_profiler_damage_unattributed(engine, 7, 4, 4, 0, 4, 4, 0),
+            1
+        );
+        // SAFETY: the literal owns a terminated card identifier.
+        let play = unsafe {
+            spire_profiler_card_play_started(
+                engine,
+                7,
+                1,
+                2,
+                c"UNRESOLVED_BLOCK".as_ptr(),
+                4,
+                0,
+                1,
+                0,
+                unresolved,
+            )
+        };
+        assert_ne!(play, 0);
+        assert_eq!(spire_profiler_orb_channeled(engine, 7, 99, host), 1);
+        assert_eq!(spire_profiler_orb_context_begin(engine, 7, 99, play, 4), 1);
+        assert_eq!(spire_profiler_orb_context_begin(engine, 7, 99, play, 4), 1);
+        assert_eq!(spire_profiler_osty_killed(engine, 7, 4, play), 1);
+        assert_eq!(spire_profiler_card_play_finished(engine, play), 1);
+        assert_eq!(spire_profiler_combat_ended(engine, 7), 1);
+        let expected = json(engine, false);
+        let summary: Value = serde_json::from_str(&expected).expect("summary parses");
+        assert_eq!(summary["block_total"], 20);
+        assert_eq!(summary["damage_received"], 20);
+        assert_eq!(summary["plays"], 1);
+        assert_eq!(summary["result"], "completed");
+        let rows = summary["cards"].as_array().expect("summary rows");
+        for (id, gained, effective) in [
+            ("HOST_BLOCK", 10, 10),
+            ("UNRESOLVED_BLOCK", 7, 0),
+            ("TEAM_SOURCE", 3, 3),
+            ("UNATTRIBUTED", 0, 7),
+            ("OSTY", 0, 4),
+        ] {
+            let row = rows
+                .iter()
+                .find(|row| row["id"] == id)
+                .expect("observed row");
+            assert_eq!(row["block_gained"], gained, "{id}");
+            assert_eq!(row["block_effective"], effective, "{id}");
+            assert_eq!(row["blk_modifier"], 0, "{id}");
+        }
+        assert_eq!(summary["coverage"]["complete"], false);
+        assert!(
+            summary["coverage"]["reasons"]
+                .as_array()
+                .expect("coverage reasons")
+                .iter()
+                .any(|reason| reason == "physical-owner-unavailable")
+        );
+        let trace = CString::new(json(engine, true)).expect("JSON has no NUL");
+        let replay = spire_profiler_engine_create();
+        // SAFETY: CString owns the terminated trace through replay.
+        assert_eq!(unsafe { spire_profiler_replay(replay, trace.as_ptr()) }, 1);
+        assert_eq!(json(replay, false), expected);
+        spire_profiler_engine_destroy(engine);
+        spire_profiler_engine_destroy(replay);
+    }
+
+    #[test]
     fn old_attribution_policies_are_rejected_without_reinterpreting_or_mutating_state() {
         let engine = spire_profiler_engine_create();
         assert_eq!(spire_profiler_recording_begin(engine), 1);
@@ -1706,8 +1916,8 @@ mod tests {
         assert_eq!(spire_profiler_turn_started(engine, 9), 1);
         let expected = json(engine, false);
         let mut trace: Value = serde_json::from_str(&json(engine, true)).expect("trace parses");
-        assert_eq!(trace["policy_version"], 3);
-        for policy in [1, 2] {
+        assert_eq!(trace["policy_version"], 4);
+        for policy in [1, 2, 3] {
             trace["policy_version"] = policy.into();
             let input = CString::new(trace.to_string()).expect("JSON has no NUL");
             // SAFETY: CString owns the terminated trace through replay.

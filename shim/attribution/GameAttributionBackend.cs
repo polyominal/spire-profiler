@@ -8,12 +8,12 @@ internal abstract class GameAttributionBackend : AttributionBackend
 {
     internal override ModelDescriptor Describe(object model) => model switch
     {
-        CardModel card => new(CaptureKind.CardInstance, ProducerRole.Card, card.Id?.Entry ?? "", 0, RunContext.CreditorSlot(card.Owner), Combat: card.Owner?.Creature?.CombatState),
-        PowerModel power => new(CaptureKind.PowerInstance, ProducerRole.Power, power.Id?.Entry ?? "", 2, 4, power.Owner, power is PoisonPower, power.Owner?.CombatState),
-        RelicModel relic => new(CaptureKind.DirectModel, ProducerRole.Relic, relic.Id?.Entry ?? "", 1, RunContext.CreditorSlot(relic.Owner), Combat: relic.Owner?.Creature?.CombatState),
-        PotionModel potion => new(CaptureKind.DirectModel, ProducerRole.Potion, potion.Id?.Entry ?? "", 3, RunContext.CreditorSlot(potion.Owner), Combat: potion.Owner?.Creature?.CombatState),
-        OrbModel orb => new(CaptureKind.OrbInstance, ProducerRole.Orb, orb.Id?.Entry ?? "", 5, RunContext.PlayerSlot(orb.Owner), Combat: orb.Owner?.Creature?.CombatState),
-        _ => new(CaptureKind.Unknown, ProducerRole.Unknown, "", 5, 4)
+        CardModel card => new(ProducerRole.Card, card.Id?.Entry ?? "", RunContext.CreditorSlot(card.Owner), Combat: card.Owner?.Creature?.CombatState),
+        PowerModel power => new(ProducerRole.Power, power.Id?.Entry ?? "", 4, power.Owner, power is PoisonPower, power.Owner?.CombatState),
+        RelicModel relic => new(ProducerRole.Relic, relic.Id?.Entry ?? "", RunContext.CreditorSlot(relic.Owner), Combat: relic.Owner?.Creature?.CombatState),
+        PotionModel potion => new(ProducerRole.Potion, potion.Id?.Entry ?? "", RunContext.CreditorSlot(potion.Owner), Combat: potion.Owner?.Creature?.CombatState),
+        OrbModel orb => new(ProducerRole.Orb, orb.Id?.Entry ?? "", RunContext.PlayerSlot(orb.Owner), Combat: orb.Owner?.Creature?.CombatState),
+        _ => new(ProducerRole.Unknown, "", 4)
     };
     internal override CreatureDescriptor DescribeCreature(object model)
     {

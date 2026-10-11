@@ -19,8 +19,9 @@ pub fn check_pin(game: &GamePaths) -> Result<()> {
     check_version(&installed_version(game)?, &game.release_info)
 }
 
-pub(crate) fn check_pin_at(release_info: &Path) -> Result<()> {
-    check_version(&installed_version_from(release_info)?, release_info)
+pub(crate) fn check_pin_at(release_info: &Path) -> Result<&'static str> {
+    check_version(&installed_version_from(release_info)?, release_info)?;
+    Ok(PIN)
 }
 
 /// Diagnosed as "bump the pin", never silently accepted.
