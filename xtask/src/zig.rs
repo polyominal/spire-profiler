@@ -11,7 +11,7 @@ use xshell::{Shell, cmd};
 use crate::{ensure_cli, workspace_root};
 
 /// Bump the version, urls, and shasums together from ziglang.org's index.
-pub const ZIG_VERSION: &str = "0.16.0";
+pub const ZIG_VERSION: &str = "0.17.0";
 
 pub fn bootstrap_dir() -> PathBuf {
     workspace_root().join("zig-sdk")
@@ -41,20 +41,20 @@ struct Pin {
 fn pin(os: &str, arch: &str) -> Result<Pin> {
     match (os, arch) {
         ("macos", "aarch64") => Ok(Pin {
-            url: "https://ziglang.org/download/0.16.0/zig-aarch64-macos-0.16.0.tar.xz",
-            sha256: "b23d70deaa879b5c2d486ed3316f7eaa53e84acf6fc9cc747de152450d401489",
+            url: "https://ziglang.org/download/0.17.0/zig-aarch64-macos-0.17.0.tar.xz",
+            sha256: "b607e9b9234790a008116ae5bdb71c6243b84b9fb42a53a9e70fde41c06c536a",
         }),
         ("macos", "x86_64") => Ok(Pin {
-            url: "https://ziglang.org/download/0.16.0/zig-x86_64-macos-0.16.0.tar.xz",
-            sha256: "0387557ed1877bc6a2e1802c8391953baddba76081876301c522f52977b52ba7",
+            url: "https://ziglang.org/download/0.17.0/zig-x86_64-macos-0.17.0.tar.xz",
+            sha256: "4f9a1c5269aa17ebda5e6d3c2b89d6cbf36f7d2b22a0306e9ab98f25f95529c6",
         }),
         ("linux", "x86_64") => Ok(Pin {
-            url: "https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz",
-            sha256: "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00",
+            url: "https://ziglang.org/download/0.17.0/zig-x86_64-linux-0.17.0.tar.xz",
+            sha256: "1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026",
         }),
         ("linux", "aarch64") => Ok(Pin {
-            url: "https://ziglang.org/download/0.16.0/zig-aarch64-linux-0.16.0.tar.xz",
-            sha256: "ea4b09bfb22ec6f6c6ceac57ab63efb6b46e17ab08d21f69f3a48b38e1534f17",
+            url: "https://ziglang.org/download/0.17.0/zig-aarch64-linux-0.17.0.tar.xz",
+            sha256: "9e8d11661d4ae3bd57702a3832781e23ad151dde5798e16a5ccd503f65234ff8",
         }),
         _ => Err(anyhow::anyhow!(
             "no zig bootstrap for this host ({os}/{arch})"
