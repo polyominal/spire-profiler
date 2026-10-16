@@ -7,6 +7,92 @@ signatures against managed delegates. The ownership and failure contracts live
 in the [native boundary](../profiler-core/src/abi.rs) and [crate
 overview](../profiler-core/src/lib.rs).
 
+## Managed entry points
+
+For managed-side changes, start with the relevant owner:
+
+- [CaptureRuntime](../shim/attribution/CaptureRuntime.cs): capture-thread and
+  combat admission; [SourceSnapshot](../shim/attribution/SourceSnapshot.cs):
+  managed ownership of native source handles.
+- [FlowCapture](../shim/attribution/FlowCapture.cs) and
+  [DamageCapture](../shim/attribution/DamageCapture.cs): producer context and
+  completed damage observations.
+- [ProfilerSession](../shim/session/ProfilerSession.cs): run and combat
+  transitions, record submission, and published views.
+- [StatisticsStore](../shim/session/StatisticsStore.cs): managed record
+  transport and optional trace files; [storage inspection](#storage-inspection)
+  covers persistence and diagnosis.
+- [ProfilerPanels](../shim/ui/ProfilerPanels.cs) and
+  [ChartProjection](../shim/ui/ChartProjection.cs): panel lifecycle and summary
+  presentation.
+
+Lifecycle changes span two owners: `CaptureRuntime.InvalidateEpoch` rejects
+further observations from a combat, while `ProfilerSession` owns discarding its
+native state. Invalidating capture alone does not discard the native ledger.
+
+## Following a direct damage result
+
+Consider an ordinary Strike with no modifier credit: the game reports one
+outgoing result with 4 unblocked damage and 2 blocked damage. The profiler
+records 6 total damage. This is the damage observation in
+`ProfilerSession.SelfTest`, which also exercises block and forge accounting.
+
+1. **Capture the source and result.** In
+   [DamageCapture](../shim/attribution/DamageCapture.cs), `Prefix` gives an
+   explicit card source precedence over an ambient producer. `ModifyDamage`
+   opens a target-local calculation. `ReportResultGroup` reads finalized game
+   results, appends their packets, and commits the complete group. The total
+   comes from unblocked plus blocked damage, not the requested amount.
+2. **Assign credit.**
+   [NativeAttributionBackend](../shim/native/NativeAttributionBackend.cs)
+   forwards the calculation through
+   [ProfilerNative](../shim/native/ProfilerNative.cs) and the Rust ABI. [Damage
+   allocation](../profiler-core/src/data/source/allocation.rs) assigns all 6
+   points to the card when no modifiers contribute. [The
+   ledger](../profiler-core/src/data/source.rs) records `damage_dealt = 6`,
+   `dmg_direct = 6`, and `damage_blocked = 2`; the attributed and modifier
+   segments remain zero. Blocked damage is included in the total, so unblocked
+   damage is `damage_dealt - damage_blocked`.
+3. **Publish a live view.**
+   [State::snapshot](../profiler-core/src/data/summary.rs) serializes the ledger
+   and coverage. `ProfilerSession.Refresh` reads changed native revisions,
+   parses the snapshot through
+   [StatisticsJson](../shim/session/StatisticsJson.cs), checks combat identity,
+   and publishes `CurrentCombat`.
+4. **Persist a completed combat.** `ProfilerSession.Finish` wraps the snapshot
+   with run, game, and mod identity and submits it through `StatisticsStore` to
+   Rust. Completed records feed the run aggregate; selecting history reads
+   persisted records into `SelectedHistory`.
+5. **Display the result.** `ProfilerPanels` supplies those views to the panels.
+   `ChartProjection.Rows` makes a damage row with value 6 and a direct segment;
+   `ChartProjection.Detail` shows 6 damage with 4 unblocked. Filtering and
+   rendering operate on these views without modifying attribution.
+
+### What verifies this example
+
+The existing checks cover different portions of that path:
+
+- The Rust scenario
+  `ordinary_hit_on_poisoned_target_does_not_consume_poison_suppliers` in
+  [scenarios.rs](../profiler-core/src/data/source/scenarios.rs) asserts the
+  4-unblocked, 2-blocked hit's exact direct credit and checks that it does not
+  consume poison suppliers.
+- `DamageGroups` in [managed capture fixtures](../shim/tests/Fixtures.cs) checks
+  the patched damage bridge, card-source selection, and complete-group timing
+  against a fake backend. Its redirected result group is a different fixture
+  from the single hit above.
+- [SessionFixtures](../shim/tests/SessionFixtures.cs) invokes
+  `ProfilerSession.SelfTest` against the real native library. It injects native
+  observations and checks damage totals, replay equality, and stored history.
+  This does not exercise capture from actual game damage.
+- [Panel fixtures](../shim/tests/PanelFixtures.cs) check presentation rules on
+  constructed summaries. They do not establish rendered appearance.
+
+Run the native scenario through `cargo nextest` and the managed fixtures through
+`cargo xtask managed-test`. No single existing check follows this exact hit from
+a real game hook through SQLite to rendered pixels. See the [verification
+guide](verify.md) for gate selection, game prerequisites, and manual validation.
+
 ## Godot resources and panels
 
 Panels use the installed game's GodotSharp assembly and ordinary managed Godot

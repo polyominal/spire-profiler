@@ -8,6 +8,10 @@ internal readonly record struct CaptureEpoch(ulong Sequence, object Combat)
     internal bool IsAvailable => Sequence > 0 && Sequence <= uint.MaxValue && Combat != null;
 }
 
+// Owns the capture thread and active combat identity. Async frames can outlive
+// a combat; their old identity remains visible so resumed work cannot enter
+// the replacement combat. Off-thread capture records a diagnostic for the
+// game thread without calling the backend.
 internal static class CaptureRuntime
 {
     internal static AttributionBackend Backend { get; private set; }
