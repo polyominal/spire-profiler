@@ -22,8 +22,10 @@ fmt-md` for Markdown only.
   design uncertainty with the user; routine fixes need no planning document.
 - Read the affected module contracts. Start with the [core
   overview](profiler-core/src/lib.rs), [state](profiler-core/src/data/state.rs),
-  [ABI](profiler-core/src/abi.rs), or [store](profiler-store/src/lib.rs). Keep
-  canonical facts beside their owner.
+  [ABI](profiler-core/src/abi.rs), or [store](profiler-store/src/lib.rs). For
+  managed capture, session, and panel changes, use the [managed entry
+  points](docs/interop.md#managed-entry-points). Keep canonical facts beside
+  their owner.
 - Call out changes to interfaces, dependencies, ownership, or performance before
   expanding implementation around them.
 - Review the whole diff for unnecessary mechanisms, inconsistent boundaries, and

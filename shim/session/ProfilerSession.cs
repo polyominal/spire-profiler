@@ -5,8 +5,9 @@ using System.Linq;
 
 namespace SpireProfiler;
 
-// The game thread owns one session. Native state covers a combat; this owner
-// supplies time and identity, persists completed observations, and publishes views.
+// The game thread owns one session. Native attribution state covers a combat;
+// this owner supplies time and identity, submits completed records to the store,
+// and publishes views.
 internal static class ProfilerSession
 {
     private static StatisticsStore store;

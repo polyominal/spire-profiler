@@ -14,6 +14,9 @@ internal sealed record ProducerFrame(CaptureEpoch Epoch, object Model, SourceSna
 {
     internal static readonly ProducerFrame Barrier = new(default, null, SourceSnapshot.Unavailable, ProducerRole.Unknown, DamageSegment.Attributed);
 }
+// Each producer owns its source across awaits. Its asynchronous work retains
+// that frame while the caller's frame is restored. An unavailable producer
+// masks the caller's source, preventing credit to an unrelated outer card.
 internal static class FlowCapture
 {
     private static readonly AsyncLocal<ProducerFrame> producer = new();

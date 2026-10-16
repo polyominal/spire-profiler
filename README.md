@@ -5,9 +5,10 @@ A per-source (cards, relics, powers, potions) combat profiler for Slay the Spire
 damage, defense, and forge. It aggregates those numbers per run, and shows them
 in two in-game charts: the combat panel and the run-history summary.
 
-C\# observes game execution and owns the panels and statistics files. A
+C\# observes game execution, coordinates run lifecycle, and owns the panels. A
 deterministic Rust engine assigns source credit under an explicit attribution
-policy. Stored records include capture coverage diagnostics.
+policy; a separate Rust store owns SQLite persistence. Stored records include
+capture coverage diagnostics.
 
 ## AI use disclaimer
 
@@ -36,6 +37,9 @@ active avatar again for the full team view).
 - Specs live in module docs: the crate overview (architecture, layers, standing
   contracts) at the top of [lib.rs](profiler-core/src/lib.rs), each subsystem's
   spec next to its code.
+- The [damage walkthrough](docs/interop.md#following-a-direct-damage-result)
+  connects those contracts to managed capture, storage, presentation, and the
+  tests that verify each part.
 - `docs/` holds the environment guides: building ([build.md](docs/build.md)),
   verification gates and headless testing ([verify.md](docs/verify.md)),
   managed/native interop ([interop.md](docs/interop.md)), and the game
